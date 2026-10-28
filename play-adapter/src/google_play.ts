@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
-import { playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
+import { editStatePatternsTried, playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
   PlayAiGeneratedState,
@@ -12,6 +12,8 @@ import type {
   DeobfuscationSymbolType,
   PromotionRequest,
   PromotionSymbolsRequest,
+  SendForReviewRequest,
+  SendForReviewResult,
   TrackRelease,
   TrackResource,
   ReleaseSummary,
@@ -215,6 +217,45 @@ function hashingBody(
       return { size, sha256: bytesToHex(hasher.digest()) };
     },
   };
+}
+
+/**
+ * Classify a release-edit commit that Google rejected, for the two paths that
+ * decide on review: promote with changesNotSentForReview, and sendForReview.
+ * Same rules as the store listing (store_listing.ts editStateRejection): in review
+ * -> 409 play_edit_in_review (Hands commits with ERROR_IF_IN_REVIEW and never
+ * cancels it); manual send required -> 409 play_changes_not_sent_for_review; an
+ * answer no pattern recognises -> 502 play_edit_state_unknown, never success.
+ * Recognised non-review causes (e.g. MULTIPLE_COMPLETED) keep play_api_rejected.
+ * Plain promote (no flag) does not use this: its errors stay as they were.
+ */
+export function releaseEditStateRejection(error: unknown, what: "release" | "send_for_review"): unknown {
+  if (!(error instanceof PlayAdapterError) || error.code !== "play_api_rejected") return error;
+  const cause = error.cause_detail?.provider_cause;
+  const subject = what === "release" ? "the release edit was not committed" : "nothing was sent for review";
+  if (cause === "EDIT_IN_REVIEW") {
+    return new PlayAdapterError(409, "play_edit_in_review",
+      `Another change for this app is in review on Google Play (Hands commits with ERROR_IF_IN_REVIEW and never cancels it); ${subject}. Wait for the review to finish, then run it again.`,
+      error.cause_detail);
+  }
+  if (cause === "CHANGES_NOT_SENT_FOR_REVIEW") {
+    return new PlayAdapterError(409, "play_changes_not_sent_for_review",
+      `Google Play requires this app's changes to be sent for review from Play Console; ${subject}. Send the pending changes for review in Play Console.`,
+      error.cause_detail);
+  }
+  if (!cause || cause === "OTHER") {
+    return new PlayAdapterError(502, "play_edit_state_unknown",
+      `Google Play answered the commit in a way Hands does not recognise; ${subject === "nothing was sent for review" ? "it is not reported as sent for review" : "the release is not reported as committed"}. Check the app in Play Console before running it again.`,
+      {
+        stage: "commit_edit",
+        provider_cause: "OTHER",
+        tried: editStatePatternsTried(),
+        ...(error.cause_detail?.message_sha256
+          ? { message_sha256: error.cause_detail.message_sha256, message_length: error.cause_detail.message_length }
+          : {}),
+      });
+  }
+  return error;
 }
 
 export class GooglePlayClient {
@@ -557,7 +598,12 @@ export class GooglePlayClient {
       return results;
     }
     try {
-      await this.commitEdit(request.packageName, editId);
+      // Same review decision as the release edit: with changesNotSentForReview the
+      // files join the pending (unsent) changes. Committing this side edit WITHOUT
+      // the flag would send every pending change for review -- the opposite of what
+      // the caller asked -- and would hit ERROR_IF_IN_REVIEW while another release
+      // is in review anyway.
+      await this.commitEdit(request.packageName, editId, { changesNotSentForReview: request.changesNotSentForReview === true });
     } catch (error) {
       const known = error instanceof PlayAdapterError ? error : null;
       results = results.map((result) => result.uploaded ? {
@@ -777,7 +823,7 @@ export class GooglePlayClient {
   private async bundleAlreadyOnPlay(
     packageName: string,
     editId: string,
-    request: PromotionRequest,
+    request: Pick<PromotionRequest, "versionCode" | "expectedSha256">,
   ): Promise<boolean> {
     // Ask Google for the bundle it actually holds, not just whether a track mentions
     // this versionCode. Play stores one bundle per versionCode, so a versionCode match
@@ -855,6 +901,7 @@ export class GooglePlayClient {
     if (request.expectedSize > this.maxAabSize) {
       throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
     }
+    const notSentForReview = request.changesNotSentForReview === true;
     let editId = await this.createEdit(request.packageName);
     let commitAttempted = false;
     let bundleUploaded = true;
@@ -892,7 +939,15 @@ export class GooglePlayClient {
       const current = await this.getTrack(request.packageName, editId, request.playTrack);
       await this.updateTrack(request, editId, current);
       commitAttempted = true;
-      await this.commitEdit(request.packageName, editId);
+      if (notSentForReview) {
+        try {
+          await this.commitEdit(request.packageName, editId, { changesNotSentForReview: true });
+        } catch (error) {
+          throw releaseEditStateRejection(error, "release");
+        }
+      } else {
+        await this.commitEdit(request.packageName, editId);
+      }
     } catch (error) {
       if (commitAttempted) throw error;
       await this.cleanupOrThrow(request.packageName, editId, error);
@@ -914,6 +969,100 @@ export class GooglePlayClient {
       deobfuscation_files: deobfuscationFiles,
       // The languages sent as releaseNotes on the new track release (empty: none).
       release_notes_languages: (request.releaseNotes ?? []).map((note) => note.language),
+      // Present only when requested, so a promotion without the flag returns exactly
+      // what it always did. true = every edit was committed changesNotSentForReview.
+      ...(notSentForReview ? { changes_not_sent_for_review: true as const } : {}),
+    };
+  }
+
+  /** Best-effort lifecycle read for one versionCode; evidence only, never fatal. */
+  private async lifecycleOf(packageName: string, playTrack: string, versionCode: number): Promise<string | null> {
+    try {
+      const releases = await this.listReleaseStates(packageName, playTrack);
+      const match = releases.find((release) => release.activeArtifacts.some((artifact) => artifact.versionCode === versionCode));
+      return match && /^[A-Z][A-Z0-9_]{0,80}$/.test(match.releaseLifecycleState) ? match.releaseLifecycleState : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Send the app's pending (not-sent-for-review) changes for review.
+   *
+   * Google has no "send for review" method. edits.commit documents
+   * changesNotSentForReview as "the changes in this edit will not be reviewed until
+   * they are explicitly sent for review"; committing an edit WITHOUT that flag is
+   * the API's only lever, and whether such a commit also submits changes saved
+   * earlier with the flag is not documented by Google. So this does exactly one
+   * thing -- open an edit, check that the release Hands is talking about is really
+   * there, commit with ERROR_IF_IN_REVIEW and no changesNotSentForReview -- and
+   * records the release lifecycle before and after as evidence.
+   *
+   * Checks before the commit (the edit is deleted on any failure):
+   *   - the bundle Play holds for versionCode has the accepted sha256;
+   *   - the requested Play track carries a release with that versionCode.
+   * The edit itself carries no changes. Never CANCEL_IN_REVIEW_AND_SUBMIT.
+   */
+  async sendForReview(request: SendForReviewRequest): Promise<SendForReviewResult> {
+    const lifecycleBefore = await this.lifecycleOf(request.packageName, request.playTrack, request.versionCode);
+    const editId = await this.createEdit(request.packageName);
+    let trackRelease: TrackRelease | undefined;
+    try {
+      const onPlay = await this.bundleAlreadyOnPlay(request.packageName, editId, request);
+      if (!onPlay) {
+        throw new PlayAdapterError(409, "play_bundle_not_on_play",
+          "Google Play holds no bundle for this versionCode; promote it (with changes_not_sent_for_review) first");
+      }
+      const track = await this.getTrack(request.packageName, editId, request.playTrack);
+      trackRelease = (track.releases ?? []).find((release) =>
+        release.versionCodes?.some((value) => exactVersionCode(value) === request.versionCode));
+      if (!trackRelease) {
+        throw new PlayAdapterError(409, "play_release_not_on_track",
+          "The requested Play track has no release with this versionCode; nothing was sent for review");
+      }
+    } catch (error) {
+      await this.cleanupOrThrow(request.packageName, editId, error);
+    }
+    let committedId: string | null;
+    try {
+      committedId = await this.commitEdit(request.packageName, editId);
+    } catch (error) {
+      // No HTTP answer: Google may or may not have committed. Leave the edit alone.
+      if (error instanceof PlayAdapterError && error.code === "play_api_unavailable") {
+        throw new PlayAdapterError(502, "play_commit_ambiguous",
+          "Google Play did not answer the commit; check Play Console before running it again", { stage: "commit_edit" });
+      }
+      if (error instanceof PlayAdapterError && error.code === "play_api_malformed") {
+        throw new PlayAdapterError(502, "play_edit_state_unknown",
+          "Google Play answered the commit in a way Hands does not recognise; it is not reported as sent for review. Check the app in Play Console before running it again.",
+          { stage: "commit_edit", provider_cause: "MALFORMED_RESPONSE", tried: editStatePatternsTried() });
+      }
+      // ERROR_IF_IN_REVIEW leaves a rejected edit valid; delete it (best effort).
+      await this.deleteEdit(request.packageName, editId).catch(() => undefined);
+      throw releaseEditStateRejection(error, "send_for_review");
+    }
+    if (committedId !== editId) {
+      throw new PlayAdapterError(502, "play_edit_state_unknown",
+        "Google Play answered the commit in a way Hands does not recognise; it is not reported as sent for review. Check the app in Play Console before running it again.",
+        { stage: "commit_edit", provider_cause: "MALFORMED_RESPONSE", tried: editStatePatternsTried() });
+    }
+    const lifecycleAfter = await this.lifecycleOf(request.packageName, request.playTrack, request.versionCode);
+    const release = trackRelease!;
+    return {
+      edit_id: editId,
+      package_name: request.packageName,
+      version_code: request.versionCode,
+      track: request.handsTrack,
+      play_track: request.playTrack,
+      sha256: request.expectedSha256,
+      track_release: {
+        status: typeof release.status === "string"
+          && ["statusUnspecified", "draft", "inProgress", "halted", "completed"].includes(release.status) ? release.status : null,
+        user_fraction: typeof release.userFraction === "number" ? release.userFraction : null,
+      },
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+      lifecycle_before: lifecycleBefore,
+      lifecycle_after: lifecycleAfter,
     };
   }
 }

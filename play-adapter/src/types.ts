@@ -71,6 +71,49 @@ export interface PromotionRpcInput extends TrackMaximumRpcInput {
   mapping?: SymbolsRpcInput | null;
   /** Optional release notes for the new track release, already mapped to Play BCP-47 tags. */
   releaseNotes?: LocalizedReleaseNote[] | null;
+  /**
+   * Commit every edit of this promotion with `changesNotSentForReview=true`: the
+   * bundle, track release, notes and deobfuscation files are saved on Play but not
+   * sent for review (sendForReview, or Play Console, does that later). Default
+   * false: the parameter is not sent, exactly as before.
+   */
+  changesNotSentForReview?: boolean;
+}
+
+/** sendForReview: one Hands release (versionCode) on one Hands track. */
+export interface SendForReviewRpcInput extends TrackMaximumRpcInput {
+  versionCode: number;
+  /** sha256 of the accepted AAB; the bundle Play holds for versionCode must match. */
+  expectedSha256: string;
+  operationId: string;
+}
+
+export interface SendForReviewRequest {
+  packageName: string;
+  handsTrack: HandsTrack;
+  playTrack: string;
+  versionCode: number;
+  expectedSha256: string;
+  operationId: string;
+}
+
+/**
+ * Result of sendForReview. `lifecycle_before/after` are best-effort reads of
+ * tracks.releases.list (null when the read failed or no release carried the
+ * versionCode); they are evidence only, never the success criterion.
+ */
+export interface SendForReviewResult {
+  edit_id: string;
+  package_name: string;
+  version_code: number;
+  track: HandsTrack;
+  play_track: string;
+  sha256: string;
+  /** The track release in the edit that carried versionCode, before the commit. */
+  track_release: { status: string | null; user_fraction: number | null };
+  commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false };
+  lifecycle_before: string | null;
+  lifecycle_after: string | null;
 }
 
 /**
@@ -149,6 +192,8 @@ export interface PromotionRequest {
   mapping?: PromotionSymbolsRequest | null;
   /** Validated release notes for the new track release; null/empty sends none. */
   releaseNotes?: LocalizedReleaseNote[] | null;
+  /** Commit with changesNotSentForReview=true (every edit of this promotion). */
+  changesNotSentForReview?: boolean;
 }
 
 /** Read-only release summaries; lifecycle is distinct from edits.tracks status. */

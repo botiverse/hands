@@ -62,6 +62,15 @@
         "track": { "enum": ["internal", "closed", "production"] },
         "rollout_percent": { "type": "number", "minimum": 0, "maximum": 100 },
         "play_version_code": { "type": "integer", "minimum": 1 },
+        "track_release": {
+          "description": "send-for-review only: the track release that carried the versionCode in the edit before the commit.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": { "type": ["string", "null"] },
+            "user_fraction": { "type": ["number", "null"] }
+          }
+        },
         "api_readback": {
           "type": "object",
           "additionalProperties": false,
@@ -76,7 +85,21 @@
       }
     },
     "actor": { "type": "string", "minLength": 1 },
-    "action": { "enum": ["accept", "promote", "halt", "resume", "rollback-republish"] },
+    "action": { "enum": ["accept", "promote", "send-for-review", "halt", "resume", "rollback-republish"] },
+    "review": {
+      "description": "Play review mode of this operation's commit (independent of result). promote: requested=true unless changes_not_sent_for_review; requested=null with reason not_acknowledged when the adapter did not confirm the flag. send-for-review: requested=true plus the release lifecycle read before/after.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "changes_not_sent_for_review"],
+      "properties": {
+        "requested": { "type": ["boolean", "null"] },
+        "changes_not_sent_for_review": { "type": "boolean" },
+        "changes_in_review_behavior": { "const": "ERROR_IF_IN_REVIEW" },
+        "reason": { "const": "not_acknowledged" },
+        "lifecycle_before": { "type": ["string", "null"] },
+        "lifecycle_after": { "type": ["string", "null"] }
+      }
+    },
     "approvals": {
       "type": "array",
       "minItems": 1,

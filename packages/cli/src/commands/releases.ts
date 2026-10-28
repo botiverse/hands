@@ -56,6 +56,14 @@ interface PlayWriteResult {
   version_code?: number | null;
   revision?: number;
   rollout_percent?: number | null;
+  /** Present for promote with --changes-not-sent-for-review and for play-send-for-review. */
+  review?: {
+    requested?: boolean | null;
+    changes_not_sent_for_review?: boolean;
+    reason?: string;
+    lifecycle_before?: string | null;
+    lifecycle_after?: string | null;
+  } | null;
 }
 
 interface ReleaseReceipt {
@@ -118,7 +126,8 @@ function playWriteError(action: string, err: unknown): Error {
           `Play ${action} failed (${code}): ${message}. Not retried automatically; resolve the conflict and re-run the command.`,
         );
       }
-      return new Error(`Play ${action} failed (${code}): ${message}${receiptNote}`);
+      const failureCode = typeof info.failure_code === "string" ? `/${info.failure_code}` : "";
+      return new Error(`Play ${action} failed (${code}${failureCode}): ${message}${receiptNote}`);
     }
   }
   return err instanceof Error ? err : new Error(String(err));
@@ -675,11 +684,16 @@ export function registerReleaseCommands(program: Command): void {
     .requiredOption("--track <track>", "Play track: internal, closed, or production.")
     .option("--rollout-percent <percent>", "Staged rollout percentage (0-100).")
     .requiredOption("--note <note>", "Approval note written into the promotion receipt's approvals (required, non-empty).")
+    .option(
+      "--changes-not-sent-for-review",
+      "Upload and commit with changesNotSentForReview=true (always ERROR_IF_IN_REVIEW): saved on Play, NOT sent for review. Use while another release is in review; send it later with `hands releases play-send-for-review`.",
+      false,
+    )
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { track: string; rolloutPercent?: string; note: string; json?: boolean },
+      opts: { track: string; rolloutPercent?: string; note: string; changesNotSentForReview?: boolean; json?: boolean },
       command: Command,
     ) => {
       const track = parsePlayTrack(opts.track);
@@ -693,6 +707,8 @@ export function registerReleaseCommands(program: Command): void {
         approval: { note: opts.note },
       };
       if (rolloutPercent !== undefined) body.rollout_percent = rolloutPercent;
+      // Sent only when set, so a plain promote is the same request as before.
+      if (opts.changesNotSentForReview) body.changes_not_sent_for_review = true;
       let res: PlayWriteResult;
       try {
         res = await apiRequest<PlayWriteResult>(
@@ -712,6 +728,55 @@ export function registerReleaseCommands(program: Command): void {
       console.log(`  track:       ${res.track ?? track}`);
       console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
       if (res.rollout_percent != null) console.log(`  rollout:     ${res.rollout_percent}%`);
+      if (opts.changesNotSentForReview) {
+        const review = res.review;
+        if (review?.requested === false) {
+          console.log("  review:      NOT sent for review (changesNotSentForReview). Send it with:");
+          console.log(`               hands releases play-send-for-review ${appIdOrSlug} ${releaseId} --track ${track} --note <note>`);
+        } else {
+          console.log("  review:      the server did not confirm changesNotSentForReview; check Play Console (the release may have been sent for review).");
+        }
+      }
+    });
+
+  releases
+    .command("play-send-for-review <appIdOrSlug> <releaseId>")
+    .description("Send a release uploaded with --changes-not-sent-for-review to Google Play review (publisher role; ERROR_IF_IN_REVIEW, never cancels a review in progress; no auto-retry).")
+    .option("--track <track>", "Play track the release was promoted to: internal, closed, or production.", "production")
+    .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      releaseId: string,
+      opts: { track: string; note: string; json?: boolean },
+      command: Command,
+    ) => {
+      const track = parsePlayTrack(opts.track);
+      const appId = await resolveAppId(appIdOrSlug);
+      const body: Record<string, unknown> = {
+        track,
+        expected_revision: await fetchReleaseRevision(appId, releaseId),
+        approval: { note: opts.note },
+      };
+      let res: PlayWriteResult;
+      try {
+        res = await apiRequest<PlayWriteResult>(
+          `/api/apps/${appId}/releases/${releaseId}/distributions/play/send-for-review`,
+          { method: "POST", body },
+        );
+      } catch (err) {
+        throw playWriteError("send-for-review", err);
+      }
+      if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      console.log(`Sent release ${releaseId} for Google Play review.`);
+      console.log(`  receipt:     ${res.receipt_id}`);
+      console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+      console.log(`  track:       ${res.track ?? track}`);
+      console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      console.log(`  lifecycle:   ${res.review?.lifecycle_before ?? "unknown"} -> ${res.review?.lifecycle_after ?? "unknown"}`);
     });
 
   releases

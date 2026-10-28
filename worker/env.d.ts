@@ -117,6 +117,8 @@ interface GooglePlayAdapterService {
       mapping?: { expectedSha256: string; expectedSize: number } | null;
       /** Release notes for the new track release, as Play BCP-47 language tags. */
       releaseNotes?: Array<{ language: string; text: string }> | null;
+      /** Commit every edit with changesNotSentForReview=true. Omitted = sent for review (unchanged). */
+      changesNotSentForReview?: boolean;
     },
     body: ReadableStream<Uint8Array>,
     symbolsBody: ReadableStream<Uint8Array> | null,
@@ -145,6 +147,26 @@ interface GooglePlayAdapterService {
     /** false when Play already held this exact bundle and only the track was edited. */
     bundle_uploaded?: boolean;
     release_notes_languages?: string[];
+    /** true only when the adapter committed with changesNotSentForReview; older adapters omit it. */
+    changes_not_sent_for_review?: boolean;
+  }>>;
+  /** Commit an empty edit without changesNotSentForReview (ERROR_IF_IN_REVIEW) after checking bundle + track. */
+  sendForReview(input: GooglePlayBindingInput & {
+    handsTrack: keyof GooglePlayTracks;
+    versionCode: number;
+    expectedSha256: string;
+    operationId: string;
+  }): Promise<GooglePlayAdapterResult<{
+    edit_id: string;
+    package_name: string;
+    version_code: number;
+    track: keyof GooglePlayTracks;
+    play_track: string;
+    sha256: string;
+    track_release: { status: string | null; user_fraction: number | null };
+    commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false };
+    lifecycle_before: string | null;
+    lifecycle_after: string | null;
   }>>;
 }
 

@@ -109,6 +109,29 @@ Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，�
 
 提交要求候选 AAB 的 versionCode **大于目标轨道已有最大值，且不超过 2100000000**；空轨道不要求从 1 开始。准备签名候选前先核目标轨道的已有版本，避免产物做好后才发现冲突。完整请求结构见 [公开 API](../public-api-reference/) 和 [OpenAPI](https://hands.build/openapi.json)。
 
+### 先上传、后送审（changes_not_sent_for_review + send-for-review）
+
+适用场景：同一应用已有另一个版本（例如正式轨道的 1.16.1）正在 Google 审核中，此时普通 promote 在 `stage=commit_edit` 被 Google 拒绝（回执 `play_api_error`，`cause.provider_cause` 多为 `EDIT_IN_REVIEW`，也可能因 Google 文案无法识别而是 `reason=unspecified`）。Hands 所有 `edits.commit` 都带 `changesInReviewBehavior=ERROR_IF_IN_REVIEW`，**从不使用 Google 的默认值 CANCEL_IN_REVIEW_AND_SUBMIT**，因此 Hands 永远不会取消别人（或自己上一个版本）正在进行的审核；被拒就是被拒，不重试、不换参数。需要提前把新版本放到 Play 上时，分两步：
+
+1. **上传但不送审**：promote 请求体加 `changes_not_sent_for_review:true`（CLI：`hands releases play-promote <app> <release> --track production --rollout-percent 100 --note ... --changes-not-sent-for-review`）。promote 的全部 edit 都以 `changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true` 提交：新 bundle 路径的 release edit；bundle 已在 Play 时，先提交的 symbols/mapping 单独 edit（`existing_bundle`）与随后的 release edit **都**带该参数——单独 edit 若不带，会把全部待送审更改送审，与请求相反，且在另一版本审核中时同样会被 ERROR_IF_IN_REVIEW 拒绝。bundle、轨道 release、release notes、deobfuscation 文件都保存在 Play，但不送审。门禁、锁、读回校验与普通 promote 完全相同。
+   - 回执（`kind:"play-promotion"`, `action:"promote"`）新增 `review`：`{requested:false, changes_not_sent_for_review:true}`；adapter 未回显该标记（旧 adapter 会忽略该参数并**按送审方式**提交）时记为 `{requested:null, changes_not_sent_for_review:true, reason:"not_acknowledged"}`，即"可能已送审"，回执不会假装没送审。不带该参数的 promote 请求、发往 Google 的请求与响应都不变，回执只多出 `review:{requested:true, changes_not_sent_for_review:false}`。
+   - 即使带了该参数，Google 仍可能回答"另有更改在审核"。此时返回 409 `code:"edit_in_review"`、`failure_code:"play_edit_in_review"`，写 failed-closed 回执（含 `cause.provider_cause:"EDIT_IN_REVIEW"`），不重试、不改变行为；只能等审核结束。Google 回答无法识别时返回 502 `code:"edit_state_unknown"`（`play_edit_state_unknown`，附 `cause.tried`），不算成功。这一分类只用于带该参数的 promote；普通 promote 的错误码保持原样。
+   - 读回：提交后 Hands 照常新开 edit 读取轨道核对版本、状态与比例。这依赖"新 edit 能看到已提交但未送审的更改"（store listing 的 `changes_not_sent_for_review` 读回同样依赖这一点）。若 Google 不是这样，提交已成功但回执为 `play_readback_mismatch`，请到 Play Console 核对，勿直接重跑。
+2. **送审**：前一个审核结束后，调用 `POST /api/apps/:appId/releases/:releaseId/distributions/play/send-for-review`，body `{track, expected_revision, approval:{note}}`（CLI：`hands releases play-send-for-review <app> <release> [--track production] --note ... [--json]`，`--track` 默认 production）。
+   - 门禁：已认证真人或 agent 且具 publisher 权限；expected_revision CAS（成功调用 adapter 前 revision +1，与 promote 相同）；AAB 已封存且最新验收通过；该 release 的 versionCode 必须已经由 Hands promote 到所请求的轨道（`play_distribution_state`，否则 400 `failure_code:"not_promoted_to_track"`，不调用 Play）；无 live hold；绑定已验证、启用且包名一致。
+   - 锁：与 promote 共用 `play_edit_locks`（插入时检查 `play_store_listing_locks` 不存在），即每个包同一时刻只有一个 Hands Play edit；store listing push 进行中时返回 409 `edit_conflict`。
+   - adapter：先读一次 `tracks.releases.list` 记录该 versionCode 的生命周期状态（只作证据，失败记 null）→ 开 edit → `edits.bundles.list` 确认 Play 持有该 versionCode 且 sha256 等于验收的 AAB（没有则 409 `play_bundle_not_on_play`，字节不同则 `aab_integrity_mismatch`）→ 读所请求的轨道，确认有 release 含该 versionCode（否则 409 `play_release_not_on_track`）→ **不写入任何更改**，以 `changesInReviewBehavior=ERROR_IF_IN_REVIEW`、**不带** `changesNotSentForReview` 提交 → 再读一次生命周期。提交前任一步失败都会删除 edit；Google 拒绝提交时也删除 edit（ERROR_IF_IN_REVIEW 不使 edit 失效）；提交无应答返回 `play_commit_ambiguous`（502 `edit_state_unknown`），不删 edit。
+   - 错误：另有更改在审核 → 409 `edit_in_review`/`play_edit_in_review`；Google 要求在 Play Console 手动送审 → 409 `edit_in_review`/`play_changes_not_sent_for_review`；无法识别或无应答 → 502 `edit_state_unknown`。每次到达 adapter 都写不可变回执。
+   - 回执：`release_receipts.kind` 有 CHECK 约束（只允许 `acceptance`、`play-promotion`），为免迁移，复用 `kind:"play-promotion"`，以 `action:"send-for-review"` 区分。成功回执含 `review:{requested:true, changes_not_sent_for_review:false, changes_in_review_behavior:"ERROR_IF_IN_REVIEW", lifecycle_before, lifecycle_after}`、`play.track_release:{status, user_fraction}`（提交前 edit 中该 release 的状态）与 `play.api_readback`（包名、versionCode、轨道，`sha256_match:true` 来自 bundles.list 的摘要比对）。`play_distribution_state` 不变。
+   - 通知：这两种非默认操作仍产生 `google_play:submission_succeeded/failed`，payload 额外带 `action`（`promote` / `send-for-review`）与 `review_requested`（`false` / `true`，未确认时 `null`）；普通 promote 的通知 payload 不变。生命周期变化（如 NOT_SENT_FOR_REVIEW → IN_REVIEW）另由 `google_play:release_state_changed` 轮询反映。
+
+**不确定之处（按 Google 文档如实记录，未实测）**：
+
+- Google 文档：`changesNotSentForReview` 表示"本 edit 的更改不会被审核，直到在 Play Console 中显式送审"，并与其他未送审的更改合并；`ERROR_IF_IN_REVIEW` 表示"有更改在审核时返回错误，edit 不提交且保持有效"。文档**没有**说明两者同时使用、且另有更改在审核时是否仍报错。Hands 的处理：照常提交，若 Google 仍报审核中，就按上文返回 `play_edit_in_review` 并写回执，不改用 CANCEL_IN_REVIEW_AND_SUBMIT、不循环重试。
+- Google **没有**"送审"API。文档只说未送审的更改要在 Play Console 中送审；"再提交一个不带 `changesNotSentForReview` 的 edit 会把之前保存的未送审更改一并送审"是常见做法，但未见 Google 明文保证；空 edit 的提交是否被接受、是否触发送审同样无文档。因此 send-for-review 不把"提交成功"等同于"已进入审核"：回执记录提交前后的 `lifecycle_before/after`（例如 `RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW` → `RELEASE_LIFECYCLE_STATE_IN_REVIEW`）。若 `lifecycle_after` 仍是 NOT_SENT_FOR_REVIEW（或为 null），请到 Play Console「发布概览」手动送审。
+- Google 回答"需在 Play Console 手动送审"（`play_changes_not_sent_for_review`）时，只能在 Play Console 送审。
+- 部署顺序：Play adapter（新增 `sendForReview`，promote 接受 `changesNotSentForReview`）→ Worker → CLI。无需迁移。若 Worker 先于 adapter 上线：带该参数的 promote 会被旧 adapter 忽略参数并送审（回执 `reason:"not_acknowledged"`），send-for-review 会以 `play_api_error` 失败并写回执。
+
 ### 商店详情（store listing）文字与图片接口
 
 `POST /api/apps/:appId/distributions/play/store-listing` 让具备应用 publisher 权限的真人或 agent 通过 Hands 修改 Play 商店详情文字，CLI 为 `hands store-listing push`（见公开 CLI 文档）。只开放白名单的 androidpublisher v3 端点：`edits.details.get`（读 defaultLanguage）、`edits.listings.list/update/delete`、`edits.validate`、`edits.commit`、`edits.delete`；不提供通用 path+body 代理，不触碰轨道、release 或 bundle。请求体 `listings[]` 的字段与 Google `Listing` 资源逐字一致（language、title、shortDescription、fullDescription、video，discovery revision 20261027）。

@@ -2160,7 +2160,11 @@ describe("play distribution commands", () => {
   });
 
   async function startPlayHarness(
-    overrides: { writeError?: { status: number; error: Record<string, unknown> }; playNull?: boolean } = {},
+    overrides: {
+      writeError?: { status: number; error: Record<string, unknown> };
+      playNull?: boolean;
+      writeExtra?: Record<string, unknown>;
+    } = {},
   ): Promise<PlayHarness> {
     const requests: PlayRequest[] = [];
     const logs: string[] = [];
@@ -2216,6 +2220,7 @@ describe("play distribution commands", () => {
           version_code: 42,
           revision: 8,
           rollout_percent: 25,
+          ...(overrides.writeExtra ?? {}),
         }));
       }
       if (req.url === "/api/apps/app-1/releases/release-1/receipts") {
@@ -2311,6 +2316,101 @@ describe("play distribution commands", () => {
       expect(text).toContain("track:       internal");
       expect(text).toContain("versionCode: 42");
       expect(text).toContain("rollout:     25%");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("sends changes_not_sent_for_review only with --changes-not-sent-for-review and prints the next step", async () => {
+    const harness = await startPlayHarness({ writeExtra: { review: { requested: false, changes_not_sent_for_review: true } } });
+    try {
+      await harness.run(
+        "releases", "play-promote", "raft-android", "release-1",
+        "--track", "production", "--rollout-percent", "100", "--note", "upload 1.17.0", "--changes-not-sent-for-review",
+      );
+      await harness.run("releases", "play-promote", "raft-android", "release-1", "--track", "production", "--note", "plain");
+      const posts = harness.requests.filter((request) => request.method === "POST");
+      expect(posts.map((post) => post.body)).toEqual([
+        { track: "production", expected_revision: 7, approval: { note: "upload 1.17.0" }, rollout_percent: 100, changes_not_sent_for_review: true },
+        { track: "production", expected_revision: 7, approval: { note: "plain" } },
+      ]);
+      const text = harness.logs.join("\n");
+      expect(text).toContain("NOT sent for review");
+      expect(text).toContain("hands releases play-send-for-review raft-android release-1 --track production");
+      // The plain promote prints no review line.
+      expect(text.match(/review:/g)).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("warns when the server did not confirm changesNotSentForReview", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "production", "--note", "n", "--changes-not-sent-for-review",
+      );
+      expect(harness.logs.join("\n")).toContain("did not confirm changesNotSentForReview");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("play-send-for-review posts track, expected_revision and note (track defaults to production)", async () => {
+    const harness = await startPlayHarness({ writeExtra: { review: {
+      requested: true, lifecycle_before: "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW", lifecycle_after: "RELEASE_LIFECYCLE_STATE_IN_REVIEW",
+    } } });
+    try {
+      await harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--note", "1.16.1 approved");
+      await harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--track", "closed", "--note", "beta");
+      const posts = harness.requests.filter((request) => request.method === "POST");
+      expect(posts).toEqual([
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/send-for-review",
+          body: { track: "production", expected_revision: 7, approval: { note: "1.16.1 approved" } },
+        },
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/send-for-review",
+          body: { track: "closed", expected_revision: 7, approval: { note: "beta" } },
+        },
+      ]);
+      const text = harness.logs.join("\n");
+      expect(text).toContain("rcpt-send-for-review");
+      expect(text).toContain("lifecycle:   RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW -> RELEASE_LIFECYCLE_STATE_IN_REVIEW");
+
+      harness.logs.length = 0;
+      await harness.run("--json", "releases", "play-send-for-review", "raft-android", "release-1", "--note", "n");
+      expect(JSON.parse(harness.logs.join("\n"))).toMatchObject({ receipt_id: "rcpt-send-for-review", review: { requested: true } });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("play-send-for-review requires --note, validates --track, and surfaces edit_in_review without retry", async () => {
+    const harness = await startPlayHarness({
+      writeError: {
+        status: 409,
+        error: {
+          code: "edit_in_review",
+          failure_code: "play_edit_in_review",
+          gate: null,
+          message: "Another change for this app is in review on Google Play",
+          receipt_id: "rcpt-failed",
+        },
+      },
+    });
+    try {
+      await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1"))
+        .rejects.toThrow("required option '--note <note>' not specified");
+      await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--track", "beta", "--note", "n"))
+        .rejects.toThrow("--track must be one of: internal, closed, production");
+      expect(harness.requests).toHaveLength(0);
+      await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--note", "n"))
+        .rejects.toThrow("Play send-for-review failed (edit_in_review/play_edit_in_review): Another change for this app is in review on Google Play (failed-closed receipt rcpt-failed)");
+      expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+      expect(harness.logs).toHaveLength(0);
     } finally {
       await harness.close();
     }

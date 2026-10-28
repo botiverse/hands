@@ -14,6 +14,9 @@ import type {
   PromotionRequest,
   PromotionRpcInput,
   PromotionSymbolsRequest,
+  SendForReviewRequest,
+  SendForReviewResult,
+  SendForReviewRpcInput,
   StoreListingPushResult,
   StoreListingPushRpcInput,
   StoreListingReadResult,
@@ -162,6 +165,9 @@ function promotionInput(
   if (expectedSize > maxAabSize(env)) {
     throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
   }
+  if (input.changesNotSentForReview !== undefined && typeof input.changesNotSentForReview !== "boolean") {
+    throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+  }
   const symbols = deobfuscationInput("nativeCode", input.symbols, symbolsBody);
   const mapping = deobfuscationInput("proguard", input.mapping, mappingBody);
   const releaseNotes = releaseNotesInput(input.releaseNotes);
@@ -178,6 +184,26 @@ function promotionInput(
     symbols,
     mapping,
     releaseNotes,
+    // Only carried when true, so a promotion without the flag is the same request as before.
+    ...(input.changesNotSentForReview === true ? { changesNotSentForReview: true } : {}),
+  };
+}
+
+function sendForReviewInput(input: SendForReviewRpcInput): SendForReviewRequest {
+  const track = trackInput(input);
+  const versionCode = positiveInteger(input.versionCode);
+  const expectedSha256 = typeof input.expectedSha256 === "string" ? input.expectedSha256.toLowerCase() : "";
+  const operationId = typeof input.operationId === "string" ? input.operationId : "";
+  if (versionCode === null || versionCode > 2_100_000_000 || !SHA256.test(expectedSha256) || !OPERATION_ID.test(operationId)) {
+    throw new PlayAdapterError(400, "send_for_review_request_invalid", "Hands send-for-review request is invalid");
+  }
+  return {
+    packageName: track.packageName,
+    handsTrack: track.handsTrack,
+    playTrack: track.playTrack,
+    versionCode,
+    expectedSha256,
+    operationId,
   };
 }
 function storeListingPushInput(input: StoreListingPushRpcInput) {
@@ -313,6 +339,22 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
         return { ok: true, value: { max_version_code: maximum } };
       } catch (error) {
         return failure(error, null);
+      }
+    },
+
+    /**
+     * Commit an empty edit WITHOUT changesNotSentForReview (always ERROR_IF_IN_REVIEW),
+     * after checking the accepted bundle and the track release are on Play.
+     */
+    async sendForReview(input: SendForReviewRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<SendForReviewResult>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        // Validate before OAuth: a malformed request never reaches Google.
+        const request = sendForReviewInput(input);
+        const resolved = await client(input, env);
+        return { ok: true, value: await resolved.client.sendForReview(request) };
+      } catch (error) {
+        return failure(error, operationId);
       }
     },
 

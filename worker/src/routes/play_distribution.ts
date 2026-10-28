@@ -15,6 +15,18 @@ export interface PlayPromotionInput {
   rollout_percent?: number;
   expected_revision: number;
   approval: { note: string };
+  /**
+   * Commit with Google's changesNotSentForReview=true: bundle, track release, notes
+   * and deobfuscation files are saved on Play but not sent for review. Send them
+   * later with the send-for-review action (or Play Console). Default false.
+   */
+  changes_not_sent_for_review?: boolean;
+}
+
+export interface PlaySendForReviewInput {
+  track: PlayTrack;
+  expected_revision: number;
+  approval: { note: string };
 }
 
 interface ReleaseArtifactRow {
@@ -50,7 +62,8 @@ interface PlayReadback {
 }
 
 interface GateFailure {
-  code: "gate_failed" | "edit_conflict" | "version_conflict" | "play_api_error" | "hold_active" | "forbidden";
+  code: "gate_failed" | "edit_conflict" | "version_conflict" | "play_api_error" | "hold_active" | "forbidden"
+    | "edit_in_review" | "edit_state_unknown";
   gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes" | null;
   message: string;
   receipt_id?: string | null;
@@ -92,7 +105,52 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
   if (input.track !== "production" && rollout !== undefined && rollout !== 100) {
     throw new Error("partial rollout is supported only for production");
   }
-  return { track: input.track, expected_revision: expectedRevision, approval: { note }, ...(rollout === undefined ? {} : { rollout_percent: rollout }) };
+  const notSent = input.changes_not_sent_for_review;
+  if (notSent !== undefined && typeof notSent !== "boolean") {
+    throw new Error("changes_not_sent_for_review must be a boolean");
+  }
+  return {
+    track: input.track,
+    expected_revision: expectedRevision,
+    approval: { note },
+    ...(rollout === undefined ? {} : { rollout_percent: rollout }),
+    // Only carried when true: a request without it is normalized exactly as before.
+    ...(notSent === true ? { changes_not_sent_for_review: true } : {}),
+  };
+}
+
+export function normalizePlaySendForReviewInput(input: PlaySendForReviewInput): PlaySendForReviewInput {
+  if (!input || typeof input !== "object") throw new Error("request body required");
+  if (input.track !== "internal" && input.track !== "closed" && input.track !== "production") {
+    throw new Error("track must be internal, closed, or production");
+  }
+  const expectedRevision = positiveRevision(input.expected_revision);
+  if (expectedRevision === null) throw new Error("expected_revision must be a non-negative integer");
+  const note = typeof input.approval?.note === "string" ? input.approval.note.trim() : "";
+  if (!note) throw new Error("approval.note required");
+  return { track: input.track, expected_revision: expectedRevision, approval: { note } };
+}
+
+/**
+ * Receipt `review` block for a promotion: whether this operation's commit asks
+ * Google to review (the commit mode, independent of the outcome in `result`).
+ *   no flag                      {requested:true,  changes_not_sent_for_review:false}
+ *   flag, adapter acknowledged   {requested:false, changes_not_sent_for_review:true}
+ *   flag, adapter did not echo   {requested:null,  changes_not_sent_for_review:true, reason:"not_acknowledged"}
+ *     (an adapter older than the flag ignores it and commits WITHOUT it -- i.e. it
+ *     may have sent the release for review; the receipt does not pretend otherwise).
+ */
+function promotionReview(input: PlayPromotionInput, acknowledged?: unknown) {
+  if (input.changes_not_sent_for_review !== true) return { requested: true, changes_not_sent_for_review: false };
+  if (acknowledged === undefined) return { requested: false, changes_not_sent_for_review: true };
+  return acknowledged === true
+    ? { requested: false, changes_not_sent_for_review: true }
+    : { requested: null, changes_not_sent_for_review: true, reason: "not_acknowledged" };
+}
+
+/** Google release lifecycle identifiers only (RELEASE_LIFECYCLE_STATE_*); anything else is dropped. */
+function lifecycleState(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Z][A-Z0-9_]{0,80}$/.test(value) ? value : null;
 }
 
 export function playReadbackMatches(
@@ -348,6 +406,8 @@ async function insertReceipt(
     editId?: string | null;
     payload: unknown;
     actor: string;
+    /** Extra webhook payload fields; only set for non-default operations, so default promote events are unchanged. */
+    notification?: Record<string, unknown> | undefined;
   },
 ) {
   const now = Date.now();
@@ -379,6 +439,7 @@ async function insertReceipt(
       reason: raw.result?.failure_code ?? null,
       rollout_percent: raw.play?.rollout_percent ?? null,
       occurred_at: new Date(now).toISOString(),
+      ...(args.notification ?? {}),
     }, now, "SELECT 1 FROM release_receipts WHERE id=?6 AND app_id=?5 AND kind='play-promotion'", [args.id])]);
 }
 
@@ -540,13 +601,19 @@ async function failedPromotionReceipt(
   approvalNote: string,
   reason: string,
   details: unknown,
+  options: {
+    action?: "promote" | "send-for-review";
+    review?: Record<string, unknown>;
+    notification?: Record<string, unknown>;
+  } = {},
 ) {
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
+  const action = options.action ?? "promote";
   await insertReceipt(c.env.DB, {
     id, appId: c.req.param("appId") ?? "", releaseId: artifact.release_id,
     kind: "play-promotion", verdict: "failed-closed", artifact,
-    action: "promote", track, payload: {
+    action, track, notification: options.notification, payload: {
       schema_version: 1,
       kind: "play-promotion",
       receipt_id: id,
@@ -555,8 +622,9 @@ async function failedPromotionReceipt(
       source: receiptSource(artifact),
       signing: { upload_key_cert_sha256: artifact.upload_key_cert_sha256 },
       actor,
-      action: "promote",
+      action,
       approvals: [{ approver: actor, at: createdAt, scope: `${track}: ${approvalNote}` }],
+      ...(options.review ? { review: options.review } : {}),
       play: {
         edit_id: "failed-closed",
         track,
@@ -650,6 +718,13 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
 
   const actor = currentActor(c);
   const operationId = crypto.randomUUID();
+  const notSentForReview = input.changes_not_sent_for_review === true;
+  // Failed receipts carry the requested review mode too; the webhook gains
+  // action/review_requested only for the non-default mode.
+  const promoteReceipt = {
+    review: promotionReview(input),
+    ...(notSentForReview ? { notification: { action: "promote", review_requested: false } } : {}),
+  };
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
     return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
   }
@@ -686,11 +761,11 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     try {
       object = await c.env.APK_BUCKET.get(artifact.r2_key);
     } catch {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_read: "failed" });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_read: "failed" }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB could not be read", receipt_id: receiptId });
     }
     if (!object || object.size !== artifact.size_bytes) {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_size: object?.size ?? null });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { object_size: object?.size ?? null }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB size changed", receipt_id: receiptId });
     }
     let symbolsObject: R2ObjectBody | null = null;
@@ -698,11 +773,11 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       try {
         symbolsObject = await c.env.APK_BUCKET.get(symbolsAsset.r2_key);
       } catch {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_read: "failed" });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_read: "failed" }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols could not be read", receipt_id: receiptId });
       }
       if (!symbolsObject || symbolsObject.size !== symbolsAsset.size_bytes) {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_size: symbolsObject?.size ?? null });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_object_size: symbolsObject?.size ?? null }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols size changed", receipt_id: receiptId });
       }
     }
@@ -711,11 +786,11 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       try {
         mappingObject = await c.env.APK_BUCKET.get(mappingAsset.r2_key);
       } catch {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_read: "failed" });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_read: "failed" }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping could not be read", receipt_id: receiptId });
       }
       if (!mappingObject || mappingObject.size !== mappingAsset.size_bytes) {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_size: mappingObject?.size ?? null });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_object_size: mappingObject?.size ?? null }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping size changed", receipt_id: receiptId });
       }
     }
@@ -735,6 +810,8 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       symbols: symbolsAsset ? { expectedSha256: symbolsAsset.file_hash, expectedSize: symbolsAsset.size_bytes } : null,
       mapping: mappingAsset ? { expectedSha256: mappingAsset.file_hash, expectedSize: mappingAsset.size_bytes } : null,
       releaseNotes: releaseNotes.present && releaseNotes.notes.length > 0 ? releaseNotes.notes : null,
+      // Sent only when requested, so the default RPC input is unchanged.
+      ...(notSentForReview ? { changesNotSentForReview: true } : {}),
     }, uploadBranch, symbolsUploadBranch, mappingUploadBranch));
     const [localResult, symbolsLocalResult, mappingLocalResult, uploadResult] = await Promise.allSettled([
       hashStream(hashBranch),
@@ -743,38 +820,38 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       uploadResponsePromise,
     ]);
     if (localResult.status === "rejected") {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { stream_read: "failed" });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { stream_read: "failed" }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB stream could not be verified", receipt_id: receiptId });
     }
     if (symbolsAsset && symbolsLocalResult.status === "rejected") {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_stream_read: "failed" });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_stream_read: "failed" }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored native debug symbols stream could not be verified", receipt_id: receiptId });
     }
     if (mappingAsset && mappingLocalResult.status === "rejected") {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_stream_read: "failed" });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_stream_read: "failed" }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping stream could not be verified", receipt_id: receiptId });
     }
     if (uploadResult.status === "rejected") {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" }, promoteReceipt);
       return fail(c, 502, { code: "play_api_error", gate: null, message: "Play edit request failed", receipt_id: receiptId });
     }
     const local = localResult.value;
     const uploadResponse = uploadResult.value;
     if (local.sha256 !== artifact.file_hash || local.size !== artifact.size_bytes) {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { actual: local });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { actual: local }, promoteReceipt);
       return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed AAB did not match the accepted artifact", receipt_id: receiptId });
     }
     if (symbolsAsset) {
       const symbolsLocal = symbolsLocalResult.status === "fulfilled" ? symbolsLocalResult.value : null;
       if (!symbolsLocal || symbolsLocal.sha256 !== symbolsAsset.file_hash || symbolsLocal.size !== symbolsAsset.size_bytes) {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_actual: symbolsLocal });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { symbols_actual: symbolsLocal }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed native debug symbols did not match the accepted artifact", receipt_id: receiptId });
       }
     }
     if (mappingAsset) {
       const mappingLocal = mappingLocalResult.status === "fulfilled" ? mappingLocalResult.value : null;
       if (!mappingLocal || mappingLocal.sha256 !== mappingAsset.file_hash || mappingLocal.size !== mappingAsset.size_bytes) {
-        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_actual: mappingLocal });
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_actual: mappingLocal }, promoteReceipt);
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed R8/ProGuard mapping did not match the accepted artifact", receipt_id: receiptId });
       }
     }
@@ -791,23 +868,39 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       // reshape upstream fails to compile here instead of silently stopping the
       // receipt from carrying it.
       const cause = receiptCause(uploadResponse.error.cause);
+      const errorCode = uploadResponse?.error?.code ?? "unknown";
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
-        code: uploadResponse?.error?.code ?? "unknown",
+        code: errorCode,
         ...(cause ? { cause } : {}),
-      });
+      }, promoteReceipt);
+      // Edit-state codes come only from the changes_not_sent_for_review path (the
+      // adapter classifies its commit); a default promote keeps today's mapping.
+      if (errorCode === "play_edit_in_review" || errorCode === "play_changes_not_sent_for_review") {
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+      }
+      if (errorCode === "play_edit_state_unknown") {
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+      }
       return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
     }
     const readback: PlayReadback = uploadResponse.value;
     if (!playReadbackMatches(artifact, input.track, readback)) {
-      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback });
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback }, promoteReceipt);
       return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play readback did not match package/version/track/SHA-256", receipt_id: receiptId });
     }
-    const reported = uploadResponse.value as { deobfuscation_files?: AdapterDeobfuscationFile[]; release_notes_languages?: unknown };
+    const reported = uploadResponse.value as {
+      deobfuscation_files?: AdapterDeobfuscationFile[];
+      release_notes_languages?: unknown;
+      changes_not_sent_for_review?: unknown;
+    };
+    // An adapter older than the flag omits the field: recorded as not acknowledged.
+    const review = promotionReview(input, notSentForReview ? reported.changes_not_sent_for_review ?? false : undefined);
     const reportedFiles = Array.isArray(reported.deobfuscation_files) ? reported.deobfuscation_files : undefined;
     const receiptId = crypto.randomUUID();
     await insertReceipt(c.env.DB, {
       id: receiptId, appId, releaseId, kind: "play-promotion", verdict: "success",
       artifact, action: "promote", track: input.track, editId: readback.edit_id,
+      ...(notSentForReview ? { notification: { action: "promote", review_requested: review.requested } } : {}),
       payload: {
         schema_version: 1,
         kind: "play-promotion",
@@ -832,6 +925,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
           ? receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles)
           : { present: false, uploaded: false, skipped_reason: "no_mapping_asset" },
         release_notes: receiptReleaseNotes(releaseNotes, reported.release_notes_languages),
+        review,
         play: {
           edit_id: readback.edit_id,
           track: input.track,
@@ -867,7 +961,204 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       appId, releaseId, artifact.package_name, input.track, artifact.version_code,
       input.rollout_percent ?? 100, readback.edit_id, receiptId, Date.now(),
     ).run();
-    return c.json({ receipt_id: receiptId, edit_id: readback.edit_id, track: input.track, version_code: artifact.version_code, revision: input.expected_revision + 1 });
+    return c.json({
+      receipt_id: receiptId, edit_id: readback.edit_id, track: input.track, version_code: artifact.version_code, revision: input.expected_revision + 1,
+      // Only with the flag, so the default response is unchanged.
+      ...(notSentForReview ? { review } : {}),
+    });
+  } finally {
+    await releaseLock(c.env.DB, operationId);
+  }
+}
+
+/**
+ * Send this release's pending Play changes for review.
+ *
+ * Step two of the two-step flow: promote with changes_not_sent_for_review saves
+ * the release on Play without review (e.g. while another release is in review);
+ * this commits an empty edit WITHOUT changesNotSentForReview, always with
+ * ERROR_IF_IN_REVIEW -- Hands never cancels a review in progress. Before the
+ * commit the adapter checks that Play holds the accepted AAB (sha256) for this
+ * versionCode and that the requested track carries it; it records the release
+ * lifecycle before/after as evidence (Google does not document whether such a
+ * commit submits changes saved earlier without review; the lifecycle shows it).
+ *
+ * Same gates as promote minus the upload ones: authenticated human/agent
+ * publisher (route role + actor type), expected_revision CAS, sealed + accepted
+ * AAB, a Hands promotion of this versionCode to this track, no live hold, a
+ * verified/enabled binding for the AAB's package, and the package-scoped Play
+ * edit lock (play_edit_locks, exclusive with play_store_listing_locks). Every
+ * adapter outcome writes an immutable play-promotion receipt with
+ * action "send-for-review" (release_receipts.kind is CHECK-constrained; reusing
+ * the kind with an action avoids a migration).
+ */
+export async function handleSendPlayDistributionForReview(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  let input: PlaySendForReviewInput;
+  try {
+    input = normalizePlaySendForReviewInput(await c.req.json<PlaySendForReviewInput>());
+  } catch (error) {
+    return fail(c, 400, { code: "gate_failed", gate: "permission", message: (error as Error).message });
+  }
+  const actorType = currentActorInfo(c).type;
+  if (actorType !== "human" && actorType !== "agent") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Sending a Play release for review requires an authenticated human or agent publisher" });
+  }
+  const artifact = await getReleaseArtifact(c.env.DB, appId, releaseId);
+  if (!artifact) return fail(c, 400, { code: "gate_failed", gate: "channel", message: "release does not contain an Android AAB" });
+  if (artifact.release_revision !== input.expected_revision) {
+    return fail(c, 409, { code: "version_conflict", gate: null, message: `release revision is ${artifact.release_revision}, not ${input.expected_revision}` });
+  }
+  const metadata = jsonObject(artifact.metadata_json);
+  if (artifact.bundle_state !== "ready" || metadata.upload_state !== "ready" || metadata.verified_sha256 !== artifact.file_hash || metadata.verified_size_bytes !== artifact.size_bytes) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB is not sealed to its declared exact bytes" });
+  }
+  const acceptance = await latestAcceptance(c.env.DB, appId, releaseId, artifact.asset_id);
+  if (!acceptanceMatches(artifact, acceptance)) {
+    return fail(c, 400, { code: "gate_failed", gate: "acceptance_receipt", message: "latest Hands acceptance receipt does not pass for the exact AAB" });
+  }
+  // Only what Hands itself put on this track: never send unrelated changes blind.
+  const state = await c.env.DB.prepare(
+    "SELECT track, version_code FROM play_distribution_state WHERE app_id = ?1 AND release_id = ?2",
+  ).bind(appId, releaseId).first<{ track: string; version_code: number }>();
+  if (!state || state.track !== input.track || state.version_code !== artifact.version_code) {
+    return fail(c, 400, { code: "gate_failed", gate: "channel", failure_code: "not_promoted_to_track", message: `release versionCode ${artifact.version_code} has not been promoted to ${input.track} through Hands` });
+  }
+  const hold = await c.env.DB.prepare(
+    "SELECT id FROM release_distribution_holds WHERE app_id = ?1 AND release_id = ?2 AND closed_at IS NULL LIMIT 1",
+  ).bind(appId, releaseId).first();
+  if (hold) return fail(c, 403, { code: "hold_active", gate: "live_hold", message: "release has an active distribution hold" });
+  if (!c.env.PLAY_RELEASE_SERVICE) {
+    return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
+  }
+  let binding;
+  try {
+    binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
+  } catch {
+    return fail(c, 502, { code: "play_api_error", gate: "permission", message: "Google Play credentials are unavailable for this app" });
+  }
+  if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Google Play must be bound, verified, and enabled for this app" });
+  }
+  if (binding.package_name !== artifact.package_name) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB package does not match this app's Google Play binding" });
+  }
+
+  const actor = currentActor(c);
+  const operationId = crypto.randomUUID();
+  const options = {
+    action: "send-for-review" as const,
+    review: { requested: true, changes_not_sent_for_review: false, changes_in_review_behavior: "ERROR_IF_IN_REVIEW" },
+    notification: { action: "send-for-review", review_requested: true },
+  };
+  if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
+    return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
+  }
+  try {
+    const reserved = await c.env.DB.prepare(
+      `UPDATE releases SET revision = revision + 1, updated_at = ?1
+       WHERE app_id = ?2 AND id = ?3 AND revision = ?4`,
+    ).bind(Date.now(), appId, releaseId, input.expected_revision).run();
+    if (Number(reserved.meta?.changes ?? 0) !== 1) {
+      return fail(c, 409, { code: "version_conflict", gate: null, message: "release changed before the Play edit was reserved" });
+    }
+    let reply;
+    try {
+      reply = await c.env.PLAY_RELEASE_SERVICE.sendForReview({
+        credential: binding.credential,
+        packageName: binding.package_name,
+        tracks: binding.tracks,
+        handsTrack: input.track,
+        versionCode: artifact.version_code,
+        expectedSha256: artifact.file_hash,
+        operationId,
+      });
+    } catch {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" }, options);
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play send-for-review request failed", receipt_id: receiptId });
+    }
+    if (!reply?.ok) {
+      const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
+      const cause = receiptCause(reply?.error?.cause);
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
+        code,
+        ...(cause ? { cause } : {}),
+      }, options);
+      const message = reply?.error?.message ?? "Play send-for-review failed";
+      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review") {
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId });
+      }
+      if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId });
+      }
+      if (code === "play_release_not_on_track" || code === "play_bundle_not_on_play" || code === "aab_integrity_mismatch") {
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId });
+      }
+      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId });
+    }
+    const value = reply.value;
+    const readback: PlayReadback = {
+      edit_id: value.edit_id, package_name: value.package_name, version_code: value.version_code,
+      track: value.track, sha256: value.sha256,
+    };
+    if (typeof value.edit_id !== "string" || !value.edit_id || !playReadbackMatches(artifact, input.track, readback)) {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback }, options);
+      return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play send-for-review answer did not match package/version/track/SHA-256", receipt_id: receiptId });
+    }
+    const review = {
+      ...options.review,
+      lifecycle_before: lifecycleState(value.lifecycle_before),
+      lifecycle_after: lifecycleState(value.lifecycle_after),
+    };
+    const trackStatus = value.track_release?.status;
+    const receiptId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    await insertReceipt(c.env.DB, {
+      id: receiptId, appId, releaseId, kind: "play-promotion", verdict: "success",
+      artifact, action: "send-for-review", track: input.track, editId: value.edit_id,
+      notification: options.notification,
+      payload: {
+        schema_version: 1,
+        kind: "play-promotion",
+        receipt_id: receiptId,
+        created_at: createdAt,
+        artifact: receiptArtifact(artifact),
+        source: receiptSource(artifact),
+        signing: { upload_key_cert_sha256: artifact.upload_key_cert_sha256 },
+        actor,
+        action: "send-for-review",
+        approvals: [{ approver: actor, at: createdAt, scope: `${input.track}: ${input.approval.note}` }],
+        review,
+        play: {
+          edit_id: value.edit_id,
+          track: input.track,
+          play_version_code: artifact.version_code,
+          // The track release found in the edit before the commit (Google's status enum only).
+          track_release: {
+            status: typeof trackStatus === "string" && IDENTIFIER_RE.test(trackStatus) ? trackStatus : null,
+            user_fraction: typeof value.track_release?.user_fraction === "number" ? value.track_release.user_fraction : null,
+          },
+          api_readback: {
+            package: value.package_name,
+            version_code: value.version_code,
+            track: value.track,
+            sha256_match: true,
+          },
+        },
+        result: { status: "success" },
+      },
+      actor,
+    });
+    c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
+    return c.json({
+      receipt_id: receiptId,
+      edit_id: value.edit_id,
+      track: input.track,
+      version_code: artifact.version_code,
+      revision: input.expected_revision + 1,
+      review,
+    });
   } finally {
     await releaseLock(c.env.DB, operationId);
   }

@@ -5,6 +5,7 @@ import type {
   PlayBindingInput,
   PlayDiscoveryInput,
   PromotionRpcInput,
+  SendForReviewRpcInput,
   StoreListingPushRpcInput,
   StoreListingReadRpcInput,
   TrackMaximumRpcInput,
@@ -35,6 +36,10 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
 
   pushStoreListings(input: StoreListingPushRpcInput) {
     return this.service.pushStoreListings(input, this.env);
+  }
+
+  sendForReview(input: SendForReviewRpcInput) {
+    return this.service.sendForReview(input, this.env);
   }
 
   readTrackMaximum(input: TrackMaximumRpcInput) {
