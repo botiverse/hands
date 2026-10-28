@@ -1938,6 +1938,32 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
   });
 
+  it.each([
+    ["a promote holds the package's Play edit", (h: Harness) => h.sqlite.prepare(`INSERT INTO play_edit_locks
+      (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run()],
+    ["a store listing push holds the package's Play edit", (h: Harness) => h.sqlite.prepare(`INSERT INTO play_store_listing_locks
+      (app_id, package_name, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'listing-op', 'other', ?)`).run(Date.now())],
+  ] as const)("send-for-review returns edit_conflict without calling Play while %s", async (_label, hold) => {
+    const h = await uploadedNotSent();
+    let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      sendForReview: async () => {
+        calls += 1;
+        return { ok: true, value: sendValue() };
+      },
+    });
+    const before = receipts(h).length;
+    hold(h);
+    const response = await sendForReview(h);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+    expect(calls).toBe(0);
+    expect(receipts(h).length).toBe(before);
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+  });
+
   it("rejects a non-boolean changes_not_sent_for_review before any Play call", async () => {
     const h = await readyRelease();
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ readTrackMaximum: async () => { throw new Error("must not call Play"); } });
