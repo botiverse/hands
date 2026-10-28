@@ -238,6 +238,14 @@ export function releaseEditStateRejection(error: unknown, what: "release" | "sen
       `Another change for this app is in review on Google Play (Hands commits with ERROR_IF_IN_REVIEW and never cancels it); ${subject}. Wait for the review to finish, then run it again.`,
       error.cause_detail);
   }
+  if (cause === "APP_REVIEW_NOT_MANAGED") {
+    // The opposite remedy to the branch below: the app does not allow
+    // upload-without-review, so nothing here can be submitted by hand and retrying
+    // with or without the flag changes nothing until the open review finishes.
+    return new PlayAdapterError(409, "play_review_not_managed",
+      `This app does not allow uploading a release without sending it for review, and another change is already in review; ${subject}. Retrying with or without changesNotSentForReview will fail the same way. Wait for the open review to finish, or enable managed publishing for this app once.`,
+      error.cause_detail);
+  }
   if (cause === "CHANGES_NOT_SENT_FOR_REVIEW") {
     return new PlayAdapterError(409, "play_changes_not_sent_for_review",
       `Google Play requires this app's changes to be sent for review from Play Console; ${subject}. Send the pending changes for review in Play Console.`,

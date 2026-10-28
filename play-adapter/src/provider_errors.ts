@@ -91,6 +91,13 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
 // Same order as the text layer: NOT_SENT_FOR_REVIEW before IN_REVIEW per identifier;
 // when both states are named, EDIT_IN_REVIEW wins (classified by the remedy that works).
 const STRUCTURED_CAUSES: Array<[RegExp, string]> = [
+  // Ordered most-specific first. A reason naming the parameter as NOT ALLOWED
+  // describes the app refusing upload-without-review (sentence B), not a request
+  // to send changes by hand -- but it still contains NOT_SENT_FOR_REVIEW, so the
+  // broad pattern below would claim it first. We do not know whether Google emits
+  // such an identifier; this arm exists so that if it does, the structured layer
+  // cannot silently invert the remedy before the text layer is ever consulted.
+  [/(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)/i, "APP_REVIEW_NOT_MANAGED"],
   [/NOT_?SENT_?FOR_?REVIEW/i, "CHANGES_NOT_SENT_FOR_REVIEW"],
   [/(?:^|_)IN_?REVIEW(?:$|_)|InReview/, "EDIT_IN_REVIEW"],
 ];
@@ -126,7 +133,8 @@ function classifyStructuredIdentifiers(body: unknown): string | undefined {
  * so a new Google wording can be added without guessing what was checked.
  */
 export function editStatePatternsTried(): string[] {
-  const relevant = (cause: string) => cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW";
+  const relevant = (cause: string) =>
+    cause === "EDIT_IN_REVIEW" || cause === "CHANGES_NOT_SENT_FOR_REVIEW" || cause === "APP_REVIEW_NOT_MANAGED";
   // In match order. Prefix = layer: structured identifiers (error.status,
   // errors[].reason, details[].reason) first, then the message text.
   return [

@@ -274,8 +274,10 @@ describe("Google Play store listing RPC", () => {
     if (result.ok) return;
     // Both layers, prefixed, in match order (NOT_SENT before IN_REVIEW in each).
     expect(result.error.cause!.tried).toEqual([
+      "structured:/(?:NOT_?ALLOWED|MUST_?NOT|NOT_?PERMITTED|DISALLOWED)/i -> APP_REVIEW_NOT_MANAGED",
       "structured:/NOT_?SENT_?FOR_?REVIEW/i -> CHANGES_NOT_SENT_FOR_REVIEW",
       "structured:/(?:^|_)IN_?REVIEW(?:$|_)|InReview/ -> EDIT_IN_REVIEW",
+      "text:/must not be set|must not be provided|not be set on this/i -> APP_REVIEW_NOT_MANAGED",
       "text:/changesNotSentForReview|not ?sent for review|unreviewed/i -> CHANGES_NOT_SENT_FOR_REVIEW",
       "text:/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i -> EDIT_IN_REVIEW",
     ]);
