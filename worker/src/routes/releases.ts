@@ -1267,6 +1267,15 @@ export async function emitReleasePublished(
         version_transition: base.displacedVersion?.name && row.version_name
           ? `${base.displacedVersion.name} → ${row.version_name}`
           : null,
+        // The same transition expressed in version codes. Repeated builds of one
+        // release share a version NAME, so "1.17.0 -> 1.17.0" is arithmetically
+        // true yet reads as no change at all; the codes distinguish them. Same
+        // null discipline as the name line, so a template needs no comparison --
+        // templates here cannot test field equality, only render and collapse.
+        version_code_transition:
+          base.displacedVersion?.code != null && row.version_code != null
+            ? `${base.displacedVersion.code} → ${row.version_code}`
+            : null,
       };
     }
   } catch (err) {
