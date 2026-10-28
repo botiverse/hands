@@ -233,6 +233,7 @@ import {
   handleListDistributions,
   handleListReleaseReceipts,
   handlePromotePlayDistribution,
+  handleSendPlayDistributionForReview,
   handleRollbackPlayDistribution,
 } from "./routes/play_distribution";
 import {
@@ -1072,6 +1073,12 @@ bindAdmin("get", "/api/apps/:appId/releases/:releaseId/distributions/play",
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/promote",
   requireAppRole("publisher"),
   handlePromotePlayDistribution,
+);
+// Step two after promote with changes_not_sent_for_review: commit without the flag
+// (ERROR_IF_IN_REVIEW; never cancels a review in progress). Same lock as promote.
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review",
+  requireAppRole("publisher"),
+  handleSendPlayDistributionForReview,
 );
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/halt",
   requireAppRole("publisher"),

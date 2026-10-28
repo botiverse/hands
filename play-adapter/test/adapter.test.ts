@@ -90,6 +90,10 @@ interface GoogleFixtureOptions {
   mappingStatus?: number;
   /** Reject the commit of this edit id with 403 EDIT_IN_REVIEW-style prose. */
   failCommitOf?: string;
+  /** Message for that rejection (default: in-review prose). */
+  failCommitMessage?: string;
+  /** tracks.releases.list answers, in order (lifecycle state of versionCode 42). */
+  lifecycleStates?: string[];
 }
 
 function googleFixture(options: GoogleFixtureOptions = {}) {
@@ -148,6 +152,13 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
         : [...(track.releases ?? []), { name: "elsewhere", versionCodes: [alreadyOnPlayVersion], status: "completed" }];
       return Response.json({ tracks: [{ track: track.track, releases }] });
     }
+    if (method === "GET" && /\/tracks\/[^/]+\/releases$/.test(url)) {
+      const state = options.lifecycleStates?.shift();
+      const playTrack = decodeURIComponent(/\/tracks\/([^/]+)\/releases$/.exec(url)![1]!);
+      return Response.json(state
+        ? { releases: [{ track: playTrack, releaseName: "r", releaseLifecycleState: state, activeArtifacts: [{ versionCode: 42 }] }] }
+        : {});
+    }
     if (method === "GET" && url.includes("/tracks/")) return Response.json(track);
     if (url.includes("/bundles?uploadType=media")) {
       const uploaded = new Uint8Array(await new Response(init.body).arrayBuffer());
@@ -192,7 +203,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       if (options.commitThrows) throw new Error("ambiguous network failure");
       if (options.failCommitOf && url.includes(`/edits/${options.failCommitOf}:commit`)) {
         return Response.json(
-          { error: { code: 403, message: "Cannot commit the edit because another change is already in review." } },
+          { error: { code: 403, message: options.failCommitMessage ?? "Cannot commit the edit because another change is already in review." } },
           { status: 403 },
         );
       }
@@ -852,5 +863,190 @@ describe("Google Play adapter RPC service", () => {
     expect(config).toMatch(/"preview_urls": false/);
     expect(config).not.toMatch(/"routes"\s*:/);
     expect(config).not.toMatch(/GOOGLE_PLAY_SERVICE_ACCOUNT_JSON|ALLOWED_PACKAGE_NAMES|CLOSED_TRACK_NAME/);
+  });
+});
+
+describe("changesNotSentForReview and sendForReview", () => {
+  const commits = (fixture: ReturnType<typeof googleFixture>) =>
+    fixture.requests.filter((request) => request.url.includes(":commit?")).map((request) => {
+      const edit = /\/edits\/([^/:?]+):commit/.exec(request.url)?.[1];
+      return `${edit}?${request.url.split("?")[1]}`;
+    });
+
+  function steps(fixture: ReturnType<typeof googleFixture>) {
+    return fixture.requests.map((request) => {
+      const edit = /\/edits\/([^/:?]+)/.exec(request.url)?.[1] ?? "";
+      if (request.method === "POST" && /\/edits$/.test(request.url)) return "create";
+      if (/\/tracks\/[^/]+\/releases$/.test(request.url)) return "lifecycle";
+      if (request.method === "GET" && /\/bundles$/.test(request.url)) return `bundles@${edit}`;
+      if (request.method === "GET" && request.url.includes("/tracks/")) return `track@${edit}`;
+      if (request.url.includes(":commit?")) return `commit@${edit}`;
+      if (request.method === "DELETE") return `delete@${edit}`;
+      return null;
+    }).filter(Boolean);
+  }
+
+  function sendInput(overrides: Record<string, unknown> = {}) {
+    return { ...binding, handsTrack: "internal" as const, versionCode: 42, expectedSha256: digest, operationId: "operation-2", ...overrides };
+  }
+
+  it("promote without the flag commits with ERROR_IF_IN_REVIEW only and returns the same shape as before", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion(), body(), null, environment());
+    expect(result.ok && "changes_not_sent_for_review" in result.value).toBe(false);
+    expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW"]);
+  });
+
+  it("promote with the flag commits changesNotSentForReview=true, keeps ERROR_IF_IN_REVIEW, and says so", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-1", version_code: 42, changes_not_sent_for_review: true } });
+    expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"]);
+    expect(fixture.requests.some((request) => /CANCEL_IN_REVIEW/.test(request.url))).toBe(false);
+  });
+
+  it("with the flag, the existing-bundle side edit is not sent for review either", async () => {
+    const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(
+      promotion({ mapping: mappingDeclaration(), changesNotSentForReview: true }), body(), null, environment(), mappingBody(),
+    );
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-2", bundle_uploaded: false, changes_not_sent_for_review: true } });
+    expect(commits(fixture)).toEqual([
+      "edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true",
+      "edit-2?changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true",
+    ]);
+  });
+
+  it("without the flag, the existing-bundle side edit commit is unchanged", async () => {
+    const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(commits(fixture)).toEqual([
+      "edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW",
+      "edit-2?changesInReviewBehavior=ERROR_IF_IN_REVIEW",
+    ]);
+  });
+
+  it("with the flag, Google's in-review answer is reported as play_edit_in_review (no retry, no cancel)", async () => {
+    const fixture = googleFixture({ failCommitOf: "edit-1" });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
+    expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"]);
+  });
+
+  it("with the flag, an unrecognised commit rejection is play_edit_state_unknown, never success", async () => {
+    const fixture = googleFixture({ failCommitOf: "edit-1", failCommitMessage: "Etwas ist schiefgelaufen." });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_edit_state_unknown", cause: { stage: "commit_edit", provider_cause: "OTHER" } } });
+    expect(JSON.stringify(result)).not.toContain("schiefgelaufen");
+  });
+
+  it("without the flag, the same in-review rejection keeps today's play_api_rejected error", async () => {
+    const fixture = googleFixture({ failCommitOf: "edit-1" });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion(), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 403, code: "play_api_rejected", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
+  });
+
+  it("rejects a non-boolean flag before OAuth", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ changesNotSentForReview: "yes" as unknown as boolean }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "promotion_request_invalid" } });
+    expect(fixture.requests).toHaveLength(0);
+  });
+
+  it("sendForReview checks bundle and track, then commits WITHOUT changesNotSentForReview", async () => {
+    const fixture = googleFixture({
+      trackMaximum: 42,
+      lifecycleStates: ["RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW", "RELEASE_LIFECYCLE_STATE_IN_REVIEW"],
+    });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.sendForReview(sendInput(), environment());
+    expect(result).toEqual({ ok: true, value: {
+      edit_id: "edit-1",
+      package_name: PACKAGE,
+      version_code: 42,
+      track: "internal",
+      play_track: "qa",
+      sha256: digest,
+      track_release: { status: "completed", user_fraction: null },
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+      lifecycle_before: "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW",
+      lifecycle_after: "RELEASE_LIFECYCLE_STATE_IN_REVIEW",
+    } });
+    expect(steps(fixture)).toEqual(["lifecycle", "create", "bundles@edit-1", "track@edit-1", "commit@edit-1", "lifecycle"]);
+    expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW"]);
+    // Nothing is written in the edit: no upload, no track PUT.
+    expect(fixture.requests.filter((request) => request.method === "PUT" || request.url.includes("uploadType"))).toHaveLength(0);
+  });
+
+  it("sendForReview records unknown lifecycle as null and still succeeds", async () => {
+    const fixture = googleFixture({ trackMaximum: 42 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.sendForReview(sendInput(), environment());
+    expect(result).toMatchObject({ ok: true, value: { lifecycle_before: null, lifecycle_after: null } });
+  });
+
+  it("sendForReview reports another change in review as play_edit_in_review and deletes the edit", async () => {
+    const fixture = googleFixture({ trackMaximum: 42, failCommitOf: "edit-1" });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.sendForReview(sendInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
+    expect(steps(fixture)).toEqual(["lifecycle", "create", "bundles@edit-1", "track@edit-1", "commit@edit-1", "delete@edit-1"]);
+  });
+
+  it("sendForReview refuses a versionCode the track does not carry, without committing", async () => {
+    const fixture = googleFixture({ trackMaximum: 41 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.sendForReview(sendInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_release_not_on_track" } });
+    expect(commits(fixture)).toEqual([]);
+    expect(steps(fixture).at(-1)).toBe("delete@edit-1");
+  });
+
+  it("sendForReview refuses when Play holds no bundle, or different bytes, for the versionCode", async () => {
+    const missing = googleFixture({ trackMaximum: 42 });
+    const missingService = createPlayAdapterService({ fetchImpl: missing.fetchImpl, nowSeconds: () => NOW });
+    expect(await missingService.sendForReview(sendInput(), environment()))
+      .toMatchObject({ ok: false, error: { status: 409, code: "play_bundle_not_on_play" } });
+    expect(commits(missing)).toEqual([]);
+
+    const different = googleFixture({ trackMaximum: 42 });
+    different.alreadyOnPlay(42, "b".repeat(64));
+    const differentService = createPlayAdapterService({ fetchImpl: different.fetchImpl, nowSeconds: () => NOW });
+    expect(await differentService.sendForReview(sendInput(), environment()))
+      .toMatchObject({ ok: false, error: { status: 409, code: "aab_integrity_mismatch" } });
+    expect(commits(different)).toEqual([]);
+  });
+
+  it("sendForReview leaves an unanswered commit alone and calls it ambiguous", async () => {
+    const fixture = googleFixture({ trackMaximum: 42, commitThrows: true });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.sendForReview(sendInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_commit_ambiguous" } });
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("sendForReview validates input before OAuth", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    for (const bad of [{ versionCode: 0 }, { expectedSha256: "nope" }, { operationId: "" }, { handsTrack: "beta" }]) {
+      const result = await service.sendForReview(sendInput(bad) as never, environment());
+      expect(result).toMatchObject({ ok: false });
+    }
+    expect(fixture.requests).toHaveLength(0);
   });
 });

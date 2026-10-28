@@ -199,6 +199,50 @@ hands builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
+## Google Play: upload now, send for review later
+
+Google Play reviews one set of changes at a time. While another release of the
+app is in review, `hands releases play-promote` fails at `stage=commit_edit`:
+Hands commits every Play edit with `changesInReviewBehavior=ERROR_IF_IN_REVIEW`
+and never cancels a review in progress. To get the next release onto Play
+anyway, split upload from review:
+
+```bash
+# 1. Upload: bundle, track release, release notes and mapping/symbols are saved
+#    on Play with changesNotSentForReview=true, NOT sent for review
+hands releases play-promote raft-android <release> --track production \
+  --rollout-percent 100 --note "upload 1.17.0" --changes-not-sent-for-review
+
+# 2. After the other review finishes: send the pending changes for review
+hands releases play-send-for-review raft-android <release> --track production \
+  --note "1.16.1 review done"
+```
+
+- Both need the app **publisher** role and use the same per-package Play edit
+  lock as promote and `hands store-listing push`.
+- The promotion receipt records `review: {requested: false,
+  changes_not_sent_for_review: true}` (plain promote: `requested: true`). If the
+  server could not confirm the flag (an older Play adapter), the receipt says
+  `requested: null, reason: "not_acknowledged"` and the CLI warns: the release
+  may have been sent for review.
+- `play-send-for-review` only works for a release Hands promoted to that track.
+  It checks that Play holds the accepted AAB (sha256) and that the track carries
+  its versionCode, then commits an edit without `changesNotSentForReview`. Its
+  receipt (`play-promotion` / `send-for-review`) records the release lifecycle
+  before and after, e.g. `RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW ->
+  RELEASE_LIFECYCLE_STATE_IN_REVIEW`. Google does not document that such a
+  commit submits changes saved earlier; if the lifecycle did not move to in
+  review, send it for review in Play Console.
+- If another change is still in review, either step fails with
+  `edit_in_review` / `play_edit_in_review` and nothing is retried; wait and run
+  it again. An answer Hands cannot classify fails with `edit_state_unknown`:
+  check Play Console first.
+
+API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`
+with `changes_not_sent_for_review: true`, and
+`POST /api/apps/:appId/releases/:releaseId/distributions/play/send-for-review`
+with `{track, expected_revision, approval: {note}}` (see OpenAPI).
+
 ## Google Play Store Listing
 
 Update the Play store listing text (app name, short and full description,

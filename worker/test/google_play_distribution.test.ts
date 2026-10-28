@@ -24,6 +24,7 @@ import {
   handleListReleaseReceipts,
   handleRollbackPlayDistribution,
   handlePromotePlayDistribution,
+  handleSendPlayDistributionForReview,
 } from "../src/routes/play_distribution";
 import { createRelease } from "../src/routes/releases";
 import { openApiDocument } from "../src/openapi";
@@ -286,6 +287,7 @@ describe("Android distribution OpenAPI", () => {
       "/api/apps/{appId}/releases/{releaseId}/distributions",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/promote",
+      "/api/apps/{appId}/releases/{releaseId}/distributions/play/send-for-review",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/halt",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/rollback",
     ]) {
@@ -430,6 +432,7 @@ function routeHarness(principal: "human" | "agent" = "human", role: "publisher" 
   app.get("/api/apps/:appId/releases/:releaseId/receipts", handleListReleaseReceipts);
   app.get("/api/apps/:appId/releases/:releaseId/distributions", handleListDistributions);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", requireAppRole("publisher"), handlePromotePlayDistribution);
+  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review", requireAppRole("publisher"), handleSendPlayDistributionForReview);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
@@ -703,6 +706,9 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
     },
     pushStoreListings: async () => {
       throw new Error("unexpected pushStoreListings call");
+    },
+    sendForReview: async () => {
+      throw new Error("unexpected sendForReview call");
     },
     ...overrides,
   };
@@ -1819,5 +1825,241 @@ describe("durable Google Play notifications", () => {
     await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(3);
     h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
     await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(3);
+  });
+});
+
+describe("Play promote with changes_not_sent_for_review, then send-for-review", () => {
+  type Harness = Awaited<ReturnType<typeof readyRelease>>;
+  const json = { "content-type": "application/json" };
+
+  function promoteStub(seen: { input?: Record<string, unknown> }, extra: Record<string, unknown> = {}) {
+    return playAdapterStub({
+      promote: async (input, stream) => {
+        seen.input = input as unknown as Record<string, unknown>;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: "build.raft.app", version_code: 42, track: "production",
+          sha256: sha(bytes), rollout_percent: 100, ...extra,
+        } };
+      },
+    });
+  }
+
+  function promoteProduction(h: Harness, body: Record<string, unknown> = {}) {
+    return h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: json,
+      body: JSON.stringify({ track: "production", expected_revision: 1, approval: { note: "upload 1.17.0" }, ...body }),
+    });
+  }
+
+  function sendForReview(h: Harness, body: Record<string, unknown> = {}) {
+    return h.request("/api/apps/app/releases/release/distributions/play/send-for-review", {
+      method: "POST", headers: json,
+      body: JSON.stringify({ track: "production", expected_revision: 2, approval: { note: "1.16.1 review done" }, ...body }),
+    });
+  }
+
+  function receipts(h: Harness) {
+    return (h.sqlite.prepare(
+      "SELECT action, verdict, track, play_edit_id, payload_json FROM release_receipts WHERE kind='play-promotion' ORDER BY rowid",
+    ).all() as Array<{ action: string; verdict: string; track: string; play_edit_id: string | null; payload_json: string }>)
+      .map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
+  }
+
+  async function uploadedNotSent(principal: "human" | "agent" = "human"): Promise<Harness> {
+    const h = await readyRelease(principal);
+    h.env.PLAY_RELEASE_SERVICE = promoteStub({}, { changes_not_sent_for_review: true });
+    expect((await promoteProduction(h, { changes_not_sent_for_review: true })).status).toBe(200);
+    return h;
+  }
+
+  const sendValue = (overrides: Record<string, unknown> = {}) => ({
+    edit_id: "edit-9", package_name: "build.raft.app", version_code: 42, track: "production" as const,
+    play_track: "production", sha256: sha(new TextEncoder().encode("exact-aab")),
+    track_release: { status: "completed", user_fraction: null },
+    commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW" as const, changes_not_sent_for_review: false as const },
+    lifecycle_before: "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW",
+    lifecycle_after: "RELEASE_LIFECYCLE_STATE_IN_REVIEW",
+    ...overrides,
+  });
+
+  it("default promote sends no flag to the adapter, records review.requested=true, and keeps the response shape", async () => {
+    const h = await readyRelease();
+    const seen: { input?: Record<string, unknown> } = {};
+    h.env.PLAY_RELEASE_SERVICE = promoteStub(seen);
+    const response = await promoteProduction(h);
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["edit_id", "receipt_id", "revision", "track", "version_code"]);
+    expect("changesNotSentForReview" in seen.input!).toBe(false);
+    expect(receipts(h)[0]!.payload.review).toEqual({ requested: true, changes_not_sent_for_review: false });
+  });
+
+  it("promote with changes_not_sent_for_review threads the flag and records review.requested=false", async () => {
+    const h = await readyRelease();
+    notificationSubscriptions(h.sqlite);
+    const seen: { input?: Record<string, unknown> } = {};
+    h.env.PLAY_RELEASE_SERVICE = promoteStub(seen, { changes_not_sent_for_review: true });
+    const response = await promoteProduction(h, { changes_not_sent_for_review: true });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ edit_id: "edit-1", review: { requested: false, changes_not_sent_for_review: true } });
+    expect(seen.input).toMatchObject({ handsTrack: "production", changesNotSentForReview: true });
+    const [receipt] = receipts(h);
+    expect(receipt).toMatchObject({ action: "promote", verdict: "success", track: "production" });
+    expect(receipt!.payload.review).toEqual({ requested: false, changes_not_sent_for_review: true });
+    const delivery = h.sqlite.prepare("SELECT payload_json FROM webhook_deliveries WHERE webhook_id='match'").get() as { payload_json: string };
+    expect(JSON.parse(delivery.payload_json).payload).toMatchObject({ action: "promote", review_requested: false });
+  });
+
+  it("records an adapter that did not acknowledge the flag as not_acknowledged, never as not sent", async () => {
+    const h = await readyRelease();
+    h.env.PLAY_RELEASE_SERVICE = promoteStub({});
+    expect((await promoteProduction(h, { changes_not_sent_for_review: true })).status).toBe(200);
+    expect(receipts(h)[0]!.payload.review).toEqual({ requested: null, changes_not_sent_for_review: true, reason: "not_acknowledged" });
+  });
+
+  it("reports Google's in-review answer to a not-sent promote as 409 edit_in_review with a failed-closed receipt", async () => {
+    const h = await readyRelease();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (_input, stream) => {
+        await new Response(stream).arrayBuffer();
+        return { ok: false, error: { status: 409, code: "play_edit_in_review", message: "Another change for this app is in review on Google Play",
+          cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } };
+      },
+    });
+    const response = await promoteProduction(h, { changes_not_sent_for_review: true });
+    expect(response.status).toBe(409);
+    const body = await response.json() as { error: { code: string; failure_code: string; receipt_id: string } };
+    expect(body.error).toMatchObject({ code: "edit_in_review", failure_code: "play_edit_in_review" });
+    const [receipt] = receipts(h);
+    expect(receipt).toMatchObject({ action: "promote", verdict: "failed-closed" });
+    expect(receipt!.payload.review).toEqual({ requested: false, changes_not_sent_for_review: true });
+    expect(receipt!.payload.result.failure_reason).toContain("EDIT_IN_REVIEW");
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  });
+
+  it("rejects a non-boolean changes_not_sent_for_review before any Play call", async () => {
+    const h = await readyRelease();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ readTrackMaximum: async () => { throw new Error("must not call Play"); } });
+    const response = await promoteProduction(h, { changes_not_sent_for_review: "yes" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { message: "changes_not_sent_for_review must be a boolean" } });
+  });
+
+  it.each(["human", "agent"] as const)("%s publisher sends the uploaded release for review and gets an attributed receipt", async (principal) => {
+    const h = await uploadedNotSent(principal);
+    // The webhook fixture's created_by references the human account.
+    if (principal === "human") notificationSubscriptions(h.sqlite);
+    let seen: Record<string, unknown> | undefined;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      sendForReview: async (input) => {
+        seen = input as unknown as Record<string, unknown>;
+        expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 1 });
+        return { ok: true, value: sendValue() };
+      },
+    });
+    const response = await sendForReview(h);
+    expect(response.status).toBe(200);
+    const review = {
+      requested: true, changes_not_sent_for_review: false, changes_in_review_behavior: "ERROR_IF_IN_REVIEW",
+      lifecycle_before: "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW", lifecycle_after: "RELEASE_LIFECYCLE_STATE_IN_REVIEW",
+    };
+    expect(await response.json()).toEqual({
+      receipt_id: expect.any(String), edit_id: "edit-9", track: "production", version_code: 42, revision: 3, review,
+    });
+    expect(seen).toMatchObject({ packageName: "build.raft.app", handsTrack: "production", versionCode: 42, expectedSha256: sha(h.aab) });
+    expect(seen && "changesNotSentForReview" in seen).toBe(false);
+    const sent = receipts(h).at(-1)!;
+    expect(sent).toMatchObject({ action: "send-for-review", verdict: "success", track: "production", play_edit_id: "edit-9" });
+    expect(sent.payload).toMatchObject({
+      kind: "play-promotion", action: "send-for-review", actor: `raft:${principal}@test`, review,
+      approvals: [{ approver: `raft:${principal}@test`, scope: "production: 1.16.1 review done" }],
+      play: { edit_id: "edit-9", track: "production", track_release: { status: "completed", user_fraction: null },
+        api_readback: { package: "build.raft.app", version_code: 42, track: "production", sha256_match: true } },
+      result: { status: "success" },
+    });
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 3 });
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+    if (principal !== "human") return;
+    const delivery = h.sqlite.prepare("SELECT payload_json FROM webhook_deliveries WHERE webhook_id='match'").get() as { payload_json: string };
+    expect(JSON.parse(delivery.payload_json)).toMatchObject({ event: "google_play:submission_succeeded",
+      payload: { action: "send-for-review", review_requested: true, version_code: 42, track: "production" } });
+  });
+
+  it.each([
+    ["never promoted", async () => readyRelease(), { expected_revision: 1 }],
+    ["promoted to another track", async () => uploadedNotSent(), { track: "internal" }],
+  ] as const)("refuses a release %s through Hands, before any Play call", async (_label, setup, body) => {
+    const h = await setup();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const before = receipts(h).length;
+    const response = await sendForReview(h, body);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "gate_failed", gate: "channel", failure_code: "not_promoted_to_track" } });
+    expect(receipts(h)).toHaveLength(before);
+  });
+
+  it("rejects viewers before any Play call", async () => {
+    const h = await uploadedNotSent();
+    h.sqlite.prepare("UPDATE app_members SET app_role='viewer' WHERE id='promotion-member'").run();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const response = await sendForReview(h);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "INSUFFICIENT_APP_ROLE" });
+  });
+
+  it("rejects a stale expected_revision and a missing note", async () => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    expect((await sendForReview(h, { expected_revision: 1 })).status).toBe(409);
+    expect((await sendForReview(h, { approval: { note: " " } })).status).toBe(400);
+  });
+
+  it.each(["play_edit_locks", "play_store_listing_locks"] as const)("returns edit_conflict while %s holds the package", async (table) => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    if (table === "play_edit_locks") {
+      h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+        VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+    } else {
+      h.sqlite.prepare(`INSERT INTO play_store_listing_locks (app_id, package_name, operation_id, acquired_by, acquired_at)
+        VALUES ('app', 'build.raft.app', 'listing-op', 'other', ?)`).run(Date.now());
+    }
+    const response = await sendForReview(h);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+  });
+
+  it.each([
+    ["play_edit_in_review", 409, "edit_in_review"],
+    ["play_changes_not_sent_for_review", 409, "edit_in_review"],
+    ["play_edit_state_unknown", 502, "edit_state_unknown"],
+    ["play_commit_ambiguous", 502, "edit_state_unknown"],
+    ["play_release_not_on_track", 409, "gate_failed"],
+    ["play_api_rejected", 502, "play_api_error"],
+  ] as const)("maps adapter %s to %i %s with a failed-closed send-for-review receipt", async (failure, status, code) => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      sendForReview: async () => ({ ok: false, error: { status, code: failure, message: "adapter message",
+        cause: { stage: "commit_edit", provider_cause: failure === "play_edit_in_review" ? "EDIT_IN_REVIEW" : "OTHER" } } }),
+    });
+    const response = await sendForReview(h);
+    expect(response.status).toBe(status);
+    const body = await response.json() as { error: { code: string; failure_code: string; receipt_id: string } };
+    expect(body.error).toMatchObject({ code, failure_code: failure, receipt_id: expect.any(String) });
+    const failed = receipts(h).at(-1)!;
+    expect(failed).toMatchObject({ action: "send-for-review", verdict: "failed-closed" });
+    expect(failed.payload.review).toMatchObject({ requested: true, changes_not_sent_for_review: false });
+    expect(failed.payload.result.failure_reason).toContain(failure);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  });
+
+  it("fails closed when the adapter's answer names different bytes", async () => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ sendForReview: async () => ({ ok: true, value: sendValue({ sha256: B }) }) });
+    const response = await sendForReview(h);
+    expect(response.status).toBe(502);
+    expect(receipts(h).at(-1)).toMatchObject({ action: "send-for-review", verdict: "failed-closed" });
   });
 });

@@ -57,7 +57,11 @@ App webhooks can subscribe to `google_play:submission_succeeded`,
 `google_play:submission_failed`, and `google_play:release_state_changed`.
 Submission events come from immutable Hands promotion receipts and include the
 package, version code, Hands track, and receipt ID. A successful submission is
-not an approval or availability announcement. Failures before Hands can create
+not an approval or availability announcement. A release uploaded with
+`--changes-not-sent-for-review` carries `action: "promote"` and
+`review_requested: false`; `hands releases play-send-for-review` carries
+`action: "send-for-review"` and `review_requested: true`. Plain promotions
+carry neither field. Failures before Hands can create
 a promotion receipt remain API errors rather than release notifications.
 
 Hands reads Google's live release lifecycle for enabled, verified connections

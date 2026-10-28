@@ -61,7 +61,12 @@ const PlayApprovalInput = z.object({
 const PlayPromotionInput = PlayApprovalInput.extend({
   track: z.enum(["internal", "closed", "production"]),
   rollout_percent: z.number().int().min(0).max(100).optional(),
+  changes_not_sent_for_review: z.boolean().optional().openapi({ description: "Default false (unchanged behavior: the commit sends the release for review). When true, every edit of this promotion is committed with changesNotSentForReview=true (always with changesInReviewBehavior=ERROR_IF_IN_REVIEW): bundle, track release, release notes and deobfuscation files are saved on Play but not sent for review; send them later with .../distributions/play/send-for-review or Play Console. The receipt records review.requested=false. If Google still answers that another change is in review, the response is 409 code edit_in_review, failure_code play_edit_in_review; an unrecognised commit answer is 502 edit_state_unknown." }),
 }).passthrough().openapi("PlayPromotionInput");
+
+const PlaySendForReviewInput = PlayApprovalInput.extend({
+  track: z.enum(["internal", "closed", "production"]),
+}).passthrough().openapi("PlaySendForReviewInput");
 
 const PlayRollbackInput = PlayApprovalInput.extend({
   to_version_code: z.number().int().positive(),
@@ -343,8 +348,29 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
       200: success("Play readback matched and immutable receipt was appended.", GenericObject),
       400: error("A promotion gate failed."),
       403: error("Authenticated publisher, submission note, or live-hold gate failed."),
-      409: error("Release revision, versionCode, or edit lock conflicts."),
-      502: error("Server-side Play adapter failed or returned mismatched readback."),
+      409: error("Release revision, versionCode, or edit lock conflicts; with changes_not_sent_for_review, also another change in review (edit_in_review)."),
+      502: error("Server-side Play adapter failed or returned mismatched readback; with changes_not_sent_for_review, an unrecognised commit answer is edit_state_unknown."),
+    },
+  });
+
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/releases/{releaseId}/distributions/play/send-for-review",
+    tags: ["Android distribution"],
+    summary: "Send the release's pending Google Play changes for review",
+    description:
+      "Step two after promote with changes_not_sent_for_review=true. Requires the same publisher, revision, sealed/accepted AAB, live-hold and binding gates as promote, a Hands promotion of this release's versionCode to the requested track, and the package-scoped Play edit lock. The adapter opens an edit, checks that Play holds the accepted AAB (sha256) for the versionCode and that the track carries it, then commits the edit with changesInReviewBehavior=ERROR_IF_IN_REVIEW and without changesNotSentForReview. Hands never cancels a review in progress: another change in review returns 409 code edit_in_review (failure_code play_edit_in_review); an unrecognised or unanswered commit returns 502 code edit_state_unknown. Google does not document whether such a commit submits changes saved earlier without review, so the receipt (kind play-promotion, action send-for-review) records the release lifecycle state read before and after (review.lifecycle_before/after); verify it in Play Console.",
+    security: auth,
+    request: {
+      params: AppReleaseParams,
+      body: { content: json(PlaySendForReviewInput), required: true },
+    },
+    responses: {
+      200: success("Commit accepted by Google; immutable receipt appended.", GenericObject),
+      400: error("A gate failed (not promoted to this track through Hands, acceptance, binding)."),
+      403: error("Authenticated publisher, binding, or live-hold gate failed."),
+      409: error("Release revision or edit lock conflicts, another change is in review (edit_in_review), or Play does not hold this release on the track."),
+      502: error("Server-side Play adapter failed, or Google's answer was unrecognised (edit_state_unknown); see receipt_id."),
     },
   });
 
