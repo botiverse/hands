@@ -16,16 +16,37 @@ vi.mock("../lib/api.js", async (importOriginal) => {
   return {
     ...actual,
     apiRequest: async (path: string, opts: { method?: string } = {}) => {
-      const calls = (globalThis as unknown as { __CALLS: Array<{ method: string; path: string }> }).__CALLS;
-      calls.push({ method: (opts.method ?? "GET").toUpperCase(), path: String(path) });
+      const state = globalThis as unknown as {
+        __CALLS: Array<{ method: string; path: string }>;
+        __BUILD_SHAPE?: "bare" | "wrapped";
+      };
+      state.__CALLS.push({ method: (opts.method ?? "GET").toUpperCase(), path: String(path) });
+      // A build GET returns the build object directly; the "wrapped" form exists
+      // only so the tolerant unwrapping can be tested against both shapes.
+      if (/\/builds\/[^/]+$/.test(String(path)) && (opts.method ?? "GET").toUpperCase() === "GET") {
+        const build = {
+          id: BUILD_ID,
+          status: "failed",
+          version_name: "0.0.0-upload-probe.1",
+          version_code: 4666106250041909,
+          asset_count: 0,
+          assets: [],
+        };
+        return (state.__BUILD_SHAPE === "wrapped" ? { build } : build) as never;
+      }
       return { url: "https://example.invalid/signed" } as never;
     },
   };
 });
 
-async function run(argv: string[]): Promise<Array<{ method: string; path: string }>> {
+async function run(
+  argv: string[],
+  buildShape: "bare" | "wrapped" = "bare",
+): Promise<Array<{ method: string; path: string }>> {
   const calls: Array<{ method: string; path: string }> = [];
-  (globalThis as unknown as { __CALLS: typeof calls }).__CALLS = calls;
+  const state = globalThis as unknown as { __CALLS: typeof calls; __BUILD_SHAPE: typeof buildShape };
+  state.__CALLS = calls;
+  state.__BUILD_SHAPE = buildShape;
 
   const [{ registerAppCommands }, { registerBuildCommands }] = await Promise.all([
     import("./apps.js"),
@@ -82,6 +103,84 @@ describe("builds asset commands reach the manifest endpoints", () => {
       method: "GET",
       path: `/api/apps/${APP_ID}/builds/${BUILD_ID}/assets/${ASSET_ID}/download?presign=1`,
     });
+  });
+
+  it("builds delete DELETEs the build path", async () => {
+    const calls = await run(["builds", "delete", APP_ID, BUILD_ID]);
+    expect(calls).toContainEqual({
+      method: "DELETE",
+      path: `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    });
+  });
+
+  it("builds delete --dry-run prints the real status from a bare build object", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    try {
+      await run(["builds", "delete", APP_ID, BUILD_ID, "--dry-run"], "bare");
+    } finally {
+      spy.mockRestore();
+    }
+    const output = logged.join("\n");
+    // Asserting the OUTPUT, not just that a GET happened: the original test only
+    // checked the request, which is why it passed while the report printed nulls.
+    expect(output).toContain("status=failed");
+    expect(output).toContain("0.0.0-upload-probe.1");
+    expect(output).not.toContain("status=null");
+  });
+
+  it("builds delete --dry-run still reads a wrapped {build} response", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    try {
+      await run(["builds", "delete", APP_ID, BUILD_ID, "--dry-run"], "wrapped");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(logged.join("\n")).toContain("status=failed");
+  });
+
+  it("builds delete records what it removed before deleting", async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    let calls: Array<{ method: string; path: string }> = [];
+    try {
+      calls = await run(["builds", "delete", APP_ID, BUILD_ID]);
+    } finally {
+      spy.mockRestore();
+    }
+    const output = logged.join("\n");
+    // The success line alone is not evidence of WHICH build went away.
+    expect(output).toContain("status=failed");
+    expect(output).toContain("0.0.0-upload-probe.1");
+    expect(output).toContain("assets=0");
+    // The NAME of this test says "before deleting", so assert the ORDER, not
+    // merely that a DELETE happened: the record is only useful if it is read
+    // while the build still exists.
+    const getIndex = calls.findIndex(
+      (call) => call.method === "GET" && call.path === `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    );
+    const deleteIndex = calls.findIndex((call) => call.method === "DELETE");
+    expect(getIndex).toBeGreaterThanOrEqual(0);
+    expect(deleteIndex).toBeGreaterThanOrEqual(0);
+    expect(getIndex).toBeLessThan(deleteIndex);
+  });
+
+  it("builds delete --dry-run reads the build and issues no DELETE", async () => {
+    const calls = await run(["builds", "delete", APP_ID, BUILD_ID, "--dry-run"]);
+    expect(calls).toContainEqual({
+      method: "GET",
+      path: `/api/apps/${APP_ID}/builds/${BUILD_ID}`,
+    });
+    // The whole point of --dry-run: nothing is removed, so a 409 is discovered
+    // before anyone decides to delete rather than after a failed attempt.
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
   });
 
   it("delete-asset DELETEs the asset path", async () => {

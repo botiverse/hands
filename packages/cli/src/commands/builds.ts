@@ -752,6 +752,116 @@ export function registerBuildCommands(program: Command): void {
       },
     );
 
+  /**
+   * GET /builds/:buildId returns the build object directly. Some Hands surfaces
+   * wrap it as { build: {...} }, so accept both: an assumed wrapper silently
+   * yields a report of nulls, which reads as a successful empty result rather
+   * than an error -- the failure mode this helper exists to prevent.
+   */
+  async function readBuild(appId: string, buildId: string): Promise<Record<string, unknown>> {
+    const detail = await apiRequest<Record<string, unknown>>(
+      `/api/apps/${appId}/builds/${buildId}`,
+    );
+    const unwrapped = (detail as { build?: unknown }).build;
+    if (unwrapped && typeof unwrapped === "object") {
+      return unwrapped as Record<string, unknown>;
+    }
+    return detail;
+  }
+
+  /**
+   * What is about to be deleted, recorded before the delete rather than after:
+   * once the row is gone the success message is the only trace, and "it had no
+   * releases and no assets" says nothing about which build disappeared.
+   */
+  function describeBuild(buildId: string, build: Record<string, unknown>) {
+    const assets = Array.isArray(build.assets) ? build.assets : [];
+    return {
+      build_id: buildId,
+      status: build.status ?? null,
+      version_name: build.version_name ?? null,
+      version_code: build.version_code ?? null,
+      asset_count: Number(build.asset_count ?? assets.length),
+      asset_sha256: assets
+        .map((asset) => (asset as { sha256?: unknown }).sha256)
+        .filter((value): value is string => typeof value === "string"),
+      checked: "server enforces: no releases referencing this build, no assets attached",
+    };
+  }
+
+  function formatBuildRecord(build: {
+    build_id: string;
+    status: unknown;
+    version_name: unknown;
+    version_code: unknown;
+    asset_count?: number;
+    asset_sha256?: string[];
+  }): string {
+    const lines = [
+      `Build ${build.build_id}:`,
+      `  status=${String(build.status)}`,
+      `  version=${String(build.version_name)} (${String(build.version_code)})`,
+    ];
+    if (typeof build.asset_count === "number") {
+      lines.push(`  assets=${build.asset_count}`);
+    }
+    for (const sha of build.asset_sha256 ?? []) lines.push(`  asset sha256=${sha}`);
+    return lines.join("\n");
+  }
+
+  builds
+    .command("delete <appIdOrSlug> <buildId>")
+    .description(
+      "Delete a build that has never been released and has no assets. " +
+        "Requires app admin. Hands refuses (409) while any release references the build " +
+        "or any asset is attached, so this can only remove a build that never shipped -- " +
+        "a test leftover, not a release record.",
+    )
+    .option("--json", "Output JSON.", false)
+    .option("--dry-run", "Check whether the build can be deleted without deleting it.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { json?: boolean; dryRun?: boolean },
+      ) => {
+        const id = await resolveAppId(appIdOrSlug);
+        const asJson = shouldOutputJson(program, jsonRequested(program, opts.json));
+
+        if (opts.dryRun) {
+          // Read the build so the refusal reasons can be reported before anyone
+          // commits to the delete: a 409 later is far less useful than knowing
+          // up front which condition blocks it.
+          const build = await readBuild(id, buildId);
+          const report = describeBuild(buildId, build);
+          if (asJson) {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          console.log(formatBuildRecord(report));
+          console.log("A delete would be refused if any release references it or any asset is attached.");
+          return;
+        }
+
+        // Record what is being removed BEFORE removing it: afterwards this
+        // message is the only evidence of which build disappeared.
+        const before = describeBuild(buildId, await readBuild(id, buildId));
+        const result = await apiRequest<Record<string, unknown>>(
+          `/api/apps/${id}/builds/${buildId}`,
+          { method: "DELETE" },
+        );
+        if (asJson) {
+          console.log(JSON.stringify({ deleted: before, result }, null, 2));
+          return;
+        }
+        console.log(`Deleting build of ${appIdOrSlug}:`);
+        console.log(formatBuildRecord(before));
+        console.log(
+          `Deleted build ${buildId}. It had no releases and no assets, so no release record referenced it.`,
+        );
+      },
+    );
+
   builds
     .command("publish-version <appIdOrSlug>")
     .description("Register an immutable externally hosted Node/CLI build target.")
