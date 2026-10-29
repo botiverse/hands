@@ -345,9 +345,61 @@ describe("App Store submission", () => {
     expect(calls[0]!.method).toBe("POST");
     expect(calls[0]!.url).toContain("/v1/reviewSubmissions");
     expect(calls[1]!.url).toContain("/v1/reviewSubmissionItems");
-    expect(calls[1]!.body.data.relationships.appStoreVersionForReview.data.id).toBe("ver-1");
+    // The item relates to the version as `appStoreVersion`; `appStoreVersionForReview`
+    // is the reviewSubmission's relationship and Apple rejects it here with
+    // "The provided entity includes an unknown relationship" (1.17.0, 2026-10-29).
+    expect(calls[1]!.body.data.relationships.appStoreVersion.data.id).toBe("ver-1");
+    expect(calls[1]!.body.data.relationships.appStoreVersionForReview).toBeUndefined();
     expect(calls[2]!.method).toBe("PATCH");
     expect(calls[2]!.body.data.attributes).toEqual({ submitted: true });
+    expect(result.reused).toBe(false);
+  });
+
+  it("reuses a given draft instead of creating a second submission", async () => {
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({}));
+    const result = await submitVersionForReview(creds, "app-1", "ver-1", "IOS", { reuseSubmissionId: "sub-draft" });
+    expect(result).toEqual({ submissionId: "sub-draft", reused: true });
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/v1/reviewSubmissions"))).toBe(false);
+    expect(calls[0]!.body.data.relationships.reviewSubmission.data.id).toBe("sub-draft");
+    expect(calls[1]!.url).toContain("/v1/reviewSubmissions/sub-draft");
+  });
+
+  it("cancels the draft it created when adding the version fails, and rethrows", async () => {
+    // Otherwise every failed attempt leaves an empty draft behind in App Store Connect.
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    const { creds } = await withFetch(() => ({}));
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (method === "POST" && u.endsWith("/v1/reviewSubmissions")) return new Response(JSON.stringify({ data: { id: "sub-new" } }));
+      if (u.endsWith("/v1/reviewSubmissionItems")) {
+        return new Response(JSON.stringify({ errors: [{ status: "409", detail: "nope" }] }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    await expect(submitVersionForReview(creds, "app-1", "ver-1", "IOS")).rejects.toThrow();
+    const cancel = calls.find((c) => c.method === "PATCH" && c.url.includes("/v1/reviewSubmissions/sub-new"));
+    expect(cancel?.body.data.attributes).toEqual({ canceled: true });
+    expect(calls.some((c) => c.body?.data?.attributes?.submitted === true)).toBe(false);
+  });
+
+  it("does not cancel a reused draft when a later step fails", async () => {
+    // The draft predates this call; cancelling it is a decision for the caller.
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    const { creds } = await withFetch(() => ({}));
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u.endsWith("/v1/reviewSubmissionItems")) {
+        return new Response(JSON.stringify({ errors: [{ status: "409", detail: "nope" }] }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    await expect(submitVersionForReview(creds, "app-1", "ver-1", "IOS", { reuseSubmissionId: "sub-draft" })).rejects.toThrow();
+    expect(calls.some((c) => c.body?.data?.attributes?.canceled === true)).toBe(false);
   });
 
   it("patches an existing localization instead of creating a duplicate", async () => {

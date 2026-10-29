@@ -1469,41 +1469,67 @@ export async function cancelReviewSubmission(
   });
 }
 
-/** Create, populate and submit a review in one call so a half-submitted review cannot linger. */
+/**
+ * Create (or reuse), populate and submit a review in one call so a half-submitted
+ * review cannot linger.
+ *
+ * `reuseSubmissionId` is an existing READY_FOR_REVIEW draft for the same platform.
+ * A draft is what a failed earlier attempt leaves behind (step 1 succeeded, a later
+ * step did not); App Store Connect keeps one open draft per platform, so creating a
+ * second one instead of reusing it is at best clutter.
+ *
+ * When this call created the draft itself and a later step fails, the draft is
+ * cancelled best-effort before the error is rethrown.
+ */
 export async function submitVersionForReview(
   creds: AscApiCredentials,
   ascAppId: string,
   versionId: string,
   platform: string,
-): Promise<{ submissionId: string }> {
-  const created = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/reviewSubmissions", {
-    data: {
-      type: "reviewSubmissions",
-      attributes: { platform },
-      relationships: { app: { data: { type: "apps", id: ascAppId } } },
-    },
-  });
-  const submissionId = created.data?.id;
-  if (typeof submissionId !== "string" || !submissionId) {
-    throw new AscApiError(502, "review_submission_malformed", "App Store Connect did not return a submission id");
-  }
-  await ascRequest(creds, "POST", "/v1/reviewSubmissionItems", {
-    data: {
-      type: "reviewSubmissionItems",
-      relationships: {
-        reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
-        appStoreVersionForReview: { data: { type: "appStoreVersions", id: versionId } },
+  opts: { reuseSubmissionId?: string } = {},
+): Promise<{ submissionId: string; reused: boolean }> {
+  let submissionId = opts.reuseSubmissionId ?? null;
+  const reused = submissionId !== null;
+  if (!submissionId) {
+    const created = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/reviewSubmissions", {
+      data: {
+        type: "reviewSubmissions",
+        attributes: { platform },
+        relationships: { app: { data: { type: "apps", id: ascAppId } } },
       },
-    },
-  });
-  await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
-    data: {
-      type: "reviewSubmissions",
-      id: submissionId,
-      attributes: { submitted: true },
-    },
-  });
-  return { submissionId };
+    });
+    submissionId = typeof created.data?.id === "string" && created.data.id ? created.data.id : null;
+    if (!submissionId) {
+      throw new AscApiError(502, "review_submission_malformed", "App Store Connect did not return a submission id");
+    }
+  }
+  try {
+    // The item's relationship to the version is `appStoreVersion`.
+    // `appStoreVersionForReview` is the relationship on the reviewSubmission itself;
+    // sent here it is rejected with "The provided entity includes an unknown relationship".
+    await ascRequest(creds, "POST", "/v1/reviewSubmissionItems", {
+      data: {
+        type: "reviewSubmissionItems",
+        relationships: {
+          reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
+          appStoreVersion: { data: { type: "appStoreVersions", id: versionId } },
+        },
+      },
+    });
+    await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
+      data: {
+        type: "reviewSubmissions",
+        id: submissionId,
+        attributes: { submitted: true },
+      },
+    });
+  } catch (error) {
+    if (!reused) {
+      await cancelReviewSubmission(creds, submissionId).catch(() => undefined);
+    }
+    throw error;
+  }
+  return { submissionId, reused };
 }
 
 // ---------- App Store version localizations (listing text) ----------

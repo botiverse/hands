@@ -27,6 +27,8 @@ async function makeContext(body: unknown, opts: { submissions?: Array<{ id: stri
           if (/FROM channels/i.test(sql)) return { bundle_id: "build.raft.app" };
           return {};
         },
+        // The audit row written after a successful submit.
+        run: async () => ({ meta: { changes: 1 } }),
       }),
     }),
   };
@@ -92,6 +94,29 @@ describe("App Store submission guards", () => {
     expect(body.code).toBe("REVIEW_ALREADY_PENDING");
     expect(body.submission_id).toBe("sub-9");
     expect(body.version_id).toBe("ver-old");
+  });
+
+  it("reuses an open READY_FOR_REVIEW draft left by an earlier failed attempt", async () => {
+    // A failed attempt can leave the draft created in step 1 behind; the retry must
+    // put the version into that draft rather than open a second one.
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      if (method !== "GET") writes.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.17.0", platform: "IOS" } }] }));
+      }
+      if (u.includes("/reviewSubmissions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "sub-draft", attributes: { state: "READY_FOR_REVIEW", platform: "IOS" } }] }));
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ submission_id: "sub-draft", submitted: true, reused_draft: true });
+    expect(writes.some((w) => w.method === "POST" && w.url.endsWith("/v1/reviewSubmissions"))).toBe(false);
+    expect(writes[0]!.body.data.relationships.reviewSubmission.data.id).toBe("sub-draft");
   });
 
   it("refuses to reuse a version Apple is holding, so an in-review 1.12 cannot be modified", async () => {
