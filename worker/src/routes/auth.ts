@@ -1681,7 +1681,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "set-app-store-localizations",
         description:
-          "Write App Store listing text per locale (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew). mode is required: dry_run returns the per-field plan with no writes; commit PATCHes changed fields, creates missing locales, and fails unless Apple's read-back matches. Screenshots are multipart: use `hands app-store screenshots push`. Requires app publisher.",
+          "Write App Store listing text per locale (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew). mode is required: dry_run returns the per-field plan with no writes; commit PATCHes changed fields, creates missing locales (a new locale must include description, keywords and supportUrl, else 409 LOCALIZATION_PLAN_BLOCKED missing_required_fields), and fails unless Apple's read-back matches. Screenshots are multipart: use `hands app-store screenshots push`. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/localizations" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
@@ -1693,7 +1693,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "set-app-store-release-notes",
         description:
-          "Upsert the localized What's New text for an App Store version. Pass one entry per locale; an existing localization is updated rather than duplicated, so this is safe to re-run after a rejection. Requires app publisher.",
+          "Update the localized What's New text of an App Store version's existing localizations. Pass one entry per locale; safe to re-run after a rejection. A locale with no localization yet is refused with 409 LOCALIZATION_MISSING and nothing is written: create it with set-app-store-localizations (description, keywords, supportUrl). Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/notes" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },

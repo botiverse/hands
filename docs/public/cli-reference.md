@@ -583,6 +583,7 @@ hands app-store status raft-ios --version-name 1.17.0
 hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id> [--commit]
 # listing text: { "en-US": { "description": "...", "keywords": "...", "promotionalText": "...",
 #                 "whatsNew": "...", "supportUrl": "...", "marketingUrl": "..." } }
+# a locale new to the version needs description, keywords and supportUrl
 hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json [--commit]
 # screenshots: shots/<locale>/<display_type>/NN.png, e.g. shots/en-US/APP_IPHONE_67/01.png
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots [--locales en-US,ja] [--commit]

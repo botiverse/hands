@@ -185,7 +185,8 @@ export function formatLocalizationResult(body: any): string {
   const v = body.version;
   if (v) lines.push(`Version ${v.version_string} (${v.id}, ${v.state})`);
   for (const plan of body.localizations ?? []) {
-    lines.push(`  ${plan.blocker ? `BLOCKED (${plan.blocker})` : plan.action.padEnd(9)} ${plan.locale}`);
+    const missing = plan.blocker === "missing_required_fields" && plan.missing_fields?.length ? `: ${plan.missing_fields.join(", ")}` : "";
+    lines.push(`  ${plan.blocker ? `BLOCKED (${plan.blocker}${missing})` : plan.action.padEnd(9)} ${plan.locale}`);
     for (const field of plan.changed_fields ?? []) {
       lines.push(`      ${field}: ${preview(plan.before?.[field])} -> ${preview(plan.after?.[field])}`);
     }

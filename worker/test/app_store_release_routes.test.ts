@@ -178,6 +178,45 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
+  function notesApple(locales: string[]) {
+    const writes: Array<{ method: string; url: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      if (u.includes("/appStoreVersions?")) return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.17.0" } }] }));
+      if (method !== "GET") {
+        writes.push({ method, url: u, body: JSON.parse(String(init!.body)) });
+        return new Response(JSON.stringify({ data: {} }));
+      }
+      if (u.includes("/appStoreVersionLocalizations")) {
+        return new Response(JSON.stringify({ data: locales.map((locale) => ({ id: `loc-${locale}`, attributes: { locale } })) }));
+      }
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    return writes;
+  }
+
+  it("refuses What's New for a locale with no localization, writing nothing", async () => {
+    // Creating it with only whatsNew leaves supportUrl unset and Apple refuses review.
+    const writes = notesApple(["en-US"]);
+    const res = await handleSetAppStoreReleaseNotes(await makeContext({ notes: { "en-US": "Bug fixes", ja: "不具合を修正" } }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ code: "LOCALIZATION_MISSING", locales: ["ja"] });
+    expect(body.next_action).toContain("hands app-store localizations push");
+    expect(writes).toEqual([]);
+  });
+
+  it("updates What's New on existing locales with a PATCH", async () => {
+    const writes = notesApple(["en-US", "ja"]);
+    const res = await handleSetAppStoreReleaseNotes(await makeContext({ notes: { "en-US": "Bug fixes", ja: "不具合を修正" } }));
+    expect(res.status).toBe(200);
+    expect(writes.map((w) => `${w.method} ${w.url.replace(/^https:\/\/[^/]+/, "")}`)).toEqual([
+      "PATCH /v1/appStoreVersionLocalizations/loc-en-US",
+      "PATCH /v1/appStoreVersionLocalizations/loc-ja",
+    ]);
+    expect(writes[1]!.body.data.attributes).toEqual({ whatsNew: "不具合を修正" });
+  });
+
   it("refuses a submission id belonging to another app, with no write", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
       const u = String(url);
