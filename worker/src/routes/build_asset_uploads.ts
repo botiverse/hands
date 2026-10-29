@@ -319,7 +319,10 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
       ? null
       : await presignR2UploadUrl(c.env, replay.staging_key, contentType, Math.max(1, Math.floor((replay.upload_expires_at - Date.now()) / 1000)));
     if (replay.state === "pending" && !uploadUrl) {
-      return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE" }, 503);
+      // retryable: false: the cause is configuration (presigning unavailable), not a
+      // transient fault. Retrying fails identically and disguises a misconfiguration
+      // as flakiness.
+      return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE", retryable: false }, 503);
     }
     return uploadResponse(c, replay, uploadUrl, true);
   }
@@ -388,7 +391,10 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
   const stagingKey = `apps/${appId}/build-ingest/pending/${buildId}/${assetId}/${attempt}/${input.filename}`;
   const uploadUrl = await presignR2UploadUrl(c.env, stagingKey, input.contentType, UPLOAD_TTL_SECONDS);
   if (!uploadUrl) {
-    return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE" }, 503);
+    // retryable: false: the cause is configuration (presigning unavailable), not a
+    // transient fault. Retrying fails identically and disguises a misconfiguration
+    // as flakiness.
+    return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE", retryable: false }, 503);
   }
   const metadata = JSON.stringify({
     ...input.metadata,
@@ -440,7 +446,10 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
             Math.max(1, Math.floor((concurrent.upload_expires_at - Date.now()) / 1000)),
           );
       if (concurrent.state === "pending" && !concurrentUploadUrl) {
-        return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE" }, 503);
+        // retryable: false: the cause is configuration (presigning unavailable), not a
+        // transient fault. Retrying fails identically and disguises a misconfiguration
+        // as flakiness.
+        return c.json({ error: "direct uploads are unavailable", code: "ASSET_UPLOAD_UNAVAILABLE", retryable: false }, 503);
       }
       return uploadResponse(c, concurrent, concurrentUploadUrl, true);
     }
