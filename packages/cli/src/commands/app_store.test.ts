@@ -70,6 +70,15 @@ describe("hands app-store", () => {
     expect(committed.calls.at(-1)).toMatchObject({ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/submit` });
   });
 
+  it("labels a rejected (UNRESOLVED_ISSUES) pending submission and a resubmit", async () => {
+    const { describePendingSubmission } = await import("./app_store.js");
+    expect(describePendingSubmission({ id: "sub-rej", state: "UNRESOLVED_ISSUES" })).toBe("sub-rej (UNRESOLVED_ISSUES — Apple rejected; fix then submit again)");
+    expect(describePendingSubmission({ id: "sub-9", state: "IN_REVIEW" })).toBe("sub-9 (IN_REVIEW)");
+    expect(describePendingSubmission(null)).toBe("none");
+    const committed = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ submission_id: "sub-rej", submitted: true, resubmitted: true }));
+    expect(committed.out.join("\n")).toContain("Resubmitted 1.17.0 (ver-117) in its rejected review submission sub-rej.");
+  });
+
   it("withdraw without --commit only reads status; with --commit names the version", async () => {
     const dry = await run(["app-store", "withdraw", APP_ID, "--version-name", "1.17.0"]);
     expect(dry.calls.every((c) => c.method === "GET")).toBe(true);
