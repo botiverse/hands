@@ -18,7 +18,7 @@ const { handlePrepareAppStoreVersion, planPrepare, classifyVersionState } = awai
  * version of the App in the current state", because Apple allows one unreleased
  * version per platform. Prepare must move 1.12.0 to 1.17.0 instead of creating.
  */
-type V = { id: string; versionString: string; appVersionState?: string; appStoreState?: string; build?: string | null; omitBuild?: boolean };
+type V = { id: string; versionString: string; appVersionState?: string; appStoreState?: string; build?: string | null; omitBuild?: boolean; releaseType?: string };
 
 function versionResource(v: V) {
   return {
@@ -27,7 +27,7 @@ function versionResource(v: V) {
     attributes: {
       versionString: v.versionString,
       platform: "IOS",
-      releaseType: "MANUAL",
+      releaseType: v.releaseType ?? "MANUAL",
       ...(v.appVersionState ? { appVersionState: v.appVersionState } : {}),
       ...(v.appStoreState ? { appStoreState: v.appStoreState } : {}),
     },
@@ -59,11 +59,12 @@ function fakeApple(initial: V[], opts: {
       const build = call.body?.data?.relationships?.build?.data?.id;
       if (build && opts.failAttach) return { status: 409, json: { errors: [{ title: "ENTITY_ERROR", detail: "build cannot be attached" }] } };
       if (call.body?.data?.attributes?.versionString) v.versionString = call.body.data.attributes.versionString;
+      if (call.body?.data?.attributes?.releaseType) v.releaseType = call.body.data.attributes.releaseType;
       if (build) v.build = build;
       return { json: { data: versionResource(v) } };
     }
     if (call.method === "POST" && call.path === "/v1/appStoreVersions") {
-      const created: V = { id: "ver-new", versionString: call.body.data.attributes.versionString, appVersionState: "PREPARE_FOR_SUBMISSION", build: null };
+      const created: V = { id: "ver-new", versionString: call.body.data.attributes.versionString, appVersionState: "PREPARE_FOR_SUBMISSION", build: null, releaseType: call.body.data.attributes.releaseType };
       versions.push(created);
       return { status: 201, json: { data: versionResource(created) } };
     }
@@ -133,6 +134,8 @@ describe("prepare renames the one editable, never-released version", () => {
     expect(res.status).toBe(409);
     expect(json.code).toBe("VERSION_IN_FLIGHT");
     expect(json.next_action).toContain("release it");
+    expect(json.next_action).toContain("release-app-store-version");
+    expect(json.next_action).toContain("hands app-store release <app> ver-112 --version 1.12.0 --commit");
     expect(asc.writes()).toEqual([]);
   });
 
@@ -216,6 +219,104 @@ describe("prepare renames the one editable, never-released version", () => {
     const { res, json } = await prepare({ version_string: "1.17.0", mode: "maybe" });
     expect(res.status).toBe(400);
     expect(json.code).toBe("INVALID_MODE");
+    expect(asc.calls).toEqual([]);
+  });
+});
+
+describe("prepare applies release_type to existing versions", () => {
+  it("rename: sends releaseType in the same PATCH as the rename and build, and reads it back", async () => {
+    const asc = fakeApple([{ id: "ver-112", versionString: "1.12.0", appVersionState: "DEVELOPER_REJECTED", build: "build-12", releaseType: "MANUAL" }]);
+    const { res, json, audits } = await prepare({ version_string: "1.17.0", asc_build_id: "build-17", release_type: "AFTER_APPROVAL", mode: "commit" });
+    expect(res.status).toBe(200);
+    expect(asc.writes()).toHaveLength(1);
+    expect(asc.writes()[0]!.body.data).toEqual({
+      type: "appStoreVersions",
+      id: "ver-112",
+      attributes: { versionString: "1.17.0", releaseType: "AFTER_APPROVAL" },
+      relationships: { build: { data: { type: "builds", id: "build-17" } } },
+    });
+    expect(json).toMatchObject({ action: "renamed", release_type: "AFTER_APPROVAL", requested_release_type: "AFTER_APPROVAL",
+      completed_steps: ["rename_version_and_attach_build_and_set_release_type"] });
+    expect(json.changes.release_type).toEqual({ from: "MANUAL", to: "AFTER_APPROVAL" });
+    expect(audits[0]!.payload.outcome).toBe("ok");
+  });
+
+  it("dry_run shows the release type change and writes nothing", async () => {
+    const asc = fakeApple([{ id: "ver-112", versionString: "1.12.0", appVersionState: "DEVELOPER_REJECTED", releaseType: "MANUAL" }]);
+    const { json } = await prepare({ version_string: "1.17.0", release_type: "AFTER_APPROVAL", mode: "dry_run" });
+    expect(json.changes).toEqual({
+      version_string: { from: "1.12.0", to: "1.17.0" },
+      build: null,
+      release_type: { from: "MANUAL", to: "AFTER_APPROVAL" },
+    });
+    expect(json.release_type).toBe("MANUAL");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("reuse: PATCHes releaseType (with the build) when it differs", async () => {
+    const asc = fakeApple([{ id: "ver-117", versionString: "1.17.0", appVersionState: "PREPARE_FOR_SUBMISSION", releaseType: "MANUAL" }]);
+    const { res, json } = await prepare({ version_string: "1.17.0", asc_build_id: "build-17", release_type: "AFTER_APPROVAL" });
+    expect(res.status).toBe(200);
+    expect(asc.writes().map((w) => w.body.data)).toEqual([{
+      type: "appStoreVersions", id: "ver-117",
+      attributes: { releaseType: "AFTER_APPROVAL" },
+      relationships: { build: { data: { type: "builds", id: "build-17" } } },
+    }]);
+    expect(json).toMatchObject({ action: "reused", release_type: "AFTER_APPROVAL", completed_steps: ["attach_build_and_set_release_type"] });
+  });
+
+  it("reuse without a build: a releaseType-only PATCH", async () => {
+    const asc = fakeApple([{ id: "ver-117", versionString: "1.17.0", appVersionState: "PREPARE_FOR_SUBMISSION", releaseType: "AFTER_APPROVAL" }]);
+    const { json } = await prepare({ version_string: "1.17.0", release_type: "MANUAL" });
+    expect(asc.writes().map((w) => w.body.data)).toEqual([{ type: "appStoreVersions", id: "ver-117", attributes: { releaseType: "MANUAL" } }]);
+    expect(json).toMatchObject({ release_type: "MANUAL", completed_steps: ["set_release_type"] });
+  });
+
+  it("does not PATCH releaseType when Apple already has the requested value", async () => {
+    const asc = fakeApple([{ id: "ver-117", versionString: "1.17.0", appVersionState: "PREPARE_FOR_SUBMISSION", releaseType: "AFTER_APPROVAL" }]);
+    const { json } = await prepare({ version_string: "1.17.0", release_type: "AFTER_APPROVAL" });
+    expect(asc.writes()).toEqual([]);
+    expect(json).toMatchObject({ release_type: "AFTER_APPROVAL", completed_steps: [] });
+    expect(json.changes.release_type).toBeNull();
+  });
+
+  it("omitted release_type leaves Apple's value alone (no reset to MANUAL)", async () => {
+    const asc = fakeApple([{ id: "ver-112", versionString: "1.12.0", appVersionState: "DEVELOPER_REJECTED", releaseType: "AFTER_APPROVAL" }]);
+    const { res, json } = await prepare({ version_string: "1.17.0", asc_build_id: "build-17" });
+    expect(res.status).toBe(200);
+    expect(asc.writes()[0]!.body.data.attributes).toEqual({ versionString: "1.17.0" });
+    expect(json).toMatchObject({ release_type: "AFTER_APPROVAL", requested_release_type: null });
+    expect(json.changes.release_type).toBeNull();
+  });
+
+  it("fails closed with READBACK_MISMATCH when Apple does not show the requested releaseType", async () => {
+    fakeApple(
+      [{ id: "ver-112", versionString: "1.12.0", appVersionState: "DEVELOPER_REJECTED", releaseType: "MANUAL" }],
+      { readback: (v) => ({ ...v, releaseType: "MANUAL" }) },
+    );
+    const { res, json, audits } = await prepare({ version_string: "1.17.0", release_type: "AFTER_APPROVAL", mode: "commit" });
+    expect(res.status).toBe(502);
+    expect(json.code).toBe("READBACK_MISMATCH");
+    expect(json.mismatches).toEqual(["release_type"]);
+    expect(json.readback.release_type).toBe("MANUAL");
+    expect(audits[0]!.payload.outcome).toBe("readback_mismatch");
+  });
+
+  it("create sends the requested releaseType (MANUAL when omitted)", async () => {
+    const asc = fakeApple([]);
+    await prepare({ version_string: "1.17.0", release_type: "AFTER_APPROVAL" });
+    expect(asc.writes()[0]!.body.data.attributes.releaseType).toBe("AFTER_APPROVAL");
+    const asc2 = fakeApple([]);
+    const { json } = await prepare({ version_string: "1.17.0" });
+    expect(asc2.writes()[0]!.body.data.attributes.releaseType).toBe("MANUAL");
+    expect(json.release_type).toBe("MANUAL");
+  });
+
+  it("refuses SCHEDULED (no earliestReleaseDate support) before calling Apple", async () => {
+    const asc = fakeApple([]);
+    const { res, json } = await prepare({ version_string: "1.17.0", release_type: "SCHEDULED" });
+    expect(res.status).toBe(400);
+    expect(json.code).toBe("RELEASE_TYPE_SCHEDULED_UNSUPPORTED");
     expect(asc.calls).toEqual([]);
   });
 });

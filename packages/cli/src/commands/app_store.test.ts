@@ -74,6 +74,27 @@ describe("hands app-store", () => {
     expect(committed.calls.at(-1)).toMatchObject({ method: "POST", path: `/api/apps/${APP_ID}/app-store/withdraw`, body: { version_id: "ver-117" } });
   });
 
+  it("release is a dry run unless --commit, and sends the exact version/build confirmation", async () => {
+    const path = `/api/apps/${APP_ID}/app-store/versions/ver-117/release`;
+    const dry = await run(["app-store", "release", APP_ID, "ver-117", "--version", "1.17.0", "--build", "b-17"], () => ({
+      mode: "dry_run", outcome: "planned", released: false, version: { version_id: "ver-117", version_string: "1.17.0", state: "PENDING_DEVELOPER_RELEASE", build_id: "b-17" },
+    }));
+    expect(dry.calls).toEqual([{ method: "POST", path, body: { mode: "dry_run", version_string: "1.17.0", asc_build_id: "b-17" }, query: undefined }]);
+    expect(dry.out.join("\n")).toContain("Dry run: would release 1.17.0");
+    expect(dry.out.join("\n")).toContain("--commit");
+
+    const committed = await run(["app-store", "release", APP_ID, "ver-117", "--version", "1.17.0", "--commit"], () => ({
+      mode: "commit", outcome: "release_requested", released: false, version_id: "ver-117", version_string: "1.17.0", observed_state: "PENDING_DEVELOPER_RELEASE",
+    }));
+    expect(committed.calls).toEqual([{ method: "POST", path, body: { mode: "commit", version_string: "1.17.0" }, query: undefined }]);
+    expect(committed.out.join("\n")).toContain("Release requested");
+    expect(committed.out.join("\n")).not.toContain("Released ");
+  });
+
+  it("release requires --version", async () => {
+    await expect(run(["app-store", "release", APP_ID, "ver-117", "--commit"])).rejects.toThrow();
+  });
+
   it("localizations push sends mode dry_run by default to the version's endpoint", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hands-asc-"));
     const file = join(dir, "listing.json");

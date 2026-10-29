@@ -96,6 +96,8 @@ Common recipes:
                                                        shots/<locale>/<display_type>/NN.png; identical sets skipped
   hands app-store localizations push <app> --version 1.17.0 --file listing.json [--commit]
   hands app-store submit|withdraw <app> --version 1.17.0 [--commit]
+  hands app-store release <app> <versionId> --version 1.17.0 [--build <ascBuildId>] [--commit]
+                                                       Release an approved version (irreversible; dry run by default)
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:

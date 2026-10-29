@@ -1256,15 +1256,57 @@ export async function renameAppStoreVersion(
   versionId: string,
   versionString: string,
   ascBuildId?: string | null,
+  releaseType?: AppStoreReleaseType | null,
 ): Promise<void> {
+  await updateAppStoreVersion(creds, versionId, { versionString, ascBuildId: ascBuildId ?? null, releaseType: releaseType ?? null });
+}
+
+export type AppStoreReleaseType = "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED";
+
+/**
+ * One PATCH of an editable version: any of versionString, releaseType (attributes)
+ * and the build relationship. Omitted fields are not sent, so Apple keeps them.
+ */
+export async function updateAppStoreVersion(
+  creds: AscApiCredentials,
+  versionId: string,
+  changes: { versionString?: string | null; releaseType?: AppStoreReleaseType | null; ascBuildId?: string | null },
+): Promise<void> {
+  const attributes: Record<string, string> = {};
+  if (changes.versionString) attributes.versionString = changes.versionString;
+  if (changes.releaseType) attributes.releaseType = changes.releaseType;
   await ascRequest(creds, "PATCH", `/v1/appStoreVersions/${encodeURIComponent(versionId)}`, {
     data: {
       type: "appStoreVersions",
       id: versionId,
-      attributes: { versionString },
-      ...(ascBuildId ? { relationships: { build: { data: { type: "builds", id: ascBuildId } } } } : {}),
+      ...(Object.keys(attributes).length ? { attributes } : {}),
+      ...(changes.ascBuildId ? { relationships: { build: { data: { type: "builds", id: changes.ascBuildId } } } } : {}),
     },
   });
+}
+
+/**
+ * Release a version Apple has approved and parked at PENDING_DEVELOPER_RELEASE
+ * (releaseType MANUAL). Irreversible: once released, the version is live on the
+ * App Store. Apple processes the request asynchronously, so the version may still
+ * read PENDING_DEVELOPER_RELEASE (or PROCESSING_FOR_*) right after this returns.
+ *
+ * Apple exposes this resource as create-only: there is no GET of existing release
+ * requests, so callers must guard against a duplicate with the version state (and
+ * their own receipts), not by listing requests.
+ */
+export async function createAppStoreVersionReleaseRequest(
+  creds: AscApiCredentials,
+  versionId: string,
+): Promise<{ id: string | null }> {
+  const res = await ascRequest<{ data?: { id?: unknown } } | null>(creds, "POST", "/v1/appStoreVersionReleaseRequests", {
+    data: {
+      type: "appStoreVersionReleaseRequests",
+      relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } },
+    },
+  });
+  const id = res?.data?.id;
+  return { id: typeof id === "string" && id ? id : null };
 }
 
 /**
@@ -1330,7 +1372,8 @@ export async function setVersionLocalization(
  *   - MANUAL: approval parks the app at PENDING_DEVELOPER_RELEASE and waits for a
  *     human (or a later call). Required when artin wants to choose the moment.
  *   - AFTER_APPROVAL: ships automatically once approved.
- *   - SCHEDULED: ships at `earliestReleaseDate`; not used here.
+ *   - SCHEDULED: ships at `earliestReleaseDate`. Hands never sets that date, so the
+ *     prepare route refuses SCHEDULED rather than create a version Apple cannot ship.
  *
  * ASC only allows one editable version per platform, so a version still in review
  * must be withdrawn first, not overwritten.
@@ -1340,7 +1383,7 @@ export async function createAppStoreVersion(
   ascAppId: string,
   versionString: string,
   platform: string,
-  releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+  releaseType: AppStoreReleaseType,
 ): Promise<{ id: string }> {
   const res = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/appStoreVersions", {
     data: {

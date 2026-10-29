@@ -1673,9 +1673,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
           version_string: { type: "string", in: "body", required: true, description: "Marketing version, e.g. 1.15.2." },
           platform: { type: "string", in: "body", required: false, description: "IOS (default) or MAC_OS." },
-          release_type: { type: "string", in: "body", required: false, description: "MANUAL (default) | AFTER_APPROVAL | SCHEDULED." },
+          release_type: { type: "string", in: "body", required: false, description: "MANUAL | AFTER_APPROVAL. Applied to a created, reused, or renamed version (PATCHed only when it differs from Apple's) and read back. Omitted: a created version gets MANUAL, an existing one keeps Apple's value. SCHEDULED is refused (Hands does not set earliestReleaseDate)." },
           asc_build_id: { type: "string", in: "body", required: false, description: "App Store Connect build id to attach. A version with no build cannot be reviewed." },
-          mode: { type: "string", in: "body", required: false, description: "commit (default) or dry_run (plan only, no writes)." },
+          mode: { type: "string", in: "body", required: false, description: "commit (default, for backward compatibility: prepare's writes are reversible) or dry_run (plan only, no writes). The listing/screenshot actions have no default mode because they overwrite live store content; the CLI is dry-run unless --commit for all of them." },
         },
       },
       {
@@ -1709,6 +1709,19 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
           version_id: { type: "string", in: "path", required: true, description: "App Store version id." },
+        },
+      },
+      {
+        name: "release-app-store-version",
+        description:
+          "Release an approved App Store version (PENDING_DEVELOPER_RELEASE) to the App Store. IRREVERSIBLE. mode is required (dry_run reads only). The caller must assert the exact version_string (and optionally the attached asc_build_id); a mismatch is 409 RELEASE_CONFIRMATION_MISMATCH. Already live is 409 ALREADY_RELEASED (not success); any other state is 409 NOT_RELEASABLE. Records an operation receipt and app_store.release_intent audit row before POST /v1/appStoreVersionReleaseRequests, then reads the version back for up to ~30s: 200 outcome released only when Apple shows READY_FOR_SALE / READY_FOR_DISTRIBUTION, else 202 release_requested with observed_state (Apple releases asynchronously). A repeat call within 6h of an accepted request returns 202 without sending a second request. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/release" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "path", required: true, description: "App Store version id (appStoreVersions id)." },
+          mode: { type: "string", in: "body", required: true, description: "dry_run or commit. No default." },
+          version_string: { type: "string", in: "body", required: true, description: "Exact versionString the version must currently have, e.g. 1.17.0." },
+          asc_build_id: { type: "string", in: "body", required: false, description: "When given, the build Apple shows attached must be exactly this id." },
         },
       },
       {

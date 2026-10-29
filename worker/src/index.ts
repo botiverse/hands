@@ -172,6 +172,7 @@ import {
 import {
   handleGetAppStoreReleaseStatus,
   handlePrepareAppStoreVersion,
+  handleReleaseAppStoreVersion,
   handleSetAppStoreReleaseNotes,
   handleSubmitAppStoreVersion,
   handleWithdrawAppStoreVersion,
@@ -1335,6 +1336,7 @@ bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/notes", requir
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/localizations", requireAppRole("publisher"), handlePushAppStoreLocalizations);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/screenshots", requireAppRole("publisher"), handlePushAppStoreScreenshots);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requireAppRole("publisher"), handleSubmitAppStoreVersion);
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/release", requireAppRole("publisher"), handleReleaseAppStoreVersion);
 bindAdmin("post", "/api/apps/:appId/app-store/withdraw", requireAppRole("publisher"), handleWithdrawAppStoreVersion);
 bindAdmin("get", "/api/apps/:appId/app-store/status", requireAppRole("viewer"), handleGetAppStoreReleaseStatus);
 bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);

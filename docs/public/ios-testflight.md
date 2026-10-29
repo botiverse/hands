@@ -228,7 +228,8 @@ Raft integration actions:
 - `get-testflight-publish-status`
 - `prepare-app-store-version`, `set-app-store-localizations`,
   `set-app-store-release-notes`, `submit-app-store-version`,
-  `withdraw-app-store-version`, `get-app-store-release-status`
+  `withdraw-app-store-version`, `release-app-store-version`,
+  `get-app-store-release-status`
   (screenshots are multipart; use the CLI)
 
 Agents pass Hands app/build ids and stable beta group ids. The integration
@@ -243,8 +244,16 @@ unsupplied locales and succeeds only after exact Apple readback.
 
 The whole App Store submission runs through Hands with the stored App Store
 Connect key; nothing needs the App Store Connect website. Every step that
-changes something at Apple is a dry run in the CLI unless `--commit` is passed,
-and the listing and screenshot endpoints have no default `mode` at all.
+changes something at Apple is a dry run in the CLI unless `--commit` is passed.
+
+On the API, `mode` defaults differ on purpose:
+
+- prepare (`POST .../app-store/versions`) defaults to `commit` for backward
+  compatibility. Its writes are reversible: the version string, build and
+  release type can all be changed again by another prepare.
+- listing text and screenshots have no default `mode`: they overwrite live
+  store content, so the caller must say `dry_run` or `commit`.
+- release has no default `mode` either: it is irreversible.
 
 ```sh
 # 1. version + build: create, reuse, or rename (see below)
@@ -260,6 +269,9 @@ hands app-store screenshots push raft-ios --version 1.17.0 --dir shots --commit
 hands app-store submit raft-ios --version 1.17.0 --commit
 hands app-store status raft-ios --version 1.17.0
 hands app-store withdraw raft-ios --version 1.17.0 --commit
+# 5. after approval (MANUAL release type): release -- irreversible
+hands app-store release raft-ios <asc-version-id> --version 1.17.0 --build <asc-build-id>            # plan
+hands app-store release raft-ios <asc-version-id> --version 1.17.0 --build <asc-build-id> --commit
 ```
 
 ### Prepare: one unreleased version per platform
@@ -284,8 +296,53 @@ than guessing. After the write Hands reads the version back
 (`GET /v1/appStoreVersions/{id}?include=build`); a version string or build that
 does not match returns 502 `READBACK_MISMATCH`. A failure after an earlier
 write returns 502 `PREPARE_PARTIALLY_APPLIED` with `completed_steps`. Renaming
-keeps the version's existing localizations, screenshots and release type;
-`release_type` in the request applies only when a version is created.
+keeps the version's existing localizations and screenshots.
+
+`release_type` (`MANUAL` or `AFTER_APPROVAL`) applies to every action. On a
+reused or renamed version Hands sends `releaseType` only when it differs from
+Apple's current value (in the same PATCH as the rename and build), and the
+read-back must show it (502 `READBACK_MISMATCH` with `release_type` otherwise).
+When `release_type` is omitted, a created version gets `MANUAL` and an existing
+version keeps whatever Apple has; prepare never resets it. `SCHEDULED` is
+refused with 400 `RELEASE_TYPE_SCHEDULED_UNSUPPORTED`, because Apple needs an
+`earliestReleaseDate` that Hands does not set. The response (dry run included)
+carries `changes: { version_string, build, release_type }`, each `{from, to}`
+or `null` when unchanged; `release_type` is Apple's value (read back after a
+commit) and `requested_release_type` is what was asked (`null` if omitted).
+
+### Release an approved version
+
+With release type `MANUAL`, an approved version waits at
+`PENDING_DEVELOPER_RELEASE`. Releasing it is **irreversible**:
+
+`POST /api/apps/{appId}/app-store/versions/{versionId}/release` (app publisher)
+with `{ "mode": "dry_run" | "commit", "version_string": "1.17.0", "asc_build_id": "<optional>" }`.
+
+- `mode` is required; `dry_run` only reads.
+- `version_string` (and `asc_build_id` when given) must equal what Apple holds
+  for that version, or 409 `RELEASE_CONFIRMATION_MISMATCH`; nothing is sent.
+- Only `PENDING_DEVELOPER_RELEASE` is released. A version already live
+  (`READY_FOR_SALE` / `READY_FOR_DISTRIBUTION`, or retired) is 409
+  `ALREADY_RELEASED`, which is not a success. Any other state is 409
+  `NOT_RELEASABLE` with the state.
+- On commit Hands records an operation receipt (kind `app-store-release`) and
+  an `app_store.release_intent` audit row first; if either cannot be written,
+  nothing is sent to Apple (500 `RELEASE_INTENT_NOT_RECORDED`). Then it sends
+  `POST /v1/appStoreVersionReleaseRequests` and reads the version back for up
+  to about 30 seconds. The result is recorded as `app_store.release` (or
+  `app_store.release_failed`).
+- `200` with `outcome: "released"` only when Apple shows `READY_FOR_SALE` /
+  `READY_FOR_DISTRIBUTION`. Otherwise `202` with
+  `outcome: "release_requested"` and `observed_state`: Apple releases
+  asynchronously, so check `hands app-store status` later.
+- Apple's release-request resource cannot be listed, so duplicates are
+  guarded by the version state plus the Hands receipt: within 6 hours of an
+  accepted request a repeat call returns `202 release_requested` with
+  `prior_operation_id` and sends nothing; while another release call is still
+  running it is 409 `RELEASE_IN_PROGRESS`.
+
+State changes after the release reach webhooks through the existing
+`app_store:version_state_changed` event.
 
 ### Listing text
 
@@ -357,6 +414,7 @@ the app audit log (`app_store.prepare_version`, `app_store.localizations`,
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [Provide test information](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
+- [App Store Connect API: App Store version release requests](https://developer.apple.com/documentation/appstoreconnectapi/app-store-version-release-requests)
 - [App Store Connect API: App Store version localizations](https://developer.apple.com/documentation/appstoreconnectapi/app-store-version-localizations)
 - [App Store Connect API: App screenshots](https://developer.apple.com/documentation/appstoreconnectapi/app-screenshots)
 - [Uploading assets to App Store Connect](https://developer.apple.com/documentation/appstoreconnectapi/uploading-assets-to-app-store-connect)
