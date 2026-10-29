@@ -1480,14 +1480,15 @@ export async function getReviewSubmissionVersionId(
   submissionId: string,
 ): Promise<string | null> {
   const res = await ascRequest<{
-    data?: Array<{ relationships?: { appStoreVersionForReview?: { data?: { id?: unknown } } } }>;
+    data?: Array<{ relationships?: { appStoreVersion?: { data?: { id?: unknown } } } }>;
     // Same trap as the version lookups: JSON:API omits the relationship unless it is
-    // requested. Without this the loop always falls through to null, so the withdraw
-    // path -- which compares this against the target version id -- never matched and
-    // reported "canceled: true" without cancelling anything.
-  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50&include=appStoreVersionForReview`);
+    // requested. On reviewSubmissionItems the relationship is `appStoreVersion`;
+    // `appStoreVersionForReview` belongs to reviewSubmissions and Apple answers it here
+    // with 400 "'appStoreVersionForReview' is not a valid relationship name"
+    // (observed 2026-10-29 on raft-ios 1.17.0).
+  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50&include=appStoreVersion`);
   for (const item of res.data ?? []) {
-    const id = item.relationships?.appStoreVersionForReview?.data?.id;
+    const id = item.relationships?.appStoreVersion?.data?.id;
     if (typeof id === "string" && id) return id;
   }
   return null;
