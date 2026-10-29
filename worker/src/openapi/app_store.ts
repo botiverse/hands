@@ -112,7 +112,8 @@ export function registerAppStoreRoutes(): RouteConfigList {
     method: "post",
     path: "/api/apps/{appId}/app-store/versions/{versionId}/notes",
     tags: ["App Store"],
-    summary: "Upsert localized What's New text",
+    summary: "Update localized What's New text of existing localizations",
+    description: "PATCHes whatsNew on each locale's existing appStoreVersionLocalization. A locale with no localization is never created here (one holding only whatsNew lacks supportUrl and Apple refuses review): 409 LOCALIZATION_MISSING, nothing written; create it with the localizations endpoint.",
     security: auth,
     request: { params: AppVersionParams, body: { content: json(NotesInput), required: true } },
     responses: {
@@ -120,6 +121,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
       400: error("notes is not a locale-to-text object."),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
+      409: error("LOCALIZATION_MISSING: a requested locale has no localization; nothing written."),
       502: error("Apple rejected the request."),
     },
   });
@@ -129,7 +131,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
     tags: ["App Store"],
     summary: "Write App Store listing text (dry run or commit)",
     description:
-      "Writes only the supplied appStoreVersionLocalizations fields (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew) of the supplied locales: PATCH changed fields of an existing localization, POST a missing one. Apple's limits are checked before any call (description 4000, keywords 100, promotionalText 170, whatsNew 4000 characters). mode is required: dry_run reads and returns the per-locale plan (create | update | unchanged with changed fields and before/after) and writes nothing. A blocker (version not editable for fields other than promotionalText, or a locale App Store Connect does not offer) returns 409 LOCALIZATION_PLAN_BLOCKED with the plan. Commit ends with a read-back that must equal every requested field (502 READBACK_MISMATCH otherwise).",
+      "Writes only the supplied appStoreVersionLocalizations fields (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew) of the supplied locales: PATCH changed fields of an existing localization, POST a missing one. Apple's limits are checked before any call (description 4000, keywords 100, promotionalText 170, whatsNew 4000 characters). mode is required: dry_run reads and returns the per-locale plan (create | update | unchanged with changed fields and before/after) and writes nothing. A blocker (version not editable for fields other than promotionalText, a locale App Store Connect does not offer, or missing_required_fields: a locale to create without description, keywords and supportUrl, listed in missing_fields) returns 409 LOCALIZATION_PLAN_BLOCKED with the plan. Commit ends with a read-back that must equal every requested field (502 READBACK_MISMATCH otherwise).",
     security: auth,
     request: { params: AppVersionParams, body: { content: json(LocalizationsInput), required: true } },
     responses: {

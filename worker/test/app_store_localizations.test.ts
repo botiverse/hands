@@ -58,13 +58,13 @@ describe("App Store listing text", () => {
     const { asc } = fakeApple();
     const { res, json } = await push({ mode: "dry_run", localizations: {
       "en-US": { description: "New", keywords: "chat" },
-      ja: { description: "説明" },
+      ja: { description: "説明", keywords: "チャット", supportUrl: "https://raft.build/support" },
     } });
     expect(res.status).toBe(200);
     expect(json.outcome).toBe("planned");
     expect(json.localizations).toEqual([
       expect.objectContaining({ locale: "en-US", action: "update", changed_fields: ["description"], before: { description: "Old", keywords: "chat" } }),
-      expect.objectContaining({ locale: "ja", action: "create", changed_fields: ["description"] }),
+      expect.objectContaining({ locale: "ja", action: "create", changed_fields: ["description", "keywords", "supportUrl"], blocker: null }),
     ]);
     expect(asc.writes()).toEqual([]);
   });
@@ -73,7 +73,7 @@ describe("App Store listing text", () => {
     const { asc } = fakeApple();
     const { res, json, audits } = await push({ mode: "commit", localizations: {
       "en-US": { description: "New", keywords: "chat" },
-      ja: { description: "説明", supportUrl: "https://raft.build/support" },
+      ja: { description: "説明", keywords: "チャット", supportUrl: "https://raft.build/support" },
     } });
     expect(res.status).toBe(200);
     expect(json).toMatchObject({ ok: true, outcome: "committed" });
@@ -84,6 +84,7 @@ describe("App Store listing text", () => {
     ]);
     expect(writes[0]!.body.data.attributes).toEqual({ description: "New" });
     expect(writes[1]!.body.data.relationships.appStoreVersion.data.id).toBe("ver-117");
+    expect(writes[1]!.body.data.attributes).toMatchObject({ locale: "ja", keywords: "チャット", supportUrl: "https://raft.build/support" });
     // The audit row carries fingerprints, not the text.
     expect(JSON.stringify(audits[0]!.payload)).not.toContain("説明");
   });
@@ -98,7 +99,7 @@ describe("App Store listing text", () => {
 
   it("reports a failed write as failure and later locales as not attempted", async () => {
     fakeApple({ failPatch: true });
-    const { res, json } = await push({ mode: "commit", localizations: { "en-US": { description: "New" }, ja: { description: "x" } } });
+    const { res, json } = await push({ mode: "commit", localizations: { "en-US": { description: "New" }, ja: { description: "x", keywords: "k", supportUrl: "https://raft.build/s" } } });
     expect(res.status).toBe(502);
     expect(json.code).toBe("LOCALIZATIONS_FAILED");
     expect(json.results.map((r: any) => r.status)).toEqual(["failed", "not_attempted"]);
@@ -135,9 +136,38 @@ describe("App Store listing text", () => {
 
   it("refuses to create a locale App Store Connect does not offer", async () => {
     const { asc } = fakeApple();
-    const { res, json } = await push({ mode: "commit", localizations: { xx: { description: "x" } } });
+    const { res, json } = await push({ mode: "commit", localizations: { xx: { description: "x", keywords: "k", supportUrl: "https://raft.build/s" } } });
     expect(res.status).toBe(409);
     expect(json.localizations[0].blocker).toBe("locale_unknown");
     expect(asc.writes()).toEqual([]);
+  });
+
+  it("blocks creating a locale without description, keywords and supportUrl, in dry_run and commit", async () => {
+    // Apple accepts the POST, then refuses review: "You must provide a value for the
+    // attribute 'supportUrl'" (zh-Hans/ja, 2026-10-29).
+    const { asc } = fakeApple();
+    const localizations = {
+      "en-US": { description: "New" },
+      ja: { description: "説明", whatsNew: "新機能" },
+    };
+    for (const mode of ["dry_run", "commit"]) {
+      const { res, json } = await push({ mode, localizations });
+      expect(res.status).toBe(409);
+      expect(json.code).toBe("LOCALIZATION_PLAN_BLOCKED");
+      expect(json.error).toContain("ja (missing_required_fields: keywords, supportUrl)");
+      expect(json.localizations[1]).toMatchObject({ locale: "ja", action: "create", blocker: "missing_required_fields", missing_fields: ["keywords", "supportUrl"] });
+      expect(json.localizations[0].blocker).toBeNull();
+      expect(json.localizations[0].missing_fields).toBeUndefined();
+    }
+    // Not even the unblocked en-US update is written.
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("lets an existing locale be updated with only whatsNew", async () => {
+    const { asc } = fakeApple();
+    const { res, json } = await push({ mode: "commit", localizations: { "en-US": { whatsNew: "Bug fixes" } } });
+    expect(res.status).toBe(200);
+    expect(json.localizations[0]).toMatchObject({ action: "update", blocker: null });
+    expect(asc.writes().map((w) => w.body.data.attributes)).toEqual([{ whatsNew: "Bug fixes" }]);
   });
 });

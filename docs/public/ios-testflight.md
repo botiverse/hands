@@ -352,7 +352,12 @@ Fields are Apple's `appStoreVersionLocalizations` attributes: `description`
 (at most 4000 characters), `keywords` (100), `promotionalText` (170),
 `whatsNew` (4000), `marketingUrl`, `supportUrl` (http or https). Only supplied
 fields are written; an existing locale is patched with the changed fields
-only, a missing locale is created. While Apple holds the version only
+only, a missing locale is created. Creating a locale requires `description`,
+`keywords` and `supportUrl` (Apple accepts the create without them but then
+refuses review); without them the plan entry is blocked with
+`missing_required_fields` and lists `missing_fields`. The What's New endpoint
+(`.../notes`) only updates existing locales and returns 409
+`LOCALIZATION_MISSING` for one that does not exist. While Apple holds the version only
 `promotionalText` may change; other fields return 409
 `LOCALIZATION_PLAN_BLOCKED`. Commit reads every requested field back and fails
 with `READBACK_MISMATCH` if Apple holds anything else. App name and subtitle

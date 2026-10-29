@@ -434,7 +434,16 @@ interface LocalePlan {
   before: Partial<Record<VersionLocalizationField, string | null>>;
   after: Partial<Record<VersionLocalizationField, string>>;
   blocker: string | null;
+  /** Set on a create that lacks fields Apple requires before it will review the version. */
+  missing_fields?: VersionLocalizationField[];
 }
+
+/**
+ * Fields a new localization must carry. Apple accepts a POST without them, then
+ * refuses the review submission (ENTITY_ERROR.ATTRIBUTE.REQUIRED on supportUrl for a
+ * zh-Hans/ja created with only whatsNew, 2026-10-29). Updates may send a subset.
+ */
+export const LOCALIZATION_CREATE_REQUIRED: readonly VersionLocalizationField[] = ["description", "keywords", "supportUrl"];
 
 function planLocalizations(input: LocalizationInput, existing: AscVersionLocalization[], editable: boolean): LocalePlan[] {
   const byLocale = new Map(existing.map((l) => [l.locale, l]));
@@ -445,8 +454,10 @@ function planLocalizations(input: LocalizationInput, existing: AscVersionLocaliz
     const action = !current ? "create" : changed.length ? "update" : "unchanged";
     // Promotional text is the one field Apple lets you change on a version it holds.
     const needsEditable = action !== "unchanged" && changed.some((name) => name !== "promotionalText");
+    const missing = current ? [] : LOCALIZATION_CREATE_REQUIRED.filter((name) => !fields[name]?.trim());
     const blocker = !current && !APP_STORE_LOCALES.has(locale) ? "locale_unknown"
-      : needsEditable && !editable ? "version_not_editable" : null;
+      : needsEditable && !editable ? "version_not_editable"
+      : missing.length > 0 ? "missing_required_fields" : null;
     return {
       locale,
       localization_id: current?.id ?? null,
@@ -455,6 +466,7 @@ function planLocalizations(input: LocalizationInput, existing: AscVersionLocaliz
       before: Object.fromEntries(names.map((name) => [name, current?.fields[name] ?? null])),
       after: fields,
       blocker,
+      ...(missing.length > 0 ? { missing_fields: missing } : {}),
     };
   });
 }
@@ -463,7 +475,9 @@ function planLocalizations(input: LocalizationInput, existing: AscVersionLocaliz
  * POST /api/apps/:appId/app-store/versions/:versionId/localizations.
  *
  * Writes only the supplied fields of the supplied locales: PATCH an existing
- * localization (changed fields only), POST a missing one. Commit stops at the first
+ * localization (changed fields only), POST a missing one. A missing one must carry
+ * description, keywords and supportUrl (Apple refuses review without them), else the
+ * plan is blocked with missing_required_fields. Commit stops at the first
  * failed locale and ends with a read-back that must equal every requested field.
  */
 export async function handlePushAppStoreLocalizations(c: AdminContext) {
@@ -494,7 +508,7 @@ export async function handlePushAppStoreLocalizations(c: AdminContext) {
     if (blocked.length > 0) {
       return c.json({
         ...base,
-        error: `cannot write ${blocked.map((p) => `${p.locale} (${p.blocker})`).join(", ")}`,
+        error: `cannot write ${blocked.map((p) => `${p.locale} (${p.blocker}${p.blocker === "missing_required_fields" ? `: ${p.missing_fields!.join(", ")}` : ""})`).join(", ")}`,
         code: "LOCALIZATION_PLAN_BLOCKED",
         localizations: plans,
         writes: 0,

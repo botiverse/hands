@@ -30,6 +30,7 @@ import {
   getReviewSubmissionVersionId,
   listAppStoreVersions,
   listReviewSubmissions,
+  listVersionLocalizations,
   ascRequest,
   renameAppStoreVersion,
   resolveAscAppId,
@@ -525,7 +526,7 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
   }
 }
 
-/** Upsert per-locale What's New, one locale per entry. */
+/** Update per-locale What's New, one locale per entry. Never creates a localization. */
 export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const versionId = c.req.param("versionId") ?? "";
@@ -541,6 +542,13 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
   try {
     const creds = await loadCredentials(c, appId);
     await assertOwnedVersion(creds, await ascAppIdFor(c, appId), versionId);
+    // A localization created with only whatsNew lacks supportUrl etc. and Apple refuses review.
+    const present = new Set((await listVersionLocalizations(creds, versionId)).map((l) => l.locale));
+    const missing = entries.map(([locale]) => locale).filter((locale) => !present.has(locale));
+    if (missing.length > 0) {
+      return c.json({ error: `no localization for ${missing.join(", ")} on this version; nothing written`, code: "LOCALIZATION_MISSING", locales: missing,
+        next_action: "create it with hands app-store localizations push (description, keywords, supportUrl, whatsNew), then retry" }, 409);
+    }
     const written: string[] = [];
     for (const [locale, text] of entries) {
       if (typeof text !== "string") {

@@ -1369,11 +1369,12 @@ export async function attachBuildToVersion(
 }
 
 /**
- * Upsert the per-locale "What's New" text.
+ * Update the per-locale "What's New" text of an existing localization.
  *
- * Locales are independent resources; one call per locale, and an existing
- * localization is patched rather than created so re-running a submission after a
- * rejection updates the copy instead of failing on a duplicate.
+ * Locales are independent resources; one call per locale. A missing localization is
+ * NOT created: a localization holding only whatsNew lacks description/keywords/
+ * supportUrl, and Apple then refuses the review submission
+ * (ENTITY_ERROR.ATTRIBUTE.REQUIRED). Create it with the listing-text push instead.
  */
 export async function setVersionLocalization(
   creds: AscApiCredentials,
@@ -1387,21 +1388,14 @@ export async function setVersionLocalization(
   const match = (existing.data ?? []).find(
     (l) => typeof l.attributes?.locale === "string" && l.attributes.locale === locale,
   );
-  if (match?.id) {
-    await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(match.id)}`, {
-      data: {
-        type: "appStoreVersionLocalizations",
-        id: match.id,
-        attributes: { whatsNew },
-      },
-    });
-    return;
+  if (!match?.id) {
+    throw new Error(`no ${locale} localization on version ${versionId}; create it with hands app-store localizations push`);
   }
-  await ascRequest(creds, "POST", "/v1/appStoreVersionLocalizations", {
+  await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(match.id)}`, {
     data: {
       type: "appStoreVersionLocalizations",
-      attributes: { locale, whatsNew },
-      relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } },
+      id: match.id,
+      attributes: { whatsNew },
     },
   });
 }

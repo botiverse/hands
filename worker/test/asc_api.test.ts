@@ -414,6 +414,14 @@ describe("App Store submission", () => {
     expect(calls[1]!.url).toContain("/appStoreVersionLocalizations/loc-zh");
     expect(calls[1]!.body.data.attributes).toEqual({ whatsNew: "修复若干问题" });
   });
+
+  it("never creates a missing localization with only whatsNew", async () => {
+    // A whatsNew-only localization lacks supportUrl; Apple then refuses review.
+    const { setVersionLocalization } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({ data: [{ id: "loc-en", attributes: { locale: "en-US" } }] }));
+    await expect(setVersionLocalization(creds, "ver-1", "ja", "新機能")).rejects.toThrow(/localizations push/);
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
 });
 
 describe("ASC associated errors", () => {

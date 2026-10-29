@@ -144,4 +144,14 @@ describe("hands app-store", () => {
     await run(["app-store", "screenshots", "push", APP_ID, "--version-id", "ver-117", "--dir", root, "--commit"]);
     expect(posted!.request.mode).toBe("commit");
   });
+
+  it("prints the fields a blocked locale create is missing", async () => {
+    const { formatLocalizationResult } = await import("./app_store.js");
+    const text = formatLocalizationResult({ localizations: [
+      { locale: "ja", action: "create", blocker: "missing_required_fields", missing_fields: ["keywords", "supportUrl"], changed_fields: [] },
+      { locale: "fr-FR", action: "create", blocker: "version_not_editable", missing_fields: ["supportUrl"], changed_fields: [] },
+    ] });
+    expect(text).toContain("BLOCKED (missing_required_fields: keywords, supportUrl) ja");
+    expect(text).toContain("BLOCKED (version_not_editable) fr-FR");
+  });
 });
