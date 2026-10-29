@@ -1359,6 +1359,60 @@ describe("Play promotion route", () => {
     expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM play_distribution_state WHERE track='internal' AND version_code=42").get()).toEqual({ count: 0 });
   });
 
+  it("persists Google's per-field identifiers in the receipt and drops anything off-shape", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (_input, stream, symbolsStream) => {
+        await new Response(stream).arrayBuffer();
+        if (symbolsStream) await new Response(symbolsStream).arrayBuffer();
+        return { ok: false, error: {
+          status: 502,
+          code: "play_upload_interrupted",
+          message: "Google Play upload was interrupted and could not be resumed (stage=upload_mapping; http_status=400)",
+          cause: {
+            stage: "upload_mapping",
+            provider_cause: "VERSION_CODE_CONFLICT",
+            provider_identifiers: {
+              status: "INVALID_ARGUMENT",
+              http_code: 400,
+              errors_reasons: ["apkNotFound", "prose with spaces"],
+              details: [
+                { type: "type.googleapis.com/google.rpc.ErrorInfo", reason: "APK_NOT_FOUND", domain: "androidpublisher.googleapis.com" },
+                { type: "https://evil.example/x", reason: "more prose" },
+              ],
+              unexpected: "dropped",
+            },
+            unexpected_top: "dropped",
+          },
+        } };
+      },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { receipt_id: string } };
+    const failed = harness.sqlite.prepare("SELECT payload_json FROM release_receipts WHERE id=?")
+      .get(body.error.receipt_id) as { payload_json: string };
+    const failedResult = JSON.parse(failed.payload_json).result as { failure_reason: string };
+    const details = JSON.parse(failedResult.failure_reason.replace(/^play_api_error: /, ""));
+    expect(details.cause).toEqual({
+      stage: "upload_mapping",
+      provider_cause: "VERSION_CODE_CONFLICT",
+      provider_identifiers: {
+        status: "INVALID_ARGUMENT",
+        http_code: 400,
+        errors_reasons: ["apkNotFound"],
+        details: [{ type: "type.googleapis.com/google.rpc.ErrorInfo", reason: "APK_NOT_FOUND", domain: "androidpublisher.googleapis.com" }],
+      },
+    });
+    expect(failedResult.failure_reason).not.toContain("prose");
+    expect(failedResult.failure_reason).not.toContain("evil.example");
+    expect(failedResult.failure_reason).not.toContain("dropped");
+  });
+
   it("surfaces the adapter symbols rejection fail-closed with a receipt", async () => {
     const harness = await readyRelease("human", "publisher", 42, true);
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({

@@ -576,7 +576,14 @@ async function releaseLock(db: D1Database, operationId: string) {
  * receipt is durable and outward-facing, so an unexpected key must not survive just
  * because some upstream chose to include it.
  */
-function receiptCause(value: unknown): { stage: string; provider_cause: string } | null {
+type ReceiptProviderIdentifiers = {
+  status?: string;
+  http_code?: number;
+  errors_reasons?: string[];
+  details?: Array<{ type?: string; reason?: string; domain?: string }>;
+};
+
+function receiptCause(value: unknown): { stage: string; provider_cause: string; provider_identifiers?: ReceiptProviderIdentifiers } | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
   const pick = (field: string): string | null => {
@@ -585,11 +592,55 @@ function receiptCause(value: unknown): { stage: string; provider_cause: string }
   };
   const stage = pick("stage");
   const provider_cause = pick("provider_cause");
-  if (!stage && !provider_cause) return null;
+  const provider_identifiers = receiptProviderIdentifiers(source.provider_identifiers);
+  if (!stage && !provider_cause && !provider_identifiers) return null;
   return {
     ...(stage ? { stage } : {}),
     ...(provider_cause ? { provider_cause } : {}),
-  } as { stage: string; provider_cause: string };
+    ...(provider_identifiers ? { provider_identifiers } : {}),
+  } as { stage: string; provider_cause: string; provider_identifiers?: ReceiptProviderIdentifiers };
+}
+
+/** A google.rpc @type URL, e.g. type.googleapis.com/google.rpc.ErrorInfo. */
+const PROVIDER_TYPE_RE = /^type\.googleapis\.com\/[A-Za-z][A-Za-z0-9._]{0,79}$/;
+/** Same rule as the adapter: camelCase or UPPER_SNAKE only (no dots, hyphens, slashes). */
+const PROVIDER_IDENTIFIER_RE = /^(?:[a-z][A-Za-z0-9]{0,63}|[A-Z][A-Z0-9_]{0,63})$/;
+const PROVIDER_DOMAIN_RE = /^[a-z][a-z0-9-]{0,62}\.googleapis\.com$/;
+
+/**
+ * Re-validate the adapter's per-field Google identifiers before they are persisted:
+ * the same "identifier, never prose" rule as stage/provider_cause, applied per field
+ * so the receipt says where Google named the condition. Anything off-shape is dropped.
+ */
+function receiptProviderIdentifiers(value: unknown): ReceiptProviderIdentifiers | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const id = (raw: unknown, re = PROVIDER_IDENTIFIER_RE): string | undefined =>
+    typeof raw === "string" && re.test(raw) ? raw : undefined;
+  const out: ReceiptProviderIdentifiers = {};
+  const status = id(v.status);
+  if (status) out.status = status;
+  if (typeof v.http_code === "number" && Number.isInteger(v.http_code) && v.http_code >= 100 && v.http_code <= 599) out.http_code = v.http_code;
+  if (Array.isArray(v.errors_reasons)) {
+    const reasons = v.errors_reasons.flatMap((r) => { const ok = id(r); return ok ? [ok] : []; }).slice(0, 8);
+    if (reasons.length > 0) out.errors_reasons = reasons;
+  }
+  if (Array.isArray(v.details)) {
+    const details = v.details.slice(0, 8).flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const d = item as Record<string, unknown>;
+      const entry: { type?: string; reason?: string; domain?: string } = {};
+      const type = id(d.type, PROVIDER_TYPE_RE);
+      const reason = id(d.reason);
+      const domain = id(d.domain, PROVIDER_DOMAIN_RE);
+      if (type) entry.type = type;
+      if (reason) entry.reason = reason;
+      if (domain) entry.domain = domain;
+      return Object.keys(entry).length > 0 ? [entry] : [];
+    });
+    if (details.length > 0) out.details = details;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** Google's identifiers: camelCase or UPPER_SNAKE, bounded length. */

@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { PlayAdapterError } from "./errors";
+import { PlayAdapterError, type PlayProviderIdentifiers } from "./errors";
 
 // Only documented error identifiers cross the provider boundary. Never expose
 // Google's arbitrary message, metadata, URLs or the request's credential.
@@ -64,6 +64,7 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   const envelopeMessage = error && typeof error === "object" ? (error as Record<string, unknown>).message : null;
   // Structured identifiers first (stable across wording and locale), message text second.
   const structured = classifyStructuredIdentifiers(body);
+  const identifiers = playProviderIdentifiers(body);
   const providerCause = structured
     ?? (typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined);
   return new PlayAdapterError(
@@ -76,8 +77,67 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
       ...(typeof envelopeMessage === "string"
         ? { message_sha256: bytesToHex(sha256(new TextEncoder().encode(envelopeMessage))), message_length: envelopeMessage.length }
         : {}),
+      ...(identifiers ? { provider_identifiers: identifiers } : {}),
     },
   );
+}
+
+/**
+ * Google's reason/status identifiers are camelCase (badRequest) or UPPER_SNAKE
+ * (INVALID_ARGUMENT, APK_NOT_FOUND). Nothing else is accepted: no dots, hyphens or
+ * slashes, so a token-shaped value (ya29.…, 1//…, hidden-secret) can never pass as an
+ * identifier even if a provider echoed one into a reason field.
+ */
+const PROVIDER_IDENTIFIER_RE = /^(?:[a-z][A-Za-z0-9]{0,63}|[A-Z][A-Z0-9_]{0,63})$/;
+/** error.details[].domain: a googleapis.com service name only. */
+const PROVIDER_DOMAIN_RE = /^[a-z][a-z0-9-]{0,62}\.googleapis\.com$/;
+/** A google.rpc @type URL, e.g. type.googleapis.com/google.rpc.ErrorInfo. */
+const PROVIDER_TYPE_RE = /^type\.googleapis\.com\/[A-Za-z][A-Za-z0-9._]{0,79}$/;
+
+function identifier(value: unknown, re = PROVIDER_IDENTIFIER_RE): string | undefined {
+  return typeof value === "string" && re.test(value) ? value : undefined;
+}
+
+/**
+ * Google's structured identifiers from a rejection body, per source field.
+ *
+ * Unlike playRejectionReason this is not allowlisted to known reasons: an unknown
+ * reason is exactly what an operator needs to see when the classified cause is too
+ * coarse (e.g. a message that merely mentions "version code"). Safety comes from
+ * the shape check instead -- identifiers only, never Google's prose, which is still
+ * reported by sha256 + length alone.
+ */
+export function playProviderIdentifiers(body: unknown): PlayProviderIdentifiers | undefined {
+  const error = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
+  if (!error || typeof error !== "object") return undefined;
+  const e = error as Record<string, unknown>;
+  const out: PlayProviderIdentifiers = {};
+  const status = identifier(e.status);
+  if (status) out.status = status;
+  if (typeof e.code === "number" && Number.isInteger(e.code) && e.code >= 100 && e.code <= 599) out.http_code = e.code;
+  if (Array.isArray(e.errors)) {
+    const reasons = [...new Set(e.errors.flatMap((item) => {
+      const reason = item && typeof item === "object" ? identifier((item as Record<string, unknown>).reason) : undefined;
+      return reason ? [reason] : [];
+    }))].slice(0, 8);
+    if (reasons.length > 0) out.errors_reasons = reasons;
+  }
+  if (Array.isArray(e.details)) {
+    const details = e.details.slice(0, 8).flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const d = item as Record<string, unknown>;
+      const entry: { type?: string; reason?: string; domain?: string } = {};
+      const type = identifier(d["@type"], PROVIDER_TYPE_RE);
+      const reason = identifier(d.reason);
+      const domain = identifier(d.domain, PROVIDER_DOMAIN_RE);
+      if (type) entry.type = type;
+      if (reason) entry.reason = reason;
+      if (domain) entry.domain = domain;
+      return Object.keys(entry).length > 0 ? [entry] : [];
+    });
+    if (details.length > 0) out.details = details;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

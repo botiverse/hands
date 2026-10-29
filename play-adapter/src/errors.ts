@@ -19,6 +19,12 @@ export type PlayErrorCause = {
    */
   message_sha256?: string;
   message_length?: number;
+  /**
+   * Google's structured identifiers from the rejection body, kept per source field
+   * so a reader can tell WHERE Google named the condition. Every value is
+   * shape-checked as an identifier (never prose) before it is kept.
+   */
+  provider_identifiers?: PlayProviderIdentifiers;
   /** For play_edit_state_unknown: the patterns Hands tried, as its own constant descriptions. */
   tried?: string[];
   /**
@@ -37,6 +43,17 @@ export type PlayErrorCause = {
     /** Present only when count is -1: why the list call failed. */
     error?: string;
   };
+};
+
+export type PlayProviderIdentifiers = {
+  /** error.status, e.g. INVALID_ARGUMENT. */
+  status?: string;
+  /** error.code, the HTTP-ish integer Google echoes in the body. */
+  http_code?: number;
+  /** error.errors[].reason, e.g. badRequest. */
+  errors_reasons?: string[];
+  /** error.details[]: @type, reason and domain of each entry (google.rpc.ErrorInfo and friends). */
+  details?: Array<{ type?: string; reason?: string; domain?: string }>;
 };
 
 export class PlayAdapterError extends Error {

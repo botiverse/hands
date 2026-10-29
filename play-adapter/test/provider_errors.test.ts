@@ -53,9 +53,15 @@ it("logs Google's validation reasons, which is the case the whitelist drops", as
   expect(logged).toContain("badRequest");
   expect(logged).toContain("releaseValidationError");
   expect(logged).toContain("INVALID_ARGUMENT");
-  // The caller's contract is unchanged: still the sanitised code and stage only.
-  expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
-  expect(JSON.stringify(result)).not.toContain("releaseValidationError");
+  // The caller now also gets Google's identifiers (per source field, identifier-shaped
+  // only), because a coarse provider_cause alone left a real failure undiagnosable
+  // without log access (2026-10-29, upload_mapping 400 "version code"). Prose still
+  // never reaches the caller.
+  expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected", cause: { provider_identifiers: {
+    status: "INVALID_ARGUMENT", errors_reasons: ["badRequest"], details: [{ reason: "releaseValidationError" }],
+  } } } });
+  expect(JSON.stringify(result)).not.toContain("Track has more than one completed release");
+  expect(JSON.stringify(result)).not.toContain("one completed per track");
   // Provider prose is never logged verbatim; only its length.
   expect(logged).not.toContain("Track has more than one completed release");
   expect(logged).not.toContain("one completed per track");
@@ -207,4 +213,44 @@ it.each(commitEditCases)("classifies commit_edit rejection as %s -> %s", async (
   const { playRejection } = await import("../src/provider_errors");
   const error = playRejection(400, { error: { code: 400, status: "INVALID_ARGUMENT", message } }, "commit_edit");
   expect(error.cause_detail).toMatchObject({ stage: "commit_edit", provider_cause: expected });
+});
+
+// The classified cause can be coarse (any message naming "version code" reads as
+// VERSION_CODE_CONFLICT), so the structured identifiers travel too, per source field
+// -- but only identifier-shaped values, never Google's prose.
+it("keeps Google's structured identifiers per field and drops prose", async () => {
+  const { playRejection } = await import("../src/provider_errors");
+  const error = playRejection(400, {
+    error: {
+      code: 400,
+      status: "INVALID_ARGUMENT",
+      message: "APK specified version code 11700009 hidden-secret prose",
+      errors: [
+        { reason: "apkNotFound", message: "hidden-secret prose" },
+        { reason: "has spaces so it is prose" },
+        { reason: "apkNotFound" },
+      ],
+      details: [
+        { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "APK_NOT_FOUND", domain: "androidpublisher.googleapis.com", metadata: { token: "hidden-refresh" } },
+        { "@type": "https://evil.example/type", reason: "also prose here" },
+      ],
+    },
+  }, "upload_mapping");
+  expect(error.cause_detail?.provider_identifiers).toEqual({
+    status: "INVALID_ARGUMENT",
+    http_code: 400,
+    errors_reasons: ["apkNotFound"],
+    details: [{ type: "type.googleapis.com/google.rpc.ErrorInfo", reason: "APK_NOT_FOUND", domain: "androidpublisher.googleapis.com" }],
+  });
+  const serialised = JSON.stringify(error.cause_detail);
+  expect(serialised).not.toContain("hidden-secret");
+  expect(serialised).not.toContain("hidden-refresh");
+  expect(serialised).not.toContain("prose");
+  expect(serialised).not.toContain("evil.example");
+});
+
+it("omits provider_identifiers when the body carries none", async () => {
+  const { playRejection } = await import("../src/provider_errors");
+  const error = playRejection(413, "<html>too large</html>", "upload_mapping");
+  expect(error.cause_detail?.provider_identifiers).toBeUndefined();
 });
