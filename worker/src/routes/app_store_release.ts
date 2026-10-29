@@ -107,6 +107,8 @@ function stateOf(version: AscAppStoreVersion): string | null {
 
 /** Review states at which Apple will not accept a new submission for the platform. */
 const IN_REVIEW_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
+/** A review submission that was created but never submitted. */
+const DRAFT_STATE = "READY_FOR_REVIEW";
 
 export class AppStoreReleaseError extends Error {
   constructor(
@@ -574,13 +576,19 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
     // Submit on the version's own platform; hardcoding IOS would fail for a MAC_OS
     // version and silently claim the wrong one.
     const target = await findAppStoreVersionById(creds, ascAppId, versionId);
-    const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, target?.platform ?? "IOS");
+    const platform = target?.platform ?? "IOS";
+    // Reuse an open draft for this platform (left behind by an earlier attempt that
+    // failed after creating it) rather than creating another.
+    const draft = submissions.find((s) => s.state === DRAFT_STATE && (s.platform ?? platform) === platform);
+    const { submissionId, reused } = await submitVersionForReview(creds, ascAppId, versionId, platform, {
+      ...(draft ? { reuseSubmissionId: draft.id } : {}),
+    });
     await insertAuditLog(c.env.DB, c, {
       app_id: appId,
       action: "app_store.submit",
-      payload: { version_id: versionId, submission_id: submissionId },
+      payload: { version_id: versionId, submission_id: submissionId, reused_draft: reused },
     });
-    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
+    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true, reused_draft: reused });
   } catch (error) {
     return fail(c, error);
   }
