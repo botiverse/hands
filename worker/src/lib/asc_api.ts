@@ -1116,7 +1116,10 @@ export async function findAppStoreVersion(
       attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown };
       relationships?: { build?: { data?: { id?: unknown } } };
     }>;
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50${query}`);
+    // `include=build` is required: without it Apple omits relationships.build
+    // entirely, which is indistinguishable from "no build attached". Callers that
+    // report build_attached would then report false for every version.
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50&include=build${query}`);
   const match = (res.data ?? []).find(
     (v) => typeof v.attributes?.versionString === "string" && v.attributes.versionString === versionString,
   );
@@ -1151,7 +1154,7 @@ export async function findAppStoreVersionById(
       attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown; releaseType?: unknown };
       relationships?: { build?: { data?: { id?: unknown } } };
     }>;
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200`);
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200&include=build`);
   const match = (res.data ?? []).find((v) => v.id === versionId);
   if (!match?.id) return null;
   return {
