@@ -1116,7 +1116,10 @@ export async function findAppStoreVersion(
       attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown };
       relationships?: { build?: { data?: { id?: unknown } } };
     }>;
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50${query}`);
+    // `include=build` is required: without it Apple omits relationships.build
+    // entirely, which is indistinguishable from "no build attached". Callers that
+    // report build_attached would then report false for every version.
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50&include=build${query}`);
   const match = (res.data ?? []).find(
     (v) => typeof v.attributes?.versionString === "string" && v.attributes.versionString === versionString,
   );
@@ -1151,7 +1154,7 @@ export async function findAppStoreVersionById(
       attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown; releaseType?: unknown };
       relationships?: { build?: { data?: { id?: unknown } } };
     }>;
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200`);
+  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200&include=build`);
   const match = (res.data ?? []).find((v) => v.id === versionId);
   if (!match?.id) return null;
   return {
@@ -1296,7 +1299,11 @@ export async function getReviewSubmissionVersionId(
 ): Promise<string | null> {
   const res = await ascRequest<{
     data?: Array<{ relationships?: { appStoreVersionForReview?: { data?: { id?: unknown } } } }>;
-  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50`);
+    // Same trap as the version lookups: JSON:API omits the relationship unless it is
+    // requested. Without this the loop always falls through to null, so the withdraw
+    // path -- which compares this against the target version id -- never matched and
+    // reported "canceled: true" without cancelling anything.
+  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50&include=appStoreVersionForReview`);
   for (const item of res.data ?? []) {
     const id = item.relationships?.appStoreVersionForReview?.data?.id;
     if (typeof id === "string" && id) return id;
