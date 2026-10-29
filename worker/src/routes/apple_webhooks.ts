@@ -235,6 +235,44 @@ async function resolveBuildIdentityForEvent(
   }
 }
 
+/**
+ * Marketing version string of the appStoreVersions resource behind a
+ * version-state event. Apple's envelope names only the resource id, so a consumer
+ * could not tell which version moved to IN_REVIEW without opening App Store
+ * Connect.
+ *
+ * Same contract as the build lookup: best effort, never throws, never blocks
+ * delivery. Returns null (keys omitted) for other events; for version events
+ * always returns both keys, with `version_lookup: "failed"` and a null string
+ * when credentials are missing or Apple errors, times out, or answers oddly.
+ */
+async function resolveVersionStringForEvent(
+  env: Env,
+  encKey: string,
+  appId: string,
+  resourceType: string,
+  resourceId: string,
+): Promise<{ version_string: string | null; version_lookup: "ok" | "failed" } | null> {
+  if (resourceType !== "appStoreVersions") return null;
+  const failed = { version_string: null, version_lookup: "failed" as const };
+  try {
+    const creds = await getAscCredentials(env.DB, encKey, appId);
+    if (!creds) return failed;
+    const res = await ascRequest<{ data?: { id?: unknown; attributes?: { versionString?: unknown } } }>(
+      creds,
+      "GET",
+      `/v1/appStoreVersions/${encodeURIComponent(resourceId)}?fields[appStoreVersions]=versionString`,
+      undefined,
+      AbortSignal.timeout(5000),
+    );
+    const value = res?.data?.attributes?.versionString;
+    if (res?.data?.id !== resourceId || !text(value, 64)) return failed;
+    return { version_string: value, version_lookup: "ok" };
+  } catch {
+    return failed;
+  }
+}
+
 const text = (v: unknown, max = 256): v is string =>
   typeof v === "string" &&
   v.length > 0 &&
@@ -449,6 +487,13 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     resourceType,
     resourceId,
   );
+  const versionLookup = await resolveVersionStringForEvent(
+    c.env,
+    c.env.ASC_CRED_ENC_KEY,
+    config.app_id,
+    resourceType,
+    resourceId,
+  );
   const payload = JSON.stringify({
     event: spec[0],
     event_id: eventId,
@@ -466,6 +511,9 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       app_store_connect_url: `https://appstoreconnect.apple.com/apps/${config.apple_app_id}`,
       /** Version this event is about, or null when it could not be resolved. */
       build: buildIdentity,
+      // version_state_changed only: the marketing version of the resource, or null
+      // with version_lookup "failed". Absent on other events.
+      ...(versionLookup ?? {}),
       // The same rendering shape the internal-beta operation event already emits, so a
       // downstream template reads one field for every TestFlight notification.
       // Omitted entirely when the groups were not resolved: an empty string would

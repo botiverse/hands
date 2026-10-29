@@ -1093,11 +1093,56 @@ export async function deleteBetaFeedbackSubmission(
 export interface AscAppStoreVersion {
   id: string;
   versionString: string | null;
+  /** appStoreState when Apple sends it, else appVersionState (historical precedence). */
   state: string | null;
+  /** Apple's current lifecycle field (AppVersionState); null when Apple omitted it. */
+  appVersionState: string | null;
+  /** Apple's deprecated lifecycle field (AppStoreVersionState); null when omitted. */
+  appStoreState: string | null;
   platform: string | null;
   /** MANUAL / AFTER_APPROVAL / SCHEDULED; governs what happens after approval. */
   releaseType: string | null;
   buildId: string | null;
+  /**
+   * True only when Apple's response carried `relationships.build.data` (an object or
+   * an explicit null). False means the relationship was not returned at all, so
+   * `buildId: null` is "we did not learn it", not "Apple says no build".
+   */
+  buildRelationshipReturned: boolean;
+}
+
+type RawAppStoreVersion = {
+  id?: unknown;
+  attributes?: {
+    versionString?: unknown;
+    appStoreState?: unknown;
+    appVersionState?: unknown;
+    platform?: unknown;
+    releaseType?: unknown;
+  };
+  relationships?: { build?: { data?: { id?: unknown } | null } };
+};
+
+const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+function toAppStoreVersion(raw: RawAppStoreVersion): AscAppStoreVersion | null {
+  if (typeof raw.id !== "string" || !raw.id) return null;
+  const appStoreState = str(raw.attributes?.appStoreState);
+  const appVersionState = str(raw.attributes?.appVersionState);
+  const build = raw.relationships?.build;
+  const buildRelationshipReturned = !!build && typeof build === "object" && "data" in build;
+  const buildId = buildRelationshipReturned && build?.data && typeof build.data.id === "string" ? build.data.id : null;
+  return {
+    id: raw.id,
+    versionString: str(raw.attributes?.versionString),
+    state: appStoreState ?? appVersionState,
+    appVersionState,
+    appStoreState,
+    platform: str(raw.attributes?.platform),
+    releaseType: str(raw.attributes?.releaseType),
+    buildId,
+    buildRelationshipReturned,
+  };
 }
 
 /** Resolve one App Store version by marketing string (and platform when given). */
@@ -1110,36 +1155,16 @@ export async function findAppStoreVersion(
   const query = platform
     ? `&filter[platform]=${encodeURIComponent(platform)}`
     : "";
-  const res = await ascRequest<{
-    data?: Array<{
-      id?: string;
-      attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown };
-      relationships?: { build?: { data?: { id?: unknown } } };
-    }>;
-    // `include=build` is required: without it Apple omits relationships.build
-    // entirely, which is indistinguishable from "no build attached". Callers that
-    // report build_attached would then report false for every version.
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50&include=build${query}`);
+  // `include=build` is required: without it Apple omits relationships.build
+  // entirely, which is indistinguishable from "no build attached". Callers that
+  // report build_attached would then report false for every version.
+  const res = await ascRequest<{ data?: RawAppStoreVersion[] }>(
+    creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=50&include=build${query}`,
+  );
   const match = (res.data ?? []).find(
     (v) => typeof v.attributes?.versionString === "string" && v.attributes.versionString === versionString,
   );
-  if (!match?.id) return null;
-  const state =
-    typeof match.attributes?.appStoreState === "string"
-      ? match.attributes.appStoreState
-      : typeof match.attributes?.appVersionState === "string"
-        ? match.attributes.appVersionState
-        : null;
-  return {
-    id: match.id,
-    versionString: typeof match.attributes?.versionString === "string" ? match.attributes.versionString : null,
-    state,
-    platform: typeof match.attributes?.platform === "string" ? match.attributes.platform : null,
-    releaseType: typeof (match.attributes as { releaseType?: unknown } | undefined)?.releaseType === "string"
-      ? (match.attributes as { releaseType: string }).releaseType
-      : null,
-    buildId: typeof match.relationships?.build?.data?.id === "string" ? match.relationships.build.data.id : null,
-  };
+  return match ? toAppStoreVersion(match) : null;
 }
 
 /** Resolve one App Store version by ASC resource id, scoped to this app. */
@@ -1148,25 +1173,80 @@ export async function findAppStoreVersionById(
   ascAppId: string,
   versionId: string,
 ): Promise<AscAppStoreVersion | null> {
-  const res = await ascRequest<{
-    data?: Array<{
-      id?: string;
-      attributes?: { versionString?: unknown; appStoreState?: unknown; appVersionState?: unknown; platform?: unknown; releaseType?: unknown };
-      relationships?: { build?: { data?: { id?: unknown } } };
-    }>;
-  }>(creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200&include=build`);
+  const res = await ascRequest<{ data?: RawAppStoreVersion[] }>(
+    creds, "GET", `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200&include=build`,
+  );
   const match = (res.data ?? []).find((v) => v.id === versionId);
-  if (!match?.id) return null;
-  return {
-    id: match.id,
-    versionString: typeof match.attributes?.versionString === "string" ? match.attributes.versionString : null,
-    state: typeof match.attributes?.appStoreState === "string"
-      ? match.attributes.appStoreState
-      : typeof match.attributes?.appVersionState === "string" ? match.attributes.appVersionState : null,
-    platform: typeof match.attributes?.platform === "string" ? match.attributes.platform : null,
-    releaseType: typeof match.attributes?.releaseType === "string" ? match.attributes.releaseType : null,
-    buildId: typeof match.relationships?.build?.data?.id === "string" ? match.relationships.build.data.id : null,
-  };
+  return match ? toAppStoreVersion(match) : null;
+}
+
+/** Bound on version-list pages; an app with more than this many versions fails closed. */
+const MAX_VERSION_PAGES = 5;
+
+/**
+ * Every App Store version of the app on one platform, with the build relationship.
+ *
+ * Follows `links.next` so a decision like "is there another unreleased version?" is
+ * made on the whole list, not the first page. If the list is longer than the page
+ * bound, this throws instead of answering from a partial view.
+ */
+export async function listAppStoreVersions(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  platform: string,
+): Promise<AscAppStoreVersion[]> {
+  const out: AscAppStoreVersion[] = [];
+  let path: string | null =
+    `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200&include=build&filter[platform]=${encodeURIComponent(platform)}`;
+  for (let page = 0; path; page++) {
+    if (page >= MAX_VERSION_PAGES) {
+      throw new AscApiError(502, "app_store_version_list_too_long", `more than ${MAX_VERSION_PAGES} pages of App Store versions; refusing to decide from a partial list`);
+    }
+    const res: { data?: RawAppStoreVersion[]; links?: { next?: unknown } } = await ascRequest(creds, "GET", path);
+    if (!Array.isArray(res?.data)) {
+      throw new AscApiError(502, "app_store_version_list_malformed", "App Store Connect returned no version list");
+    }
+    for (const raw of res.data) {
+      const version = toAppStoreVersion(raw);
+      if (version) out.push(version);
+    }
+    const next = typeof res.links?.next === "string" ? res.links.next : null;
+    path = next ? (next.startsWith(ASC_API_BASE) ? next.slice(ASC_API_BASE.length) : null) : null;
+  }
+  return out;
+}
+
+/** Read one version directly, with the build relationship. Used for read-back after writes. */
+export async function getAppStoreVersion(
+  creds: AscApiCredentials,
+  versionId: string,
+): Promise<AscAppStoreVersion | null> {
+  const res = await ascRequest<{ data?: RawAppStoreVersion }>(
+    creds, "GET", `/v1/appStoreVersions/${encodeURIComponent(versionId)}?include=build`,
+  );
+  return res?.data ? toAppStoreVersion(res.data) : null;
+}
+
+/**
+ * Change an editable version's marketing string and, when given, its build, in one
+ * PATCH. Apple allows a single not-yet-released version per platform, so moving
+ * that record to the new version string is the only way to prepare a newer release
+ * while it exists. Callers must check the version state first.
+ */
+export async function renameAppStoreVersion(
+  creds: AscApiCredentials,
+  versionId: string,
+  versionString: string,
+  ascBuildId?: string | null,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/appStoreVersions/${encodeURIComponent(versionId)}`, {
+    data: {
+      type: "appStoreVersions",
+      id: versionId,
+      attributes: { versionString },
+      ...(ascBuildId ? { relationships: { build: { data: { type: "builds", id: ascBuildId } } } } : {}),
+    },
+  });
 }
 
 /**
@@ -1363,4 +1443,297 @@ export async function submitVersionForReview(
     },
   });
   return { submissionId };
+}
+
+// ---------- App Store version localizations (listing text) ----------
+
+/** appStoreVersionLocalizations attributes Hands reads and writes, Apple's names verbatim. */
+export const VERSION_LOCALIZATION_FIELDS = [
+  "description",
+  "keywords",
+  "promotionalText",
+  "marketingUrl",
+  "supportUrl",
+  "whatsNew",
+] as const;
+export type VersionLocalizationField = typeof VERSION_LOCALIZATION_FIELDS[number];
+
+export interface AscVersionLocalization {
+  id: string;
+  locale: string;
+  fields: Partial<Record<VersionLocalizationField, string | null>>;
+}
+
+/**
+ * Every localization of one version. This is the related-resource list, so an empty
+ * `data` array is Apple saying "none"; a response without `data` is malformed and
+ * throws rather than reading as "none".
+ */
+export async function listVersionLocalizations(
+  creds: AscApiCredentials,
+  versionId: string,
+): Promise<AscVersionLocalization[]> {
+  const res = await ascRequest<{ data?: Array<{ id?: unknown; attributes?: Record<string, unknown> }> }>(
+    creds, "GET", `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations?limit=200`,
+  );
+  if (!Array.isArray(res?.data)) {
+    throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned no localization list");
+  }
+  const out: AscVersionLocalization[] = [];
+  for (const item of res.data) {
+    const locale = item.attributes?.locale;
+    if (typeof item.id !== "string" || typeof locale !== "string") continue;
+    const fields: AscVersionLocalization["fields"] = {};
+    for (const field of VERSION_LOCALIZATION_FIELDS) {
+      const value = item.attributes?.[field];
+      fields[field] = typeof value === "string" ? value : null;
+    }
+    out.push({ id: item.id, locale, fields });
+  }
+  return out;
+}
+
+export async function updateVersionLocalizationFields(
+  creds: AscApiCredentials,
+  localizationId: string,
+  attributes: Partial<Record<VersionLocalizationField, string>>,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(localizationId)}`, {
+    data: { type: "appStoreVersionLocalizations", id: localizationId, attributes },
+  });
+}
+
+export async function createVersionLocalizationWithFields(
+  creds: AscApiCredentials,
+  versionId: string,
+  locale: string,
+  attributes: Partial<Record<VersionLocalizationField, string>>,
+): Promise<string> {
+  const res = await ascRequest<{ data?: { id?: unknown } }>(creds, "POST", "/v1/appStoreVersionLocalizations", {
+    data: {
+      type: "appStoreVersionLocalizations",
+      attributes: { locale, ...attributes },
+      relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } },
+    },
+  });
+  if (typeof res?.data?.id !== "string" || !res.data.id) {
+    throw new AscApiError(502, "version_localization_malformed", "App Store Connect did not return a localization id");
+  }
+  return res.data.id;
+}
+
+// ---------- App Store screenshots ----------
+//
+// Apple's asset flow (developer.apple.com "Uploading assets to App Store Connect"):
+//   POST /v1/appScreenshots {fileName, fileSize} -> uploadOperations
+//   PUT each operation's byte range to its URL with its headers (no ASC JWT)
+//   PATCH /v1/appScreenshots/{id} {uploaded: true, sourceFileChecksum: <MD5 hex>}
+//   poll GET /v1/appScreenshots/{id} assetDeliveryState.state -> COMPLETE | FAILED
+
+export interface AscScreenshotSet {
+  id: string;
+  displayType: string | null;
+}
+
+export interface AscScreenshot {
+  id: string;
+  fileName: string | null;
+  fileSize: number | null;
+  /** MD5 hex the uploader declared at commit; null when Apple has none on record. */
+  sourceFileChecksum: string | null;
+  /** assetDeliveryState.state: AWAITING_UPLOAD | UPLOAD_COMPLETE | COMPLETE | FAILED. */
+  state: string | null;
+  errors: Array<{ code: string | null; description: string | null }>;
+}
+
+type RawScreenshot = {
+  id?: unknown;
+  type?: unknown;
+  attributes?: {
+    fileName?: unknown;
+    fileSize?: unknown;
+    sourceFileChecksum?: unknown;
+    assetDeliveryState?: { state?: unknown; errors?: unknown } | null;
+    uploadOperations?: unknown;
+  };
+};
+
+function toScreenshot(raw: RawScreenshot): AscScreenshot | null {
+  if (typeof raw.id !== "string" || !raw.id) return null;
+  const delivery = raw.attributes?.assetDeliveryState;
+  const errors = Array.isArray(delivery?.errors)
+    ? (delivery!.errors as Array<{ code?: unknown; description?: unknown }>).slice(0, 10).map((e) => ({
+        code: str(e?.code), description: typeof e?.description === "string" ? e.description.slice(0, 500) : null,
+      }))
+    : [];
+  return {
+    id: raw.id,
+    fileName: str(raw.attributes?.fileName),
+    fileSize: typeof raw.attributes?.fileSize === "number" ? raw.attributes.fileSize : null,
+    sourceFileChecksum: str(raw.attributes?.sourceFileChecksum)?.toLowerCase() ?? null,
+    state: str(delivery?.state),
+    errors,
+  };
+}
+
+/** Screenshot sets of one localization (related-resource list; empty `data` = none). */
+export async function listScreenshotSets(
+  creds: AscApiCredentials,
+  localizationId: string,
+): Promise<AscScreenshotSet[]> {
+  const res = await ascRequest<{ data?: Array<{ id?: unknown; attributes?: { screenshotDisplayType?: unknown } }> }>(
+    creds, "GET", `/v1/appStoreVersionLocalizations/${encodeURIComponent(localizationId)}/appScreenshotSets?limit=50`,
+  );
+  if (!Array.isArray(res?.data)) {
+    throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned no screenshot set list");
+  }
+  return res.data
+    .filter((s): s is { id: string; attributes?: { screenshotDisplayType?: unknown } } => typeof s.id === "string")
+    .map((s) => ({ id: s.id, displayType: str(s.attributes?.screenshotDisplayType) }));
+}
+
+/**
+ * One screenshot set with its screenshots, in Apple's display order.
+ *
+ * The order lives in the set's `appScreenshots` relationship, which JSON:API only
+ * fills when asked: `include=appScreenshots` is required. A response without
+ * `relationships.appScreenshots.data` is "we did not learn it" and throws; an empty
+ * array is Apple saying the set is empty.
+ */
+export async function getScreenshotSetWithScreenshots(
+  creds: AscApiCredentials,
+  setId: string,
+): Promise<AscScreenshot[]> {
+  const res = await ascRequest<{
+    data?: { relationships?: { appScreenshots?: { data?: Array<{ id?: unknown }> | null } } };
+    included?: RawScreenshot[];
+  }>(creds, "GET", `/v1/appScreenshotSets/${encodeURIComponent(setId)}?include=appScreenshots&limit[appScreenshots]=50`);
+  const linkage = res?.data?.relationships?.appScreenshots?.data;
+  if (!Array.isArray(linkage)) {
+    throw new AscApiError(502, "screenshot_set_relationship_missing",
+      "App Store Connect did not return the screenshot set's appScreenshots relationship");
+  }
+  const included = new Map<string, AscScreenshot>();
+  for (const raw of res.included ?? []) {
+    if (raw?.type !== undefined && raw.type !== "appScreenshots") continue;
+    const shot = toScreenshot(raw);
+    if (shot) included.set(shot.id, shot);
+  }
+  return linkage.map((ref) => {
+    const id = typeof ref?.id === "string" ? ref.id : "";
+    const shot = included.get(id);
+    if (!shot) {
+      throw new AscApiError(502, "screenshot_set_include_missing",
+        `App Store Connect listed screenshot ${id} in the set but did not include it`);
+    }
+    return shot;
+  });
+}
+
+export async function createScreenshotSet(
+  creds: AscApiCredentials,
+  localizationId: string,
+  displayType: string,
+): Promise<string> {
+  const res = await ascRequest<{ data?: { id?: unknown } }>(creds, "POST", "/v1/appScreenshotSets", {
+    data: {
+      type: "appScreenshotSets",
+      attributes: { screenshotDisplayType: displayType },
+      relationships: { appStoreVersionLocalization: { data: { type: "appStoreVersionLocalizations", id: localizationId } } },
+    },
+  });
+  if (typeof res?.data?.id !== "string" || !res.data.id) {
+    throw new AscApiError(502, "screenshot_set_malformed", "App Store Connect did not return a screenshot set id");
+  }
+  return res.data.id;
+}
+
+/** Reserve a screenshot; returns its id and the upload operations Apple wants performed. */
+export async function reserveScreenshot(
+  creds: AscApiCredentials,
+  setId: string,
+  fileName: string,
+  fileSize: number,
+): Promise<{ id: string; uploadOperations: UploadOperation[] }> {
+  const res = await ascRequest<{ data?: RawScreenshot }>(creds, "POST", "/v1/appScreenshots", {
+    data: {
+      type: "appScreenshots",
+      attributes: { fileName, fileSize },
+      relationships: { appScreenshotSet: { data: { type: "appScreenshotSets", id: setId } } },
+    },
+  });
+  const id = res?.data?.id;
+  const ops = res?.data?.attributes?.uploadOperations;
+  if (typeof id !== "string" || !id || !Array.isArray(ops) || ops.length === 0) {
+    throw new AscApiError(502, "screenshot_reservation_malformed", "App Store Connect did not return a screenshot id with upload operations");
+  }
+  return { id, uploadOperations: ops as UploadOperation[] };
+}
+
+/**
+ * Perform Apple's upload operations for one file: each covers [offset, offset+length)
+ * and carries its own headers. These go to Apple's asset host, not the ASC API, so no
+ * JWT is sent. Any non-2xx is an error; nothing is retried silently.
+ */
+export async function performUploadOperations(
+  operations: UploadOperation[],
+  bytes: Uint8Array,
+): Promise<void> {
+  let covered = 0;
+  for (const op of operations) {
+    if (typeof op?.url !== "string" || !Number.isSafeInteger(op.offset) || !Number.isSafeInteger(op.length)
+      || op.offset < 0 || op.length <= 0 || op.offset + op.length > bytes.byteLength) {
+      throw new AscApiError(502, "upload_operation_malformed", "App Store Connect returned an unusable upload operation");
+    }
+    const headers: Record<string, string> = {};
+    for (const h of op.requestHeaders ?? []) {
+      if (typeof h?.name === "string" && typeof h?.value === "string") headers[h.name] = h.value;
+    }
+    const res = await fetch(op.url, {
+      method: typeof op.method === "string" && op.method ? op.method : "PUT",
+      headers,
+      body: bytes.slice(op.offset, op.offset + op.length),
+    });
+    if (!res.ok) {
+      throw new AscApiError(res.status, "upload_part_failed", `asset upload part at offset ${op.offset} failed (${res.status})`);
+    }
+    covered += op.length;
+  }
+  if (covered !== bytes.byteLength) {
+    throw new AscApiError(502, "upload_operations_incomplete", `upload operations covered ${covered} of ${bytes.byteLength} bytes`);
+  }
+}
+
+/** Mark a reserved screenshot uploaded; Apple's sourceFileChecksum is the file's MD5 hex. */
+export async function commitScreenshot(
+  creds: AscApiCredentials,
+  screenshotId: string,
+  md5Hex: string,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/appScreenshots/${encodeURIComponent(screenshotId)}`, {
+    data: { type: "appScreenshots", id: screenshotId, attributes: { uploaded: true, sourceFileChecksum: md5Hex } },
+  });
+}
+
+export async function getScreenshot(
+  creds: AscApiCredentials,
+  screenshotId: string,
+): Promise<AscScreenshot | null> {
+  const res = await ascRequest<{ data?: RawScreenshot }>(creds, "GET", `/v1/appScreenshots/${encodeURIComponent(screenshotId)}`);
+  return res?.data ? toScreenshot(res.data) : null;
+}
+
+export async function deleteScreenshot(creds: AscApiCredentials, screenshotId: string): Promise<void> {
+  await ascRequest(creds, "DELETE", `/v1/appScreenshots/${encodeURIComponent(screenshotId)}`);
+}
+
+/** Set the display order of a set: the full ordered list of its screenshot ids. */
+export async function reorderScreenshots(
+  creds: AscApiCredentials,
+  setId: string,
+  orderedIds: string[],
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/appScreenshotSets/${encodeURIComponent(setId)}/relationships/appScreenshots`, {
+    data: orderedIds.map((id) => ({ type: "appScreenshots", id })),
+  });
 }

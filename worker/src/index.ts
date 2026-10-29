@@ -176,6 +176,7 @@ import {
   handleSubmitAppStoreVersion,
   handleWithdrawAppStoreVersion,
 } from "./routes/app_store_release";
+import { handlePushAppStoreLocalizations, handlePushAppStoreScreenshots } from "./routes/app_store_metadata";
 import { handleAppStoreReview } from "./routes/appstore_review";
 import {
   handleGetBetaAppDescription,
@@ -332,6 +333,7 @@ import { registerOrgRoutes } from "./openapi/orgs";
 import { registerPublicRoutes } from "./openapi/public";
 import { registerReleaseRoutes } from "./openapi/releases";
 import { registerSettingsRoutes } from "./openapi/settings";
+import { registerAppStoreRoutes } from "./openapi/app_store";
 import type { RouteConfigDef } from "./openapi/common";
 
 // Single source of truth for request schemas: every documented route is bound
@@ -349,6 +351,7 @@ for (const cfg of [
   ...registerReleaseRoutes(),
   ...registerOrgRoutes(),
   ...registerSettingsRoutes(),
+  ...registerAppStoreRoutes(),
 ]) {
   specIndex.set(`${cfg.method.toUpperCase()} ${cfg.path}`, cfg);
 }
@@ -1328,6 +1331,9 @@ bindAdmin("post", "/api/apps/:appId/asc-credentials/verify", requireAppRole("adm
 // effect, and it refuses while another submission is already pending.
 bindAdmin("post", "/api/apps/:appId/app-store/versions", requireAppRole("publisher"), handlePrepareAppStoreVersion);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/notes", requireAppRole("publisher"), handleSetAppStoreReleaseNotes);
+// Listing text and screenshots: explicit mode (dry_run | commit), no default.
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/localizations", requireAppRole("publisher"), handlePushAppStoreLocalizations);
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/screenshots", requireAppRole("publisher"), handlePushAppStoreScreenshots);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requireAppRole("publisher"), handleSubmitAppStoreVersion);
 bindAdmin("post", "/api/apps/:appId/app-store/withdraw", requireAppRole("publisher"), handleWithdrawAppStoreVersion);
 bindAdmin("get", "/api/apps/:appId/app-store/status", requireAppRole("viewer"), handleGetAppStoreReleaseStatus);

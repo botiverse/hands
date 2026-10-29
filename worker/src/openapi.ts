@@ -8,6 +8,7 @@ import { registerOrgRoutes } from "./openapi/orgs";
 import { registerPublicRoutes } from "./openapi/public";
 import { registerReleaseRoutes } from "./openapi/releases";
 import { registerSettingsRoutes } from "./openapi/settings";
+import { registerAppStoreRoutes } from "./openapi/app_store";
 
 const docs = new OpenAPIHono();
 
@@ -23,6 +24,7 @@ for (const r of registerReleaseRoutes()) docs.openAPIRegistry.registerPath(creat
 for (const r of Object.values(feedbackRoutes)) docs.openAPIRegistry.registerPath(createRoute(r));
 for (const r of registerOrgRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
 for (const r of registerSettingsRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
+for (const r of registerAppStoreRoutes()) docs.openAPIRegistry.registerPath(createRoute(r));
 
 export const openApiDocument = docs.getOpenAPI31Document({
   openapi: "3.1.0",
@@ -87,6 +89,11 @@ export const openApiDocument = docs.getOpenAPI31Document({
       name: "TestFlight",
       description:
         "Server-side App Store Connect upload, beta group distribution, review, and status synchronization.",
+    },
+    {
+      name: "App Store",
+      description:
+        "App Store version preparation (create, reuse, or rename), listing text, screenshots, review submission, and withdrawal through App Store Connect.",
     },
     {
       name: "QA artifacts",

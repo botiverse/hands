@@ -226,6 +226,10 @@ Raft integration actions:
 - `expire-testflight-build`
 - `publish-testflight-build`
 - `get-testflight-publish-status`
+- `prepare-app-store-version`, `set-app-store-localizations`,
+  `set-app-store-release-notes`, `submit-app-store-version`,
+  `withdraw-app-store-version`, `get-app-store-release-status`
+  (screenshots are multipart; use the CLI)
 
 Agents pass Hands app/build ids and stable beta group ids. The integration
 never returns the `.p8` credential.
@@ -235,6 +239,116 @@ Beta App Description is app-level invitation copy and uses
 field (`betaBuildLocalizations.whatsNew`). The dedicated update action preserves
 unsupplied locales and succeeds only after exact Apple readback.
 
+## App Store release (version, listing, screenshots, review)
+
+The whole App Store submission runs through Hands with the stored App Store
+Connect key; nothing needs the App Store Connect website. Every step that
+changes something at Apple is a dry run in the CLI unless `--commit` is passed,
+and the listing and screenshot endpoints have no default `mode` at all.
+
+```sh
+# 1. version + build: create, reuse, or rename (see below)
+hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id>            # plan
+hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id> --commit
+# 2. listing text per locale
+hands app-store localizations push raft-ios --version 1.17.0 --file listing.json   # plan
+hands app-store localizations push raft-ios --version 1.17.0 --file listing.json --commit
+# 3. screenshots: shots/<locale>/<display_type>/NN.png
+hands app-store screenshots push raft-ios --version 1.17.0 --dir shots              # plan
+hands app-store screenshots push raft-ios --version 1.17.0 --dir shots --commit
+# 4. review
+hands app-store submit raft-ios --version 1.17.0 --commit
+hands app-store status raft-ios --version 1.17.0
+hands app-store withdraw raft-ios --version 1.17.0 --commit
+```
+
+### Prepare: one unreleased version per platform
+
+Apple allows only one not-yet-released App Store version per platform. A
+withdrawn version (for example 1.12.0, now `DEVELOPER_REJECTED`) still occupies
+that slot, so creating 1.17.0 fails with Apple's 409 "You cannot create a new
+version of the App in the current state." Prepare reads every version for the
+platform (`include=build`) and decides:
+
+| Apple has | Prepare does | `action` |
+| --- | --- | --- |
+| a version with the requested string, editable | attaches the build | `reused` |
+| a version with the requested string, not editable | 409 `VERSION_NOT_EDITABLE` | - |
+| another unreleased version Apple holds (`WAITING_FOR_REVIEW`, `IN_REVIEW`, `PENDING_DEVELOPER_RELEASE`, ...) | 409 `VERSION_IN_FLIGHT`, naming it; withdraw it first | - |
+| exactly one editable, never-released version (`PREPARE_FOR_SUBMISSION`, `DEVELOPER_REJECTED`, `REJECTED`, `METADATA_REJECTED`, `INVALID_BINARY`) | renames it to the requested string and attaches the build in one PATCH | `renamed`, with `previous_version_string` |
+| only released versions | creates the version, then attaches the build | `created` |
+
+A version in a state Hands does not recognise, or two editable versions,
+refuses (409 `VERSION_STATE_UNKNOWN` / `MULTIPLE_EDITABLE_VERSIONS`) rather
+than guessing. After the write Hands reads the version back
+(`GET /v1/appStoreVersions/{id}?include=build`); a version string or build that
+does not match returns 502 `READBACK_MISMATCH`. A failure after an earlier
+write returns 502 `PREPARE_PARTIALLY_APPLIED` with `completed_steps`. Renaming
+keeps the version's existing localizations, screenshots and release type;
+`release_type` in the request applies only when a version is created.
+
+### Listing text
+
+`POST /api/apps/{appId}/app-store/versions/{versionId}/localizations` with
+`{ "mode": "dry_run" | "commit", "localizations": { "<locale>": { ... } } }`.
+Fields are Apple's `appStoreVersionLocalizations` attributes: `description`
+(at most 4000 characters), `keywords` (100), `promotionalText` (170),
+`whatsNew` (4000), `marketingUrl`, `supportUrl` (http or https). Only supplied
+fields are written; an existing locale is patched with the changed fields
+only, a missing locale is created. While Apple holds the version only
+`promotionalText` may change; other fields return 409
+`LOCALIZATION_PLAN_BLOCKED`. Commit reads every requested field back and fails
+with `READBACK_MISMATCH` if Apple holds anything else. App name and subtitle
+live on `appInfoLocalizations` and are not covered yet.
+
+### Screenshots
+
+`POST /api/apps/{appId}/app-store/versions/{versionId}/screenshots`,
+multipart: a `request` JSON part
+`{ "mode": "dry_run" | "commit", "sets": [ { "locale": "en-US", "display_type": "APP_IPHONE_67", "images": [ { "part": "img1", "sha256": "<hex>" } ] } ] }`
+plus one file part per image, at most 24 MiB of images per push.
+
+Checked before any Apple call: sha256 of each part, PNG or JPEG, no
+transparency (a PNG with an alpha channel or tRNS chunk is refused; flatten
+it), 1-10 images per set, and an exact pixel size for the display type
+(portrait or landscape):
+
+| `display_type` | Sizes (portrait) |
+| --- | --- |
+| `APP_IPHONE_67` (6.9" and 6.7") | 1320x2868, 1290x2796, 1260x2736 |
+| `APP_IPHONE_65` | 1242x2688, 1284x2778 |
+| `APP_IPHONE_61` (6.3" and 6.1") | 1206x2622, 1179x2556, 1170x2532, 1125x2436, 1080x2340 |
+| `APP_IPHONE_55` | 1242x2208 |
+| `APP_IPAD_PRO_3GEN_129` (13") | 2064x2752, 2048x2732 |
+| `APP_IPAD_PRO_3GEN_11` | 1488x2266, 1668x2420, 1668x2388, 1640x2360 |
+| `APP_IPAD_PRO_129` | 2048x2732 |
+
+`display_type` must be one of Apple's `ScreenshotDisplayType` values; other
+Apple values are refused as not supported yet. Apple has no separate type for
+dual-screen devices.
+
+Per set, the version must already have that locale (create it with the
+listing text step first). Existing screenshots are compared by MD5, which is
+what Apple stores as `sourceFileChecksum`:
+
+- same files, same order, all `COMPLETE`: `unchanged`, no write (re-running a
+  push is safe);
+- same files, other order: `reorder` only;
+- anything else: `replace` (or `upload` / `create_set_and_upload`): delete
+  the set's screenshots, reserve each image, perform Apple's upload
+  operations, commit with the MD5, poll `assetDeliveryState` until `COMPLETE`,
+  set the order, then read the set back.
+
+Commit stops at the first failed set (later sets are `not_attempted`). Any
+image that ends `FAILED` or does not finish within the poll budget makes the
+response 502 `SCREENSHOTS_FAILED`, with each image's id and state; it is never
+reported as success. Because a replace deletes before it uploads, a failed
+replace can leave a set partly filled: fix the cause and push again.
+
+Every prepare, listing, and screenshot call (dry runs included) is recorded in
+the app audit log (`app_store.prepare_version`, `app_store.localizations`,
+`app_store.screenshots`); listing text is recorded as sha256 and length only.
+
 ## Apple references
 
 - [App Store Connect API: Prerelease Versions and Beta Testers](https://developer.apple.com/documentation/appstoreconnectapi/prerelease-versions-and-beta-testers)
@@ -243,6 +357,10 @@ unsupplied locales and succeeds only after exact Apple readback.
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [Provide test information](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
+- [App Store Connect API: App Store version localizations](https://developer.apple.com/documentation/appstoreconnectapi/app-store-version-localizations)
+- [App Store Connect API: App screenshots](https://developer.apple.com/documentation/appstoreconnectapi/app-screenshots)
+- [Uploading assets to App Store Connect](https://developer.apple.com/documentation/appstoreconnectapi/uploading-assets-to-app-store-connect)
+- [Screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/screenshot-specifications/)
 
 ## App Store Connect webhook notifications
 
@@ -369,5 +487,19 @@ response is an unexpected shape, `build` is `null` and the event is still
 delivered with every other field unchanged. The `build` key itself is always
 present, so a consumer must treat `null` as "version unknown, open the link"
 rather than as an absent field. Events whose resource is not a build (e.g.
-`app_store:version_state_changed`) always report `build: null` and cost no
-Apple request.
+`app_store:version_state_changed`) always report `build: null`.
+
+### `version_string` on version state events
+
+`app_store:version_state_changed` also carries the marketing version of the
+`appStoreVersions` resource, read with one
+`GET /v1/appStoreVersions/{id}?fields[appStoreVersions]=versionString`:
+
+```json
+"version_string": "1.17.0", "version_lookup": "ok"
+```
+
+Same contract as `build`: best effort, 5 s budget, never blocks delivery. When
+the app has no App Store Connect credentials or the read fails, the event is
+delivered with `"version_string": null, "version_lookup": "failed"`. Other
+event types do not carry these keys.

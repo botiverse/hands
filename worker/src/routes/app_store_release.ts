@@ -14,38 +14,94 @@ import { insertAuditLog } from "../lib/permissions";
 import {
   AscApiError,
   type AscApiCredentials,
+  type AscAppStoreVersion,
   attachBuildToVersion,
   cancelReviewSubmission,
   createAppStoreVersion,
   findAppStoreVersion,
   findAppStoreVersionById,
+  getAppStoreVersion,
   getReviewSubmissionVersionId,
+  listAppStoreVersions,
   listReviewSubmissions,
   ascRequest,
+  renameAppStoreVersion,
   resolveAscAppId,
   setVersionLocalization,
   submitVersionForReview,
 } from "../lib/asc_api";
 
-type AdminContext = Context<AdminEnv & { Bindings: Env }>;
+export type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
 /**
- * Version states in which the record is still ours to edit. Anything else means
- * Apple is holding it: WAITING_FOR_REVIEW / IN_REVIEW (under consideration),
- * PENDING_DEVELOPER_RELEASE / PENDING_APPLE_RELEASE (approved, about to ship),
- * READY_FOR_SALE (shipped), or a rejection state that needs a human decision.
+ * Version states in which the record is still ours to edit and has never been
+ * released. Anything else means Apple is holding it: WAITING_FOR_REVIEW / IN_REVIEW
+ * (under consideration), PENDING_DEVELOPER_RELEASE / PENDING_APPLE_RELEASE
+ * (approved, about to ship), READY_FOR_SALE (shipped). INVALID_BINARY is editable:
+ * the fix is attaching a different build.
+ *
+ * Names are shared by Apple's AppStoreVersionState (appStoreState, deprecated) and
+ * AppVersionState (appVersionState) enums.
  */
-const EDITABLE_STATES = new Set([
+export const EDITABLE_STATES = new Set([
   "PREPARE_FOR_SUBMISSION",
   "DEVELOPER_REJECTED",
   "METADATA_REJECTED",
   "REJECTED",
+  "INVALID_BINARY",
 ]);
+
+/**
+ * Not yet released, but Apple holds the record: it cannot be edited or renamed, and
+ * while it exists Apple refuses to create another version for the platform.
+ */
+const IN_FLIGHT_STATES = new Set([
+  "WAITING_FOR_REVIEW",
+  "IN_REVIEW",
+  "READY_FOR_REVIEW",
+  "WAITING_FOR_EXPORT_COMPLIANCE",
+  "PENDING_CONTRACT",
+  "PENDING_DEVELOPER_RELEASE",
+  "PENDING_APPLE_RELEASE",
+  "PROCESSING_FOR_APP_STORE",
+  "PROCESSING_FOR_DISTRIBUTION",
+  "ACCEPTED",
+]);
+
+/** Released or retired: history, never touched. */
+const RELEASED_STATES = new Set([
+  "READY_FOR_SALE",
+  "READY_FOR_DISTRIBUTION",
+  "PREORDER_READY_FOR_SALE",
+  "REPLACED_WITH_NEW_VERSION",
+  "REMOVED_FROM_SALE",
+  "DEVELOPER_REMOVED_FROM_SALE",
+]);
+
+export type VersionStateClass = "editable" | "in_flight" | "released" | "unknown";
+
+/**
+ * Classify by appVersionState (Apple's current field) when present, else the
+ * deprecated appStoreState. A state not listed above is "unknown", and every caller
+ * treats unknown as "do not write".
+ */
+export function classifyVersionState(version: Pick<AscAppStoreVersion, "appVersionState" | "appStoreState">): VersionStateClass {
+  const state = version.appVersionState ?? version.appStoreState;
+  if (!state) return "unknown";
+  if (EDITABLE_STATES.has(state)) return "editable";
+  if (IN_FLIGHT_STATES.has(state)) return "in_flight";
+  if (RELEASED_STATES.has(state)) return "released";
+  return "unknown";
+}
+
+function stateOf(version: AscAppStoreVersion): string | null {
+  return version.appVersionState ?? version.appStoreState ?? version.state;
+}
 
 /** Review states at which Apple will not accept a new submission for the platform. */
 const IN_REVIEW_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
 
-class AppStoreReleaseError extends Error {
+export class AppStoreReleaseError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
@@ -55,7 +111,7 @@ class AppStoreReleaseError extends Error {
   }
 }
 
-async function loadCredentials(c: AdminContext, appId: string): Promise<AscApiCredentials> {
+export async function loadCredentials(c: AdminContext, appId: string): Promise<AscApiCredentials> {
   const encKey = c.env.ASC_CRED_ENC_KEY;
   if (!encKey) throw new AppStoreReleaseError(500, "ASC_CRED_ENC_KEY_MISSING", "server is missing ASC_CRED_ENC_KEY");
   const creds = await getAscCredentials(c.env.DB, encKey, appId);
@@ -65,7 +121,7 @@ async function loadCredentials(c: AdminContext, appId: string): Promise<AscApiCr
   return creds;
 }
 
-async function ascAppIdFor(c: AdminContext, appId: string): Promise<string> {
+export async function ascAppIdFor(c: AdminContext, appId: string): Promise<string> {
   // Bundle ids live on the app's main channel, not on `apps` -- the release channel
   // is the one that names the real App Store record (preview/nightly carry beta
   // bundle ids that are not App Store apps). Same source appstore_review.ts reads.
@@ -127,78 +183,158 @@ async function assertOwnedSubmission(
   }
 }
 
-function fail(c: AdminContext, error: unknown) {
+/** Map an error to the status and body every App Store route returns. */
+export function errorBody(error: unknown): { status: number; body: Record<string, unknown> } {
   if (error instanceof AppStoreReleaseError) {
-    return c.json({ error: error.message, code: error.code }, error.status as 400);
+    return { status: error.status, body: { error: error.message, code: error.code } };
   }
   // Surface Apple's own words rather than a generic 502. When App Store Connect
   // refuses a call (for example "another version is already pending release"), that
   // reason is the only thing that tells the caller what to do next, so it is passed
   // through as provider_cause in the same spirit as the Play adapter's receipts.
   if (error instanceof AscApiError) {
-    return c.json({
+    return { status: 502, body: {
       error: error.message,
       code: "ASC_API_REJECTED",
       status: error.status,
       ...(error.detail ? { provider_cause: error.detail } : {}),
-    }, 502);
+    } };
   }
   const message = error instanceof Error ? error.message : String(error);
-  return c.json({ error: message, code: "APP_STORE_RELEASE_FAILED" }, 502);
+  return { status: 502, body: { error: message, code: "APP_STORE_RELEASE_FAILED" } };
+}
+
+export function fail(c: AdminContext, error: unknown) {
+  const { status, body } = errorBody(error);
+  return c.json(body, status as 400);
+}
+
+type PreparePlan =
+  | { action: "created"; version: null }
+  | { action: "reused"; version: AscAppStoreVersion }
+  | { action: "renamed"; version: AscAppStoreVersion };
+
+type PrepareRefusal = { status: 409; body: Record<string, unknown> };
+
+function versionRef(v: AscAppStoreVersion) {
+  return { version_id: v.id, version_string: v.versionString, state: stateOf(v) };
 }
 
 /**
- * Create (or reuse) the App Store version for a build and attach the build to it.
+ * Decide what prepare does, from Apple's full version list for the platform. Pure:
+ * no writes, so dry_run and commit share it.
  *
- * Reusing an existing editable version rather than creating a second one matters:
- * App Store Connect allows one editable version per platform, so a blind create
- * fails when a version is already prepared.
+ * Apple allows one not-yet-released version per platform. So:
+ *   1. a version with the requested string exists -> reuse it if editable, else refuse;
+ *   2. otherwise any unreleased version Apple is holding (in review, pending
+ *      release, ...) -> refuse and name it (withdraw first);
+ *   3. otherwise exactly one editable, never-released version with another string
+ *      -> rename it to the requested string;
+ *   4. otherwise -> create.
+ * A state Hands does not recognise anywhere in the list refuses rather than guesses.
+ */
+export function planPrepare(versions: AscAppStoreVersion[], versionString: string): PreparePlan | PrepareRefusal {
+  const exact = versions.find((v) => v.versionString === versionString);
+  if (exact) {
+    const cls = classifyVersionState(exact);
+    if (cls === "editable") return { action: "reused", version: exact };
+    const state = stateOf(exact);
+    // Refuse to touch a version Apple is already handling. Reusing one that is
+    // waiting for or in review would attach a different build to a submission under
+    // Apple's consideration, and one already pending release is still the version
+    // that will ship -- either way a single mis-call would corrupt a live submission.
+    return { status: 409, body: {
+      error: `version ${versionString} is in state ${state ?? "unknown"} and cannot be modified`,
+      code: cls === "unknown" ? "VERSION_STATE_UNKNOWN" : "VERSION_NOT_EDITABLE",
+      ...versionRef(exact),
+      next_action: state === "PENDING_DEVELOPER_RELEASE"
+        ? "this version is approved and waiting to be released; release or remove it before preparing another"
+        : cls === "released"
+          ? "this version string is already released; choose a higher version_string"
+          : "withdraw the pending submission first if the version must be changed",
+    } };
+  }
+  const others = versions.filter((v) => v.versionString !== versionString);
+  const unknown = others.filter((v) => classifyVersionState(v) === "unknown");
+  if (unknown.length > 0) {
+    return { status: 409, body: {
+      error: `version ${unknown[0]!.versionString ?? unknown[0]!.id} is in a state Hands does not recognise (${stateOf(unknown[0]!) ?? "none"}); refusing to create or rename`,
+      code: "VERSION_STATE_UNKNOWN",
+      ...versionRef(unknown[0]!),
+      versions: unknown.map(versionRef),
+    } };
+  }
+  const inFlight = others.filter((v) => classifyVersionState(v) === "in_flight");
+  if (inFlight.length > 0) {
+    const blocker = inFlight[0]!;
+    const state = stateOf(blocker);
+    return { status: 409, body: {
+      error: `version ${blocker.versionString} is ${state}; Apple allows one unreleased version per platform, so ${versionString} cannot be created or take its place`,
+      code: "VERSION_IN_FLIGHT",
+      ...versionRef(blocker),
+      versions: inFlight.map(versionRef),
+      next_action: state === "WAITING_FOR_REVIEW" || state === "IN_REVIEW" || state === "READY_FOR_REVIEW"
+        ? `withdraw it first (withdraw-app-store-version with version_id ${blocker.id}), then prepare ${versionString} again; the withdrawn version will be renamed`
+        : state === "PENDING_DEVELOPER_RELEASE"
+          ? "it is approved and waiting to be released; release it (or remove it in App Store Connect) before preparing another"
+          : "wait for Apple to finish with it, then prepare again",
+    } };
+  }
+  const editable = others.filter((v) => classifyVersionState(v) === "editable");
+  if (editable.length > 1) {
+    return { status: 409, body: {
+      error: "more than one editable version exists for this platform; refusing to pick one to rename",
+      code: "MULTIPLE_EDITABLE_VERSIONS",
+      versions: editable.map(versionRef),
+    } };
+  }
+  if (editable.length === 1) return { action: "renamed", version: editable[0]! };
+  return { action: "created", version: null };
+}
+
+/**
+ * Prepare the App Store version for a marketing version string and attach a build.
+ *
+ * Create, reuse, or rename -- see planPrepare. Renaming matters because App Store
+ * Connect allows only one unreleased version per platform: after a withdrawal the
+ * old version (e.g. 1.12.0, DEVELOPER_REJECTED) still occupies that slot, and a
+ * blind create of 1.17.0 fails with "You cannot create a new version of the App in
+ * the current state."
+ *
+ * Every write is read back (GET /v1/appStoreVersions/{id}?include=build) and the
+ * request fails closed unless the version string and requested build match.
+ * `mode: "dry_run"` returns the plan and writes nothing; the default stays
+ * "commit" for existing callers.
  */
 export async function handlePrepareAppStoreVersion(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const body = (await c.req.json().catch(() => null)) as
-    | { version_string?: unknown; platform?: unknown; release_type?: unknown; asc_build_id?: unknown }
+    | { version_string?: unknown; platform?: unknown; release_type?: unknown; asc_build_id?: unknown; mode?: unknown }
     | null;
   const versionString = typeof body?.version_string === "string" ? body.version_string.trim() : "";
   const platform = typeof body?.platform === "string" ? body.platform.trim() : "IOS";
   const releaseType = typeof body?.release_type === "string" ? body.release_type.trim() : "MANUAL";
   const ascBuildId = typeof body?.asc_build_id === "string" ? body.asc_build_id.trim() : "";
+  const mode = body?.mode === undefined ? "commit" : body.mode;
   if (!versionString) {
     return c.json({ error: "version_string is required", code: "VERSION_STRING_REQUIRED" }, 400);
   }
   if (!["MANUAL", "AFTER_APPROVAL", "SCHEDULED"].includes(releaseType)) {
     return c.json({ error: "release_type must be MANUAL, AFTER_APPROVAL or SCHEDULED", code: "INVALID_RELEASE_TYPE" }, 400);
   }
+  if (mode !== "dry_run" && mode !== "commit") {
+    return c.json({ error: 'mode must be "dry_run" or "commit"', code: "INVALID_MODE" }, 400);
+  }
+  let plan: PreparePlan | null = null;
+  let versionId: string | null = null;
+  const done: string[] = [];
   try {
     const creds = await loadCredentials(c, appId);
     const ascAppId = await ascAppIdFor(c, appId);
-    const existing = await findAppStoreVersion(creds, ascAppId, versionString, platform);
-    // Refuse to touch a version Apple is already handling. Reusing one that is
-    // waiting for or in review would attach a different build to a submission under
-    // Apple's consideration, and one already pending release is still the version
-    // that will ship -- either way a single mis-call would corrupt a live submission.
-    if (existing && existing.state && !EDITABLE_STATES.has(existing.state)) {
-      return c.json({
-        error: `version ${versionString} is in state ${existing.state} and cannot be modified`,
-        code: "VERSION_NOT_EDITABLE",
-        version_id: existing.id,
-        version_string: existing.versionString,
-        state: existing.state,
-        next_action: existing.state === "PENDING_DEVELOPER_RELEASE"
-          ? "this version is approved and waiting to be released; release or remove it before preparing another"
-          : "withdraw the pending submission first if the version must be changed",
-      }, 409);
-    }
-    const version = existing ?? (await createAppStoreVersion(
-      creds,
-      ascAppId,
-      versionString,
-      platform,
-      releaseType as "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
-    ));
     if (ascBuildId) {
-      // The build must be one of this app's, resolved from Apple's own list — same
-      // rule testflight.ts applies to asc_build_id.
+      // The build must be one of this app's, resolved from Apple's own list -- same
+      // rule testflight.ts applies to asc_build_id. Checked before any write, so an
+      // unknown build cannot leave a created or renamed version behind.
       const builds = await ascRequest<{ data?: Array<{ id?: unknown }> }>(
         creds,
         "GET",
@@ -207,28 +343,112 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       if (!(builds.data ?? []).some((b) => b.id === ascBuildId)) {
         return c.json({ error: "asc_build_id does not belong to this app", code: "ASC_BUILD_NOT_IN_APP" }, 404);
       }
-      await attachBuildToVersion(creds, version.id, ascBuildId);
     }
+    const decided = planPrepare(await listAppStoreVersions(creds, ascAppId, platform), versionString);
+    if ("status" in decided) return c.json(decided.body, decided.status);
+    plan = decided;
+    const existing = plan.version;
+    const summary = {
+      action: plan.action,
+      version_id: existing?.id ?? null,
+      version_string: versionString,
+      ...(plan.action === "renamed" ? { previous_version_string: existing!.versionString } : {}),
+      platform,
+      state: existing ? stateOf(existing) : null,
+      // An existing version keeps its stored releaseType; prepare does not change it.
+      release_type: existing ? existing.releaseType : releaseType,
+      requested_release_type: releaseType,
+      asc_build_id: ascBuildId || null,
+      current_build_id: existing?.buildRelationshipReturned ? existing.buildId : null,
+    };
+    if (mode === "dry_run") {
+      return c.json({ mode, ...summary, writes: [] });
+    }
+
+    if (plan.action === "created") {
+      versionId = (await createAppStoreVersion(
+        creds, ascAppId, versionString, platform, releaseType as "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+      )).id;
+      done.push("create_version");
+      if (ascBuildId) {
+        await attachBuildToVersion(creds, versionId, ascBuildId);
+        done.push("attach_build");
+      }
+    } else if (plan.action === "renamed") {
+      versionId = existing!.id;
+      await renameAppStoreVersion(creds, versionId, versionString, ascBuildId || null);
+      done.push(ascBuildId ? "rename_version_and_attach_build" : "rename_version");
+    } else {
+      versionId = existing!.id;
+      if (ascBuildId) {
+        await attachBuildToVersion(creds, versionId, ascBuildId);
+        done.push("attach_build");
+      }
+    }
+
+    // Read back what Apple now holds. include=build is what makes buildId a fact;
+    // if Apple does not return the relationship, a requested build cannot be
+    // confirmed and the call fails rather than claiming it.
+    const readback = await getAppStoreVersion(creds, versionId);
+    const mismatches: string[] = [];
+    if (!readback) mismatches.push("version_not_found");
+    else {
+      if (readback.versionString !== versionString) mismatches.push("version_string");
+      if (ascBuildId && !readback.buildRelationshipReturned) mismatches.push("build_relationship_not_returned");
+      else if (ascBuildId && readback.buildId !== ascBuildId) mismatches.push("build_id");
+    }
+    const readbackView = readback ? {
+      version_string: readback.versionString,
+      state: stateOf(readback),
+      build_id: readback.buildRelationshipReturned ? readback.buildId : null,
+      build_relationship_returned: readback.buildRelationshipReturned,
+    } : null;
     await insertAuditLog(c.env.DB, c, {
       app_id: appId,
       action: "app_store.prepare_version",
-      payload: { version_id: version.id, version_string: versionString, release_type: releaseType,
-        ...(ascBuildId ? { asc_build_id: ascBuildId } : {}) },
+      payload: {
+        ...summary, version_id: versionId, steps: done,
+        outcome: mismatches.length ? "readback_mismatch" : "ok",
+        ...(mismatches.length ? { mismatches, readback: readbackView } : {}),
+      },
     });
+    if (mismatches.length) {
+      return c.json({
+        error: `App Store Connect read-back does not match the request (${mismatches.join(", ")})`,
+        code: "READBACK_MISMATCH",
+        ...summary,
+        version_id: versionId,
+        completed_steps: done,
+        mismatches,
+        readback: readbackView,
+      }, 502);
+    }
     return c.json({
-      version_id: version.id,
-      version_string: versionString,
-      platform,
-      // When an existing version is reused, its stored releaseType keeps governing
-      // app behaviour -- echoing the requested value would claim MANUAL on a version
-      // that actually ships AFTER_APPROVAL.
-      release_type: existing ? (existing.releaseType ?? null) : releaseType,
-      requested_release_type: releaseType,
-      state: "state" in version ? version.state : null,
-      reused: existing !== null,
-      build_attached: Boolean(ascBuildId),
+      mode,
+      ...summary,
+      version_id: versionId,
+      state: readbackView!.state,
+      reused: plan.action !== "created",
+      // From the read-back, not from the request. null = Apple did not return the
+      // relationship, which is "not known", never "no build".
+      build_attached: readback!.buildRelationshipReturned ? readback!.buildId !== null : null,
+      build_id: readbackView!.build_id,
+      completed_steps: done,
     });
   } catch (error) {
+    if (done.length > 0) {
+      // Something was written before the failure: say exactly what, so the caller
+      // does not read a 502 as "nothing happened".
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.prepare_version",
+        payload: { action: plan?.action ?? null, version_id: versionId, version_string: versionString,
+          asc_build_id: ascBuildId || null, steps: done, outcome: "partial_failure" },
+      }).catch(() => undefined);
+      const base = errorBody(error).body;
+      return c.json({ ...base, code: "PREPARE_PARTIALLY_APPLIED", cause_code: base.code ?? null,
+        action: plan?.action ?? null, version_id: versionId, completed_steps: done }, 502);
+    }
     return fail(c, error);
   }
 }
@@ -372,7 +592,8 @@ export async function handleGetAppStoreReleaseStatus(c: AdminContext) {
       version_id: version.id,
       version_string: version.versionString,
       state: version.state,
-      build_attached: version.buildId !== null,
+      // null when Apple did not return the build relationship: unknown, not "none".
+      build_attached: version.buildRelationshipReturned ? version.buildId !== null : null,
       pending_submission: pending ? { id: pending.id, state: pending.state } : null,
     });
   } catch (error) {
