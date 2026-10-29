@@ -81,6 +81,44 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
 }
 
 /**
+ * Upload-protocol failures for deobfuscation files, distinct from a provider
+ * refusal of the content (play_api_rejected):
+ *   play_upload_too_large      Google answered 413 (simple upload or resumable initiation/chunk)
+ *   play_upload_session_failed resumable initiation not 200, no usable Location, or no answer
+ *   play_upload_interrupted    a chunk failed and could not be resumed within the retry budget
+ *   play_upload_incomplete     Google's progress/final answer does not match the bytes sent
+ * When Google answered with an error body, the same sanitised classification as
+ * playRejection (stage, provider_cause, message digest) rides along.
+ */
+export type PlayUploadFailureCode =
+  | "play_upload_too_large"
+  | "play_upload_session_failed"
+  | "play_upload_interrupted"
+  | "play_upload_incomplete";
+
+export const PLAY_UPLOAD_FAILURE_CODES: ReadonlySet<string> = new Set<PlayUploadFailureCode>([
+  "play_upload_too_large", "play_upload_session_failed", "play_upload_interrupted", "play_upload_incomplete",
+]);
+
+const UPLOAD_FAILURE_MESSAGES: Record<PlayUploadFailureCode, string> = {
+  play_upload_too_large: "Google Play refused the upload as too large",
+  play_upload_session_failed: "Google Play did not open a resumable upload session",
+  play_upload_interrupted: "Google Play upload was interrupted and could not be resumed",
+  play_upload_incomplete: "Google Play did not confirm the complete upload",
+};
+
+export function playUploadFailure(code: PlayUploadFailureCode, stage: string, status?: number, body?: unknown): PlayAdapterError {
+  const rejection = status !== undefined && body !== undefined && body !== null ? playRejection(status, body, stage) : null;
+  if (!rejection) console.warn("hands_play_upload_failure", JSON.stringify({ stage, code, status: status ?? null }));
+  return new PlayAdapterError(
+    502,
+    code,
+    `${UPLOAD_FAILURE_MESSAGES[code]} (stage=${stage}${status !== undefined ? `; http_status=${status}` : ""})`,
+    rejection?.cause_detail ?? { stage },
+  );
+}
+
+/**
  * Edit-state causes recognised from Google's structured identifiers:
  * `error.status`, `errors[].reason` and `details[].reason` (google.rpc.ErrorInfo).
  * Google does not document a specific identifier for "changes in review" or

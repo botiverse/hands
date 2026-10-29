@@ -4,6 +4,17 @@ export type HandsTrack = "internal" | "closed" | "production";
 export interface PlayAdapterEnv {
   /** Maximum streamed AAB size accepted from Hands. */
   MAX_AAB_SIZE_BYTES?: string;
+  /**
+   * Deobfuscation files (mapping.txt, native symbols zip) of at least this many
+   * bytes use Google's resumable upload instead of one simple media request.
+   * Default 33554432 (32 MiB); unset or not a positive integer -> default.
+   */
+  PLAY_RESUMABLE_UPLOAD_THRESHOLD_BYTES?: string;
+  /**
+   * Bytes per resumable chunk PUT. Default 8388608 (8 MiB); must be a positive
+   * multiple of 262144 (256 KiB), otherwise the default is used.
+   */
+  PLAY_RESUMABLE_CHUNK_BYTES?: string;
 }
 
 export interface ServiceAccountCredential {

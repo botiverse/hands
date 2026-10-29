@@ -883,6 +883,11 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       if (errorCode === "play_edit_state_unknown") {
         return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
       }
+      // Upload-protocol failures of a deobfuscation file (resumable session, 413, an
+      // interrupted or incomplete transfer) keep their specific code for the caller.
+      if (PLAY_UPLOAD_FAILURE_CODES.has(errorCode)) {
+        return fail(c, 502, { code: "play_api_error", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+      }
       return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
     }
     const readback: PlayReadback = uploadResponse.value;
@@ -1252,6 +1257,16 @@ async function failedUploadSymbolsReceipt(
   c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
   return id;
 }
+
+/**
+ * Play adapter codes for a deobfuscation upload that failed in transport rather
+ * than on content: 413, no resumable session, an interrupted or incomplete
+ * transfer. upload-symbols passes every adapter code through as failure_code;
+ * promote names these explicitly (its generic play_api_error carries none).
+ */
+const PLAY_UPLOAD_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "play_upload_too_large", "play_upload_session_failed", "play_upload_interrupted", "play_upload_incomplete",
+]);
 
 /** Map an adapter failure code onto the route's error model (shared by dry run and commit). */
 function uploadSymbolsAdapterFailure(code: string, message: string, receiptId: string | null): [400 | 409 | 502, GateFailure] {

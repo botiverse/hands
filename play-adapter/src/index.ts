@@ -1,6 +1,7 @@
 import { createAccessToken, parsePlayCredential } from "./auth";
 import { PlayAdapterError } from "./errors";
 import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
+import { resumableUploadOptions } from "./resumable_upload";
 import { pushStoreListings, readStoreListings, storeListingImagesInput, storeListingsInput } from "./store_listing";
 import type {
   AdapterResult,
@@ -310,10 +311,16 @@ function failure(error: unknown, operationId: string | null): AdapterResult<neve
 export interface AdapterOptions {
   fetchImpl?: typeof fetch;
   nowSeconds?: () => number;
+  /** Test hook: base delay before a resumable status query (default 1000 ms). */
+  resumableRetryDelayMs?: number;
 }
 
 export function createPlayAdapterService(options: AdapterOptions = {}) {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const uploadOptions = (env: PlayAdapterEnv) => ({
+    ...resumableUploadOptions(env),
+    ...(options.resumableRetryDelayMs !== undefined ? { retryDelayMs: options.resumableRetryDelayMs } : {}),
+  });
 
   async function client(input: PlayBindingInput, env: PlayAdapterEnv) {
     const binding = bindingInput(input);
@@ -322,14 +329,14 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
       fetchImpl,
       options.nowSeconds?.() ?? Math.floor(Date.now() / 1000),
     );
-    return { binding, client: new GooglePlayClient(accessToken, fetchImpl, maxAabSize(env)) };
+    return { binding, client: new GooglePlayClient(accessToken, fetchImpl, maxAabSize(env), uploadOptions(env)) };
   }
 
   /** A client for operations that need only the package (store listings are not track-scoped). */
   async function discoveryClient(input: PlayDiscoveryInput, env: PlayAdapterEnv) {
     const binding = discoveryInput(input);
     const token = await createAccessToken(binding.credential, fetchImpl, options.nowSeconds?.() ?? Math.floor(Date.now() / 1000));
-    return { binding, client: new GooglePlayClient(token, fetchImpl, maxAabSize(env)) };
+    return { binding, client: new GooglePlayClient(token, fetchImpl, maxAabSize(env), uploadOptions(env)) };
   }
 
   return {
@@ -356,7 +363,7 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
       try {
         const binding = discoveryInput(input);
         const token = await createAccessToken(binding.credential, fetchImpl, options.nowSeconds?.() ?? Math.floor(Date.now() / 1000));
-        const google = new GooglePlayClient(token, fetchImpl, maxAabSize(env));
+        const google = new GooglePlayClient(token, fetchImpl, maxAabSize(env), uploadOptions(env));
         return { ok: true, value: { client_email: binding.credential.client_email, package_name: binding.packageName, tracks: await google.listTracks(binding.packageName) } };
       } catch (error) { return failure(error, null); }
     },

@@ -1,7 +1,16 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
-import { editStatePatternsTried, playRejection, playRejectionReason, playRequestStage } from "./provider_errors";
+import {
+  editStatePatternsTried,
+  PLAY_UPLOAD_FAILURE_CODES,
+  playRejection,
+  playRejectionReason,
+  playRequestStage,
+  playUploadFailure,
+} from "./provider_errors";
+import { DEFAULT_RESUMABLE_UPLOAD_OPTIONS, resumableUpload } from "./resumable_upload";
+import type { ResumableUploadOptions } from "./resumable_upload";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
   PlayAiGeneratedState,
@@ -184,6 +193,7 @@ function hashingBody(
   const hasher = sha256.create();
   let size = 0;
   let finished = false;
+  let result: { size: number; sha256: string } | null = null;
   let control: TransformStreamDefaultController<Uint8Array> | null = null;
   const stream = body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     start(controller) {
@@ -216,7 +226,9 @@ function hashingBody(
       if (!finished) {
         throw new PlayAdapterError(409, limits.incompleteCode, limits.incompleteMessage);
       }
-      return { size, sha256: bytesToHex(hasher.digest()) };
+      // Memoised: the resumable path checks before its final chunk and again after.
+      result ??= { size, sha256: bytesToHex(hasher.digest()) };
+      return result;
     },
   };
 }
@@ -275,6 +287,7 @@ export class GooglePlayClient {
     private readonly accessToken: string,
     fetchImpl: typeof fetch,
     private readonly maxAabSize: number,
+    private readonly resumable: ResumableUploadOptions = DEFAULT_RESUMABLE_UPLOAD_OPTIONS,
   ) {
     // Workers native fetch rejects a class instance as its receiver.
     // Keep injected fetch functions callable without changing their this value.
@@ -532,11 +545,28 @@ export class GooglePlayClient {
         ...fields,
       };
     };
+    const uploadUrl = `${UPLOAD_ROOT}/applications/${encodeURIComponent(request.packageName)}/edits/${encodeURIComponent(editId)}/apks/${request.versionCode}/deobfuscationFiles/${symbolType}`;
+    const integrityError = () => new PlayAdapterError(409, kind.integrityCode, `Streamed ${kind.label} did not match the Hands identity`);
     let response: Response;
     try {
-      response = await this.fetchImpl(
-        `${UPLOAD_ROOT}/applications/${encodeURIComponent(request.packageName)}/edits/${encodeURIComponent(editId)}/apks/${request.versionCode}/deobfuscationFiles/${symbolType}?uploadType=media`,
-        {
+      response = file.expectedSize >= this.resumable.thresholdBytes
+        // Large files: Google's resumable protocol, one chunk in memory at a time.
+        // The identity is verified before the final chunk is sent.
+        ? await resumableUpload({
+          fetchImpl: this.fetchImpl,
+          accessToken: this.accessToken,
+          uploadUrl,
+          total: file.expectedSize,
+          stage: kind.stage,
+          source: local.stream,
+          options: this.resumable,
+          verify: () => {
+            const hashResult = local.digest();
+            if (hashResult.size !== file.expectedSize || hashResult.sha256 !== file.expectedSha256) throw integrityError();
+          },
+          lengthMismatch: integrityError,
+        })
+        : await this.fetchImpl(`${uploadUrl}?uploadType=media`, {
           method: "POST",
           headers: {
             authorization: `Bearer ${this.accessToken}`,
@@ -544,16 +574,28 @@ export class GooglePlayClient {
           },
           body: local.stream,
           redirect: "manual",
-        },
-      );
+        });
     } catch (error) {
-      if (error instanceof PlayAdapterError) throw error;
+      if (error instanceof PlayAdapterError) {
+        // Upload-protocol failures are Google's answer, so fail-soft may report them;
+        // Hands' own integrity/size failures always throw.
+        if (mode === "soft" && PLAY_UPLOAD_FAILURE_CODES.has(error.code)) {
+          return rejected({
+            error_code: error.code,
+            ...(error.cause_detail?.provider_cause ? { provider_cause: error.cause_detail.provider_cause } : {}),
+          });
+        }
+        throw error;
+      }
       if (mode === "soft") return rejected({ error_code: kind.unavailableCode });
       throw new PlayAdapterError(502, kind.unavailableCode, `Google Play ${kind.label} upload failed`);
     }
     const body = await response.json().catch(() => null) as { deobfuscationFile?: { symbolType?: string } } | null;
     if (!response.ok) {
-      const rejection = playRejection(response.status, body, kind.stage);
+      // 413 on the simple upload reads as a size refusal, not a content rejection.
+      const rejection = response.status === 413
+        ? playUploadFailure("play_upload_too_large", kind.stage, 413, body)
+        : playRejection(response.status, body, kind.stage);
       if (mode === "soft") {
         return rejected({
           error_code: rejection.code,
@@ -566,7 +608,7 @@ export class GooglePlayClient {
     }
     const hashResult = local.digest();
     if (hashResult.size !== file.expectedSize || hashResult.sha256 !== file.expectedSha256) {
-      throw new PlayAdapterError(409, kind.integrityCode, `Streamed ${kind.label} did not match the Hands identity`);
+      throw integrityError();
     }
     // Discovery documents no post-commit GET for deobfuscation files: this
     // upload response is the only provider-side acknowledgement available.

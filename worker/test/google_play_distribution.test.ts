@@ -1326,6 +1326,39 @@ describe("Play promotion route", () => {
     expect(serialised).not.toContain("not-an-identifier");
   });
 
+  it.each([
+    "play_upload_too_large", "play_upload_session_failed", "play_upload_interrupted", "play_upload_incomplete",
+  ])("passes the adapter's mapping upload failure %s through as failure_code with a failed-closed receipt", async (failure) => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      readTrackMaximum: async () => ({ ok: true, value: { max_version_code: 41 } }),
+      promote: async (_input, stream, symbolsStream) => {
+        await new Response(stream).arrayBuffer();
+        if (symbolsStream) await new Response(symbolsStream).arrayBuffer();
+        return { ok: false, error: {
+          status: 502,
+          code: failure,
+          message: `adapter message (stage=upload_mapping; http_status=413)`,
+          cause: { stage: "upload_mapping" },
+        } };
+      },
+    });
+    const res = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error: { code: string; failure_code: string; receipt_id: string } };
+    expect(body.error).toMatchObject({ code: "play_api_error", failure_code: failure, receipt_id: expect.any(String) });
+    const failed = harness.sqlite.prepare(
+      "SELECT verdict, payload_json FROM release_receipts WHERE id=?",
+    ).get(body.error.receipt_id) as { verdict: string; payload_json: string };
+    expect(failed.verdict).toBe("failed-closed");
+    const failedResult = JSON.parse(failed.payload_json).result as { failure_code: string; failure_reason: string };
+    expect(failedResult.failure_reason).toContain(failure);
+    expect(harness.sqlite.prepare("SELECT COUNT(*) AS count FROM play_distribution_state WHERE track='internal' AND version_code=42").get()).toEqual({ count: 0 });
+  });
+
   it("surfaces the adapter symbols rejection fail-closed with a receipt", async () => {
     const harness = await readyRelease("human", "publisher", 42, true);
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
@@ -2335,6 +2368,10 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     ["play_edit_in_review", 409, "edit_in_review"],
     ["play_commit_ambiguous", 502, "edit_state_unknown"],
     ["play_api_rejected", 502, "play_api_error"],
+    ["play_upload_too_large", 502, "play_api_error"],
+    ["play_upload_session_failed", 502, "play_api_error"],
+    ["play_upload_interrupted", 502, "play_api_error"],
+    ["play_upload_incomplete", 502, "play_api_error"],
   ] as const)("commit maps adapter %s to %i %s with a failed-closed receipt", async (failure, status, code) => {
     const h = await readyRelease();
     attachSealedMapping(h);
