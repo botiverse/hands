@@ -35,6 +35,7 @@ import { registerStoreListingCommands } from "./commands/store_listing.js";
 import { registerAppStoreCommands } from "./commands/app_store.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
+import { redactForLog } from "./lib/redact_for_log.js";
 import { readEnv } from "./lib/env.js";
 import { setApiBase, AgentEnvironmentError } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
@@ -173,6 +174,16 @@ program.parseAsync(process.argv).catch((err) => {
       console.error(`Next action: ${info.next_action}`);
     } else if (typeof info.manage_url === "string") {
       console.error(`Next action: see ${info.manage_url}`);
+    }
+    // A non-JSON error body is the one case where the response did not come from our
+    // Worker: every Hands error is `c.json({...})` with a code, so raw text means an
+    // intermediary answered (a Cloudflare 5xx carries an HTML page). Printing a bounded,
+    // redacted excerpt is the only way to tell those apart from a single CI run -- and
+    // without it the body is discarded and the failure is unattributable.
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === "number" && status >= 500 && typeof body === "string") {
+      console.error(`Status: ${status}`);
+      console.error(`Body (first 500 bytes): ${redactForLog(body).slice(0, 500)}`);
     }
     if (readEnv("VERBOSE") === "1" && err.stack) {
       console.error(err.stack);
