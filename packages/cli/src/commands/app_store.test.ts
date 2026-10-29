@@ -46,9 +46,23 @@ async function run(argv: string[], reply: (call: Call) => unknown = () => ({})) 
   return { calls, out };
 }
 
+const PREFLIGHT_PATH = `/api/apps/${APP_ID}/app-store/versions/ver-117/preflight`;
+const PREFLIGHT_BLOCKED = {
+  version_id: "ver-117", version_string: "1.17.0", state: "PREPARE_FOR_SUBMISSION", ready: false,
+  findings: [
+    { severity: "error", check: "localization_required_fields", locale: "zh-Hans", resource: "/v1/appStoreVersionLocalizations/loc-zh", message: "You must provide a value for the attribute 'supportUrl'", fix: "hands app-store localizations push ..." },
+    { severity: "warning", check: "unreadable:age_rating", message: "could not read age_rating: 500 UNEXPECTED_ERROR" },
+    { severity: "info", check: "localization_whats_new", locale: "ja", message: "whatsNew is empty" },
+  ],
+  checked: ["version_state", "build"],
+  not_checkable: [{ check: "app_privacy", reason: "not in the public API" }],
+};
+const PREFLIGHT_READY = { ...PREFLIGHT_BLOCKED, ready: true, findings: [PREFLIGHT_BLOCKED.findings[2]] };
+
 const FIXTURES = fileURLToPath(new URL("../../../../worker/test/fixtures/play-images/", import.meta.url));
 
 afterEach(() => {
+  process.exitCode = undefined;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -62,12 +76,47 @@ describe("hands app-store", () => {
     expect((commit.calls[0]!.body as any).mode).toBe("commit");
   });
 
-  it("submit without --commit only reads status", async () => {
-    const { calls, out } = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0"]);
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /api/apps/${APP_ID}/app-store/status`]);
-    expect(out.join("\n")).toContain("Dry run: would submit 1.17.0");
+  it("submit without --commit only reads status and the preflight, and prints its errors", async () => {
+    const { calls, out } = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0"], () => PREFLIGHT_BLOCKED);
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /api/apps/${APP_ID}/app-store/status`, `GET ${PREFLIGHT_PATH}`]);
+    const text = out.join("\n");
+    expect(text).toContain("Dry run: would submit 1.17.0");
+    expect(text).toContain("You must provide a value for the attribute 'supportUrl'");
+    expect(text).toContain("Apple will likely refuse this submission");
+    // Only errors in the dry run; the full table is `preflight`.
+    expect(text).not.toContain("whatsNew is empty");
+    expect(process.exitCode ?? 0).toBe(0);
+    const json = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0", "--json"], () => PREFLIGHT_BLOCKED);
+    expect(JSON.parse(json.out.join("\n"))).toMatchObject({ mode: "dry_run", preflight: { ready: false } });
+    // An older server without the route: the dry run still works.
+    const old = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0"], () => { throw new Error("404 Not Found"); });
+    expect(old.out.join("\n")).toContain("Preflight unavailable: 404 Not Found");
     const committed = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ submission_id: "sub-1", submitted: true }));
     expect(committed.calls.at(-1)).toMatchObject({ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/submit` });
+  });
+
+  it("preflight prints a table grouped by severity and exits non-zero on any error", async () => {
+    const blocked = await run(["app-store", "preflight", APP_ID, "--version-name", "1.17.0"], () => PREFLIGHT_BLOCKED);
+    expect(blocked.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /api/apps/${APP_ID}/app-store/status`, `GET ${PREFLIGHT_PATH}`]);
+    const text = blocked.out.join("\n");
+    expect(text).toContain("Preflight 1.17.0 (ver-117, PREPARE_FOR_SUBMISSION): NOT READY");
+    const order = ["Errors (1):", "Warnings (1):", "Info (1):", "Checked: version_state, build", "Not checked: app_privacy"].map((h) => text.indexOf(h));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(text).toContain("zh-Hans: You must provide a value for the attribute 'supportUrl'");
+    expect(text).toContain("resource: /v1/appStoreVersionLocalizations/loc-zh");
+    expect(process.exitCode).toBe(1);
+
+    process.exitCode = undefined;
+    const ready = await run(["app-store", "preflight", APP_ID, "--version-id", "ver-117", "--json"], () => PREFLIGHT_READY);
+    // --version-id skips the status lookup.
+    expect(ready.calls.map((c) => c.path)).toEqual([PREFLIGHT_PATH]);
+    expect(JSON.parse(ready.out.join("\n"))).toMatchObject({ ready: true });
+    expect(process.exitCode ?? 0).toBe(0);
+
+    const warningsOnly = await run(["app-store", "preflight", APP_ID, "--version-id", "ver-117"], () => ({ ...PREFLIGHT_BLOCKED, findings: [PREFLIGHT_BLOCKED.findings[1]] }));
+    expect(warningsOnly.out.join("\n")).toContain("Warnings (1):");
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   it("labels a rejected (UNRESOLVED_ISSUES) pending submission and a resubmit", async () => {

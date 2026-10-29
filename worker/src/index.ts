@@ -178,6 +178,7 @@ import {
   handleWithdrawAppStoreVersion,
 } from "./routes/app_store_release";
 import { handlePushAppStoreLocalizations, handlePushAppStoreScreenshots } from "./routes/app_store_metadata";
+import { handleGetAppStorePreflight } from "./routes/app_store_preflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
 import {
   handleGetBetaAppDescription,
@@ -1346,6 +1347,7 @@ bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requi
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/release", requireAppRole("publisher"), handleReleaseAppStoreVersion);
 bindAdmin("post", "/api/apps/:appId/app-store/withdraw", requireAppRole("publisher"), handleWithdrawAppStoreVersion);
 bindAdmin("get", "/api/apps/:appId/app-store/status", requireAppRole("viewer"), handleGetAppStoreReleaseStatus);
+bindAdmin("get", "/api/apps/:appId/app-store/versions/:versionId/preflight", requireAppRole("viewer"), handleGetAppStorePreflight);
 bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);

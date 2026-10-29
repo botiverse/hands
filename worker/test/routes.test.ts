@@ -109,6 +109,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/app-store/versions/{versionId}/localizations",
       "/api/apps/{appId}/app-store/versions/{versionId}/screenshots",
       "/api/apps/{appId}/app-store/versions/{versionId}/release",
+      "/api/apps/{appId}/app-store/versions/{versionId}/preflight",
       "/api/apps/{appId}/app-store/withdraw",
       "/api/apps/{appId}/testflight-crashes",
       "/api/apps/{appId}/testflight-crashes/{submissionId}/log",

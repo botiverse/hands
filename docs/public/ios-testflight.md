@@ -229,7 +229,7 @@ Raft integration actions:
 - `prepare-app-store-version`, `set-app-store-localizations`,
   `set-app-store-release-notes`, `submit-app-store-version`,
   `withdraw-app-store-version`, `release-app-store-version`,
-  `get-app-store-release-status`
+  `get-app-store-release-status`, `get-app-store-preflight`
   (screenshots are multipart; use the CLI)
 
 Agents pass Hands app/build ids and stable beta group ids. The integration
@@ -265,7 +265,8 @@ hands app-store localizations push raft-ios --version-name 1.17.0 --file listing
 # 3. screenshots: shots/<locale>/<display_type>/NN.png
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots              # plan
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots --commit
-# 4. review
+# 4. review: preflight (read-only), then submit
+hands app-store preflight raft-ios --version-name 1.17.0
 hands app-store submit raft-ios --version-name 1.17.0 --commit
 hands app-store status raft-ios --version-name 1.17.0
 hands app-store withdraw raft-ios --version-name 1.17.0 --commit
@@ -273,6 +274,47 @@ hands app-store withdraw raft-ios --version-name 1.17.0 --commit
 hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id>            # plan
 hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id> --commit
 ```
+
+### Preflight: is the version ready for review?
+
+`GET /api/apps/{appId}/app-store/versions/{versionId}/preflight` (app viewer)
+is read-only: every call Hands makes to App Store Connect is a GET. CLI:
+`hands app-store preflight <app> --version-name 1.17.0 [--json]` exits 1 when
+any error is found; `hands app-store submit` without `--commit` prints the
+errors too. Submit itself is not blocked by it.
+
+The response is `{version_id, version_string, state, ready, findings, checked,
+not_checkable}`. Each finding has `severity` (`error`, `warning`, `info`),
+`check`, optional `locale` / `display_type`, `resource`, `message` and `fix`.
+`resource` uses the paths Apple uses in a refused submit's associated errors
+(for example `/v1/appStoreVersionLocalizations/<id>`), and a missing field
+reads as Apple words it ("You must provide a value for the attribute
+'supportUrl'").
+
+| Check | Severity |
+| --- | --- |
+| `version_state`: editable (`PREPARE_FOR_SUBMISSION`, `DEVELOPER_REJECTED`, `REJECTED`, `METADATA_REJECTED`, `INVALID_BINARY`) | error otherwise; `WAITING_FOR_REVIEW` / `IN_REVIEW` is info |
+| `build`: attached, `VALID`, not expired | error |
+| `build`: build's version string differs from the App Store version | warning |
+| `export_compliance`: `usesNonExemptEncryption` unset on the build | warning |
+| `copyright` empty | warning |
+| `localization_required_fields`: description, keywords, supportUrl per locale | error |
+| `localization_whats_new`: empty whatsNew (required unless first version) | info |
+| `localization_lengths`: description 4000, keywords 100, promotionalText 170, whatsNew 4000 | warning |
+| `app_info_localizations`: each version locale has an app name; privacy policy URL on the primary locale | error (privacy URL on other locales: warning) |
+| `screenshots`: primary locale has a 6.9"/6.5" iPhone set (`APP_IPHONE_67` / `APP_IPHONE_65`); every screenshot `COMPLETE` | error |
+| `screenshots`: other locales without screenshots fall back to the primary | info |
+| `screenshots`: iPad sets exist but none 13" (`APP_IPAD_PRO_3GEN_129`) on the primary | warning; when Hands cannot tell whether the app runs on iPad, info |
+| `review_detail`: contact first/last name, phone, email; demo account name and password when `demoAccountRequired` | error |
+| `age_rating`: no age rating declaration | warning |
+| `review_submission`: another version holds an open submission (`WAITING_FOR_REVIEW`, `IN_REVIEW`, `UNRESOLVED_ISSUES`) | error; this version's own submission or a draft is info |
+
+A resource Apple refuses to return becomes a warning `unreadable:<what>` with
+Apple's status, code and detail; the rules that need it are listed in
+`not_checkable`. `ready` is true only with no error, no unreadable resource,
+and every rule run. App Privacy answers are not in the public App Store
+Connect API, and pricing/availability, content rights and categories are not
+read yet: they are always listed in `not_checkable`.
 
 ### Prepare: one unreleased version per platform
 

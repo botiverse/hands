@@ -179,7 +179,7 @@ export async function ascAppIdFor(c: AdminContext, appId: string): Promise<strin
  * Unmatched ids return 404 rather than 403: the caller has no business learning
  * whether that id exists elsewhere.
  */
-async function assertOwnedVersion(
+export async function assertOwnedVersion(
   creds: AscApiCredentials,
   ascAppId: string,
   versionId: string,
