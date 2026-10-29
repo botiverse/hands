@@ -280,7 +280,18 @@ describe("direct build asset upload routes", () => {
       const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
       const failed = await app.request(`${url}/complete`, { method: "POST" }, env);
       expect(failed.status).toBe(503);
-      expect(await failed.json()).toMatchObject({ code: "ASSET_UPLOAD_STORAGE_FAILED", phase, retryable: true, state: "pending" });
+      const failureBody = await failed.json() as any;
+      expect(failureBody).toMatchObject({ code: "ASSET_UPLOAD_STORAGE_FAILED", phase, retryable: true, state: "pending" });
+      // Failures that happen before the concurrent hash/seal block (staging_head,
+      // staging_read, seal_readback) carry no timings, and must not claim to. Only a
+      // failure inside the block can say which stage ran long.
+      if (phase === "seal_write") {
+        expect(typeof failureBody.verification_elapsed_ms).toBe("number");
+        expect(failureBody.verification_elapsed_ms).toBeGreaterThanOrEqual(0);
+        expect(typeof failureBody.slowest_stage).toBe("string");
+      } else {
+        expect(failureBody.verification_elapsed_ms).toBeUndefined();
+      }
       expect(bucket.objects.has(attempt.staging_key)).toBe(true);
       expect(await (await app.request(url, {}, env)).json()).toMatchObject({ state: "pending", can_retry_complete: true });
       expect((await app.request(`${url}/complete`, { method: "POST" }, env)).status).toBe(200);

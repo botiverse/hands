@@ -713,9 +713,18 @@ async function failVerification(
   row: DirectUploadRow,
   leaseId: string,
   reason: string,
+  detail?: { phase?: string | null; elapsedMs?: number },
 ): Promise<boolean> {
   const now = Date.now();
-  const receipt = `verification_failed:${reason}:${crypto.randomUUID()}`;
+  // The receipt is parsed positionally (`verification_failed:<reason>:<uuid>`), so the
+  // diagnostic suffix is appended at the END and uses `@` rather than `:`. Readers keep
+  // working unchanged; new readers can recover which stage ran long and for how long.
+  const diagnostic = detail?.phase
+    ? `@${detail.phase}@${Math.round(detail.elapsedMs ?? 0)}`
+    : detail?.elapsedMs !== undefined
+      ? `@lease@${Math.round(detail.elapsedMs)}`
+      : "";
+  const receipt = `verification_failed:${reason}:${crypto.randomUUID()}${diagnostic}`;
   const failed = await c.env.DB.prepare(
     `UPDATE build_asset_ingest_attempt
         SET state = 'failed', cleanup_state = 'tombstoned', cleanup_receipt = ?1,
@@ -732,7 +741,13 @@ async function failVerification(
   return true;
 }
 
-async function retryStorageVerification(c: AdminContext, row: DirectUploadRow, leaseId: string, phase: string) {
+async function retryStorageVerification(
+  c: AdminContext,
+  row: DirectUploadRow,
+  leaseId: string,
+  phase: string,
+  diagnostics?: { phase?: string | null; elapsedMs?: number },
+) {
   // The failed operation has settled. Retain staging bytes and the generation
   // ledger; a later successful verifier or cleanup reaps any partial seal.
   const released = await c.env.DB.prepare(
@@ -741,7 +756,13 @@ async function retryStorageVerification(c: AdminContext, row: DirectUploadRow, l
   ).bind(row.asset_id, row.attempt, leaseId).run();
   if ((released.meta?.changes ?? 0) !== 1) return completeUploadContention(c, row.app_id, row.build_id, row.asset_id);
   c.header("Retry-After", String(UPLOAD_RETRY_SECONDS));
-  return c.json({ error: "storage verification failed; retry the same completion without re-uploading", code: "ASSET_UPLOAD_STORAGE_FAILED", phase, state: "pending", retryable: true }, 503);
+  return c.json({
+    error: "storage verification failed; retry the same completion without re-uploading",
+    code: "ASSET_UPLOAD_STORAGE_FAILED", phase, state: "pending", retryable: true,
+    // Slowest stage and total time, so a stall on a large file is attributable from the
+    // response alone instead of only from state that lapses with the lease.
+    ...(diagnostics ? { slowest_stage: diagnostics.phase ?? null, verification_elapsed_ms: diagnostics.elapsedMs ?? null } : {}),
+  }, 503);
 }
 
 function isTransientUploadError(error: unknown): boolean {
@@ -886,26 +907,42 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   // pump, so it cannot leave verification waiting for a consumer forever.
   let failurePhase: string | null = null;
   const failTogether = <T>(operation: Promise<T>, phase: string): Promise<T> => operation.catch((error: unknown) => { failurePhase ??= phase; abort.abort(error); throw error; });
+  // Time each stage so a stalled verification says WHICH stage stalled. Without this the
+  // only durable trace is `state = 'verifying'` until the lease lapses, which is
+  // indistinguishable between "slow write", "hung stream" and "finished but lost the race
+  // to seal". Observed on a 282 MB mapping that never sealed inside the 15 minute lease.
+  const verifyStartedAt = Date.now();
+  const stageTimings: Record<string, number> = {};
+  const timed = <T>(operation: Promise<T>, stage: string): Promise<T> => {
+    const startedAt = Date.now();
+    return operation.finally(() => { stageTimings[stage] = Date.now() - startedAt; });
+  };
+  const slowestStage = (): string => {
+    const entries = Object.entries(stageTimings);
+    if (entries.length === 0) return "unknown";
+    return entries.sort((a, b) => b[1] - a[1])[0][0];
+  };
   const [hashResult, pumpResult, putResult] = await Promise.allSettled([
-    failTogether(hashBody(hashStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: abort.signal })), "staging_stream"),
-    failTogether(fixed.pump, "seal_stream"),
-    failTogether(c.env.APK_BUCKET.put(finalKey, fixed.readable, {
+    timed(failTogether(hashBody(hashStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: abort.signal })), "staging_stream"), "staging_stream"),
+    timed(failTogether(fixed.pump, "seal_stream"), "seal_stream"),
+    timed(failTogether(c.env.APK_BUCKET.put(finalKey, fixed.readable, {
       httpMetadata: { contentType },
       customMetadata: { sha256: row.file_hash, build_id: buildId, asset_id: assetId },
-    }), "seal_write"),
+    }), "seal_write"), "seal_write"),
   ]);
+  const verifyElapsedMs = Date.now() - verifyStartedAt;
   if (hashResult.status === "rejected" || pumpResult.status === "rejected" || putResult.status === "rejected") {
     const failures = [hashResult, pumpResult, putResult].filter((result) => result.status === "rejected");
     const integrityFailure = failures.find((result) => result.status === "rejected" && result.reason instanceof UploadStreamSizeError);
     if (!integrityFailure) {
-      return retryStorageVerification(c, row, leaseId, failurePhase ?? "staging_stream");
+      return retryStorageVerification(c, row, leaseId, failurePhase ?? "staging_stream", { phase: slowestStage(), elapsedMs: verifyElapsedMs });
     }
-    if (!await failVerification(c, row, leaseId, "stream_size_mismatch")) return completeUploadContention(c, appId, buildId, assetId);
+    if (!await failVerification(c, row, leaseId, "stream_size_mismatch", { phase: slowestStage(), elapsedMs: verifyElapsedMs })) return completeUploadContention(c, appId, buildId, assetId);
     return c.json({ error: "streamed asset size differs from declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH", reason: "stream_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: (integrityFailure.reason as UploadStreamSizeError).actualBytes } }, 422);
   }
   const actual = hashResult.value;
   if (actual.size !== row.size_bytes || actual.sha256 !== row.file_hash.toLowerCase()) {
-    if (!await failVerification(c, row, leaseId, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch")) {
+    if (!await failVerification(c, row, leaseId, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", { phase: slowestStage(), elapsedMs: verifyElapsedMs })) {
       return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
     }
     return c.json({
