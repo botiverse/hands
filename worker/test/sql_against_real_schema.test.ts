@@ -39,7 +39,7 @@ function literalStatements(src: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
     const text = m[1] ?? m[2];
-    if (!VERB.test(text)) continue;
+    if (text === undefined || !VERB.test(text)) continue;
     // Skip interpolated statements: the identifiers are runtime values.
     if (/\$\{/.test(text)) continue;
     // Skip cases where a verb-looking string is actually a message fragment.
