@@ -56,7 +56,7 @@ describe("App Store release: bundle id comes from a column that exists", () => {
     const re = /prepare\(\s*\n?\s*"([^"]+)"/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src)) !== null) {
-      const q = m[1];
+      const q = m[1] ?? "";
       if (/^\s*(SELECT|INSERT|UPDATE|DELETE)/i.test(q)) sqls.push(q);
     }
     expect(sqls.length).toBeGreaterThan(0);
@@ -75,7 +75,9 @@ describe("App Store release: bundle id comes from a column that exists", () => {
       ).not.toThrow();
     }
 
-    const row = db.prepare(normalise(bundleSql[0])).get("app-1") as { bundle_id: string | null };
+    const bundleStatement = bundleSql[0];
+    expect(bundleStatement).toBeDefined();
+    const row = db.prepare(normalise(bundleStatement ?? "")).get("app-1") as { bundle_id: string | null };
     expect(row.bundle_id).toBe("build.raft.app");
     db.close();
   });
