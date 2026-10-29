@@ -280,7 +280,18 @@ describe("direct build asset upload routes", () => {
       const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
       const failed = await app.request(`${url}/complete`, { method: "POST" }, env);
       expect(failed.status).toBe(503);
-      expect(await failed.json()).toMatchObject({ code: "ASSET_UPLOAD_STORAGE_FAILED", phase, retryable: true, state: "pending" });
+      const failureBody = await failed.json() as any;
+      expect(failureBody).toMatchObject({ code: "ASSET_UPLOAD_STORAGE_FAILED", phase, retryable: true, state: "pending" });
+      // Failures that happen before the concurrent hash/seal block (staging_head,
+      // staging_read, seal_readback) carry no timings, and must not claim to. Only a
+      // failure inside the block can say which stage ran long.
+      if (phase === "seal_write") {
+        expect(typeof failureBody.verification_elapsed_ms).toBe("number");
+        expect(failureBody.verification_elapsed_ms).toBeGreaterThanOrEqual(0);
+        expect(typeof failureBody.slowest_stage).toBe("string");
+      } else {
+        expect(failureBody.verification_elapsed_ms).toBeUndefined();
+      }
       expect(bucket.objects.has(attempt.staging_key)).toBe(true);
       expect(await (await app.request(url, {}, env)).json()).toMatchObject({ state: "pending", can_retry_complete: true });
       expect((await app.request(`${url}/complete`, { method: "POST" }, env)).status).toBe(200);
@@ -855,5 +866,30 @@ describe("direct build asset upload routes", () => {
     expect(sqlite.prepare("SELECT artifact_mode, status, source, version_name, version_code FROM builds WHERE id = 'legacy-build'").get()).toEqual({
       artifact_mode: "hands_r2", status: "succeeded", source: "external-import", version_name: "1.0.32", version_code: 1000032,
     });
+  });
+});
+
+describe("cleanup receipt format stays readable by both parsers", () => {
+  // The receipt carries a diagnostic suffix now (@stage@elapsedMs). Two places read it:
+  // uploadStatus' regex and the cron pass' slice+split. Both must keep extracting the
+  // same reason from new receipts, and must still cope with pre-existing ones.
+  const reasonOf = (receipt: string) => receipt.match(/^verification_failed:([^:]+):/)?.[1] ?? null;
+  const reasonOfCron = (receipt: string) =>
+    receipt.slice("verification_failed:".length).split(":", 1)[0] || "verification_failed";
+
+  it.each([
+    ["legacy receipt", "verification_failed:sha256_mismatch:crashed-worker"],
+    ["receipt with diagnostics", "verification_failed:stream_size_mismatch:uuid-abc@seal_write@841203"],
+    ["receipt with only elapsed", "verification_failed:size_mismatch:uuid-def@lease@910500"],
+  ])("%s yields the same reason in both parsers", (_label, receipt) => {
+    expect(reasonOf(receipt)).toBe(reasonOfCron(receipt));
+    expect(reasonOf(receipt)).toMatch(/^(sha256_mismatch|stream_size_mismatch|size_mismatch)$/);
+  });
+
+  it("the diagnostic never lands in the reason", () => {
+    const receipt = "verification_failed:sha256_mismatch:uuid-xyz@seal_write@12";
+    expect(reasonOf(receipt)).toBe("sha256_mismatch");
+    expect(reasonOf(receipt)).not.toContain("@");
+    expect(reasonOf(receipt)).not.toContain("seal_write");
   });
 });
