@@ -10420,9 +10420,45 @@ describe("quiver public API v2 — scope resolution", () => {
       env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-advisory").first(),
     ).resolves.toBeNull();
     const audit = await env.DB.prepare(
-      "SELECT id FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete'",
-    ).bind("app-scope").first();
+      "SELECT id FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete' AND payload LIKE ?",
+    ).bind("app-scope", "%asset-delete-advisory%").first();
     expect(audit).not.toBeNull();
+  });
+
+  it("still reports success when both advisory counts are zero but the rows landed", async () => {
+    // D1 may report 0 for the delete as well as the audit insert. Treating only the audit
+    // count as unreliable would pass the fallback and then return 409 "asset not deleted"
+    // for a delete that actually happened -- the same defect with a different status code.
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-bothzero", "build-delete-bothzero", [["full", "all"]], {
+      versionCode: 17, versionName: "1.0.17",
+    });
+    const hash = "d".repeat(64);
+    const r2Key = "apps/app-scope/bothzero.patch.gz";
+    await seedAsset(env, "build-delete-bothzero", "asset-delete-bothzero", {
+      artifactKind: "android-delta", filetype: "patch", sizeBytes: 123, fileHash: hash, r2Key,
+    });
+    env.APK_BUCKET = { head: async (key: string) => key === r2Key ? { size: 123 } : null, delete: async () => undefined };
+
+    const realBatch = env.DB.batch.bind(env.DB);
+    env.DB = {
+      ...env.DB,
+      async batch(statements: any[]) {
+        const results = await realBatch(statements);
+        return results.map((r: any) => ({ ...r, meta: { ...r.meta, changes: 0 } }));
+      },
+    } as any;
+
+    const response = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-bothzero", "asset-delete-bothzero", {
+        expected_file_hash: hash, expected_size_bytes: "123",
+      }),
+    );
+    expect(response.status).toBe(200);
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-bothzero").first(),
+    ).resolves.toBeNull();
   });
 
 
