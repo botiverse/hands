@@ -10398,7 +10398,8 @@ describe("quiver public API v2 — scope resolution", () => {
       delete: async () => undefined,
     };
 
-    const realBatch = env.DB.batch.bind(env.DB);
+    const dbBeforeAdvisory = env.DB as unknown as D1Database;
+    const realBatch = dbBeforeAdvisory.batch.bind(dbBeforeAdvisory);
     env.DB = {
       ...env.DB,
       async batch(statements: any[]) {
@@ -10441,7 +10442,8 @@ describe("quiver public API v2 — scope resolution", () => {
     });
     env.APK_BUCKET = { head: async (key: string) => key === r2Key ? { size: 123 } : null, delete: async () => undefined };
 
-    const realBatch = env.DB.batch.bind(env.DB);
+    const dbBeforeAdvisory = env.DB as unknown as D1Database;
+    const realBatch = dbBeforeAdvisory.batch.bind(dbBeforeAdvisory);
     env.DB = {
       ...env.DB,
       async batch(statements: any[]) {
