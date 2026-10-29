@@ -31,7 +31,7 @@ export function installAscFake(handler: (call: AscCall) => AscReply | Promise<As
     }
     const headers: Record<string, string> = {};
     new Headers(init?.headers as HeadersInit | undefined).forEach((value, key) => { headers[key] = value; });
-    const call: AscCall = { method, url, path: url.startsWith(ASC) ? url.slice(ASC.length) : url, body, headers, rawBody: init?.body };
+    const call: AscCall = { method, url, path: new URL(url).origin === new URL(ASC).origin ? url.slice(ASC.length) : url, body, headers, rawBody: init?.body };
     calls.push(call);
     const reply = await handler(call);
     if (reply instanceof Response) return reply;

@@ -1211,9 +1211,27 @@ export async function listAppStoreVersions(
       if (version) out.push(version);
     }
     const next = typeof res.links?.next === "string" ? res.links.next : null;
-    path = next ? (next.startsWith(ASC_API_BASE) ? next.slice(ASC_API_BASE.length) : null) : null;
+    path = next ? sameOriginAscPath(next) : null;
   }
   return out;
+}
+
+/**
+ * Follow Apple's `links.next` only when it points at the App Store Connect API
+ * origin itself. A prefix check would accept `https://api.appstoreconnect.apple.com.evil.example/…`
+ * and send the API token there; compare parsed origins instead.
+ */
+export function sameOriginAscPath(link: string): string | null {
+  let url: URL;
+  let base: URL;
+  try {
+    url = new URL(link);
+    base = new URL(ASC_API_BASE);
+  } catch {
+    return null;
+  }
+  if (url.origin !== base.origin) return null;
+  return `${url.pathname}${url.search}`;
 }
 
 /** Read one version directly, with the build relationship. Used for read-back after writes. */
