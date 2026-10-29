@@ -207,6 +207,8 @@ export function errorBody(error: unknown): { status: number; body: Record<string
       code: "ASC_API_REJECTED",
       status: error.status,
       ...(error.detail ? { provider_cause: error.detail } : {}),
+      // Apple's actual blockers when the top-level detail only says "check associated errors".
+      ...(error.associated.length > 0 ? { provider_associated_errors: error.associated } : {}),
     } };
   }
   const message = error instanceof Error ? error.message : String(error);

@@ -415,3 +415,38 @@ describe("App Store submission", () => {
     expect(calls[1]!.body.data.attributes).toEqual({ whatsNew: "修复若干问题" });
   });
 });
+
+describe("ASC associated errors", () => {
+  it("keeps Apple's per-resource blockers from meta.associatedErrors", async () => {
+    // "This resource cannot be reviewed, please check associated errors to see why."
+    // names nothing; the blockers are only in meta.associatedErrors (1.17.0, 2026-10-29).
+    const { parseAssociatedErrors } = await import("../src/lib/asc_api");
+    const out = parseAssociatedErrors([{
+      status: "409", code: "STATE_ERROR.ENTITY_STATE_INVALID",
+      title: "appStoreVersions with id 'v1' is not in valid state.",
+      detail: "This resource cannot be reviewed, please check associated errors to see why.",
+      meta: { associatedErrors: {
+        "/v1/appScreenshotSets/s1": [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" }],
+        "/v1/appInfoLocalizations/l1": [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: "name required" }],
+      } },
+    }]);
+    expect(out).toEqual([
+      { resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" },
+      { resource: "/v1/appInfoLocalizations/l1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "name required" },
+    ]);
+  });
+
+  it("is bounded and tolerates junk", async () => {
+    const { parseAssociatedErrors } = await import("../src/lib/asc_api");
+    expect(parseAssociatedErrors(undefined)).toEqual([]);
+    expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": "nope" } } }])).toEqual([]);
+    // null, string and number entries are skipped without throwing; valid ones survive.
+    expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": [null, "s", 7, { code: "C", detail: "ok" }] } } }]))
+      .toEqual([{ resource: "/x", code: "C", detail: "ok" }]);
+    expect(parseAssociatedErrors([null, "s", 7])).toEqual([]);
+    const many = Array.from({ length: 50 }, () => ({ code: "C", detail: "d".repeat(1000) }));
+    const out = parseAssociatedErrors([{ meta: { associatedErrors: { "/x": many } } }]);
+    expect(out).toHaveLength(30);
+    expect(out[0]!.detail!.length).toBe(300);
+  });
+});

@@ -76,14 +76,54 @@ export async function createAscJwt(
   return `${header}.${payload}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
+/** One entry of Apple's `meta.associatedErrors`: which resource is blocking, and why. */
+export interface AscAssociatedError {
+  resource: string;
+  code: string | null;
+  detail: string | null;
+}
+
 export class AscApiError extends Error {
   status: number;
   detail: string | null;
-  constructor(status: number, message: string, detail: string | null = null) {
+  /**
+   * Apple's per-resource reasons. A refusal like "This resource cannot be reviewed,
+   * please check associated errors to see why." names nothing by itself; the actual
+   * blockers (missing screenshots, missing localization fields, ...) are only here.
+   */
+  associated: AscAssociatedError[];
+  constructor(status: number, message: string, detail: string | null = null, associated: AscAssociatedError[] = []) {
     super(message);
     this.status = status;
     this.detail = detail;
+    this.associated = associated;
   }
+}
+
+const MAX_ASSOCIATED_ERRORS = 30;
+const MAX_ASSOCIATED_TEXT = 300;
+
+/** Flatten `errors[].meta.associatedErrors` ({ "<resource path>": [{code, detail}] }), bounded. */
+export function parseAssociatedErrors(errors: unknown): AscAssociatedError[] {
+  const out: AscAssociatedError[] = [];
+  if (!Array.isArray(errors)) return out;
+  const text = (v: unknown) => (typeof v === "string" && v ? v.slice(0, MAX_ASSOCIATED_TEXT) : null);
+  for (const error of errors) {
+    const map = (error as { meta?: { associatedErrors?: unknown } })?.meta?.associatedErrors;
+    if (!map || typeof map !== "object") continue;
+    for (const [resource, list] of Object.entries(map as Record<string, unknown>)) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (out.length >= MAX_ASSOCIATED_ERRORS) return out;
+        // A null/primitive entry must not throw here: that would replace Apple's
+        // original AscApiError with a TypeError.
+        if (!item || typeof item !== "object") continue;
+        const i = item as { code?: unknown; detail?: unknown; title?: unknown };
+        out.push({ resource: resource.slice(0, MAX_ASSOCIATED_TEXT), code: text(i.code), detail: text(i.detail) ?? text(i.title) });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -122,6 +162,7 @@ export async function ascRequest<T>(
       res.status,
       first?.title ?? `App Store Connect API ${method} ${path} failed (${res.status})`,
       first?.detail ?? (parsed ? null : text.slice(0, 500) || null),
+      parseAssociatedErrors(errors),
     );
   }
   return parsed as T;

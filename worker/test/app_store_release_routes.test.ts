@@ -213,3 +213,17 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("INVALID_RELEASE_TYPE");
   });
 });
+
+describe("App Store error body", () => {
+  it("passes Apple's associated errors through to the caller", async () => {
+    const { errorBody } = await import("../src/routes/app_store_release");
+    const { AscApiError } = await import("../src/lib/asc_api");
+    const { status, body } = errorBody(new AscApiError(409, "not in valid state", "check associated errors",
+      [{ resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" }]));
+    expect(status).toBe(502);
+    expect(body.provider_associated_errors).toEqual([
+      { resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" },
+    ]);
+    expect(errorBody(new AscApiError(409, "x")).body.provider_associated_errors).toBeUndefined();
+  });
+});
