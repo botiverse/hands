@@ -97,16 +97,20 @@ describe("App Store submission guards", () => {
   it("refuses to reuse a version Apple is holding, so an in-review 1.12 cannot be modified", async () => {
     // Reusing a version that is waiting for / in review would attach a different build
     // to a submission under Apple's consideration -- one mis-call corrupts it.
-    vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
       const u = String(url);
+      // Any write would be a bug; fail loudly if one happens.
+      if ((init?.method ?? "GET") !== "GET") throw new Error(`unexpected write to ${u}`);
       if (u.includes("/appStoreVersions?")) {
         return new Response(JSON.stringify({ data: [{
           id: "ver-112",
           attributes: { versionString: "1.12", appStoreState: "WAITING_FOR_REVIEW", platform: "IOS" },
         }] }));
       }
-      // Any write would be a bug; fail loudly if one happens.
-      throw new Error(`unexpected write to ${u}`);
+      // The build-ownership read now runs before any decision, so no write can
+      // precede it; it is a read and is served.
+      if (u.includes("/v1/builds?")) return new Response(JSON.stringify({ data: [{ id: "build-x" }] }));
+      throw new Error(`unexpected request to ${u}`);
     }));
     const res = await handlePrepareAppStoreVersion(
       await makeContext({ version_string: "1.12", asc_build_id: "build-x" }),

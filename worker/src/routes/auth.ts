@@ -1667,7 +1667,7 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       {
         name: "prepare-app-store-version",
         description:
-          "Create (or reuse) the App Store version for a marketing version and attach an already-processed build to it. release_type MANUAL parks it at PENDING_DEVELOPER_RELEASE after approval instead of shipping automatically. Requires app publisher.",
+          "Prepare the App Store version for a marketing version and attach a processed build: reuse a version with that string, else rename the one editable never-released version (e.g. DEVELOPER_REJECTED after a withdrawal), else create. Returns action created|reused|renamed (+previous_version_string), read back from Apple. 409 VERSION_IN_FLIGHT names a version in review or pending release: withdraw first. Requires app publisher.",
         endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions" },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
@@ -1675,6 +1675,19 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           platform: { type: "string", in: "body", required: false, description: "IOS (default) or MAC_OS." },
           release_type: { type: "string", in: "body", required: false, description: "MANUAL (default) | AFTER_APPROVAL | SCHEDULED." },
           asc_build_id: { type: "string", in: "body", required: false, description: "App Store Connect build id to attach. A version with no build cannot be reviewed." },
+          mode: { type: "string", in: "body", required: false, description: "commit (default) or dry_run (plan only, no writes)." },
+        },
+      },
+      {
+        name: "set-app-store-localizations",
+        description:
+          "Write App Store listing text per locale (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew). mode is required: dry_run returns the per-field plan with no writes; commit PATCHes changed fields, creates missing locales, and fails unless Apple's read-back matches. Screenshots are multipart: use `hands app-store screenshots push`. Requires app publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/app-store/versions/{version_id}/localizations" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "path", required: true, description: "App Store version id from prepare-app-store-version." },
+          mode: { type: "string", in: "body", required: true, description: "dry_run or commit." },
+          localizations: { type: "object", in: "body", required: true, description: "Locale-to-fields map, e.g. {\"en-US\":{\"keywords\":\"chat,agents\"}}. Limits: description/whatsNew 4000, keywords 100, promotionalText 170." },
         },
       },
       {

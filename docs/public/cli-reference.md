@@ -536,6 +536,32 @@ For raw CI drafts, a single `--changelog-file ./changelog.txt` is still valid.
 For reviewed notes, prefer repeatable `lang=file` entries such as
 `--changelog-file zh=zh.md --changelog-file en=en.md`.
 
+## App Store release
+
+`hands app-store` drives an App Store submission through Hands. Every command
+that writes to Apple is a dry run unless `--commit` is passed. Details, the
+prepare decision table, and the screenshot size table:
+[iOS releases & TestFlight](ios-testflight.md#app-store-release-version-listing-screenshots-review).
+
+```bash
+hands app-store status raft-ios --version 1.17.0
+# create, reuse, or rename the version (a withdrawn 1.12.0 becomes 1.17.0)
+hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id> [--commit]
+# listing text: { "en-US": { "description": "...", "keywords": "...", "promotionalText": "...",
+#                 "whatsNew": "...", "supportUrl": "...", "marketingUrl": "..." } }
+hands app-store localizations push raft-ios --version 1.17.0 --file listing.json [--commit]
+# screenshots: shots/<locale>/<display_type>/NN.png, e.g. shots/en-US/APP_IPHONE_67/01.png
+hands app-store screenshots push raft-ios --version 1.17.0 --dir shots [--locales en-US,ja] [--commit]
+hands app-store submit raft-ios --version 1.17.0 [--commit]
+hands app-store withdraw raft-ios --version 1.17.0 [--commit]
+```
+
+`--version-id <asc-version-id>` can replace `--version` on the push commands.
+Screenshot files are ordered by name, numeric-aware (`2-` before `10-`). A
+push of screenshots identical to Apple's (same MD5s, same order) writes
+nothing. A refused or failed push prints the per-set or per-locale plan
+before the error; `--json` prints the full response.
+
 ## Publish HarmonyOS / OHOS
 
 Use `builds publish-ohos` after CI has assembled and signed the App Pack. The

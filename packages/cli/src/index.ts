@@ -32,6 +32,7 @@ import { registerWebhookCommands } from "./commands/webhooks.js";
 import { registerTestflightCommands } from "./commands/testflight.js";
 import { registerAgcCommands } from "./commands/agc.js";
 import { registerStoreListingCommands } from "./commands/store_listing.js";
+import { registerAppStoreCommands } from "./commands/app_store.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { readEnv } from "./lib/env.js";
@@ -89,6 +90,12 @@ Common recipes:
   hands store-listing pull <app> --out listing.json   Google Play listing text as JSON
   hands store-listing push <app> --listing listing.json [--commit]
                                                        Dry-run (default) or commit listing text to Play
+  hands app-store prepare <app> --version 1.17.0 --build <ascBuildId> [--commit]
+                                                       Create, reuse, or rename the App Store version (dry run by default)
+  hands app-store screenshots push <app> --version 1.17.0 --dir shots [--commit]
+                                                       shots/<locale>/<display_type>/NN.png; identical sets skipped
+  hands app-store localizations push <app> --version 1.17.0 --file listing.json [--commit]
+  hands app-store submit|withdraw <app> --version 1.17.0 [--commit]
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -127,6 +134,7 @@ registerWebhookCommands(program);
 registerTestflightCommands(program);
 registerAgcCommands(program);
 registerStoreListingCommands(program);
+registerAppStoreCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);

@@ -787,20 +787,65 @@ describe("Apple ingress — build identity enrichment", () => {
     expect(latestPayload(sql).payload.build).toBeNull();
   });
 
-  it("does not call ASC for events whose resource is not a build", async () => {
+  function versionPayload(sql: Database.Database) {
+    const row = sql
+      .prepare(
+        "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed'",
+      )
+      .get() as { payload_json: string };
+    return JSON.parse(row.payload_json).payload;
+  }
+
+  it("does not look up a build for version events; reads only the version string", async () => {
     const { sql, send } = await setup();
     await withAscCredentials(sql);
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({
+      data: { type: "appStoreVersions", id: "version-1", attributes: { versionString: "1.17.0" } },
+    })));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    expect((await send(fixture("version-event"))).status).toBe(200);
+
+    // Exactly one GET, for the version resource itself -- no build-relationship hop.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String((fetchSpy.mock.calls[0] as unknown[])[0])).toBe(
+      "https://api.appstoreconnect.apple.com/v1/appStoreVersions/version-1?fields[appStoreVersions]=versionString",
+    );
+    const payload = versionPayload(sql);
+    expect(payload.build).toBeNull();
+    expect(payload.version_string).toBe("1.17.0");
+    expect(payload.version_lookup).toBe("ok");
+  });
+
+  it("still delivers a version event when the version lookup fails, and says so", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
+
+    expect((await send(fixture("version-event"))).status).toBe(200);
+
+    const payload = versionPayload(sql);
+    expect(payload.state).toBe("IN_REVIEW");
+    expect("version_string" in payload).toBe(true);
+    expect(payload.version_string).toBeNull();
+    expect(payload.version_lookup).toBe("failed");
+  });
+
+  it("reports version_lookup failed without calling Apple when the app has no ASC credentials", async () => {
+    const { sql, send } = await setup();
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
 
     expect((await send(fixture("version-event"))).status).toBe(200);
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    const row = sql
-      .prepare(
-        "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed'",
-      )
-      .get() as { payload_json: string };
-    expect(JSON.parse(row.payload_json).payload.build).toBeNull();
+    expect(versionPayload(sql).version_lookup).toBe("failed");
+  });
+
+  it("does not add version keys to non-version events", async () => {
+    const { sql, send } = await setup();
+    vi.stubGlobal("fetch", vi.fn());
+    expect((await send(betaEvent())).status).toBe(200);
+    expect("version_string" in latestPayload(sql).payload).toBe(false);
   });
 });
