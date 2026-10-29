@@ -27,6 +27,7 @@ export interface OperationLog {
     | "testflight-upload"
     | "testflight-publish"
     | "testflight-expire"
+    | "app-store-release"
     | "delta-generate";
   status: "pending" | "in_progress" | "success" | "failed" | "cancelled";
   parent_op_id: string | null;
@@ -185,10 +186,12 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
-  if (existing.kind === "testflight-expire") {
+  if (existing.kind === "testflight-expire" || existing.kind === "app-store-release") {
     return c.json(
       {
-        error: "retry cannot rewrite a durable TestFlight expire receipt; invoke the exact expire action again",
+        error: existing.kind === "app-store-release"
+          ? "retry cannot rewrite a durable App Store release receipt; invoke the exact release action again"
+          : "retry cannot rewrite a durable TestFlight expire receipt; invoke the exact expire action again",
         operation: existing,
       },
       400,
@@ -241,9 +244,9 @@ export async function handleDeleteOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
   if (!existing) return c.json({ error: "not found" }, 404);
-  if (existing.kind === "testflight-expire") {
+  if (existing.kind === "testflight-expire" || existing.kind === "app-store-release") {
     return c.json(
-      { error: "durable TestFlight expire receipts cannot be deleted" },
+      { error: "durable TestFlight expire and App Store release receipts cannot be deleted" },
       409,
     );
   }

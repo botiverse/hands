@@ -68,17 +68,22 @@ export function makeContext(opts: {
   body?: unknown;
   request?: Request;
   params?: Record<string, string>;
+  /** Answer a `.first()` the default stub does not know (e.g. a receipt lookup). */
+  first?: (sql: string, args: unknown[]) => unknown;
 }) {
   const audits: Array<{ action: string; payload: any }> = [];
+  /** Every statement `.run()` executed, in order (SQL + bound args). */
+  const statements: Array<{ sql: string; args: unknown[] }> = [];
   const db = {
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
         first: async () => {
           if (/SELECT id FROM apps/i.test(sql)) return { id: "app-1" };
           if (/FROM channels/i.test(sql)) return { bundle_id: "build.raft.app" };
-          return null;
+          return opts.first ? (opts.first(sql, args) ?? null) : null;
         },
         run: async () => {
+          statements.push({ sql, args });
           if (/INSERT INTO audit_logs/i.test(sql)) {
             audits.push({ action: String(args[2]), payload: JSON.parse(String(args[6])) });
           }
@@ -105,7 +110,7 @@ export function makeContext(opts: {
     get: () => undefined,
     json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
   } as any;
-  return { c, audits };
+  return { c, audits, statements };
 }
 
 /**

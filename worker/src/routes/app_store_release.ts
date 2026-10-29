@@ -2,22 +2,28 @@
  * App Store release actions: create a version, attach a build, write localized
  * release notes, submit for review, and read back review state.
  *
+ * Releasing an approved version (PENDING_DEVELOPER_RELEASE) is automated too, behind
+ * an explicit mode plus exact version/build confirmation, because it is irreversible.
+ *
  * Scope note: submitting for review and reporting the outcome are automated here.
  * Acting on a rejection is deliberately NOT automated -- a rejection usually needs
  * a human to decide whether the fix is copy or code, so the reason is surfaced and
  * the decision is left to a person.
  */
 import type { Context } from "hono";
-import type { AdminEnv } from "../middleware/auth";
+import { currentActor, type AdminEnv } from "../middleware/auth";
 import { getAscCredentials } from "../lib/asc_credentials";
 import { insertAuditLog } from "../lib/permissions";
+import { createOperation, updateOperation } from "./operations";
 import {
   AscApiError,
   type AscApiCredentials,
   type AscAppStoreVersion,
+  type AppStoreReleaseType,
   attachBuildToVersion,
   cancelReviewSubmission,
   createAppStoreVersion,
+  createAppStoreVersionReleaseRequest,
   findAppStoreVersion,
   findAppStoreVersionById,
   getAppStoreVersion,
@@ -29,6 +35,7 @@ import {
   resolveAscAppId,
   setVersionLocalization,
   submitVersionForReview,
+  updateAppStoreVersion,
 } from "../lib/asc_api";
 
 export type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -248,7 +255,7 @@ export function planPrepare(versions: AscAppStoreVersion[], versionString: strin
       code: cls === "unknown" ? "VERSION_STATE_UNKNOWN" : "VERSION_NOT_EDITABLE",
       ...versionRef(exact),
       next_action: state === "PENDING_DEVELOPER_RELEASE"
-        ? "this version is approved and waiting to be released; release or remove it before preparing another"
+        ? `this version is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${exact.id} --version ${exact.versionString ?? versionString} --commit\`) or remove it in App Store Connect before preparing another`
         : cls === "released"
           ? "this version string is already released; choose a higher version_string"
           : "withdraw the pending submission first if the version must be changed",
@@ -276,7 +283,7 @@ export function planPrepare(versions: AscAppStoreVersion[], versionString: strin
       next_action: state === "WAITING_FOR_REVIEW" || state === "IN_REVIEW" || state === "READY_FOR_REVIEW"
         ? `withdraw it first (withdraw-app-store-version with version_id ${blocker.id}), then prepare ${versionString} again; the withdrawn version will be renamed`
         : state === "PENDING_DEVELOPER_RELEASE"
-          ? "it is approved and waiting to be released; release it (or remove it in App Store Connect) before preparing another"
+          ? `it is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${blocker.id} --version ${blocker.versionString ?? "<version>"} --commit\`) or remove it in App Store Connect, then prepare ${versionString} again`
           : "wait for Apple to finish with it, then prepare again",
     } };
   }
@@ -302,9 +309,20 @@ export function planPrepare(versions: AscAppStoreVersion[], versionString: strin
  * the current state."
  *
  * Every write is read back (GET /v1/appStoreVersions/{id}?include=build) and the
- * request fails closed unless the version string and requested build match.
+ * request fails closed unless the version string, requested build, and requested
+ * release type match.
+ *
+ * `release_type`: when given, it is applied to a reused or renamed version too (in
+ * the same PATCH as the rename / build), but only if it differs from what Apple
+ * holds. When omitted, a created version gets MANUAL and an existing version keeps
+ * Apple's value -- prepare never resets it to a default. SCHEDULED is refused:
+ * Apple needs an earliestReleaseDate for it, which Hands does not set.
+ *
  * `mode: "dry_run"` returns the plan and writes nothing; the default stays
- * "commit" for existing callers.
+ * "commit" for existing callers. That default is acceptable here (unlike the
+ * listing and screenshot pushes, which have no default) because every prepare
+ * write is reversible: the version string, build and release type can be changed
+ * again by another prepare.
  */
 export async function handlePrepareAppStoreVersion(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -313,15 +331,27 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
     | null;
   const versionString = typeof body?.version_string === "string" ? body.version_string.trim() : "";
   const platform = typeof body?.platform === "string" ? body.platform.trim() : "IOS";
-  const releaseType = typeof body?.release_type === "string" ? body.release_type.trim() : "MANUAL";
+  const requestedReleaseType = typeof body?.release_type === "string" && body.release_type.trim()
+    ? body.release_type.trim()
+    : body?.release_type === undefined || body?.release_type === null ? null : String(body.release_type);
   const ascBuildId = typeof body?.asc_build_id === "string" ? body.asc_build_id.trim() : "";
   const mode = body?.mode === undefined ? "commit" : body.mode;
   if (!versionString) {
     return c.json({ error: "version_string is required", code: "VERSION_STRING_REQUIRED" }, 400);
   }
-  if (!["MANUAL", "AFTER_APPROVAL", "SCHEDULED"].includes(releaseType)) {
-    return c.json({ error: "release_type must be MANUAL, AFTER_APPROVAL or SCHEDULED", code: "INVALID_RELEASE_TYPE" }, 400);
+  if (requestedReleaseType !== null && !["MANUAL", "AFTER_APPROVAL", "SCHEDULED"].includes(requestedReleaseType)) {
+    return c.json({ error: "release_type must be MANUAL or AFTER_APPROVAL", code: "INVALID_RELEASE_TYPE" }, 400);
   }
+  if (requestedReleaseType === "SCHEDULED") {
+    // Apple ships a SCHEDULED version at earliestReleaseDate; Hands does not set
+    // that date, so a SCHEDULED version from here could never ship as intended.
+    return c.json({
+      error: "release_type SCHEDULED needs an earliestReleaseDate, which Hands does not set; use MANUAL (then release-app-store-version) or AFTER_APPROVAL, or schedule in App Store Connect",
+      code: "RELEASE_TYPE_SCHEDULED_UNSUPPORTED",
+    }, 400);
+  }
+  // Sent on create only when omitted; an existing version keeps Apple's value.
+  const createReleaseType = (requestedReleaseType ?? "MANUAL") as AppStoreReleaseType;
   if (mode !== "dry_run" && mode !== "commit") {
     return c.json({ error: 'mode must be "dry_run" or "commit"', code: "INVALID_MODE" }, 400);
   }
@@ -348,6 +378,22 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
     if ("status" in decided) return c.json(decided.body, decided.status);
     plan = decided;
     const existing = plan.version;
+    // Only send releaseType when the caller asked for one and Apple holds another.
+    const releaseTypeChange: AppStoreReleaseType | null =
+      existing && requestedReleaseType && existing.releaseType !== requestedReleaseType
+        ? requestedReleaseType as AppStoreReleaseType
+        : null;
+    // What the read-back must show: the value sent on create, or the requested one.
+    const expectedReleaseType: string | null = plan.action === "created" ? createReleaseType : requestedReleaseType;
+    const changes = {
+      version_string: plan.action === "renamed" ? { from: existing!.versionString, to: versionString } : null,
+      build: ascBuildId && (!existing || !existing.buildRelationshipReturned || existing.buildId !== ascBuildId)
+        ? { from: existing?.buildRelationshipReturned ? existing.buildId : null, to: ascBuildId }
+        : null,
+      release_type: plan.action === "created"
+        ? { from: null, to: createReleaseType }
+        : releaseTypeChange ? { from: existing!.releaseType, to: releaseTypeChange } : null,
+    };
     const summary = {
       action: plan.action,
       version_id: existing?.id ?? null,
@@ -355,9 +401,11 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       ...(plan.action === "renamed" ? { previous_version_string: existing!.versionString } : {}),
       platform,
       state: existing ? stateOf(existing) : null,
-      // An existing version keeps its stored releaseType; prepare does not change it.
-      release_type: existing ? existing.releaseType : releaseType,
-      requested_release_type: releaseType,
+      // Apple's current value (before this call), or what create will send.
+      release_type: existing ? existing.releaseType : createReleaseType,
+      // null = not requested: an existing version keeps Apple's value.
+      requested_release_type: requestedReleaseType,
+      changes,
       asc_build_id: ascBuildId || null,
       current_build_id: existing?.buildRelationshipReturned ? existing.buildId : null,
     };
@@ -367,7 +415,7 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
 
     if (plan.action === "created") {
       versionId = (await createAppStoreVersion(
-        creds, ascAppId, versionString, platform, releaseType as "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+        creds, ascAppId, versionString, platform, createReleaseType,
       )).id;
       done.push("create_version");
       if (ascBuildId) {
@@ -376,11 +424,14 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       }
     } else if (plan.action === "renamed") {
       versionId = existing!.id;
-      await renameAppStoreVersion(creds, versionId, versionString, ascBuildId || null);
-      done.push(ascBuildId ? "rename_version_and_attach_build" : "rename_version");
+      await renameAppStoreVersion(creds, versionId, versionString, ascBuildId || null, releaseTypeChange);
+      done.push(["rename_version", ...(ascBuildId ? ["attach_build"] : []), ...(releaseTypeChange ? ["set_release_type"] : [])].join("_and_"));
     } else {
       versionId = existing!.id;
-      if (ascBuildId) {
+      if (releaseTypeChange) {
+        await updateAppStoreVersion(creds, versionId, { releaseType: releaseTypeChange, ascBuildId: ascBuildId || null });
+        done.push(ascBuildId ? "attach_build_and_set_release_type" : "set_release_type");
+      } else if (ascBuildId) {
         await attachBuildToVersion(creds, versionId, ascBuildId);
         done.push("attach_build");
       }
@@ -396,9 +447,11 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       if (readback.versionString !== versionString) mismatches.push("version_string");
       if (ascBuildId && !readback.buildRelationshipReturned) mismatches.push("build_relationship_not_returned");
       else if (ascBuildId && readback.buildId !== ascBuildId) mismatches.push("build_id");
+      if (expectedReleaseType && readback.releaseType !== expectedReleaseType) mismatches.push("release_type");
     }
     const readbackView = readback ? {
       version_string: readback.versionString,
+      release_type: readback.releaseType,
       state: stateOf(readback),
       build_id: readback.buildRelationshipReturned ? readback.buildId : null,
       build_relationship_returned: readback.buildRelationshipReturned,
@@ -428,6 +481,8 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
       ...summary,
       version_id: versionId,
       state: readbackView!.state,
+      // Read back from Apple (after any change), not echoed from the request.
+      release_type: readbackView!.release_type,
       reused: plan.action !== "created",
       // From the read-back, not from the request. null = Apple did not return the
       // relationship, which is "not known", never "no build".
@@ -527,6 +582,311 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
     });
     return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
   } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Bounded wait for Apple to finish a release request. Exported so tests can shorten it. */
+export const RELEASE_POLL = { intervalMs: 3000, timeoutMs: 30_000 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The only states that mean "live on the App Store": READY_FOR_SALE in the
+ * deprecated appStoreState enum, READY_FOR_DISTRIBUTION in appVersionState. A
+ * release is never reported as done on anything else.
+ */
+const LIVE_STATES = new Set(["READY_FOR_SALE", "READY_FOR_DISTRIBUTION"]);
+
+/** Apple accepted a release and is processing it; a second request must not be sent. */
+const RELEASE_PROCESSING_STATES = new Set(["PROCESSING_FOR_APP_STORE", "PROCESSING_FOR_DISTRIBUTION"]);
+
+/**
+ * A durable receipt from an earlier release of this version: either a request Apple
+ * accepted in the last 6 hours (post_confirmed), or one still running (pending /
+ * in_progress, last 10 minutes). Apple's release-request resource is create-only
+ * (no GET), so this receipt plus the version state is the only duplicate guard.
+ * Past the window, a version still PENDING_DEVELOPER_RELEASE means the earlier
+ * request did not take, and a new one may be sent.
+ */
+async function priorReleaseOperation(c: AdminContext, appId: string, versionId: string) {
+  return c.env.DB.prepare(
+    `SELECT id, status, created_at, json_extract(output, '$.post_confirmed') AS post_confirmed
+     FROM operation_logs
+     WHERE app_id = ?1 AND kind = 'app-store-release'
+       AND json_extract(input, '$.asc_version_id') = ?2
+       AND ((json_extract(output, '$.post_confirmed') = 1 AND created_at >= ?4)
+            OR (status IN ('pending', 'in_progress') AND created_at >= ?3))
+     ORDER BY created_at DESC LIMIT 1`,
+  ).bind(appId, versionId, Date.now() - 10 * 60_000, Date.now() - 6 * 3600_000)
+    .first<{ id: string; status: string; created_at: number; post_confirmed: number | null }>();
+}
+
+/**
+ * Release an approved App Store version (PENDING_DEVELOPER_RELEASE -> live).
+ *
+ * Irreversible, so:
+ *   - `mode` is required ("dry_run" | "commit"), no default;
+ *   - the caller asserts the exact `version_string` (and optionally the attached
+ *     `asc_build_id`); a mismatch refuses with 409 before any write;
+ *   - only PENDING_DEVELOPER_RELEASE is released. Already live (or retired) ->
+ *     409 ALREADY_RELEASED; anything else -> 409 NOT_RELEASABLE;
+ *   - an operation receipt and an `app_store.release_intent` audit row are written
+ *     BEFORE the POST; if either cannot be written, nothing is sent to Apple;
+ *   - after the POST the version is read back (bounded poll). `released` only when
+ *     Apple shows READY_FOR_SALE / READY_FOR_DISTRIBUTION; otherwise 202
+ *     `release_requested` with the observed state, because Apple releases
+ *     asynchronously.
+ */
+export async function handleReleaseAppStoreVersion(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const versionId = c.req.param("versionId") ?? "";
+  const body = (await c.req.json().catch(() => null)) as
+    | { mode?: unknown; version_string?: unknown; asc_build_id?: unknown }
+    | null;
+  if (body?.mode === undefined || body?.mode === null) {
+    return c.json({ error: 'mode is required: "dry_run" or "commit"', code: "MODE_REQUIRED" }, 400);
+  }
+  const mode = body.mode;
+  if (mode !== "dry_run" && mode !== "commit") {
+    return c.json({ error: 'mode must be "dry_run" or "commit"', code: "INVALID_MODE" }, 400);
+  }
+  const expectedVersionString = typeof body.version_string === "string" ? body.version_string.trim() : "";
+  if (!expectedVersionString) {
+    return c.json({ error: "version_string is required: the exact version string you expect to release", code: "VERSION_STRING_REQUIRED" }, 400);
+  }
+  if (body.asc_build_id !== undefined && (typeof body.asc_build_id !== "string" || !body.asc_build_id.trim())) {
+    return c.json({ error: "asc_build_id must be a non-empty string when given", code: "INVALID_ASC_BUILD_ID" }, 400);
+  }
+  const expectedBuildId = typeof body.asc_build_id === "string" ? body.asc_build_id.trim() : null;
+
+  let operationId: string | null = null;
+  let postConfirmed = false;
+  let releaseRequestId: string | null = null;
+  try {
+    const creds = await loadCredentials(c, appId);
+    const ascAppId = await ascAppIdFor(c, appId);
+    // Scoped to this app's own version list: ASC team keys are not app-scoped.
+    const version = await findAppStoreVersionById(creds, ascAppId, versionId);
+    if (!version) {
+      return c.json({ error: "app store version does not belong to this app", code: "VERSION_NOT_IN_APP" }, 404);
+    }
+    const state = stateOf(version);
+    const current = {
+      version_id: version.id,
+      version_string: version.versionString,
+      state,
+      platform: version.platform,
+      release_type: version.releaseType,
+      build_id: version.buildRelationshipReturned ? version.buildId : null,
+      build_relationship_returned: version.buildRelationshipReturned,
+    };
+
+    // The caller's assertion is checked before anything else, so a stale or wrong
+    // id cannot release something the caller did not name.
+    const mismatches: string[] = [];
+    if (version.versionString !== expectedVersionString) mismatches.push("version_string");
+    if (expectedBuildId) {
+      if (!version.buildRelationshipReturned) mismatches.push("build_relationship_not_returned");
+      else if (version.buildId !== expectedBuildId) mismatches.push("build_id");
+    }
+    if (mismatches.length) {
+      return c.json({
+        error: `version ${versionId} does not match the confirmation (${mismatches.join(", ")}); nothing was released`,
+        code: "RELEASE_CONFIRMATION_MISMATCH",
+        mismatches,
+        expected: { version_string: expectedVersionString, asc_build_id: expectedBuildId },
+        current,
+      }, 409);
+    }
+
+    if (state && RELEASED_STATES.has(state)) {
+      return c.json({
+        error: `version ${version.versionString} is already released (${state}); nothing was done`,
+        code: "ALREADY_RELEASED",
+        released_by_this_call: false,
+        current,
+      }, 409);
+    }
+    if (state !== "PENDING_DEVELOPER_RELEASE") {
+      return c.json({
+        error: `version ${version.versionString} is ${state ?? "in an unknown state"}; only PENDING_DEVELOPER_RELEASE can be released`,
+        code: "NOT_RELEASABLE",
+        state,
+        current,
+        next_action: state && RELEASE_PROCESSING_STATES.has(state)
+          ? "Apple is already processing a release of this version; poll `hands app-store status` until READY_FOR_SALE"
+          : state === "PENDING_APPLE_RELEASE"
+            ? "Apple releases this version itself; nothing to do"
+            : "only an approved version waiting for developer release (releaseType MANUAL) can be released",
+      }, 409);
+    }
+
+    const prior = await priorReleaseOperation(c, appId, versionId);
+    const plan = {
+      version: current,
+      request: { method: "POST", path: "/v1/appStoreVersionReleaseRequests", relationship: { appStoreVersion: versionId } },
+      prior_operation_id: prior?.id ?? null,
+    };
+    if (prior) {
+      // Apple has (or is about to) receive a release request for this version and
+      // still shows PENDING_DEVELOPER_RELEASE because it processes asynchronously.
+      // Do not send a second one.
+      if (prior.post_confirmed !== 1) {
+        return c.json({
+          error: "another release of this version is in progress; nothing was sent",
+          code: "RELEASE_IN_PROGRESS",
+          prior_operation_id: prior.id,
+          current,
+          next_action: "wait for the running release to finish, then check `hands app-store status`",
+        }, 409);
+      }
+      return c.json({
+        mode,
+        outcome: "release_requested",
+        released: false,
+        observed_state: state,
+        prior_operation_id: prior.id,
+        version: current,
+        writes: [],
+        next_action: "Apple already accepted a release request for this version (see prior_operation_id); poll `hands app-store status` until READY_FOR_SALE. No second request was sent.",
+      }, 202);
+    }
+
+    if (mode === "dry_run") {
+      return c.json({ mode, outcome: "planned", released: false, ...plan, writes: [] });
+    }
+
+    // Durable intent BEFORE the irreversible POST. If it cannot be written, stop.
+    try {
+      const operation = await createOperation(c.env.DB, {
+        app_id: appId,
+        kind: "app-store-release",
+        actor: currentActor(c),
+        input: JSON.stringify({
+          asc_app_id: ascAppId,
+          asc_version_id: versionId,
+          version_string: version.versionString,
+          asc_build_id: current.build_id,
+          platform: version.platform,
+        }),
+      });
+      operationId = operation.id;
+      await updateOperation(c.env.DB, operationId, {
+        status: "in_progress",
+        progress: 10,
+        output: JSON.stringify({ phase: "intent_recorded", post_confirmed: false, readback_confirmed: false }),
+      });
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.release_intent",
+        payload: {
+          operation_id: operationId,
+          version_id: versionId,
+          version_string: version.versionString,
+          asc_build_id: current.build_id,
+          state,
+        },
+      });
+    } catch (error) {
+      if (operationId) {
+        await updateOperation(c.env.DB, operationId, {
+          status: "failed",
+          output: JSON.stringify({ phase: "intent_failed", post_confirmed: false, readback_confirmed: false }),
+          error: JSON.stringify({ code: "RELEASE_INTENT_NOT_RECORDED" }),
+          completed_at: Date.now(),
+        }).catch(() => null);
+      }
+      return c.json({
+        error: `could not record the release intent; nothing was sent to Apple (${error instanceof Error ? error.message : String(error)})`,
+        code: "RELEASE_INTENT_NOT_RECORDED",
+        operation_id: operationId,
+      }, 500);
+    }
+
+    releaseRequestId = (await createAppStoreVersionReleaseRequest(creds, versionId)).id;
+    postConfirmed = true;
+    await updateOperation(c.env.DB, operationId, {
+      status: "in_progress",
+      progress: 60,
+      output: JSON.stringify({ phase: "release_request_created", post_confirmed: true, readback_confirmed: false, release_request_id: releaseRequestId }),
+    }).catch(() => null);
+
+    // Bounded read-back. Read errors do not undo the request; they are reported.
+    let observed: AscAppStoreVersion | null = null;
+    let readbackError: string | null = null;
+    const deadline = Date.now() + RELEASE_POLL.timeoutMs;
+    for (;;) {
+      try {
+        observed = await getAppStoreVersion(creds, versionId);
+        readbackError = null;
+      } catch (error) {
+        readbackError = error instanceof Error ? error.message : String(error);
+      }
+      const observedState = observed ? stateOf(observed) : null;
+      if (observedState && LIVE_STATES.has(observedState)) break;
+      if (Date.now() >= deadline) break;
+      await sleep(RELEASE_POLL.intervalMs);
+    }
+    const observedState = observed ? stateOf(observed) : null;
+    const released = !!observedState && LIVE_STATES.has(observedState);
+    const outcome = released ? "released" : "release_requested";
+    await updateOperation(c.env.DB, operationId, {
+      status: "success",
+      progress: 100,
+      output: JSON.stringify({
+        phase: released ? "readback_released" : "readback_pending",
+        post_confirmed: true,
+        readback_confirmed: released,
+        release_request_id: releaseRequestId,
+        observed_state: observedState,
+      }),
+      completed_at: Date.now(),
+    }).catch(() => null);
+    const auditPayload = {
+      operation_id: operationId,
+      version_id: versionId,
+      version_string: version.versionString,
+      asc_build_id: current.build_id,
+      release_request_id: releaseRequestId,
+      outcome,
+      observed_state: observedState,
+    };
+    let auditFailed = false;
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.release", payload: auditPayload })
+      .catch(() => { auditFailed = true; });
+    const result = {
+      mode,
+      outcome,
+      released,
+      operation_id: operationId,
+      release_request_id: releaseRequestId,
+      version_id: versionId,
+      version_string: version.versionString,
+      observed_state: observedState,
+      ...(readbackError ? { readback_error: readbackError } : {}),
+      ...(auditFailed ? { audit_warning: "final audit row could not be written; the operation receipt holds the outcome" } : {}),
+      ...(released ? {} : {
+        next_action: "Apple accepted the release request and processes it asynchronously; poll `hands app-store status` until READY_FOR_SALE. Do not release again.",
+      }),
+    };
+    return c.json(result, released ? 200 : 202);
+  } catch (error) {
+    if (operationId) {
+      await updateOperation(c.env.DB, operationId, {
+        status: "failed",
+        output: JSON.stringify({ phase: postConfirmed ? "readback_failed" : "post_failed", post_confirmed: postConfirmed, readback_confirmed: false, release_request_id: releaseRequestId }),
+        error: JSON.stringify({ code: error instanceof AscApiError ? "ASC_API_ERROR" : "APP_STORE_RELEASE_FAILED" }),
+        completed_at: Date.now(),
+      }).catch(() => null);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.release_failed",
+        payload: { operation_id: operationId, version_id: versionId, post_confirmed: postConfirmed },
+      }).catch(() => null);
+      const base = errorBody(error);
+      return c.json({ ...base.body, operation_id: operationId, release_requested: postConfirmed }, base.status as 400);
+    }
     return fail(c, error);
   }
 }

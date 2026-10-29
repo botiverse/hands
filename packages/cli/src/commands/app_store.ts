@@ -8,8 +8,8 @@ import { jsonRequested } from "../lib/json_output.js";
 /**
  * `hands app-store` -- App Store release through Hands (which holds the App Store
  * Connect key). Every command that changes something at Apple is a dry run unless
- * --commit is passed: prepare and the metadata pushes print Hands' plan, submit and
- * withdraw print what they would act on.
+ * --commit is passed: prepare, release and the metadata pushes print Hands' plan,
+ * submit and withdraw print what they would act on.
  */
 
 type AppRow = { id: string; slug: string };
@@ -206,7 +206,7 @@ export function parseLocalizationsFile(raw: unknown): Record<string, Record<stri
 }
 
 export function registerAppStoreCommands(program: Command): void {
-  const group = program.command("app-store").description("App Store release through Hands: prepare, listing text, screenshots, submit, withdraw, status. Writes need --commit.");
+  const group = program.command("app-store").description("App Store release through Hands: prepare, listing text, screenshots, submit, withdraw, release, status. Writes need --commit.");
 
   group
     .command("status <appIdOrSlug>")
@@ -226,7 +226,7 @@ export function registerAppStoreCommands(program: Command): void {
     .requiredOption("--version <version>", "Marketing version, e.g. 1.17.0.")
     .option("--build <ascBuildId>", "App Store Connect build id to attach.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
-    .option("--release-type <type>", "MANUAL (default) | AFTER_APPROVAL | SCHEDULED (only when a version is created).")
+    .option("--release-type <type>", "MANUAL | AFTER_APPROVAL. Applied to a created, reused or renamed version; omitted keeps Apple's value (MANUAL on create).")
     .option("--commit", "Apply the plan.", false)
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, opts: { version: string; build?: string; platform?: string; releaseType?: string; commit?: boolean; json?: boolean }) => {
@@ -247,10 +247,11 @@ export function registerAppStoreCommands(program: Command): void {
       const what = result.action === "renamed"
         ? `rename ${result.previous_version_string} (${result.version_id}, ${result.state}) to ${result.version_string}`
         : result.action === "reused" ? `reuse ${result.version_string} (${result.version_id}, ${result.state})` : `create ${result.version_string}`;
+      const rt = result.changes?.release_type;
       if (result.mode === "dry_run") {
-        console.log(`Dry run: would ${what}${opts.build ? ` and attach build ${opts.build}` : ""}. Nothing was written. Run again with --commit to apply.`);
+        console.log(`Dry run: would ${what}${opts.build ? ` and attach build ${opts.build}` : ""}${rt ? `; release type ${rt.from ?? "(new)"} -> ${rt.to}` : ""}. Nothing was written. Run again with --commit to apply.`);
       } else {
-        console.log(`Done: ${result.action} ${result.version_string} (${result.version_id}, ${result.state}); build ${result.build_attached === null ? "unknown" : result.build_attached ? result.build_id : "not attached"}. Read back from Apple.`);
+        console.log(`Done: ${result.action} ${result.version_string} (${result.version_id}, ${result.state}); build ${result.build_attached === null ? "unknown" : result.build_attached ? result.build_id : "not attached"}; release type ${result.release_type}. Read back from Apple.`);
       }
     });
 
@@ -320,6 +321,38 @@ export function registerAppStoreCommands(program: Command): void {
       }
       const result = await apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(current.version_id)}/submit`, { method: "POST" });
       console.log(json ? JSON.stringify(result, null, 2) : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
+    });
+
+  group
+    .command("release <appIdOrSlug> <versionId>")
+    .description("Release an approved version (PENDING_DEVELOPER_RELEASE) to the App Store. IRREVERSIBLE. Dry run by default; --commit releases. --version (and --build) must match what Apple holds.")
+    .requiredOption("--version <version>", "Exact marketing version the version must have, e.g. 1.17.0.")
+    .option("--build <ascBuildId>", "Exact App Store Connect build id that must be attached.")
+    .option("--commit", "Really release (cannot be undone).", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, versionId: string, opts: { version: string; build?: string; commit?: boolean; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const json = jsonRequested(program, opts.json);
+      const result = await withDetail(json, (b) => JSON.stringify(b, null, 2), () =>
+        apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/release`, {
+          method: "POST",
+          body: {
+            mode: opts.commit ? "commit" : "dry_run",
+            version_string: opts.version,
+            ...(opts.build ? { asc_build_id: opts.build } : {}),
+          },
+        }));
+      if (json) { console.log(JSON.stringify(result, null, 2)); return; }
+      if (result.outcome === "planned") {
+        const v = result.version ?? {};
+        console.log(`Dry run: would release ${v.version_string} (${v.version_id}, ${v.state}; build ${v.build_id ?? "unknown"}). Nothing was sent.`);
+        console.log("Run again with --commit to release. This cannot be undone.");
+      } else if (result.outcome === "released") {
+        console.log(`Released ${result.version_string} (${result.version_id}): Apple shows ${result.observed_state}.`);
+      } else {
+        console.log(`Release requested for ${result.version_string ?? result.version?.version_string} (${result.version_id ?? result.version?.version_id}); Apple shows ${result.observed_state ?? "unknown"} and releases asynchronously.${result.prior_operation_id ? ` Already requested earlier (operation ${result.prior_operation_id}); nothing new was sent.` : ""}`);
+        console.log("Check with `hands app-store status` until READY_FOR_SALE. Do not release again.");
+      }
     });
 
   group

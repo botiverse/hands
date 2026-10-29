@@ -554,7 +554,24 @@ hands app-store localizations push raft-ios --version 1.17.0 --file listing.json
 hands app-store screenshots push raft-ios --version 1.17.0 --dir shots [--locales en-US,ja] [--commit]
 hands app-store submit raft-ios --version 1.17.0 [--commit]
 hands app-store withdraw raft-ios --version 1.17.0 [--commit]
+# after approval (PENDING_DEVELOPER_RELEASE): release -- irreversible
+hands app-store release raft-ios <asc-version-id> --version 1.17.0 [--build <asc-build-id>] [--commit]
 ```
+
+`--release-type MANUAL|AFTER_APPROVAL` on `prepare` is applied to a created,
+reused or renamed version; without it an existing version keeps Apple's
+release type.
+
+`release` refuses unless `--version` (and `--build`, when given) match what
+Apple holds for that version. It prints `Released` only when Apple reads back
+`READY_FOR_SALE`; otherwise it reports `Release requested` with Apple's current
+state (Apple releases asynchronously). An already-live version is an error
+(`ALREADY_RELEASED`), not a success.
+
+The CLI is a dry run unless `--commit` for every command. On the API, prepare
+defaults to `mode: "commit"` for backward compatibility (its writes are
+reversible), while listing text, screenshots and release have no default
+`mode` (they overwrite live store content or cannot be undone).
 
 `--version-id <asc-version-id>` can replace `--version` on the push commands.
 Screenshot files are ordered by name, numeric-aware (`2-` before `10-`). A
