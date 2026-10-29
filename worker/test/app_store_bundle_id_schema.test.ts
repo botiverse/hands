@@ -88,6 +88,18 @@ describe("App Store release: bundle id comes from a column that exists", () => {
     db.close();
   });
 
+  it("app creation inserts a main channel, which is what the bundle-id lookup relies on", () => {
+    // ascAppIdFor reads the bundle id from the app's `main` channel. That is only safe
+    // while every app has one; if creation ever stopped inserting it, every App Store
+    // release route would start returning BUNDLE_ID_REQUIRED for new apps. Pin the
+    // invariant at its source rather than trusting it.
+    const appsSrc = readFileSync(
+      fileURLToPath(new URL("../src/routes/apps.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(appsSrc).toMatch(/INSERT INTO channels\b[\s\S]{0,200}'main'/);
+  });
+
   it("the route file contains no reference to the columns that do not exist", () => {
     const src = readFileSync(routePath, "utf8");
     expect(src).not.toMatch(/FROM\s+apps\s+WHERE[^;]*bundle_id/i);
