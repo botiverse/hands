@@ -10372,6 +10372,60 @@ describe("quiver public API v2 — scope resolution", () => {
       r2_preserved: null,
     });
   });
+  it("treats a zero advisory changes count as success when the rows say it worked", async () => {
+    // Production D1 has returned `meta.changes: 0` for a successful `INSERT ... SELECT`
+    // batch (see the feedback-commit case above). handleDeleteBuildAsset compared the two
+    // advisory counts, so a real delete reported 500 "audit/delete result mismatch" while
+    // both the audit row and the deletion had in fact happened. The authority must be the
+    // resulting rows, not the counts the database reports about itself.
+    const env = makeEnv();
+    const { handleDeleteBuildAsset } = await import("../src/routes/builds");
+    await seedRelease(env, "rel-delete-advisory", "build-delete-advisory", [["full", "all"]], {
+      versionCode: 15,
+      versionName: "1.0.15",
+    });
+    const hash = "b".repeat(64);
+    const r2Key = "apps/app-scope/advisory.patch.gz";
+    await seedAsset(env, "build-delete-advisory", "asset-delete-advisory", {
+      artifactKind: "android-delta",
+      filetype: "patch",
+      sizeBytes: 123,
+      fileHash: hash,
+      r2Key,
+    });
+    env.APK_BUCKET = {
+      head: async (key: string) => key === r2Key ? { size: 123 } : null,
+      delete: async () => undefined,
+    };
+
+    const realBatch = env.DB.batch.bind(env.DB);
+    env.DB = {
+      ...env.DB,
+      async batch(statements: any[]) {
+        const results = await realBatch(statements);
+        // Mimic production: report zero changes for the audit INSERT ... SELECT.
+        return results.map((r: any, i: number) => (i === 0 ? { ...r, meta: { ...r.meta, changes: 0 } } : r));
+      },
+    } as any;
+
+    const response = await handleDeleteBuildAsset(
+      makeBuildAssetDownloadContext(env, "build-delete-advisory", "asset-delete-advisory", {
+        expected_file_hash: hash,
+        expected_size_bytes: "123",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(
+      env.DB.prepare("SELECT id FROM build_assets WHERE id = ?").bind("asset-delete-advisory").first(),
+    ).resolves.toBeNull();
+    const audit = await env.DB.prepare(
+      "SELECT id FROM audit_logs WHERE app_id = ? AND action = 'build_asset.delete'",
+    ).bind("app-scope").first();
+    expect(audit).not.toBeNull();
+  });
+
+
 
   it("returns a conflict when immutable release evidence references the asset", async () => {
     const env = makeEnv();

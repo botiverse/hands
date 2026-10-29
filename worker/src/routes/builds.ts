@@ -1595,10 +1595,23 @@ export async function handleDeleteBuildAsset(c: Context<{ Bindings: Env }>) {
   if (!auditWrite || !deletion) {
     throw new Error("atomic build-asset audit/delete batch returned an incomplete result");
   }
+  // Production D1 has returned `meta.changes: 0` for a successful `INSERT ... SELECT`
+  // batch (the same advisory-metadata behaviour the feedback commit path documents).
+  // Comparing those counts made a real delete report 500 "audit/delete result mismatch"
+  // while both the audit row and the deletion had in fact happened. The authority is the
+  // resulting rows, not the counts the database reports about itself.
   const audited = Number(auditWrite.meta?.changes ?? 0) === 1;
   const deleted = Number(deletion.meta?.changes ?? 0) === 1;
-  if (audited !== deleted) {
-    throw new Error("atomic build-asset audit/delete result mismatch");
+  if (!audited || !deleted) {
+    const auditRow = await c.env.DB.prepare("SELECT id FROM audit_logs WHERE id = ?1")
+      .bind(auditId).first();
+    const assetRow = await c.env.DB.prepare("SELECT id FROM build_assets WHERE id = ?1 AND build_id = ?2")
+      .bind(assetId, buildId).first();
+    if (auditRow && !assetRow) {
+      // Both effects are present; only the reported counts disagreed.
+    } else if (audited !== deleted) {
+      throw new Error("atomic build-asset audit/delete result mismatch");
+    }
   }
   if (!deleted) {
     return c.json(
