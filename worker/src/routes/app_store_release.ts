@@ -255,7 +255,7 @@ export function planPrepare(versions: AscAppStoreVersion[], versionString: strin
       code: cls === "unknown" ? "VERSION_STATE_UNKNOWN" : "VERSION_NOT_EDITABLE",
       ...versionRef(exact),
       next_action: state === "PENDING_DEVELOPER_RELEASE"
-        ? `this version is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${exact.id} --version ${exact.versionString ?? versionString} --commit\`) or remove it in App Store Connect before preparing another`
+        ? `this version is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${exact.id} --version-name ${exact.versionString ?? versionString} --commit\`) or remove it in App Store Connect before preparing another`
         : cls === "released"
           ? "this version string is already released; choose a higher version_string"
           : "withdraw the pending submission first if the version must be changed",
@@ -283,7 +283,7 @@ export function planPrepare(versions: AscAppStoreVersion[], versionString: strin
       next_action: state === "WAITING_FOR_REVIEW" || state === "IN_REVIEW" || state === "READY_FOR_REVIEW"
         ? `withdraw it first (withdraw-app-store-version with version_id ${blocker.id}), then prepare ${versionString} again; the withdrawn version will be renamed`
         : state === "PENDING_DEVELOPER_RELEASE"
-          ? `it is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${blocker.id} --version ${blocker.versionString ?? "<version>"} --commit\`) or remove it in App Store Connect, then prepare ${versionString} again`
+          ? `it is approved and waiting to be released; release it (release-app-store-version, or \`hands app-store release <app> ${blocker.id} --version-name ${blocker.versionString ?? "<version>"} --commit\`) or remove it in App Store Connect, then prepare ${versionString} again`
           : "wait for Apple to finish with it, then prepare again",
     } };
   }

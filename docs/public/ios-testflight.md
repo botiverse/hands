@@ -257,21 +257,21 @@ On the API, `mode` defaults differ on purpose:
 
 ```sh
 # 1. version + build: create, reuse, or rename (see below)
-hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id>            # plan
-hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id> --commit
+hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id>            # plan
+hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id> --commit
 # 2. listing text per locale
-hands app-store localizations push raft-ios --version 1.17.0 --file listing.json   # plan
-hands app-store localizations push raft-ios --version 1.17.0 --file listing.json --commit
+hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json   # plan
+hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json --commit
 # 3. screenshots: shots/<locale>/<display_type>/NN.png
-hands app-store screenshots push raft-ios --version 1.17.0 --dir shots              # plan
-hands app-store screenshots push raft-ios --version 1.17.0 --dir shots --commit
+hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots              # plan
+hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots --commit
 # 4. review
-hands app-store submit raft-ios --version 1.17.0 --commit
-hands app-store status raft-ios --version 1.17.0
-hands app-store withdraw raft-ios --version 1.17.0 --commit
+hands app-store submit raft-ios --version-name 1.17.0 --commit
+hands app-store status raft-ios --version-name 1.17.0
+hands app-store withdraw raft-ios --version-name 1.17.0 --commit
 # 5. after approval (MANUAL release type): release -- irreversible
-hands app-store release raft-ios <asc-version-id> --version 1.17.0 --build <asc-build-id>            # plan
-hands app-store release raft-ios <asc-version-id> --version 1.17.0 --build <asc-build-id> --commit
+hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id>            # plan
+hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id> --commit
 ```
 
 ### Prepare: one unreleased version per platform

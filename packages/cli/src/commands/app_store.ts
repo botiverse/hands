@@ -40,12 +40,12 @@ async function status(appId: string, versionString: string, platform?: string): 
   });
 }
 
-/** --version-id wins; otherwise --version is resolved through the status endpoint. */
-async function resolveVersionId(appId: string, opts: { version?: string; versionId?: string; platform?: string }): Promise<string> {
-  if (opts.versionId && opts.version) throw new Error("pass --version or --version-id, not both");
+/** --version-id wins; otherwise --version-name is resolved through the status endpoint. */
+async function resolveVersionId(appId: string, opts: { versionName?: string; versionId?: string; platform?: string }): Promise<string> {
+  if (opts.versionId && opts.versionName) throw new Error("pass --version-name or --version-id, not both");
   if (opts.versionId) return opts.versionId;
-  if (!opts.version) throw new Error("pass --version <marketing version> or --version-id <ASC version id>");
-  return (await status(appId, opts.version, opts.platform)).version_id;
+  if (!opts.versionName) throw new Error("pass --version-name <marketing version> or --version-id <ASC version id>");
+  return (await status(appId, opts.versionName, opts.platform)).version_id;
 }
 
 export interface ScreenshotSetPlan {
@@ -211,11 +211,11 @@ export function registerAppStoreCommands(program: Command): void {
   group
     .command("status <appIdOrSlug>")
     .description("Review state of one version: state, build attached, pending submission. Read-only.")
-    .requiredOption("--version <version>", "Marketing version, e.g. 1.17.0.")
+    .requiredOption("--version-name <version>", "Marketing version, e.g. 1.17.0.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { version: string; platform?: string; json?: boolean }) => {
-      const result = await status(await resolveAppId(appIdOrSlug), opts.version, opts.platform);
+    .action(async (appIdOrSlug: string, opts: { versionName: string; platform?: string; json?: boolean }) => {
+      const result = await status(await resolveAppId(appIdOrSlug), opts.versionName, opts.platform);
       if (jsonRequested(program, opts.json)) { console.log(JSON.stringify(result, null, 2)); return; }
       console.log(`${result.version_string} ${result.version_id}: ${result.state}; build ${result.build_attached ? "attached" : "not attached"}; pending submission: ${result.pending_submission ? `${result.pending_submission.id} (${result.pending_submission.state})` : "none"}`);
     });
@@ -223,20 +223,20 @@ export function registerAppStoreCommands(program: Command): void {
   group
     .command("prepare <appIdOrSlug>")
     .description("Create, reuse, or rename the App Store version and attach a build. Dry run by default; --commit writes.")
-    .requiredOption("--version <version>", "Marketing version, e.g. 1.17.0.")
+    .requiredOption("--version-name <version>", "Marketing version, e.g. 1.17.0.")
     .option("--build <ascBuildId>", "App Store Connect build id to attach.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
     .option("--release-type <type>", "MANUAL | AFTER_APPROVAL. Applied to a created, reused or renamed version; omitted keeps Apple's value (MANUAL on create).")
     .option("--commit", "Apply the plan.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { version: string; build?: string; platform?: string; releaseType?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { versionName: string; build?: string; platform?: string; releaseType?: string; commit?: boolean; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const json = jsonRequested(program, opts.json);
       const result = await withDetail(json, (b) => JSON.stringify(b.versions ?? b, null, 2), () =>
         apiRequest<any>(`/api/apps/${appId}/app-store/versions`, {
           method: "POST",
           body: {
-            version_string: opts.version,
+            version_string: opts.versionName,
             mode: opts.commit ? "commit" : "dry_run",
             ...(opts.build ? { asc_build_id: opts.build } : {}),
             ...(opts.platform ? { platform: opts.platform } : {}),
@@ -260,13 +260,13 @@ export function registerAppStoreCommands(program: Command): void {
     .command("push <appIdOrSlug>")
     .description("Replace screenshot sets from <dir>/<locale>/<display_type>/NN.png. Identical sets are skipped. Dry run by default; --commit writes (deletes and re-uploads changed sets).")
     .requiredOption("--dir <dir>", "Screenshots directory, e.g. shots/en-US/APP_IPHONE_67/01.png.")
-    .option("--version <version>", "Marketing version (resolved to its ASC id).")
+    .option("--version-name <version>", "Marketing version (resolved to its ASC id).")
     .option("--version-id <id>", "ASC appStoreVersions id.")
-    .option("--platform <platform>", "Platform for --version lookup.")
+    .option("--platform <platform>", "Platform for --version-name lookup.")
     .option("--locales <list>", "Only these locales, comma-separated.")
     .option("--commit", "Apply the plan.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { dir: string; version?: string; versionId?: string; platform?: string; locales?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { dir: string; versionName?: string; versionId?: string; platform?: string; locales?: string; commit?: boolean; json?: boolean }) => {
       if (!(await stat(opts.dir).catch(() => null))?.isDirectory()) throw new Error(`${opts.dir} is not a directory`);
       const locales = opts.locales?.split(",").map((l) => l.trim()).filter(Boolean);
       const sets = await collectScreenshotSets(opts.dir, locales);
@@ -285,12 +285,12 @@ export function registerAppStoreCommands(program: Command): void {
     .command("push <appIdOrSlug>")
     .description("Write listing text from a JSON file keyed by locale. Dry run by default; --commit writes.")
     .requiredOption("--file <json>", '{"en-US":{"description":"...","keywords":"...","promotionalText":"...","whatsNew":"...","supportUrl":"...","marketingUrl":"..."}}')
-    .option("--version <version>", "Marketing version (resolved to its ASC id).")
+    .option("--version-name <version>", "Marketing version (resolved to its ASC id).")
     .option("--version-id <id>", "ASC appStoreVersions id.")
-    .option("--platform <platform>", "Platform for --version lookup.")
+    .option("--platform <platform>", "Platform for --version-name lookup.")
     .option("--commit", "Apply the plan.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { file: string; version?: string; versionId?: string; platform?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { file: string; versionName?: string; versionId?: string; platform?: string; commit?: boolean; json?: boolean }) => {
       let raw: unknown;
       try { raw = JSON.parse(await readFile(opts.file, "utf8")); } catch (error) { throw new Error(`cannot read ${opts.file}: ${(error as Error).message}`); }
       const body = { mode: opts.commit ? "commit" : "dry_run", localizations: parseLocalizationsFile(raw) };
@@ -305,13 +305,13 @@ export function registerAppStoreCommands(program: Command): void {
   group
     .command("submit <appIdOrSlug>")
     .description("Submit a prepared version for App Store review. Without --commit, only shows what would be submitted.")
-    .requiredOption("--version <version>", "Marketing version to submit.")
+    .requiredOption("--version-name <version>", "Marketing version to submit.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
     .option("--commit", "Really submit for review.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { version: string; platform?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { versionName: string; platform?: string; commit?: boolean; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const current = await status(appId, opts.version, opts.platform);
+      const current = await status(appId, opts.versionName, opts.platform);
       const json = jsonRequested(program, opts.json);
       if (!opts.commit) {
         if (json) { console.log(JSON.stringify({ mode: "dry_run", would_submit: current }, null, 2)); return; }
@@ -326,11 +326,11 @@ export function registerAppStoreCommands(program: Command): void {
   group
     .command("release <appIdOrSlug> <versionId>")
     .description("Release an approved version (PENDING_DEVELOPER_RELEASE) to the App Store. IRREVERSIBLE. Dry run by default; --commit releases. --version (and --build) must match what Apple holds.")
-    .requiredOption("--version <version>", "Exact marketing version the version must have, e.g. 1.17.0.")
+    .requiredOption("--version-name <version>", "Exact marketing version the version must have, e.g. 1.17.0.")
     .option("--build <ascBuildId>", "Exact App Store Connect build id that must be attached.")
     .option("--commit", "Really release (cannot be undone).", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, versionId: string, opts: { version: string; build?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, versionId: string, opts: { versionName: string; build?: string; commit?: boolean; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const json = jsonRequested(program, opts.json);
       const result = await withDetail(json, (b) => JSON.stringify(b, null, 2), () =>
@@ -338,7 +338,7 @@ export function registerAppStoreCommands(program: Command): void {
           method: "POST",
           body: {
             mode: opts.commit ? "commit" : "dry_run",
-            version_string: opts.version,
+            version_string: opts.versionName,
             ...(opts.build ? { asc_build_id: opts.build } : {}),
           },
         }));
@@ -358,13 +358,13 @@ export function registerAppStoreCommands(program: Command): void {
   group
     .command("withdraw <appIdOrSlug>")
     .description("Withdraw the pending review of a version (cancels its review submission). Without --commit, only shows what would be withdrawn.")
-    .requiredOption("--version <version>", "Marketing version whose review to withdraw.")
+    .requiredOption("--version-name <version>", "Marketing version whose review to withdraw.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
     .option("--commit", "Really withdraw.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { version: string; platform?: string; commit?: boolean; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { versionName: string; platform?: string; commit?: boolean; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const current = await status(appId, opts.version, opts.platform);
+      const current = await status(appId, opts.versionName, opts.platform);
       const json = jsonRequested(program, opts.json);
       if (!opts.commit) {
         if (json) { console.log(JSON.stringify({ mode: "dry_run", would_withdraw: current }, null, 2)); return; }

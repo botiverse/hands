@@ -37,6 +37,9 @@ async function run(argv: string[], reply: (call: Call) => unknown = () => ({})) 
   const { registerAppStoreCommands } = await import("./app_store.js");
   const program = new Command();
   program.exitOverride();
+  // Mirror index.ts: the global -V/--version used to swallow a subcommand's
+  // `--version 1.17.0` and print the CLI version instead.
+  program.version("0.0.0-test");
   program.option("--json", "", false);
   registerAppStoreCommands(program);
   await program.parseAsync(["node", "hands", ...argv]);
@@ -52,38 +55,38 @@ afterEach(() => {
 
 describe("hands app-store", () => {
   it("prepare is a dry run unless --commit", async () => {
-    const dry = await run(["app-store", "prepare", APP_ID, "--version", "1.17.0", "--build", "b-17"], () => ({ mode: "dry_run", action: "renamed", previous_version_string: "1.12.0", version_id: "ver-112", version_string: "1.17.0", state: "DEVELOPER_REJECTED" }));
+    const dry = await run(["app-store", "prepare", APP_ID, "--version-name", "1.17.0", "--build", "b-17"], () => ({ mode: "dry_run", action: "renamed", previous_version_string: "1.12.0", version_id: "ver-112", version_string: "1.17.0", state: "DEVELOPER_REJECTED" }));
     expect(dry.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions`, body: { version_string: "1.17.0", mode: "dry_run", asc_build_id: "b-17" }, query: undefined }]);
     expect(dry.out.join("\n")).toContain("would rename 1.12.0");
-    const commit = await run(["app-store", "prepare", APP_ID, "--version", "1.17.0", "--commit"], () => ({ mode: "commit", action: "created", version_id: "v", version_string: "1.17.0", state: "PREPARE_FOR_SUBMISSION", build_attached: false }));
+    const commit = await run(["app-store", "prepare", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ mode: "commit", action: "created", version_id: "v", version_string: "1.17.0", state: "PREPARE_FOR_SUBMISSION", build_attached: false }));
     expect((commit.calls[0]!.body as any).mode).toBe("commit");
   });
 
   it("submit without --commit only reads status", async () => {
-    const { calls, out } = await run(["app-store", "submit", APP_ID, "--version", "1.17.0"]);
+    const { calls, out } = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0"]);
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([`GET /api/apps/${APP_ID}/app-store/status`]);
     expect(out.join("\n")).toContain("Dry run: would submit 1.17.0");
-    const committed = await run(["app-store", "submit", APP_ID, "--version", "1.17.0", "--commit"], () => ({ submission_id: "sub-1", submitted: true }));
+    const committed = await run(["app-store", "submit", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ submission_id: "sub-1", submitted: true }));
     expect(committed.calls.at(-1)).toMatchObject({ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/submit` });
   });
 
   it("withdraw without --commit only reads status; with --commit names the version", async () => {
-    const dry = await run(["app-store", "withdraw", APP_ID, "--version", "1.17.0"]);
+    const dry = await run(["app-store", "withdraw", APP_ID, "--version-name", "1.17.0"]);
     expect(dry.calls.every((c) => c.method === "GET")).toBe(true);
-    const committed = await run(["app-store", "withdraw", APP_ID, "--version", "1.17.0", "--commit"], () => ({ submission_id: "sub-1", canceled: true }));
+    const committed = await run(["app-store", "withdraw", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ submission_id: "sub-1", canceled: true }));
     expect(committed.calls.at(-1)).toMatchObject({ method: "POST", path: `/api/apps/${APP_ID}/app-store/withdraw`, body: { version_id: "ver-117" } });
   });
 
   it("release is a dry run unless --commit, and sends the exact version/build confirmation", async () => {
     const path = `/api/apps/${APP_ID}/app-store/versions/ver-117/release`;
-    const dry = await run(["app-store", "release", APP_ID, "ver-117", "--version", "1.17.0", "--build", "b-17"], () => ({
+    const dry = await run(["app-store", "release", APP_ID, "ver-117", "--version-name", "1.17.0", "--build", "b-17"], () => ({
       mode: "dry_run", outcome: "planned", released: false, version: { version_id: "ver-117", version_string: "1.17.0", state: "PENDING_DEVELOPER_RELEASE", build_id: "b-17" },
     }));
     expect(dry.calls).toEqual([{ method: "POST", path, body: { mode: "dry_run", version_string: "1.17.0", asc_build_id: "b-17" }, query: undefined }]);
     expect(dry.out.join("\n")).toContain("Dry run: would release 1.17.0");
     expect(dry.out.join("\n")).toContain("--commit");
 
-    const committed = await run(["app-store", "release", APP_ID, "ver-117", "--version", "1.17.0", "--commit"], () => ({
+    const committed = await run(["app-store", "release", APP_ID, "ver-117", "--version-name", "1.17.0", "--commit"], () => ({
       mode: "commit", outcome: "release_requested", released: false, version_id: "ver-117", version_string: "1.17.0", observed_state: "PENDING_DEVELOPER_RELEASE",
     }));
     expect(committed.calls).toEqual([{ method: "POST", path, body: { mode: "commit", version_string: "1.17.0" }, query: undefined }]);
@@ -91,7 +94,7 @@ describe("hands app-store", () => {
     expect(committed.out.join("\n")).not.toContain("Released ");
   });
 
-  it("release requires --version", async () => {
+  it("release requires --version-name", async () => {
     await expect(run(["app-store", "release", APP_ID, "ver-117", "--commit"])).rejects.toThrow();
   });
 
@@ -99,7 +102,7 @@ describe("hands app-store", () => {
     const dir = await mkdtemp(join(tmpdir(), "hands-asc-"));
     const file = join(dir, "listing.json");
     await writeFile(file, JSON.stringify({ "en-US": { keywords: "chat,agents" } }));
-    const { calls } = await run(["app-store", "localizations", "push", APP_ID, "--version", "1.17.0", "--file", file], () => ({ outcome: "planned", localizations: [] }));
+    const { calls } = await run(["app-store", "localizations", "push", APP_ID, "--version-name", "1.17.0", "--file", file], () => ({ outcome: "planned", localizations: [] }));
     expect(calls.at(-1)).toMatchObject({
       method: "POST",
       path: `/api/apps/${APP_ID}/app-store/versions/ver-117/localizations`,
