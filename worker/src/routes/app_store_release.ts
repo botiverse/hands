@@ -66,12 +66,17 @@ async function loadCredentials(c: AdminContext, appId: string): Promise<AscApiCr
 }
 
 async function ascAppIdFor(c: AdminContext, appId: string): Promise<string> {
+  // Bundle ids live on the app's main channel, not on `apps` -- the release channel
+  // is the one that names the real App Store record (preview/nightly carry beta
+  // bundle ids that are not App Store apps). Same source appstore_review.ts reads.
+  const app = await c.env.DB.prepare("SELECT id FROM apps WHERE id = ?1")
+    .bind(appId)
+    .first<{ id: string }>();
+  if (!app) throw new AppStoreReleaseError(404, "APP_NOT_FOUND", "app not found");
   const row = await c.env.DB.prepare(
-    "SELECT bundle_id, asc_app_id FROM apps WHERE id = ?1",
-  ).bind(appId).first<{ bundle_id: string | null; asc_app_id: string | null }>();
-  if (!row) throw new AppStoreReleaseError(404, "APP_NOT_FOUND", "app not found");
-  if (row.asc_app_id) return row.asc_app_id;
-  if (!row.bundle_id) throw new AppStoreReleaseError(400, "BUNDLE_ID_REQUIRED", "app has no bundle id");
+    "SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1",
+  ).bind(appId).first<{ bundle_id: string | null }>();
+  if (!row?.bundle_id) throw new AppStoreReleaseError(400, "BUNDLE_ID_REQUIRED", "app has no bundle id");
   const bundleId: string = row.bundle_id;
   // resolveAscAppId returns null when Apple has no app with that bundle id, which
   // is a configuration problem rather than an empty result worth caching.
