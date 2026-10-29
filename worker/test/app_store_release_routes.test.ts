@@ -311,4 +311,24 @@ describe("App Store error body", () => {
     ]);
     expect(errorBody(new AscApiError(409, "x")).body.provider_associated_errors).toBeUndefined();
   });
+
+  it("passes Apple's code, source and further errors through, only when present", async () => {
+    const { errorBody } = await import("../src/routes/app_store_release");
+    const { AscApiError } = await import("../src/lib/asc_api");
+    const error = new AscApiError(409, "A required attribute is missing.", "supportUrl required");
+    error.code = "ENTITY_ERROR.ATTRIBUTE.REQUIRED";
+    error.source = "/data/attributes/supportUrl";
+    error.others = [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: null, detail: "keywords required", source: "/data/attributes/keywords" }];
+    expect(errorBody(error).body).toMatchObject({
+      code: "ASC_API_REJECTED",
+      provider_cause: "supportUrl required",
+      provider_code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED",
+      provider_source: "/data/attributes/supportUrl",
+      provider_errors: error.others,
+    });
+    const bare = errorBody(new AscApiError(409, "x")).body;
+    expect(bare).not.toHaveProperty("provider_code");
+    expect(bare).not.toHaveProperty("provider_source");
+    expect(bare).not.toHaveProperty("provider_errors");
+  });
 });
