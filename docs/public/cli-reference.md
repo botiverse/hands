@@ -544,18 +544,18 @@ prepare decision table, and the screenshot size table:
 [iOS releases & TestFlight](ios-testflight.md#app-store-release-version-listing-screenshots-review).
 
 ```bash
-hands app-store status raft-ios --version 1.17.0
+hands app-store status raft-ios --version-name 1.17.0
 # create, reuse, or rename the version (a withdrawn 1.12.0 becomes 1.17.0)
-hands app-store prepare raft-ios --version 1.17.0 --build <asc-build-id> [--commit]
+hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id> [--commit]
 # listing text: { "en-US": { "description": "...", "keywords": "...", "promotionalText": "...",
 #                 "whatsNew": "...", "supportUrl": "...", "marketingUrl": "..." } }
-hands app-store localizations push raft-ios --version 1.17.0 --file listing.json [--commit]
+hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json [--commit]
 # screenshots: shots/<locale>/<display_type>/NN.png, e.g. shots/en-US/APP_IPHONE_67/01.png
-hands app-store screenshots push raft-ios --version 1.17.0 --dir shots [--locales en-US,ja] [--commit]
-hands app-store submit raft-ios --version 1.17.0 [--commit]
-hands app-store withdraw raft-ios --version 1.17.0 [--commit]
+hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots [--locales en-US,ja] [--commit]
+hands app-store submit raft-ios --version-name 1.17.0 [--commit]
+hands app-store withdraw raft-ios --version-name 1.17.0 [--commit]
 # after approval (PENDING_DEVELOPER_RELEASE): release -- irreversible
-hands app-store release raft-ios <asc-version-id> --version 1.17.0 [--build <asc-build-id>] [--commit]
+hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 [--build <asc-build-id>] [--commit]
 ```
 
 `--release-type MANUAL|AFTER_APPROVAL` on `prepare` is applied to a created,

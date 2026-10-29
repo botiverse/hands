@@ -91,13 +91,13 @@ Common recipes:
   hands store-listing pull <app> --out listing.json   Google Play listing text as JSON
   hands store-listing push <app> --listing listing.json [--commit]
                                                        Dry-run (default) or commit listing text to Play
-  hands app-store prepare <app> --version 1.17.0 --build <ascBuildId> [--commit]
+  hands app-store prepare <app> --version-name 1.17.0 --build <ascBuildId> [--commit]
                                                        Create, reuse, or rename the App Store version (dry run by default)
-  hands app-store screenshots push <app> --version 1.17.0 --dir shots [--commit]
+  hands app-store screenshots push <app> --version-name 1.17.0 --dir shots [--commit]
                                                        shots/<locale>/<display_type>/NN.png; identical sets skipped
-  hands app-store localizations push <app> --version 1.17.0 --file listing.json [--commit]
-  hands app-store submit|withdraw <app> --version 1.17.0 [--commit]
-  hands app-store release <app> <versionId> --version 1.17.0 [--build <ascBuildId>] [--commit]
+  hands app-store localizations push <app> --version-name 1.17.0 --file listing.json [--commit]
+  hands app-store submit|withdraw <app> --version-name 1.17.0 [--commit]
+  hands app-store release <app> <versionId> --version-name 1.17.0 [--build <ascBuildId>] [--commit]
                                                        Release an approved version (irreversible; dry run by default)
   hands logs collect                                  Bundle local CLI logs for a bug report
 
