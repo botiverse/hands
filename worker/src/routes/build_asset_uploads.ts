@@ -1027,8 +1027,11 @@ export async function handleAbortBuildAssetUpload(c: AdminContext) {
   }
   const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
   if (!cleanup.deleted) {
-    // The server retries this itself from cron; a caller retrying would duplicate work
-    // it is already scheduled to do, so say so rather than leaving the 503 ambiguous.
+    // retryable: false means "retrying will not help", not "the condition is permanent".
+    // The receipt above is already claimed, so a retry of this request returns
+    // ASSET_UPLOAD_BUSY and never re-attempts; cleanup itself is retried by cron, which
+    // is why the work is still expected to complete. A caller that looped on this would
+    // spend its attempts on 409s.
     return c.json({ error: "asset cleanup will be retried", code: "ASSET_UPLOAD_CLEANUP_RETRY", retryable: false }, 503);
   }
   if (!await finalizeClaimedUploadCleanup(c.env, row, receipt, "aborted", currentActor(c), now)) {
