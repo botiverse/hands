@@ -166,10 +166,27 @@ export function formatScreenshotResult(body: any): string {
       lines.push(`      #${image.index + 1} ${image.screenshot_id ?? "-"} ${image.state}${image.error ? ` (${image.error})` : ""}${image.errors?.length ? ` ${image.errors.map((e: any) => e.code).join(",")}` : ""}`);
     }
   }
+  // Failed and pending sets are listed apart: pending is not a rejection, but not done either.
+  // What to do next comes from the server's next_action (printed with the error code).
+  if (body.failed_sets?.length) lines.push(`Failed: ${body.failed_sets.join(", ")}`);
+  if (body.pending_sets?.length) lines.push(`Uploaded, still processing at Apple: ${body.pending_sets.join(", ")}`);
   if (body.outcome === "planned") lines.push("Dry run: nothing was written. Run again with --commit to apply.");
   else if (body.outcome === "no_changes") lines.push("No changes: Apple already has these screenshots in this order.");
   else if (body.outcome === "committed") lines.push("Committed and read back from Apple.");
   return lines.join("\n");
+}
+
+/**
+ * Worker answers 202 SCREENSHOTS_PENDING (ok: false) when Apple accepted the uploads but
+ * is still processing them. That is not success: turn it into an error so the command
+ * exits non-zero with its own code (SCREENSHOTS_FAILED, a 502, already throws).
+ */
+export function assertScreenshotsConfirmed<T>(body: T): T {
+  const b = body as { ok?: unknown; error?: unknown; code?: unknown } | null;
+  if (b && typeof b === "object" && b.ok === false) {
+    throw new QuiverApiError(202, body, String(b.error ?? b.code ?? "screenshot push not confirmed"));
+  }
+  return body;
 }
 
 function preview(value: string | null | undefined): string {
@@ -283,8 +300,8 @@ export function registerAppStoreCommands(program: Command): void {
       const versionId = await resolveVersionId(appId, opts);
       const { request, parts } = await buildScreenshotRequest(sets, opts.commit ? "commit" : "dry_run");
       const json = jsonRequested(program, opts.json);
-      const result = await withDetail(json, formatScreenshotResult, () =>
-        postMultipart<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/screenshots`, request, parts));
+      const result = await withDetail(json, formatScreenshotResult, async () => assertScreenshotsConfirmed(
+        await postMultipart<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/screenshots`, request, parts)));
       console.log(json ? JSON.stringify(result, null, 2) : formatScreenshotResult(result));
     });
 

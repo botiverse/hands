@@ -11,7 +11,8 @@ vi.mock("../src/lib/asc_api", async (importOriginal) => ({
   resolveAscAppId: async () => "asc-app-1",
 }));
 
-const { handlePushAppStoreScreenshots, SCREENSHOT_POLL } = await import("../src/routes/app_store_metadata");
+const { handlePushAppStoreScreenshots, SCREENSHOT_POLL, isGlobalScreenshotError, SCREENSHOTS_PENDING_NEXT_ACTION } = await import("../src/routes/app_store_metadata");
+const { AscApiError } = await import("../src/lib/asc_api");
 const { SCREENSHOT_DISPLAY_TYPES, allowedSizes } = await import("../src/lib/app_store_screenshots");
 
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
@@ -30,6 +31,12 @@ function fakeApple(opts: {
   sets?: Array<{ id: string; locale: string; displayType: string; shots: Array<Omit<Shot, "fileName" | "fileSize"> & { fileName?: string }> }>;
   /** Reserved screenshots (1-based creation order) that Apple ends in FAILED. */
   failReserved?: number[];
+  /** Reserved screenshots that Apple keeps processing (UPLOAD_COMPLETE) forever. */
+  stuckReserved?: number[];
+  /** Reply for the Nth reservation instead of creating it (Apple refusing the request). */
+  refuseReserve?: (n: number) => { status: number; json: unknown } | undefined;
+  /** Readback reports this checksum for every new screenshot (Apple stored something else). */
+  readbackChecksum?: string;
   omitSetRelationship?: boolean;
 } = {}) {
   const locales = (opts.locales ?? ["en-US"]).map((locale) => ({ id: `loc-${locale}`, locale }));
@@ -40,6 +47,7 @@ function fakeApple(opts: {
   });
   let reserved = 0;
   const failing = new Set<string>();
+  const stuck = new Set<string>();
   const shotJson = (s: Shot) => ({
     type: "appScreenshots", id: s.id,
     attributes: {
@@ -83,8 +91,11 @@ function fakeApple(opts: {
     }
     if (method === "POST" && path === "/v1/appScreenshots") {
       reserved += 1;
+      const refusal = opts.refuseReserve?.(reserved);
+      if (refusal) return refusal;
       const id = `shot-new-${reserved}`;
       if (opts.failReserved?.includes(reserved)) failing.add(id);
+      if (opts.stuckReserved?.includes(reserved)) stuck.add(id);
       const { fileName, fileSize } = call.body.data.attributes;
       shots.set(id, { id, fileName, fileSize, checksum: null, state: "AWAITING_UPLOAD" });
       sets.find((s) => s.id === call.body.data.relationships.appScreenshotSet.data.id)!.order.push(id);
@@ -100,13 +111,13 @@ function fakeApple(opts: {
     m = path.match(/^\/v1\/appScreenshots\/([^/?]+)$/);
     if (m && method === "PATCH") {
       const shot = shots.get(m[1]!)!;
-      shot.checksum = call.body.data.attributes.sourceFileChecksum;
+      shot.checksum = opts.readbackChecksum ?? call.body.data.attributes.sourceFileChecksum;
       shot.state = "UPLOAD_COMPLETE";
       return { json: { data: shotJson(shot) } };
     }
     if (m && method === "GET") {
       const shot = shots.get(m[1]!)!;
-      if (shot.state === "UPLOAD_COMPLETE") shot.state = failing.has(shot.id) ? "FAILED" : "COMPLETE";
+      if (shot.state === "UPLOAD_COMPLETE" && !stuck.has(shot.id)) shot.state = failing.has(shot.id) ? "FAILED" : "COMPLETE";
       return { json: { data: shotJson(shot) } };
     }
     if (m && method === "DELETE") {
@@ -271,12 +282,100 @@ describe("screenshot plan and commit", () => {
     expect(audits[0]!.payload.outcome).toBe("failed");
   });
 
-  it("stops after the first failed set and reports the rest as not attempted", async () => {
-    const { asc } = fakeApple({ locales: ["en-US", "ja"], failReserved: [1] });
+  it("a set Apple rejects does not stop later sets", async () => {
+    const { asc, sets } = fakeApple({ locales: ["en-US", "ja"], failReserved: [1] });
     const { res, json } = await push({ mode: "commit", sets: [set([["f1", A]]), set([["f2", B]], { locale: "ja" })] }, { f1: A, f2: B });
     expect(res.status).toBe(502);
+    expect(json.code).toBe("SCREENSHOTS_FAILED");
+    expect(json.sets.map((s: any) => s.status)).toEqual(["failed", "ok"]);
+    expect(json.failed_sets).toEqual(["en-US APP_IPHONE_67"]);
+    expect(json.pending_sets).toEqual([]);
+    expect(json.sets[1].readback).toMatchObject({ md5_order_match: true, all_complete: true });
+    expect(asc.writes().filter((w) => w.method === "POST" && w.path === "/v1/appScreenshotSets")).toHaveLength(2);
+    expect(sets.find((s) => s.locId === "loc-ja")!.order).toEqual(["shot-new-2"]);
+  });
+
+  it("a set-local 409 from Apple (invalid attribute) does not stop later sets", async () => {
+    const { asc } = fakeApple({ locales: ["en-US", "ja"],
+      refuseReserve: (n) => n === 1 ? { status: 409, json: { errors: [{ title: "An attribute value is invalid.", detail: "fileSize is too large" }] } } : undefined });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", A]]), set([["f2", B]], { locale: "ja" })] }, { f1: A, f2: B });
+    expect(res.status).toBe(502);
+    expect(json.sets.map((s: any) => s.status)).toEqual(["failed", "ok"]);
+    expect(json.sets[0].images[0]).toMatchObject({ state: "RESERVE_FAILED", error: "An attribute value is invalid." });
+    expect(asc.writes().filter((w) => w.method === "POST" && w.path === "/v1/appScreenshots")).toHaveLength(2);
+  });
+
+  it("an auth failure stops the run: later sets are not attempted", async () => {
+    const { asc } = fakeApple({ locales: ["en-US", "ja", "de-DE"],
+      refuseReserve: () => ({ status: 401, json: { errors: [{ title: "Authentication credentials are missing or invalid." }] } }) });
+    const { res, json } = await push({ mode: "commit", sets: [
+      set([["f1", A], ["f2", B]]), set([["f3", A]], { locale: "ja" }), set([["f4", B]], { locale: "de-DE" }),
+    ] }, { f1: A, f2: B, f3: A, f4: B });
+    expect(res.status).toBe(502);
+    expect(json.code).toBe("SCREENSHOTS_FAILED");
+    expect(json.sets.map((s: any) => s.status)).toEqual(["failed", "not_attempted", "not_attempted"]);
+    expect(json.sets[0].error).toMatchObject({ code: "ASC_API_REJECTED", status: 401, scope: "global" });
+    expect(json.error).toContain("stopped at en-US APP_IPHONE_67");
+    expect(json.failed_sets).toHaveLength(3);
+    // One reservation, not one per image or per set.
+    expect(asc.calls.filter((c) => c.method === "POST" && c.path === "/v1/appScreenshots")).toHaveLength(1);
+  });
+
+  it("Apple's 409 STATE_ERROR (version locked mid-run) also stops the run", async () => {
+    fakeApple({ locales: ["en-US", "ja"],
+      refuseReserve: () => ({ status: 409, json: { errors: [{ title: "The request cannot be fulfilled because of the state of another resource." }] } }) });
+    const { json } = await push({ mode: "commit", sets: [set([["f1", A]]), set([["f2", B]], { locale: "ja" })] }, { f1: A, f2: B });
     expect(json.sets.map((s: any) => s.status)).toEqual(["failed", "not_attempted"]);
-    expect(asc.writes().filter((w) => w.method === "POST" && w.path === "/v1/appScreenshotSets")).toHaveLength(1);
+    expect(json.sets[0].error.scope).toBe("global");
+  });
+
+  it("classifies errors conservatively: only clear per-request 4xx are set-local", () => {
+    expect(isGlobalScreenshotError(new AscApiError(409, "An attribute value is invalid."))).toBe(false);
+    expect(isGlobalScreenshotError(new AscApiError(422, "Unprocessable", "dimensions are wrong"))).toBe(false);
+    expect(isGlobalScreenshotError(new AscApiError(400, "asset upload part at offset 0 failed (400)"))).toBe(false);
+    expect(isGlobalScreenshotError(new AscApiError(409, "The request cannot be fulfilled because of the state of another resource."))).toBe(true);
+    expect(isGlobalScreenshotError(new AscApiError(409, "Conflict", "The version is not editable"))).toBe(true);
+    for (const status of [401, 403, 404, 429, 500, 502, 503]) expect(isGlobalScreenshotError(new AscApiError(status, "x"))).toBe(true);
+    expect(isGlobalScreenshotError(new Error("network down"))).toBe(true);
+    expect(isGlobalScreenshotError("weird")).toBe(true);
+  });
+
+  it("a read-back checksum mismatch is still a failure", async () => {
+    fakeApple({ readbackChecksum: "f".repeat(32) });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", A]])] }, { f1: A });
+    expect(res.status).toBe(502);
+    expect(json.code).toBe("SCREENSHOTS_FAILED");
+    expect(json.sets[0]).toMatchObject({ status: "failed", readback: { md5_order_match: false } });
+  });
+
+  it("a timed-out set is uploaded_pending (not failed), and a later set still runs", async () => {
+    SCREENSHOT_POLL.timeoutMs = 0;
+    const { asc } = fakeApple({ locales: ["en-US", "ja"], stuckReserved: [2] });
+    const { res, json, audits } = await push({ mode: "commit", sets: [set([["f1", A], ["f2", B]]), set([["f3", C]], { locale: "ja" })] }, { f1: A, f2: B, f3: C });
+    expect(res.status).toBe(202);
+    expect(json).toMatchObject({ ok: false, outcome: "uploaded_pending", code: "SCREENSHOTS_PENDING" });
+    expect(json.sets.map((s: any) => s.status)).toEqual(["uploaded_pending", "ok"]);
+    expect(json.sets[0].images.map((i: any) => i.state)).toEqual(["COMPLETE", "TIMEOUT(UPLOAD_COMPLETE)"]);
+    expect(json.pending_sets).toEqual(["en-US APP_IPHONE_67"]);
+    expect(json.failed_sets).toEqual([]);
+    expect(json.next_action).toBe(SCREENSHOTS_PENDING_NEXT_ACTION);
+    expect(json.next_action).toContain("Run the dry run again later: if every set is `unchanged`, files and order are confirmed; if a set shows `reorder` or `replace`, run --commit again.");
+    expect(json.next_action).not.toContain("order may not be set");
+    // No automatic retry: each image reserved exactly once.
+    expect(asc.calls.filter((c) => c.method === "POST" && c.path === "/v1/appScreenshots")).toHaveLength(3);
+    expect(audits[0]!.payload.outcome).toBe("uploaded_pending");
+  });
+
+  it("failed takes precedence over pending, and both are listed", async () => {
+    SCREENSHOT_POLL.timeoutMs = 0;
+    fakeApple({ locales: ["en-US", "ja"], failReserved: [1], stuckReserved: [2] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", A]]), set([["f2", B]], { locale: "ja" })] }, { f1: A, f2: B });
+    expect(res.status).toBe(502);
+    expect(json).toMatchObject({ ok: false, outcome: "failed", code: "SCREENSHOTS_FAILED" });
+    expect(json.sets.map((s: any) => s.status)).toEqual(["failed", "uploaded_pending"]);
+    expect(json.failed_sets).toEqual(["en-US APP_IPHONE_67"]);
+    expect(json.pending_sets).toEqual(["ja APP_IPHONE_67"]);
+    expect(json.next_action).toContain(SCREENSHOTS_PENDING_NEXT_ACTION);
   });
 
   it("times out instead of waiting forever, and does not claim success", async () => {
@@ -292,7 +391,9 @@ describe("screenshot plan and commit", () => {
       return fetchImpl(input, init);
     });
     const { res, json } = await push({ mode: "commit", sets: [set([["f1", A]])] }, { f1: A });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(202);
+    expect(json.ok).toBe(false);
+    expect(json.sets[0].status).toBe("uploaded_pending");
     expect(json.sets[0].images[0].state).toBe("TIMEOUT(UPLOAD_COMPLETE)");
     expect(asc.writes().some((w) => w.path.endsWith("/relationships/appScreenshots"))).toBe(false);
   });
