@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { findAppStoreVersion } from "../src/lib/asc_api";
+import { findAppStoreVersion, getReviewSubmissionVersionId } from "../src/lib/asc_api";
 
 /**
  * `include=build` is not optional here.
@@ -76,6 +76,26 @@ describe("App Store version lookup asks Apple for the build relationship", () =>
     });
     const version = await findAppStoreVersion(await realCreds(), "app-1", "1.12.0");
     expect(version?.buildId).toBeNull();
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("submission item lookup asks Apple for the version relationship", () => {
+  it("requests include=appStoreVersionForReview", async () => {
+    const calls = mockAsc({ data: [] });
+    await getReviewSubmissionVersionId(await realCreds(), "sub-1").catch(() => undefined);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0]).toContain("include=appStoreVersionForReview");
+    vi.unstubAllGlobals();
+  });
+
+  it("identifies the version a submission carries", async () => {
+    mockAsc({
+      data: [
+        { relationships: { appStoreVersionForReview: { data: { id: "ver-9" } } } },
+      ],
+    });
+    expect(await getReviewSubmissionVersionId(await realCreds(), "sub-1")).toBe("ver-9");
     vi.unstubAllGlobals();
   });
 });
