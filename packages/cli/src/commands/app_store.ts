@@ -34,6 +34,13 @@ interface StatusResponse {
   pending_submission: { id: string; state: string | null } | null;
 }
 
+/** Pending-submission text; a rejected one needs a fix and a resubmit, not waiting. */
+export function describePendingSubmission(pending: StatusResponse["pending_submission"]): string {
+  if (!pending) return "none";
+  if (pending.state === "UNRESOLVED_ISSUES") return `${pending.id} (UNRESOLVED_ISSUES — Apple rejected; fix then submit again)`;
+  return `${pending.id} (${pending.state})`;
+}
+
 async function status(appId: string, versionString: string, platform?: string): Promise<StatusResponse> {
   return apiRequest<StatusResponse>(`/api/apps/${appId}/app-store/status`, {
     query: { version_string: versionString, ...(platform ? { platform } : {}) },
@@ -217,7 +224,7 @@ export function registerAppStoreCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { versionName: string; platform?: string; json?: boolean }) => {
       const result = await status(await resolveAppId(appIdOrSlug), opts.versionName, opts.platform);
       if (jsonRequested(program, opts.json)) { console.log(JSON.stringify(result, null, 2)); return; }
-      console.log(`${result.version_string} ${result.version_id}: ${result.state}; build ${result.build_attached ? "attached" : "not attached"}; pending submission: ${result.pending_submission ? `${result.pending_submission.id} (${result.pending_submission.state})` : "none"}`);
+      console.log(`${result.version_string} ${result.version_id}: ${result.state}; build ${result.build_attached ? "attached" : "not attached"}; pending submission: ${describePendingSubmission(result.pending_submission)}`);
     });
 
   group
@@ -315,12 +322,14 @@ export function registerAppStoreCommands(program: Command): void {
       const json = jsonRequested(program, opts.json);
       if (!opts.commit) {
         if (json) { console.log(JSON.stringify({ mode: "dry_run", would_submit: current }, null, 2)); return; }
-        console.log(`Dry run: would submit ${current.version_string} (${current.version_id}, ${current.state}; build ${current.build_attached ? "attached" : "NOT attached"}). Pending submission: ${current.pending_submission ? `${current.pending_submission.id} (${current.pending_submission.state})` : "none"}.`);
+        console.log(`Dry run: would submit ${current.version_string} (${current.version_id}, ${current.state}; build ${current.build_attached ? "attached" : "NOT attached"}). Pending submission: ${describePendingSubmission(current.pending_submission)}.`);
         console.log("Run again with --commit to submit for review.");
         return;
       }
       const result = await apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(current.version_id)}/submit`, { method: "POST" });
-      console.log(json ? JSON.stringify(result, null, 2) : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
+      console.log(json ? JSON.stringify(result, null, 2) : result.resubmitted
+        ? `Resubmitted ${current.version_string} (${current.version_id}) in its rejected review submission ${result.submission_id}.`
+        : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
     });
 
   group

@@ -164,14 +164,14 @@ export function registerAppStoreRoutes(): RouteConfigList {
     path: "/api/apps/{appId}/app-store/versions/{versionId}/submit",
     tags: ["App Store"],
     summary: "Submit a prepared version for review",
-    description: "Refuses with 409 REVIEW_ALREADY_PENDING while another submission for the platform is waiting or in review.",
+    description: "Refuses with 409 REVIEW_ALREADY_PENDING while another submission for the platform is waiting or in review. A rejected (UNRESOLVED_ISSUES) submission for the platform that holds this version is resubmitted in place (resubmitted: true); one holding another version is 409 UNRESOLVED_SUBMISSION_PENDING with no write.",
     security: auth,
     request: { params: AppVersionParams },
     responses: {
       200: success("Submitted.", GenericObject),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
-      409: error("Another submission is pending."),
+      409: error("REVIEW_ALREADY_PENDING or UNRESOLVED_SUBMISSION_PENDING: another submission is open."),
       502: error("Apple rejected the request."),
     },
   });
@@ -203,7 +203,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
     path: "/api/apps/{appId}/app-store/withdraw",
     tags: ["App Store"],
     summary: "Withdraw a pending review submission",
-    description: "Cancels the review submission holding version_id (or the exact submission_id), returning the version to an editable state.",
+    description: "Cancels the review submission holding version_id (waiting, in review, rejected UNRESOLVED_ISSUES, or an unsubmitted READY_FOR_REVIEW draft) or the exact submission_id, returning the version to an editable state.",
     security: auth,
     request: { params: AppIdParam, body: { content: json(WithdrawInput), required: false } },
     responses: {

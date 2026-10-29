@@ -1512,6 +1512,28 @@ export async function cancelReviewSubmission(
 }
 
 /**
+ * Send an UNRESOLVED_ISSUES submission back to Apple after the version was fixed.
+ *
+ * After a rejection the submission stays open with the version still in it as an
+ * item, and Apple will not open a new submission for the platform until this one is
+ * resubmitted or cancelled. So resubmitting is only `submitted: true` on the same
+ * resource -- adding the version as an item again is refused because it is already
+ * there.
+ */
+export async function resubmitReviewSubmission(
+  creds: AscApiCredentials,
+  submissionId: string,
+): Promise<void> {
+  await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
+    data: {
+      type: "reviewSubmissions",
+      id: submissionId,
+      attributes: { submitted: true },
+    },
+  });
+}
+
+/**
  * Create (or reuse), populate and submit a review in one call so a half-submitted
  * review cannot linger.
  *
