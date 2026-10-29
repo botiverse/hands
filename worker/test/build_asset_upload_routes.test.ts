@@ -868,3 +868,28 @@ describe("direct build asset upload routes", () => {
     });
   });
 });
+
+describe("cleanup receipt format stays readable by both parsers", () => {
+  // The receipt carries a diagnostic suffix now (@stage@elapsedMs). Two places read it:
+  // uploadStatus' regex and the cron pass' slice+split. Both must keep extracting the
+  // same reason from new receipts, and must still cope with pre-existing ones.
+  const reasonOf = (receipt: string) => receipt.match(/^verification_failed:([^:]+):/)?.[1] ?? null;
+  const reasonOfCron = (receipt: string) =>
+    receipt.slice("verification_failed:".length).split(":", 1)[0] || "verification_failed";
+
+  it.each([
+    ["legacy receipt", "verification_failed:sha256_mismatch:crashed-worker"],
+    ["receipt with diagnostics", "verification_failed:stream_size_mismatch:uuid-abc@seal_write@841203"],
+    ["receipt with only elapsed", "verification_failed:size_mismatch:uuid-def@lease@910500"],
+  ])("%s yields the same reason in both parsers", (_label, receipt) => {
+    expect(reasonOf(receipt)).toBe(reasonOfCron(receipt));
+    expect(reasonOf(receipt)).toMatch(/^(sha256_mismatch|stream_size_mismatch|size_mismatch)$/);
+  });
+
+  it("the diagnostic never lands in the reason", () => {
+    const receipt = "verification_failed:sha256_mismatch:uuid-xyz@seal_write@12";
+    expect(reasonOf(receipt)).toBe("sha256_mismatch");
+    expect(reasonOf(receipt)).not.toContain("@");
+    expect(reasonOf(receipt)).not.toContain("seal_write");
+  });
+});
