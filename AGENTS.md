@@ -83,16 +83,29 @@ cookies, or other credentials into public Raft channels.
 
   Refer to the PR by its Stamp page
   (`https://stamp.build/github/botiverse/hands/pull/<N>`).
-- A reviewer who is not the author reads the exact head and approves it in
-  Stamp; that approval is the GO, not a Raft message or PR comment:
+- The Stamp approval of the exact head is the GO, not a Raft message or PR
+  comment. Prefer a reviewer who is not the author: they read the exact head
+  and approve it:
 
   ```bash
   stamp pr review <N> --repo botiverse/hands
   stamp pr approve <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA>
   ```
 
-  `--base` is the PR's recorded base SHA (`stamp pr view` prints it). Never
-  approve your own PR.
+  `--base` is the PR's recorded base SHA (`stamp pr view` prints it).
+- When no non-author reviewer is available, the author may approve their own
+  PR, but only with review evidence recorded in Stamp (approved by artin,
+  2026-10-29):
+
+  ```bash
+  stamp pr approve <N> --repo botiverse/hands --head <HEAD_SHA> --base <BASE_SHA> --evidence-file review.md
+  ```
+
+  The evidence (format: `stamp pr approve --help`) lists the checks actually
+  run, a reverse verification (the change reverted turns a test red) or why
+  none applies, and every known risk or unverified assumption. Say in the PR
+  description that it was self-approved. A later non-author review is still
+  welcome; findings go into a follow-up PR.
 - Whoever holds merge authority (usually the author) merges through Stamp,
   now or once approved and ready:
 
