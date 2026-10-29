@@ -84,7 +84,7 @@ describe("App Store submission guards", () => {
         return new Response(JSON.stringify({ data: [{ id: "sub-9", attributes: { state: "WAITING_FOR_REVIEW" } }] }));
       }
       if (u.includes("/reviewSubmissions/sub-9/items")) {
-        return new Response(JSON.stringify({ data: [{ relationships: { appStoreVersionForReview: { data: { id: "ver-old" } } } }] }));
+        return new Response(JSON.stringify({ data: [{ relationships: { appStoreVersion: { data: { id: "ver-old" } } } }] }));
       }
       return new Response(JSON.stringify({ data: {} }));
     }));
