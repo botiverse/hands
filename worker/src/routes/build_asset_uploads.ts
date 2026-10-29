@@ -590,7 +590,9 @@ async function finalizeClaimedUploadCleanup(
         )`,
     ).bind(
       crypto.randomUUID(), row.app_id, action, actor,
-      JSON.stringify({ build_id: row.build_id, asset_id: row.asset_id, attempt: row.attempt }),
+      // Carry the reason: without it the audit cannot distinguish an abandoned
+      // verifier from an upload whose window closed, which are different faults.
+      JSON.stringify({ build_id: row.build_id, asset_id: row.asset_id, attempt: row.attempt, reason }),
       now, row.asset_id, row.attempt, receipt,
     ),
     env.DB.prepare(
@@ -1294,6 +1296,12 @@ export async function cleanupExpiredBuildAssetUploads(env: Env, now = Date.now()
               -- nothing else moves this row; waiting for upload_expires_at (1 hour)
               -- would block the same sha for 45 minutes longer than the 15 minute
               -- lease already proved necessary.
+              --
+              -- Trade-off, accepted deliberately: between the lease lapsing and
+              -- upload_expires_at, uploadStatus reports can_retry_complete, so a client
+              -- could have retried the completion. Reaping first means it must re-upload
+              -- instead (~80s for a 282MB mapping). Holding the row open for a verifier
+              -- that is gone costs every other attempt on that sha, which is worse.
               OR (i.state = 'verifying' AND i.verifier_lease_expires_at IS NOT NULL
                   AND i.verifier_lease_expires_at <= ?1)
             ))
