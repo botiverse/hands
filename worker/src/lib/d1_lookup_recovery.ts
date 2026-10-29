@@ -8,8 +8,17 @@ export function isTransientD1LookupError(error: unknown): boolean {
     current = current.cause;
   }
   const text = messages.join("\n");
+  // Terminal first: a constraint or schema error will never succeed on retry, so it must
+  // not be reported as a temporary outage.
   if (/SQLITE_CONSTRAINT|constraint failed|no such (?:table|column)|has no column named|D1_TYPE_ERROR/i.test(text)) return false;
-  return /Network connection lost|storage caused object to be reset|reset because its code was updated|D1 DB is unavailable|D1_ERROR.*(?:overloaded|reset|timeout)/i.test(text);
+  // Transient. This list is deliberately the same one `isTransientUploadError`
+  // (routes/build_asset_uploads.ts) already uses for the upload path, plus the D1-specific
+  // wording this module was written for. It previously covered less than that one, so a
+  // `database is locked` or `temporarily unavailable` outage on the reporter routes was
+  // reported as a 500 instead of a 503 with Retry-After -- telling the caller "we are
+  // broken" when the condition is retryable. Keep the two lists aligned: same condition,
+  // same answer, whichever route hits it.
+  return /Network connection lost|network error|fetch failed|storage caused object to be reset|reset because its code was updated|D1 DB is unavailable|D1_ERROR.*(?:overloaded|reset|timeout)|temporarily unavailable|database is (?:locked|busy)|overloaded|connection reset|timed? ?out/i.test(text);
 }
 export async function recoverIdempotentD1Lookup<T>(operation: () => Promise<T>): Promise<T> {
   try {
