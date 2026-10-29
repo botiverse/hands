@@ -115,6 +115,9 @@ export function parseAssociatedErrors(errors: unknown): AscAssociatedError[] {
       if (!Array.isArray(list)) continue;
       for (const item of list) {
         if (out.length >= MAX_ASSOCIATED_ERRORS) return out;
+        // A null/primitive entry must not throw here: that would replace Apple's
+        // original AscApiError with a TypeError.
+        if (!item || typeof item !== "object") continue;
         const i = item as { code?: unknown; detail?: unknown; title?: unknown };
         out.push({ resource: resource.slice(0, MAX_ASSOCIATED_TEXT), code: text(i.code), detail: text(i.detail) ?? text(i.title) });
       }

@@ -440,6 +440,10 @@ describe("ASC associated errors", () => {
     const { parseAssociatedErrors } = await import("../src/lib/asc_api");
     expect(parseAssociatedErrors(undefined)).toEqual([]);
     expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": "nope" } } }])).toEqual([]);
+    // null, string and number entries are skipped without throwing; valid ones survive.
+    expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": [null, "s", 7, { code: "C", detail: "ok" }] } } }]))
+      .toEqual([{ resource: "/x", code: "C", detail: "ok" }]);
+    expect(parseAssociatedErrors([null, "s", 7])).toEqual([]);
     const many = Array.from({ length: 50 }, () => ({ code: "C", detail: "d".repeat(1000) }));
     const out = parseAssociatedErrors([{ meta: { associatedErrors: { "/x": many } } }]);
     expect(out).toHaveLength(30);
