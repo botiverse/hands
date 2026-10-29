@@ -1377,6 +1377,11 @@ describe("Play promotion route", () => {
           cause: {
             stage: "upload_mapping",
             provider_cause: "VERSION_CODE_CONFLICT",
+            // The cause here was inferred from prose, not read from a structured
+            // identifier -- exactly the case that produced this receipt. An out-of-vocabulary
+            // value must be dropped rather than carried.
+            cause_source: "message",
+            cause_source_bogus: "free text",
             provider_identifiers: {
               status: "INVALID_ARGUMENT",
               http_code: 400,
@@ -1405,6 +1410,7 @@ describe("Play promotion route", () => {
     expect(details.cause).toEqual({
       stage: "upload_mapping",
       provider_cause: "VERSION_CODE_CONFLICT",
+      cause_source: "message",
       provider_identifiers: {
         status: "INVALID_ARGUMENT",
         http_code: 400,

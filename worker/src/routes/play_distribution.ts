@@ -613,7 +613,7 @@ function receiptCause(value: unknown): { stage: string; provider_cause: string; 
     ...(provider_cause ? { provider_cause } : {}),
     ...(cause_source ? { cause_source } : {}),
     ...(provider_identifiers ? { provider_identifiers } : {}),
-  } as { stage: string; provider_cause: string; provider_identifiers?: ReceiptProviderIdentifiers };
+  } as { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers };
 }
 
 /** A google.rpc @type URL, e.g. type.googleapis.com/google.rpc.ErrorInfo. */
