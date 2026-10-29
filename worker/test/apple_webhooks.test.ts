@@ -787,15 +787,41 @@ describe("Apple ingress — build identity enrichment", () => {
     expect(latestPayload(sql).payload.build).toBeNull();
   });
 
-  it("does not call ASC for events whose resource is not a build", async () => {
+  it("names the App Store version a state change belongs to", async () => {
+    // Apple's event carries only `appStoreVersions/{id}`, never the marketing string.
+    // A notification that says "developer rejected" without naming a version is not
+    // actionable, and following the id is the only way to say which one changed.
     const { sql, send } = await setup();
     await withAscCredentials(sql);
-    const fetchSpy = vi.fn();
+    const fetchSpy = vi.fn(async () =>
+      new Response(JSON.stringify({ data: { attributes: { versionString: "1.12.0" } } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
     vi.stubGlobal("fetch", fetchSpy);
 
     expect((await send(fixture("version-event"))).status).toBe(200);
 
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("/v1/appStoreVersions/version-1");
+    const row = sql
+      .prepare(
+        "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed'",
+      )
+      .get() as { payload_json: string };
+    const build = JSON.parse(row.payload_json).payload.build;
+    expect(build.version).toBe("1.12.0");
+    // A version has no build number; null is the honest value, not "" or 0.
+    expect(build.version_code).toBeNull();
+  });
+
+  it("still delivers the notification when the version lookup fails", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+
+    expect((await send(fixture("version-event"))).status).toBe(200);
     const row = sql
       .prepare(
         "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed'",

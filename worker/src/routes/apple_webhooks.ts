@@ -59,6 +59,8 @@ const BUILD_LOOKUP: Partial<Record<string, string>> = {
   // itself, so no relationship has to be followed: the empty path means "read this
   // resource's own attributes".
   buildUploadStateUpdated: "",
+  // An App Store version carries versionString on itself; no relationship to follow.
+  appStoreVersionAppVersionStateUpdated: "",
 };
 
 /**
@@ -107,7 +109,13 @@ async function resolveBuildIdentity(
   // resource shape must still fail closed, which is why the types stay an explicit
   // allowlist rather than "anything goes".
   const supportedResource =
-    resourceType === "buildBetaDetails" || resourceType === "buildUploads";
+    resourceType === "buildBetaDetails" ||
+    resourceType === "buildUploads" ||
+    // App Store versions name the marketing string directly on the resource, so the
+    // empty lookup path means "read this resource's own attributes" -- the same shape
+    // buildUploads uses. Without this the state-changed notification can only say
+    // "developer rejected", never which version.
+    resourceType === "appStoreVersions";
   if (!creds || lookupPath === undefined || !supportedResource)
     return null;
   try {
@@ -117,6 +125,7 @@ async function resolveBuildIdentity(
           version?: unknown;
           cfBundleVersion?: unknown;
           cfBundleShortVersionString?: unknown;
+          versionString?: unknown;
         };
         relationships?: {
           preReleaseVersion?: { data?: { id?: unknown } };
@@ -148,6 +157,14 @@ async function resolveBuildIdentity(
       typeof buildNumberRaw === "string" && text(buildNumberRaw, 64)
         ? buildNumberRaw
         : null;
+    if (resourceType === "appStoreVersions") {
+      // No build number exists on this resource; the marketing string is the whole
+      // identity, and returning null when Apple has not filled it in keeps the
+      // notification honest rather than naming a version that is not established.
+      const raw = attributes?.versionString;
+      const version = typeof raw === "string" && text(raw, 64) ? raw : null;
+      return version === null ? null : { version, version_code: null };
+    }
     if (resourceType === "buildUploads") {
       const marketing = attributes?.cfBundleShortVersionString;
       const version = typeof marketing === "string" && text(marketing, 64) ? marketing : null;
