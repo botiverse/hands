@@ -1048,7 +1048,15 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
   }
   await c.env.APK_BUCKET.delete(row.staging_key).catch(() => {});
-  return c.json({ asset_id: assetId, state: "ready", r2_key: finalKey, file_hash: actual.sha256, size_bytes: actual.size, replayed: false });
+  // Surface the timings on the response as well as in metadata_json: metadata_json is
+  // only reachable from inside the Worker, so a caller polling this endpoint after a
+  // slow-but-successful verification would otherwise have no way to see that it was
+  // slow. That is the state that precedes the failure being investigated.
+  return c.json({
+    asset_id: assetId, state: "ready", r2_key: finalKey, file_hash: actual.sha256,
+    size_bytes: actual.size, replayed: false,
+    verification_ms: verifyElapsedMs, verification_slowest_stage: slowestStage(),
+  });
 }
 
 export async function handleAbortBuildAssetUpload(c: AdminContext) {

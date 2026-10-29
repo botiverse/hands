@@ -475,6 +475,21 @@ describe("direct build asset upload routes", () => {
     expect((await redeclared.json() as any).asset_id).not.toBe(body.asset_id);
   });
 
+  it("returns verification_ms and the slowest stage on a completed upload", async () => {
+    const bytes = Buffer.from("timed-verification");
+    const body = await (await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+    const url = `http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload`;
+    const done = await app.request(`${url}/complete`, { method: "POST" }, env);
+    expect(done.status).toBe(200);
+    const json = await done.json() as any;
+    expect(json.state).toBe("ready");
+    expect(typeof json.verification_ms).toBe("number");
+    expect(json.verification_ms).toBeGreaterThanOrEqual(0);
+    expect(typeof json.verification_slowest_stage).toBe("string");
+  });
+
   it("binds a replay to one exact staging key and exposes only a single-key PUT URL", async () => {
     const bytes = Buffer.from("computer-bytes");
     const hash = createHash("sha256").update(bytes).digest("hex");
@@ -868,6 +883,13 @@ describe("direct build asset upload routes", () => {
     });
   });
 });
+
+  // verification_ms is also written to metadata_json, but that column is only readable
+  // from inside the Worker. Without it on the response, a verification that took 14
+  // minutes and only just beat the lease looks identical to one that took a second --
+  // and "slow but succeeded" is the state immediately before the failure under
+  // investigation.
+  
 
 describe("cleanup receipt format stays readable by both parsers", () => {
   // The receipt carries a diagnostic suffix now (@stage@elapsedMs). Two places read it:
