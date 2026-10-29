@@ -117,7 +117,49 @@ describe("ascRequest", () => {
       status: 403,
       message: "NOT_AUTHORIZED",
       detail: "Key lacks access",
+      code: null,
+      source: null,
+      others: [],
     } satisfies Partial<AscApiError>);
+  });
+
+  it("keeps Apple's code, source and every error, not just the first", async () => {
+    // 2026-10-29: a review refusal named supportUrl only in the code/pointer of the
+    // errors that were dropped.
+    const { creds } = await generateTestCreds();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ errors: [
+      { status: "409", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: "A required attribute is missing.",
+        detail: "You must provide a value for the attribute 'supportUrl'", source: { pointer: "/data/attributes/supportUrl" } },
+      null, "junk", 7, ["x"],
+      { code: "PARAMETER_ERROR.INVALID", title: "bad filter", source: { parameter: "filter[platform]" } },
+      { code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "keywords", source: "not-an-object" },
+    ] }), { status: 409 })));
+    const error = (await ascRequest(creds, "POST", "/v1/appStoreVersionLocalizations", {}).catch((e: unknown) => e)) as AscApiError;
+    expect(error).toBeInstanceOf(AscApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      message: "A required attribute is missing.",
+      detail: "You must provide a value for the attribute 'supportUrl'",
+      code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED",
+      source: "/data/attributes/supportUrl",
+    });
+    expect(error.others).toEqual([
+      { code: "PARAMETER_ERROR.INVALID", title: "bad filter", detail: null, source: "filter[platform]" },
+      { code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: null, detail: "keywords", source: null },
+    ]);
+  });
+
+  it("bounds the extra errors and their text", async () => {
+    const { parseOtherAscErrors, parseAscErrorEntry } = await import("../src/lib/asc_api");
+    const long = "x".repeat(1000);
+    const many = [{}, ...Array.from({ length: 25 }, () => ({ code: long, title: long, detail: long, source: { pointer: long } }))];
+    const out = parseOtherAscErrors(many);
+    expect(out).toHaveLength(10);
+    for (const field of ["code", "title", "detail", "source"] as const) expect(out[0]![field]!.length).toBe(300);
+    expect(parseOtherAscErrors(undefined)).toEqual([]);
+    expect(parseOtherAscErrors({ errors: [] })).toEqual([]);
+    expect(parseAscErrorEntry(null)).toBeNull();
+    expect(parseAscErrorEntry({ source: { pointer: 5, parameter: "limit" } })).toEqual({ code: null, title: null, detail: null, source: "limit" });
   });
 });
 

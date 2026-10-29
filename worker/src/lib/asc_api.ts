@@ -83,9 +83,23 @@ export interface AscAssociatedError {
   detail: string | null;
 }
 
+/** One of Apple's `errors[]` entries after the first, bounded. */
+export interface AscErrorEntry {
+  code: string | null;
+  title: string | null;
+  detail: string | null;
+  source: string | null;
+}
+
 export class AscApiError extends Error {
   status: number;
   detail: string | null;
+  /** Apple's machine code for errors[0], e.g. STATE_ERROR.ENTITY_STATE_INVALID. */
+  code: string | null = null;
+  /** errors[0].source.pointer (or .parameter): the attribute or query parameter at fault. */
+  source: string | null = null;
+  /** errors[1..], which Apple uses when one request has several faults. */
+  others: AscErrorEntry[] = [];
   /**
    * Apple's per-resource reasons. A refusal like "This resource cannot be reviewed,
    * please check associated errors to see why." names nothing by itself; the actual
@@ -102,6 +116,34 @@ export class AscApiError extends Error {
 
 const MAX_ASSOCIATED_ERRORS = 30;
 const MAX_ASSOCIATED_TEXT = 300;
+const MAX_OTHER_ERRORS = 10;
+
+const boundedText = (v: unknown) => (typeof v === "string" && v ? v.slice(0, MAX_ASSOCIATED_TEXT) : null);
+
+/** One `errors[]` entry as {code, title, detail, source}; null for a non-object entry. */
+export function parseAscErrorEntry(error: unknown): AscErrorEntry | null {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return null;
+  const e = error as { code?: unknown; title?: unknown; detail?: unknown; source?: unknown };
+  const source = e.source && typeof e.source === "object" ? (e.source as { pointer?: unknown; parameter?: unknown }) : null;
+  return {
+    code: boundedText(e.code),
+    title: boundedText(e.title),
+    detail: boundedText(e.detail),
+    source: boundedText(source?.pointer) ?? boundedText(source?.parameter),
+  };
+}
+
+/** errors[1..] as bounded entries; junk entries are skipped, never thrown on. */
+export function parseOtherAscErrors(errors: unknown): AscErrorEntry[] {
+  if (!Array.isArray(errors)) return [];
+  const out: AscErrorEntry[] = [];
+  for (const error of errors.slice(1)) {
+    if (out.length >= MAX_OTHER_ERRORS) break;
+    const entry = parseAscErrorEntry(error);
+    if (entry) out.push(entry);
+  }
+  return out;
+}
 
 /** Flatten `errors[].meta.associatedErrors` ({ "<resource path>": [{code, detail}] }), bounded. */
 export function parseAssociatedErrors(errors: unknown): AscAssociatedError[] {
@@ -158,12 +200,17 @@ export async function ascRequest<T>(
     const errors = (parsed as { errors?: Array<{ title?: string; detail?: string }> })
       ?.errors;
     const first = errors?.[0];
-    throw new AscApiError(
+    const error = new AscApiError(
       res.status,
       first?.title ?? `App Store Connect API ${method} ${path} failed (${res.status})`,
       first?.detail ?? (parsed ? null : text.slice(0, 500) || null),
       parseAssociatedErrors(errors),
     );
+    const head = Array.isArray(errors) ? parseAscErrorEntry(errors[0]) : null;
+    error.code = head?.code ?? null;
+    error.source = head?.source ?? null;
+    error.others = parseOtherAscErrors(errors);
+    throw error;
   }
   return parsed as T;
 }

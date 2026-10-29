@@ -223,6 +223,9 @@ export function errorBody(error: unknown): { status: number; body: Record<string
       ...(error.detail ? { provider_cause: error.detail } : {}),
       // Apple's actual blockers when the top-level detail only says "check associated errors".
       ...(error.associated.length > 0 ? { provider_associated_errors: error.associated } : {}),
+      ...(error.code ? { provider_code: error.code } : {}),
+      ...(error.source ? { provider_source: error.source } : {}),
+      ...(error.others.length > 0 ? { provider_errors: error.others } : {}),
     } };
   }
   const message = error instanceof Error ? error.message : String(error);

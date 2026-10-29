@@ -817,7 +817,7 @@ export async function publishProcessedAscBuild(
   };
 }
 
-function testflightErrorResponse(c: AdminContext, error: unknown) {
+export function testflightErrorResponse(c: AdminContext, error: unknown) {
   if (error instanceof TestflightPublishError) {
     return c.json(
       { error: error.message, code: error.code, ...error.details },
@@ -831,6 +831,9 @@ function testflightErrorResponse(c: AdminContext, error: unknown) {
         code: error.status === 409 ? "ASC_CONFLICT" : "ASC_API_ERROR",
         detail: error.detail,
         upstream_status: error.status,
+        ...(error.code ? { provider_code: error.code } : {}),
+        ...(error.source ? { provider_source: error.source } : {}),
+        ...(error.others.length > 0 ? { provider_errors: error.others } : {}),
       },
       error.status === 409 ? 409 : 502,
     );
