@@ -13,10 +13,20 @@ import {
  */
 async function makeContext(body: unknown, opts: { submissions?: Array<{ id: string; state: string }> } = {}) {
   const appId = "app-1";
+  // Answer per statement instead of returning one object for every query: a blanket
+  // stub makes a query against a column that does not exist look fine (that is how
+  // `SELECT bundle_id, asc_app_id FROM apps` stayed green while failing in production).
   const db = {
-    prepare: () => ({
+    prepare: (sql: string) => ({
       bind: () => ({
-        first: async () => ({ bundle_id: "build.raft.app", asc_app_id: "asc-app-1" }),
+        first: async () => {
+          // `asc_app_id` is not a column anywhere; the route resolves it from Apple.
+          // These guard tests do not exercise that lookup, so the app row carries a
+          // pre-resolved id and the channel row carries the bundle id.
+          if (/SELECT id FROM apps/i.test(sql)) return { id: appId };
+          if (/FROM channels/i.test(sql)) return { bundle_id: "build.raft.app" };
+          return {};
+        },
       }),
     }),
   };
@@ -47,6 +57,14 @@ async function realCreds() {
 let cachedCreds: any = null;
 vi.mock("../src/lib/asc_credentials", () => ({
   getAscCredentials: async () => (cachedCreds ??= await realCreds()),
+}));
+// The route resolves the ASC app id from Apple via the main channel's bundle id.
+// Stubbing that resolution here keeps these guard tests about the guards; the DB
+// stub used to return a fake `asc_app_id` column to skip it, which is exactly the
+// kind of fiction that let a query against a non-existent column stay green.
+vi.mock("../src/lib/asc_api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/asc_api")>()),
+  resolveAscAppId: async () => "asc-app-1",
 }));
 
 describe("App Store submission guards", () => {
