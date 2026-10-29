@@ -168,6 +168,38 @@ interface GooglePlayAdapterService {
     lifecycle_before: string | null;
     lifecycle_after: string | null;
   }>>;
+  /**
+   * Upload deobfuscation files for a versionCode Play already holds, in one edit of
+   * their own (no track/rollout/bundle change). dry_run: insert, check, delete.
+   * commit: insert, check, upload each declared file, commit. Failure deletes the edit.
+   */
+  uploadDeobfuscation(
+    input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+      mode: "dry_run" | "commit";
+      versionCode: number;
+      /** sha256 of the release's AAB; the bundle Play holds for versionCode must match. */
+      expectedSha256: string;
+      operationId: string;
+      mapping?: { expectedSha256: string; expectedSize: number } | null;
+      symbols?: { expectedSha256: string; expectedSize: number } | null;
+    },
+    mappingBody?: ReadableStream<Uint8Array> | null,
+    symbolsBody?: ReadableStream<Uint8Array> | null,
+  ): Promise<GooglePlayAdapterResult<{
+    mode: "dry_run" | "commit";
+    edit_id: string;
+    package_name: string;
+    version_code: number;
+    version_on_play: true;
+    files: Array<{
+      symbol_type: "nativeCode" | "proguard";
+      sha256: string;
+      size_bytes: number;
+      uploaded: boolean;
+      edit?: string;
+    }>;
+    commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false } | null;
+  }>>;
 }
 
 declare global {

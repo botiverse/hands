@@ -17,6 +17,8 @@ import type {
   TrackRelease,
   TrackResource,
   ReleaseSummary,
+  UploadDeobfuscationRequest,
+  UploadDeobfuscationResult,
 } from "./types";
 
 const API_ROOT = "https://androidpublisher.googleapis.com/androidpublisher/v3";
@@ -229,10 +231,12 @@ function hashingBody(
  * Recognised non-review causes (e.g. MULTIPLE_COMPLETED) keep play_api_rejected.
  * Plain promote (no flag) does not use this: its errors stay as they were.
  */
-export function releaseEditStateRejection(error: unknown, what: "release" | "send_for_review"): unknown {
+export function releaseEditStateRejection(error: unknown, what: "release" | "send_for_review" | "deobfuscation"): unknown {
   if (!(error instanceof PlayAdapterError) || error.code !== "play_api_rejected") return error;
   const cause = error.cause_detail?.provider_cause;
-  const subject = what === "release" ? "the release edit was not committed" : "nothing was sent for review";
+  const subject = what === "release"
+    ? "the release edit was not committed"
+    : what === "deobfuscation" ? "the deobfuscation files were not committed" : "nothing was sent for review";
   if (cause === "EDIT_IN_REVIEW") {
     return new PlayAdapterError(409, "play_edit_in_review",
       `Another change for this app is in review on Google Play (Hands commits with ERROR_IF_IN_REVIEW and never cancels it); ${subject}. Wait for the review to finish, then run it again.`,
@@ -253,7 +257,7 @@ export function releaseEditStateRejection(error: unknown, what: "release" | "sen
   }
   if (!cause || cause === "OTHER") {
     return new PlayAdapterError(502, "play_edit_state_unknown",
-      `Google Play answered the commit in a way Hands does not recognise; ${subject === "nothing was sent for review" ? "it is not reported as sent for review" : "the release is not reported as committed"}. Check the app in Play Console before running it again.`,
+      `Google Play answered the commit in a way Hands does not recognise; ${what === "send_for_review" ? "it is not reported as sent for review" : what === "deobfuscation" ? "the deobfuscation files are not reported as committed" : "the release is not reported as committed"}. Check the app in Play Console before running it again.`,
       {
         stage: "commit_edit",
         provider_cause: "OTHER",
@@ -503,7 +507,7 @@ export class GooglePlayClient {
    * already on Play). Hands' own integrity failures throw in both modes.
    */
   private async uploadDeobfuscationFile(
-    request: PromotionRequest,
+    request: Pick<PromotionRequest, "packageName" | "versionCode">,
     editId: string,
     symbolType: DeobfuscationSymbolType,
     file: PromotionSymbolsRequest,
@@ -1071,6 +1075,84 @@ export class GooglePlayClient {
       commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
       lifecycle_before: lifecycleBefore,
       lifecycle_after: lifecycleAfter,
+    };
+  }
+
+  /**
+   * Upload deobfuscation files (R8/ProGuard mapping, native debug symbols) for a
+   * versionCode Play ALREADY holds, in one edit that changes nothing else: no
+   * bundle upload, no track update, no rollout, no release notes. This is how a
+   * mapping is backfilled for a version that is already live.
+   *
+   *   edits.insert -> edits.bundles.list (the versionCode must be there, with the
+   *   expected AAB sha256) -> [dry_run: edits.delete, return]
+   *   -> edits.deobfuscationfiles.upload per file (strict) -> edits.commit
+   *
+   * Commit is plain: changesInReviewBehavior=ERROR_IF_IN_REVIEW (never cancels a
+   * review) and no changesNotSentForReview. Any failure after the insert deletes
+   * the edit (best effort), so nothing is half-committed and no edit is leaked.
+   * Re-running is meant to be safe: Google keeps one file per symbolType for a
+   * versionCode, and an upload replaces it.
+   */
+  async uploadDeobfuscation(request: UploadDeobfuscationRequest): Promise<UploadDeobfuscationResult> {
+    this.lastBundleLookup = null;
+    const editId = await this.createEdit(request.packageName);
+    const files: DeobfuscationFileResult[] = [];
+    try {
+      const onPlay = await this.bundleAlreadyOnPlay(request.packageName, editId, request);
+      if (!onPlay) {
+        throw new PlayAdapterError(409, "version_not_on_play",
+          "Google Play holds no bundle for this versionCode; deobfuscation files can only be attached to a version already on Play",
+          { stage: "bundle_lookup", ...(this.lastBundleLookup ? { bundle_lookup: this.lastBundleLookup } : {}) });
+      }
+      if (request.mode === "dry_run") {
+        for (const file of request.files) {
+          files.push({ symbol_type: file.symbolType, sha256: file.expectedSha256, size_bytes: file.expectedSize, uploaded: false });
+        }
+      } else {
+        for (const file of request.files) {
+          if (!file.body) {
+            throw new PlayAdapterError(400, "deobfuscation_request_invalid", "Hands deobfuscation upload request is invalid");
+          }
+          files.push({
+            ...(await this.uploadDeobfuscationFile(request, editId, file.symbolType, {
+              body: file.body, expectedSha256: file.expectedSha256, expectedSize: file.expectedSize,
+            })),
+            edit: "upload_deobfuscation",
+          });
+        }
+      }
+    } catch (error) {
+      await this.cleanupOrThrow(request.packageName, editId, error);
+    }
+    if (request.mode === "dry_run") {
+      await this.deleteEdit(request.packageName, editId);
+      return {
+        mode: "dry_run", edit_id: editId, package_name: request.packageName, version_code: request.versionCode,
+        version_on_play: true, files, commit: null,
+      };
+    }
+    try {
+      await this.commitEdit(request.packageName, editId);
+    } catch (error) {
+      // Never leave the edit behind. If the commit did land, Google refuses to
+      // delete a committed edit and nothing changes; if it did not, this clears it.
+      await this.deleteEdit(request.packageName, editId).catch(() => undefined);
+      if (error instanceof PlayAdapterError && error.code === "play_api_unavailable") {
+        throw new PlayAdapterError(502, "play_commit_ambiguous",
+          "Google Play did not answer the commit; check Play Console, then run it again (re-uploading replaces the same file)", { stage: "commit_edit" });
+      }
+      if (error instanceof PlayAdapterError && error.code === "play_api_malformed") {
+        throw new PlayAdapterError(502, "play_edit_state_unknown",
+          "Google Play answered the commit in a way Hands does not recognise; the deobfuscation files are not reported as committed. Check the app in Play Console before running it again.",
+          { stage: "commit_edit", provider_cause: "MALFORMED_RESPONSE", tried: editStatePatternsTried() });
+      }
+      throw releaseEditStateRejection(error, "deobfuscation");
+    }
+    return {
+      mode: "commit", edit_id: editId, package_name: request.packageName, version_code: request.versionCode,
+      version_on_play: true, files,
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
     };
   }
 }

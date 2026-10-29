@@ -85,6 +85,29 @@ function parsePlayTrack(value: string): string {
   return track;
 }
 
+interface PlayUploadSymbolsResult {
+  mode: "dry_run" | "commit";
+  receipt_id?: string;
+  edit_id?: string | null;
+  package_name?: string;
+  version_code?: number | null;
+  version_on_play?: boolean;
+  revision?: number;
+  files?: Array<{ type: string; sha256: string; size_bytes: number; uploaded?: boolean }>;
+}
+
+const DEOBFUSCATION_KINDS = ["proguard", "nativeCode"] as const;
+
+/** `--kinds proguard,nativeCode` -> unique values in a fixed order; anything else is refused. */
+export function parseDeobfuscationKinds(value: string): string[] {
+  const requested = value.split(",").map((kind) => kind.trim()).filter(Boolean);
+  const unknown = requested.filter((kind) => !(DEOBFUSCATION_KINDS as readonly string[]).includes(kind));
+  if (requested.length === 0 || unknown.length > 0) {
+    throw new Error("--kinds must be a comma-separated list of: proguard, nativeCode");
+  }
+  return DEOBFUSCATION_KINDS.filter((kind) => requested.includes(kind));
+}
+
 function parsePlayVersionCode(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -777,6 +800,58 @@ export function registerReleaseCommands(program: Command): void {
       console.log(`  track:       ${res.track ?? track}`);
       console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
       console.log(`  lifecycle:   ${res.review?.lifecycle_before ?? "unknown"} -> ${res.review?.lifecycle_after ?? "unknown"}`);
+    });
+
+  releases
+    .command("play-upload-symbols <appIdOrSlug> <releaseId>")
+    .description("Upload the release build's sealed R8/ProGuard mapping and/or native debug symbols to Google Play for its versionCode, which must already be on Play. Never changes a track, rollout, or bundle. Dry run by default (publisher role; no auto-retry).")
+    .option("--kinds <kinds>", "Comma-separated deobfuscation file types: proguard, nativeCode. Default: every sealed file the build has.")
+    .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
+    .option("--commit", "Upload and commit. Without it, only checks (Play edit opened, versionCode verified, edit deleted) and writes nothing.", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      releaseId: string,
+      opts: { kinds?: string; note: string; commit?: boolean; json?: boolean },
+      command: Command,
+    ) => {
+      const kinds = opts.kinds === undefined ? undefined : parseDeobfuscationKinds(opts.kinds);
+      const appId = await resolveAppId(appIdOrSlug);
+      const body: Record<string, unknown> = {
+        mode: opts.commit ? "commit" : "dry_run",
+        expected_revision: await fetchReleaseRevision(appId, releaseId),
+        approval: { note: opts.note },
+      };
+      if (kinds) body.kinds = kinds;
+      let res: PlayUploadSymbolsResult;
+      try {
+        res = await apiRequest<PlayUploadSymbolsResult>(
+          `/api/apps/${appId}/releases/${releaseId}/distributions/play/upload-symbols`,
+          { method: "POST", body },
+        );
+      } catch (err) {
+        throw playWriteError("upload-symbols", err);
+      }
+      if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      if (!opts.commit) {
+        console.log(`Dry run: nothing was written (no upload, no receipt, Play edit deleted).`);
+        console.log(`  package:     ${res.package_name ?? "unavailable"}`);
+        console.log(`  versionCode: ${res.version_code ?? "unavailable"} (${res.version_on_play ? "on Google Play" : "not confirmed on Google Play"})`);
+      } else {
+        console.log(`Uploaded deobfuscation files for release ${releaseId} to Google Play (no track or rollout change).`);
+        console.log(`  receipt:     ${res.receipt_id ?? "unavailable"}`);
+        console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+        console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      }
+      for (const file of res.files ?? []) {
+        console.log(`  ${opts.commit ? "uploaded" : "would upload"}: ${file.type}  ${file.size_bytes} bytes  sha256=${file.sha256}`);
+      }
+      if (!opts.commit) {
+        console.log(`Run again with --commit to upload: hands releases play-upload-symbols ${appIdOrSlug} ${releaseId}${opts.kinds ? ` --kinds ${kinds!.join(",")}` : ""} --note <note> --commit`);
+      }
     });
 
   releases
