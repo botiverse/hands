@@ -17,7 +17,7 @@ const CLEANED_SEAL_MEDIUM_WINDOW_MS = 7 * CLEANED_SEAL_FAST_WINDOW_MS;
 const CLEANED_SEAL_MEDIUM_RETRY_MS = 60 * 60 * 1000;
 const CLEANED_SEAL_SLOW_RETRY_MS = 24 * 60 * 60 * 1000;
 
-type CleanupReason = "aborted" | "upload_expired";
+type CleanupReason = "aborted" | "upload_expired" | "verification_lease_expired";
 
 export interface DirectBuildAssetUploadInput {
   idempotency_key: string;
@@ -1286,18 +1286,29 @@ export async function cleanupExpiredBuildAssetUploads(env: Env, now = Date.now()
        JOIN build_assets a ON a.id = i.asset_id
        JOIN builds b ON b.id = a.build_id
       WHERE i.cleanup_state = 'tombstoned'
-         OR (i.upload_expires_at <= ?1 AND i.cleanup_state = 'live'
-             AND i.state <> 'ready'
-             AND NOT (i.state = 'verifying' AND i.verifier_lease_expires_at >= ?1))
+         OR (i.cleanup_state = 'live' AND i.state <> 'ready' AND (
+              -- Normal path: the upload window closed.
+              i.upload_expires_at <= ?1
+              -- Orphaned verifier: the lease lapsed without the request ever
+              -- returning. A Worker killed mid-verification writes no outcome, so
+              -- nothing else moves this row; waiting for upload_expires_at (1 hour)
+              -- would block the same sha for 45 minutes longer than the 15 minute
+              -- lease already proved necessary.
+              OR (i.state = 'verifying' AND i.verifier_lease_expires_at IS NOT NULL
+                  AND i.verifier_lease_expires_at <= ?1)
+            ))
       ORDER BY i.upload_expires_at ASC LIMIT 50`,
   ).bind(now).all<{
     app_id: string; build_id: string; asset_id: string; attempt: number; staging_key: string;
     state: string; cleanup_state: string; cleanup_receipt: string | null;
   }>();
   for (const row of results) {
+    // Name the reason accurately: a verifier whose lease lapsed is not an upload
+    // whose window closed, and the two are diagnosed differently.
+    const reapReason = row.state === "verifying" ? "verification_lease_expired" : "upload_expired";
     const receipt = row.cleanup_state === "tombstoned"
       ? row.cleanup_receipt
-      : await claimUploadCleanup(env.DB, row.asset_id, row.attempt, now, "upload_expired");
+      : await claimUploadCleanup(env.DB, row.asset_id, row.attempt, now, reapReason);
     if (!receipt) continue;
     const cleanup = await deleteClaimedUploadObjects(env, row, receipt, now);
     if (row.state === "failed" && receipt.startsWith("verification_failed:")) {
@@ -1307,6 +1318,6 @@ export async function cleanupExpiredBuildAssetUploads(env: Env, now = Date.now()
       continue;
     }
     if (!cleanup.deleted) continue;
-    await finalizeClaimedUploadCleanup(env, row, receipt, "upload_expired", "system:cron", now);
+    await finalizeClaimedUploadCleanup(env, row, receipt, reapReason, "system:cron", now);
   }
 }

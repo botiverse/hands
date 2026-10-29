@@ -261,6 +261,37 @@ describe("direct build asset upload routes", () => {
     expect((await app.request(url.replace("app-1", "other-app"), {}, env)).status).toBe(404);
   });
 
+  it("reaps a verifier whose lease lapsed instead of waiting for the upload window", async () => {
+    // A Worker killed mid-verification writes no outcome, so nothing moves the row and
+    // it stays `verifying` until upload_expires_at -- one hour, against a 15 minute
+    // lease. During that hour the same sha cannot be uploaded again, so one crash blocks
+    // the file for 45 minutes longer than the lease already proved necessary.
+    const bytes = Buffer.from("orphaned-verifier");
+    const body = await (await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length)).json() as any;
+    const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+    bucket.objects.set(attempt.staging_key, bytes);
+
+    const now = Date.now();
+    sqlite.prepare(
+      `UPDATE build_asset_ingest_attempt
+          SET state = 'verifying', verifier_lease_id = 'dead-lease',
+              verifier_lease_expires_at = ?, upload_expires_at = ?
+        WHERE asset_id = ?`,
+    ).run(now - 60_000, now + 30 * 60_000, body.asset_id);
+    expect((sqlite.prepare("SELECT state FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any).state).toBe("verifying");
+
+    await cleanupExpiredBuildAssetUploads(env, now);
+
+    // Cleanup removes the ingest row, so the durable evidence is the audit entry: it
+    // must say the verifier's lease lapsed rather than that the upload window closed.
+    const audits = sqlite
+      .prepare("SELECT action, payload FROM audit_logs WHERE payload LIKE ?")
+      .all(`%${body.asset_id}%`) as Array<{ action: string; payload: string }>;
+    expect(audits.length).toBeGreaterThan(0);
+    expect(sqlite.prepare("SELECT id FROM build_assets WHERE id = ?").get(body.asset_id)).toBeUndefined();
+  });
+
+
   it.each(["staging_head", "staging_read", "seal_write", "seal_readback"])("preserves staging and retries after %s failure", async (phase) => {
     const bytes = Buffer.from("storage-retry");
     const body = await (await declare(createHash("sha256").update(bytes).digest("hex"), bytes.length)).json() as any;
