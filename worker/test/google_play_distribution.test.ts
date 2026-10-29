@@ -1075,6 +1075,7 @@ describe("Play promotion route", () => {
             symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: false,
             edit: "existing_bundle", attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
             http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+            cause_source: "message",
             // A field outside the contract, and one with provider prose, must not reach the receipt.
             message: "Google said something", ...({ provider_cause_text: "free text <script>" } as object),
           } as never],
@@ -1088,6 +1089,9 @@ describe("Play promotion route", () => {
       present: true, sha256: sha(mapping), size_bytes: mapping.byteLength, edit: "existing_bundle",
       uploaded: false, attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
       http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+      // Carried so a receipt can say whether the cause came from a Google identifier or
+      // was inferred from the message; without it a guess reads exactly like a statement.
+      cause_source: "message",
       provider_ack: null, post_commit_get: false,
     });
     expect(payload.play.bundle_uploaded).toBe(false);
