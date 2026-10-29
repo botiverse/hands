@@ -920,7 +920,7 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   const slowestStage = (): string => {
     const entries = Object.entries(stageTimings);
     if (entries.length === 0) return "unknown";
-    return entries.sort((a, b) => b[1] - a[1])[0][0];
+    return entries.sort((a, b) => b[1] - a[1])[0]?.[0] ?? "unknown";
   };
   const [hashResult, pumpResult, putResult] = await Promise.allSettled([
     timed(failTogether(hashBody(hashStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: abort.signal })), "staging_stream"), "staging_stream"),
@@ -965,12 +965,18 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
 
   const readyAt = Date.now();
   const readyCleanupReceipt = `ready:${leaseId}`;
+  // Record the timings on success too. Without this, a verification that took 14
+  // minutes and only just beat the lease leaves no trace at all, so "slow but
+  // succeeded" is invisible until it becomes "slow and did not" -- which is exactly
+  // how the 282 MB mapping failed.
   const metadata = {
     ...JSON.parse(row.metadata_json),
     upload_state: "ready",
     verified_sha256: actual.sha256,
     verified_size_bytes: actual.size,
     verified_at: readyAt,
+    verification_ms: verifyElapsedMs,
+    verification_slowest_stage: slowestStage(),
   };
   const readyResults = await c.env.DB.batch([
     c.env.DB.prepare(
