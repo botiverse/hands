@@ -25,6 +25,8 @@ import {
   handleRollbackPlayDistribution,
   handlePromotePlayDistribution,
   handleSendPlayDistributionForReview,
+  handleUploadPlaySymbols,
+  normalizePlayUploadSymbolsInput,
 } from "../src/routes/play_distribution";
 import { createRelease } from "../src/routes/releases";
 import { openApiDocument } from "../src/openapi";
@@ -288,6 +290,7 @@ describe("Android distribution OpenAPI", () => {
       "/api/apps/{appId}/releases/{releaseId}/distributions/play",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/promote",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/send-for-review",
+      "/api/apps/{appId}/releases/{releaseId}/distributions/play/upload-symbols",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/halt",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/rollback",
     ]) {
@@ -433,6 +436,7 @@ function routeHarness(principal: "human" | "agent" = "human", role: "publisher" 
   app.get("/api/apps/:appId/releases/:releaseId/distributions", handleListDistributions);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", requireAppRole("publisher"), handlePromotePlayDistribution);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review", requireAppRole("publisher"), handleSendPlayDistributionForReview);
+  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols", requireAppRole("publisher"), handleUploadPlaySymbols);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
@@ -709,6 +713,9 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
     },
     sendForReview: async () => {
       throw new Error("unexpected sendForReview call");
+    },
+    uploadDeobfuscation: async () => {
+      throw new Error("unexpected uploadDeobfuscation call");
     },
     ...overrides,
   };
@@ -2087,5 +2094,291 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     const response = await sendForReview(h);
     expect(response.status).toBe(502);
     expect(receipts(h).at(-1)).toMatchObject({ action: "send-for-review", verdict: "failed-closed" });
+  });
+});
+
+describe("Play upload-symbols (backfill deobfuscation files for a versionCode already on Play)", () => {
+  type Harness = Awaited<ReturnType<typeof readyRelease>>;
+  type UploadInput = Parameters<PlayAdapter["uploadDeobfuscation"]>[0];
+  const json = { "content-type": "application/json" };
+  const path = "/api/apps/app/releases/release/distributions/play/upload-symbols";
+
+  function uploadSymbols(h: Harness, body: Record<string, unknown> = {}) {
+    return h.request(path, {
+      method: "POST", headers: json,
+      body: JSON.stringify({ expected_revision: 1, approval: { note: "backfill 11700009 mapping" }, ...body }),
+    });
+  }
+
+  function receipts(h: Harness) {
+    return (h.sqlite.prepare(
+      "SELECT action, verdict, track, play_edit_id, version_code, payload_json FROM release_receipts WHERE kind='play-promotion' ORDER BY rowid",
+    ).all() as Array<{ action: string; verdict: string; track: string | null; play_edit_id: string | null; version_code: number; payload_json: string }>)
+      .map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
+  }
+
+  const revision = (h: Harness) => (h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get() as { revision: number }).revision;
+  const locks = (h: Harness) => h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get();
+
+  function recordingAdapter(calls: Array<{ input: UploadInput; mapping: string | null; symbols: string | null }>, reply?: (input: UploadInput) => Awaited<ReturnType<PlayAdapter["uploadDeobfuscation"]>>) {
+    return playAdapterStub({
+      uploadDeobfuscation: async (input, mappingBody, symbolsBody) => {
+        const read = async (stream: ReadableStream<Uint8Array> | null | undefined) =>
+          stream ? sha(new Uint8Array(await new Response(stream).arrayBuffer())) : null;
+        const mapping = await read(mappingBody);
+        const symbols = await read(symbolsBody);
+        calls.push({ input, mapping, symbols });
+        if (reply) return reply(input);
+        const files = [
+          ...(input.symbols ? [{ symbol_type: "nativeCode" as const, sha256: symbols ?? input.symbols.expectedSha256, size_bytes: input.symbols.expectedSize, uploaded: input.mode === "commit", edit: "upload_deobfuscation" }] : []),
+          ...(input.mapping ? [{ symbol_type: "proguard" as const, sha256: mapping ?? input.mapping.expectedSha256, size_bytes: input.mapping.expectedSize, uploaded: input.mode === "commit", edit: "upload_deobfuscation" }] : []),
+        ];
+        return { ok: true, value: {
+          mode: input.mode, edit_id: "edit-sym", package_name: input.packageName, version_code: input.versionCode,
+          version_on_play: true as const, files,
+          commit: input.mode === "commit" ? { changes_in_review_behavior: "ERROR_IF_IN_REVIEW" as const, changes_not_sent_for_review: false as const } : null,
+        } };
+      },
+    });
+  }
+
+  function seedLiveState(h: Harness) {
+    h.sqlite.prepare(`INSERT INTO play_distribution_state
+      (app_id, release_id, package_name, track, version_code, rollout_percent, state, last_edit_id, last_receipt_id, revision, updated_at)
+      VALUES ('app', 'release', 'build.raft.app', 'production', 42, 100, 'active', 'edit-live', (SELECT id FROM release_receipts WHERE kind='acceptance' LIMIT 1), 3, 1)`).run();
+    return h.sqlite.prepare("SELECT * FROM play_distribution_state").all();
+  }
+
+  it("normalizes input: dry_run by default, kinds de-duplicated in a fixed order, bad values refused", () => {
+    expect(normalizePlayUploadSymbolsInput({ expected_revision: 2, approval: { note: " n " } }))
+      .toEqual({ mode: "dry_run", expected_revision: 2, approval: { note: "n" } });
+    expect(normalizePlayUploadSymbolsInput({ mode: "commit", kinds: ["proguard", "nativeCode", "proguard"], expected_revision: 0, approval: { note: "n" } }))
+      .toEqual({ mode: "commit", kinds: ["proguard", "nativeCode"], expected_revision: 0, approval: { note: "n" } });
+    for (const bad of [
+      { mode: "apply" }, { kinds: [] }, { kinds: ["mapping"] }, { kinds: "proguard" }, { expected_revision: -1 }, { approval: { note: " " } },
+    ]) {
+      expect(() => normalizePlayUploadSymbolsInput({ expected_revision: 1, approval: { note: "n" }, ...bad } as never)).toThrow();
+    }
+  });
+
+  it("dry run returns the plan, calls the adapter in dry_run without bytes, and writes nothing", async () => {
+    const h = await readyRelease("human", "publisher", 42, true);
+    const mapping = attachSealedMapping(h);
+    const before = seedLiveState(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
+    const response = await uploadSymbols(h);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      mode: "dry_run", version_code: 42, package_name: "build.raft.app", version_on_play: true,
+      files: [
+        { type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength },
+        { type: "nativeCode", sha256: sha(h.symbols), size_bytes: h.symbols.byteLength },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toMatchObject({
+      mode: "dry_run", packageName: "build.raft.app", versionCode: 42, expectedSha256: sha(h.aab),
+      mapping: { expectedSha256: sha(mapping), expectedSize: mapping.byteLength },
+      symbols: { expectedSha256: sha(h.symbols), expectedSize: h.symbols.byteLength },
+    });
+    expect(calls[0]!.mapping).toBeNull();
+    expect(calls[0]!.symbols).toBeNull();
+    expect(receipts(h)).toHaveLength(0);
+    expect(revision(h)).toBe(1);
+    expect(locks(h)).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").all()).toEqual(before);
+  });
+
+  it.each(["human", "agent"] as const)("%s commit streams the sealed bytes, writes a success receipt, bumps the revision, and leaves play_distribution_state alone", async (principal) => {
+    const h = await readyRelease(principal, "publisher", 42, true);
+    const mapping = attachSealedMapping(h);
+    const before = seedLiveState(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      ...recordingAdapter(calls),
+      readTrackMaximum: async () => { throw new Error("upload-symbols must not read the track maximum"); },
+    });
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      mode: "commit", receipt_id: expect.any(String), edit_id: "edit-sym", version_code: 42, revision: 2,
+      files: [
+        { type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: true },
+        { type: "nativeCode", sha256: sha(h.symbols), size_bytes: h.symbols.byteLength, uploaded: true },
+      ],
+    });
+    expect(calls[0]!.input.mode).toBe("commit");
+    expect(calls[0]!.mapping).toBe(sha(mapping));
+    expect(calls[0]!.symbols).toBe(sha(h.symbols));
+    const [receipt] = receipts(h);
+    expect(receipt).toMatchObject({ action: "upload-symbols", verdict: "success", track: null, play_edit_id: "edit-sym", version_code: 42 });
+    expect(receipt!.payload).toMatchObject({
+      kind: "play-promotion", action: "upload-symbols", receipt_id: body.receipt_id, actor: `raft:${principal}@test`,
+      approvals: [{ approver: `raft:${principal}@test`, scope: "upload-symbols: backfill 11700009 mapping" }],
+      files: [
+        { type: "proguard", sha256: sha(mapping), uploaded: true, provider_ack: "deobfuscationFile.symbolType=proguard" },
+        { type: "nativeCode", sha256: sha(h.symbols), uploaded: true, provider_ack: "deobfuscationFile.symbolType=nativeCode" },
+      ],
+      play: { edit_id: "edit-sym", play_version_code: 42, version_on_play: true, track_changed: false,
+        commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false } },
+      result: { status: "success" },
+    });
+    expect(revision(h)).toBe(2);
+    expect(locks(h)).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").all()).toEqual(before);
+  });
+
+  it("uploads only the requested kinds", async () => {
+    const h = await readyRelease("human", "publisher", 42, true);
+    const mapping = attachSealedMapping(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
+    const response = await uploadSymbols(h, { mode: "commit", kinds: ["proguard"] });
+    expect(response.status).toBe(200);
+    expect(calls[0]!.input.symbols).toBeNull();
+    expect(calls[0]!.symbols).toBeNull();
+    expect(calls[0]!.mapping).toBe(sha(mapping));
+    expect((await response.json() as { files: unknown[] }).files).toHaveLength(1);
+  });
+
+  it("refuses with no_symbols when the build has no sealed deobfuscation file, or not the requested kind", async () => {
+    const h = await readyRelease();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const none = await uploadSymbols(h);
+    expect(none.status).toBe(400);
+    expect(await none.json()).toMatchObject({ error: { code: "gate_failed", gate: "deobfuscation_files", failure_code: "no_symbols" } });
+    attachSealedMapping(h);
+    const wrongKind = await uploadSymbols(h, { kinds: ["nativeCode"] });
+    expect(wrongKind.status).toBe(400);
+    expect(await wrongKind.json()).toMatchObject({ error: { failure_code: "no_symbols" } });
+    expect(receipts(h)).toHaveLength(0);
+    expect(revision(h)).toBe(1);
+  });
+
+  it("fails closed before any Play call when the mapping is not sealed", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h, { sealed: false });
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { gate: "immutable_binding", failure_code: "mapping_not_sealed" } });
+  });
+
+  it("rejects a deploy token even with the publisher role, before any Play call", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const app = new Hono<{ Bindings: Env; Variables: { admin_deploy_token: any; admin_actor: string } }>();
+    app.use("*", async (c, next) => {
+      c.set("admin_deploy_token", {
+        id: "token-1", app_id: "app", app_slug: "raft-android", name: "ci", token_prefix: "hds_ci",
+        app_role: "publisher", scopes: null, reporter_integration_id: null,
+      });
+      c.set("admin_actor", "deploy-token:ci@raft-android");
+      await next();
+    });
+    app.post("/api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols", requireAppRole("publisher"), handleUploadPlaySymbols);
+    const response = await app.fetch(new Request(`https://hands.test${path}`, {
+      method: "POST", headers: json,
+      body: JSON.stringify({ mode: "commit", expected_revision: 1, approval: { note: "n" } }),
+    }), h.env, executionContext);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "forbidden", gate: "permission" } });
+    expect(receipts(h)).toHaveLength(0);
+    expect(revision(h)).toBe(1);
+  });
+
+  it("rejects viewers, a stale expected_revision, and a missing note", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const stale = await uploadSymbols(h, { mode: "commit", expected_revision: 0 });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "version_conflict" } });
+    expect((await uploadSymbols(h, { approval: { note: " " } })).status).toBe(400);
+    h.sqlite.prepare("UPDATE app_members SET app_role='viewer' WHERE id='promotion-member'").run();
+    const viewer = await uploadSymbols(h);
+    expect(viewer.status).toBe(403);
+    expect(await viewer.json()).toMatchObject({ code: "INSUFFICIENT_APP_ROLE" });
+    expect(receipts(h)).toHaveLength(0);
+  });
+
+  it("returns edit_conflict without calling Play while another Play edit holds the package", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+    expect(revision(h)).toBe(1);
+  });
+
+  it("dry run maps version_not_on_play to 409 without a receipt", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      uploadDeobfuscation: async () => ({ ok: false, error: { status: 409, code: "version_not_on_play", message: "Google Play holds no bundle for this versionCode" } }),
+    });
+    const response = await uploadSymbols(h);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "gate_failed", gate: "version_code", failure_code: "version_not_on_play", receipt_id: null } });
+    expect(receipts(h)).toHaveLength(0);
+    expect(revision(h)).toBe(1);
+  });
+
+  it.each([
+    ["version_not_on_play", 409, "gate_failed"],
+    ["play_edit_in_review", 409, "edit_in_review"],
+    ["play_commit_ambiguous", 502, "edit_state_unknown"],
+    ["play_api_rejected", 502, "play_api_error"],
+  ] as const)("commit maps adapter %s to %i %s with a failed-closed receipt", async (failure, status, code) => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    const before = seedLiveState(h);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      uploadDeobfuscation: async (_input, mappingBody) => {
+        await mappingBody?.cancel();
+        return { ok: false, error: { status, code: failure, message: "adapter message", cause: { stage: "upload_mapping", provider_cause: "OTHER" } } };
+      },
+    });
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(status);
+    const body = await response.json() as { error: { code: string; failure_code: string; receipt_id: string } };
+    expect(body.error).toMatchObject({ code, failure_code: failure, receipt_id: expect.any(String) });
+    const [failed] = receipts(h);
+    expect(failed).toMatchObject({ action: "upload-symbols", verdict: "failed-closed", track: null });
+    expect(failed!.payload).toMatchObject({ action: "upload-symbols", play: { edit_id: "failed-closed", track_changed: false },
+      result: { status: "failed-closed", failure_code: "play_api_error" } });
+    expect(failed!.payload.result.failure_reason).toContain(failure);
+    expect(revision(h)).toBe(2);
+    expect(locks(h)).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").all()).toEqual(before);
+  });
+
+  it("commit fails closed with a receipt when the stored mapping changed size", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h, { storedBytes: new TextEncoder().encode("tampered") });
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { gate: "immutable_binding", receipt_id: expect.any(String) } });
+    expect(receipts(h)[0]).toMatchObject({ action: "upload-symbols", verdict: "failed-closed" });
+  });
+
+  it("commit fails closed when the adapter does not acknowledge every file", async () => {
+    const h = await readyRelease();
+    attachSealedMapping(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls, (input) => ({ ok: true, value: {
+      mode: "commit", edit_id: "edit-sym", package_name: input.packageName, version_code: input.versionCode,
+      version_on_play: true, files: [], commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+    } }));
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(502);
+    expect(receipts(h)[0]).toMatchObject({ action: "upload-symbols", verdict: "failed-closed" });
   });
 });

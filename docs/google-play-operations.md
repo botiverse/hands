@@ -132,6 +132,22 @@ Hands 中的上传校验通过，仅证明文件和所声明的摘要一致，�
 - Google 回答"需在 Play Console 手动送审"（`play_changes_not_sent_for_review`）时，只能在 Play Console 送审。
 - 部署顺序：Play adapter（新增 `sendForReview`，promote 接受 `changesNotSentForReview`）→ Worker → CLI。无需迁移。若 Worker 先于 adapter 上线：带该参数的 promote 会被旧 adapter 忽略参数并送审（回执 `reason:"not_acknowledged"`），send-for-review 会以 `play_api_error` 失败并写回执。
 
+### 给已在 Play 上的版本补传 mapping / native symbols（upload-symbols）
+
+适用场景：某个 versionCode 已经在 Play 上（例如已上线正式轨道），但它的 R8/ProGuard `mapping.txt` 或 native debug symbols 当时没有传到 Play（例如事后才用 `hands builds attach-symbols` 封存到该 build）。promote 要求 versionCode **大于**轨道最大值，所以不能用来补传；这个接口专门做这件事，**不改动任何轨道、rollout、bundle 或 release notes**，`play_distribution_state` 也不变。
+
+- 接口：`POST /api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols`，body `{mode?: "dry_run" | "commit", kinds?: ["proguard" | "nativeCode"], expected_revision, approval:{note}}`。`mode` 默认 `dry_run`；`kinds` 默认是该 release 的 build 上所有已封存的 deobfuscation 文件（mapping = `proguard`，native symbols zip = `nativeCode`）。
+- CLI：`hands releases play-upload-symbols <app> <release> [--kinds proguard,nativeCode] --note ... [--commit] [--json]`。**默认是 dry run**：只开 Play edit、确认该 versionCode 在 Play 上、再删除 edit，打印计划并说明什么都没写；加 `--commit` 才真正上传。CLI 自己读取 release 当前 revision 作为 `expected_revision`。
+- 门禁（同 send-for-review）：已认证真人或 agent 且具 publisher 权限（**deploy token 一律拒绝**，403）；expected_revision CAS；approval note 必填；AAB 已封存（其 sha256 就是 Play 上该 versionCode 必须持有的 bundle）；所请求的文件都已封存且不超过 Google 上限 2,097,152,000 字节（`mapping_not_sealed` / `symbols_not_sealed` / `mapping_too_large` / `symbols_too_large`）；build 上没有可上传文件，或 `kinds` 指定了不存在的类型 → 400 `gate_failed`、`failure_code:"no_symbols"`；无 live hold；绑定已验证、启用且包名一致；与 promote / store listing 共用包级 Play edit 锁。**不检查** versionCode 与轨道最大值的关系，因此任何已在 Play 上的 versionCode 都可以补传。
+- adapter：`edits.insert` → `edits.bundles.list` 确认 Play 持有该 versionCode 且 sha256 等于 release 的 AAB（没有 → 409 `gate_failed`/`version_not_on_play`；字节不同 → `aab_integrity_mismatch`）→ dry run 到此 `edits.delete` 返回 → commit 时按 `nativeCode`、`proguard` 顺序 `edits.deobfuscationfiles.upload`（`apkVersionCode`=该 versionCode），adapter 逐字节核对 sha256 和大小 → `edits.commit`（`changesInReviewBehavior=ERROR_IF_IN_REVIEW`，**不带** `changesNotSentForReview`）。**任一步失败都会删除 edit**（提交无应答时也尝试删除：若提交其实已生效，Google 不允许删除已提交的 edit，删除无副作用），不会留下半提交或泄漏的 edit。
+- dry run：不读 R2 文件内容（只 `head` 核对对象大小），不写回执，revision 不变。返回 `{mode:"dry_run", version_code, package_name, files:[{type, sha256, size_bytes}], version_on_play:true}`。
+- commit：调用 adapter 前 revision +1（与 send-for-review 相同）；Worker 直接把 R2 流交给 adapter（不 tee、不在 Worker 里二次哈希，避免数百 MB 的 mapping 在 Worker 内存里缓冲；完整性由 adapter 在提交前核对）。成功回执复用 `kind:"play-promotion"`、`action:"upload-symbols"`、`track` 为空，含 `files:[{type, sha256, size_bytes, uploaded:true, provider_ack}]`、`play:{edit_id, play_version_code, version_on_play:true, track_changed:false, commit, provider_uploads}`；任何失败都写 failed-closed 回执。返回 `{mode:"commit", receipt_id, edit_id, version_code, files, revision}`。
+- 错误：另有更改在审核 → 409 `edit_in_review`/`play_edit_in_review`（edit 已删除，稍后重跑）；提交无应答或无法识别 → 502 `edit_state_unknown`（`play_commit_ambiguous` / `play_edit_state_unknown`），先到 Play Console 的「App bundle 浏览器」核对；其他 Google 拒绝 → 502 `play_api_error`。
+- 通知：仍产生 `google_play:submission_succeeded/failed`，payload 带 `action:"upload-symbols"`，成功时 `state_label` 为「符号文件已上传到 Google Play（未改动轨道）」，`track` 为 null。
+- 可安全重跑：同一 versionCode 同一类型的文件再次上传会替换旧文件。
+
+**不确定之处（未实测）**：Google 文档未说明只含 deobfuscation 文件的 edit 提交是否需要审核、在另一更改审核中时是否会被 `ERROR_IF_IN_REVIEW` 拒绝；若被拒，按上文 `edit_in_review` 处理，等审核结束后重跑。"重复上传替换同类型文件"来自 Google 对 deobfuscationfiles.upload 的描述，未在本仓库实测。
+
 ### 商店详情（store listing）文字与图片接口
 
 `POST /api/apps/:appId/distributions/play/store-listing` 让具备应用 publisher 权限的真人或 agent 通过 Hands 修改 Play 商店详情文字，CLI 为 `hands store-listing push`（见公开 CLI 文档）。只开放白名单的 androidpublisher v3 端点：`edits.details.get`（读 defaultLanguage）、`edits.listings.list/update/delete`、`edits.validate`、`edits.commit`、`edits.delete`；不提供通用 path+body 代理，不触碰轨道、release 或 bundle。请求体 `listings[]` 的字段与 Google `Listing` 资源逐字一致（language、title、shortDescription、fullDescription、video，discovery revision 20261027）。

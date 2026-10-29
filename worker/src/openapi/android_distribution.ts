@@ -68,6 +68,11 @@ const PlaySendForReviewInput = PlayApprovalInput.extend({
   track: z.enum(["internal", "closed", "production"]),
 }).passthrough().openapi("PlaySendForReviewInput");
 
+const PlayUploadSymbolsInput = PlayApprovalInput.extend({
+  mode: z.enum(["dry_run", "commit"]).optional().openapi({ description: "Default dry_run: the adapter opens a Play edit, checks the versionCode is on Play, and deletes the edit; nothing is written (no receipt, revision unchanged). commit uploads and commits." }),
+  kinds: z.array(z.enum(["proguard", "nativeCode"])).min(1).optional().openapi({ description: "Deobfuscation file types to upload. Default: every sealed deobfuscation asset on the release's build (R8/ProGuard mapping = proguard, native debug symbols zip = nativeCode). A requested kind the build does not have fails with failure_code no_symbols." }),
+}).passthrough().openapi("PlayUploadSymbolsInput");
+
 const PlayRollbackInput = PlayApprovalInput.extend({
   to_version_code: z.number().int().positive(),
 }).passthrough().openapi("PlayRollbackInput");
@@ -371,6 +376,27 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
       403: error("Authenticated publisher, binding, or live-hold gate failed."),
       409: error("Release revision or edit lock conflicts, another change is in review (edit_in_review), or Play does not hold this release on the track."),
       502: error("Server-side Play adapter failed, or Google's answer was unrecognised (edit_state_unknown); see receipt_id."),
+    },
+  });
+
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/releases/{releaseId}/distributions/play/upload-symbols",
+    tags: ["Android distribution"],
+    summary: "Upload deobfuscation files for a versionCode already on Google Play",
+    description:
+      "Uploads the release build's sealed R8/ProGuard mapping (deobfuscationFileType proguard) and/or native debug symbols zip (nativeCode) to Google Play for the release's versionCode, in one Play edit that changes nothing else: no track, rollout, bundle or release notes, and play_distribution_state is not touched. Unlike promote there is no versionCode-above-track-maximum gate; instead the adapter checks that Play already holds a bundle for this versionCode with the release's AAB sha256 (409 gate_failed, failure_code version_not_on_play or aab_integrity_mismatch, otherwise). Gates: authenticated human or agent publisher (deploy tokens are refused), expected_revision, approval note, sealed AAB, sealed requested files within Google's 2,097,152,000-byte bound, no live hold, verified/enabled binding for the package, and the package-scoped Play edit lock. mode defaults to dry_run (edit inserted, checked, deleted; no receipt; revision unchanged). commit bumps the revision, uploads each file, commits with changesInReviewBehavior=ERROR_IF_IN_REVIEW and without changesNotSentForReview, and appends a play-promotion receipt with action upload-symbols (failed-closed on any failure). Any failure deletes the Play edit. Re-running is safe: an upload replaces the file of the same type for that versionCode.",
+    security: auth,
+    request: {
+      params: AppReleaseParams,
+      body: { content: json(PlayUploadSymbolsInput), required: true },
+    },
+    responses: {
+      200: success("dry_run: the plan {mode, version_code, package_name, files, version_on_play}; commit: {mode, receipt_id, edit_id, version_code, files, revision}.", GenericObject),
+      400: error("A gate failed (no_symbols, not sealed, too large, binding)."),
+      403: error("Authenticated publisher (not a deploy token), binding, or live-hold gate failed."),
+      409: error("Release revision or edit lock conflicts, the versionCode is not on Play, or another change is in review (edit_in_review)."),
+      502: error("Server-side Play adapter failed, or Google's commit answer was unrecognised or missing (edit_state_unknown); see receipt_id."),
     },
   });
 

@@ -117,6 +117,56 @@ export interface SendForReviewResult {
 }
 
 /**
+ * uploadDeobfuscation: attach deobfuscation files to a versionCode Play ALREADY
+ * holds, in one edit of its own. Nothing else is written in that edit (no track,
+ * rollout, bundle or release notes).
+ *
+ * dry_run: insert an edit, check the versionCode is on Play, delete the edit.
+ * commit:  insert, check, upload each declared file, commit (no changesNotSentForReview).
+ */
+export type DeobfuscationUploadMode = "dry_run" | "commit";
+
+export interface UploadDeobfuscationRpcInput extends PlayDiscoveryInput {
+  mode: DeobfuscationUploadMode;
+  versionCode: number;
+  /** sha256 of the release's AAB; the bundle Play holds for versionCode must match. */
+  expectedSha256: string;
+  operationId: string;
+  /** R8/ProGuard mapping.txt declaration (symbolType proguard); bytes are the 2nd RPC argument on commit. */
+  mapping?: SymbolsRpcInput | null;
+  /** Native debug symbols zip declaration (symbolType nativeCode); bytes are the 3rd RPC argument on commit. */
+  symbols?: SymbolsRpcInput | null;
+}
+
+export interface UploadDeobfuscationRequest {
+  packageName: string;
+  mode: DeobfuscationUploadMode;
+  versionCode: number;
+  expectedSha256: string;
+  operationId: string;
+  /** Declared files in upload order (nativeCode, then proguard); `body` is null on dry_run. */
+  files: Array<{
+    symbolType: DeobfuscationSymbolType;
+    expectedSha256: string;
+    expectedSize: number;
+    body: ReadableStream<Uint8Array> | null;
+  }>;
+}
+
+export interface UploadDeobfuscationResult {
+  mode: DeobfuscationUploadMode;
+  /** The edit used; on dry_run it was deleted, on commit it was committed. */
+  edit_id: string;
+  package_name: string;
+  version_code: number;
+  /** Always true on success: Play holds this versionCode with the expected AAB sha256. */
+  version_on_play: true;
+  /** dry_run: one entry per declared file, uploaded:false. commit: every entry uploaded:true. */
+  files: DeobfuscationFileResult[];
+  commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false } | null;
+}
+
+/**
  * What happened to one declared deobfuscation file during promote().
  *
  * uploaded:true  -> Google acknowledged the requested symbolType.
@@ -129,8 +179,11 @@ export interface DeobfuscationFileResult {
   sha256: string;
   size_bytes: number;
   uploaded: boolean;
-  /** "existing_bundle" when attached to a bundle Play already held, in its own edit. */
-  edit?: "promotion" | "existing_bundle";
+  /**
+   * "existing_bundle" when attached to a bundle Play already held, in its own edit;
+   * "upload_deobfuscation" for the standalone uploadDeobfuscation operation.
+   */
+  edit?: "promotion" | "existing_bundle" | "upload_deobfuscation";
   attempt?: "rejected";
   /** Adapter stage that failed: upload_symbols | upload_mapping | commit_edit. */
   stage?: string;

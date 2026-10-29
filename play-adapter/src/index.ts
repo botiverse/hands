@@ -23,6 +23,9 @@ import type {
   StoreListingReadRpcInput,
   SymbolsRpcInput,
   TrackMaximumRpcInput,
+  UploadDeobfuscationRequest,
+  UploadDeobfuscationResult,
+  UploadDeobfuscationRpcInput,
 } from "./types";
 
 const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -206,6 +209,63 @@ function sendForReviewInput(input: SendForReviewRpcInput): SendForReviewRequest 
     operationId,
   };
 }
+/**
+ * uploadDeobfuscation input. At least one file must be declared. On dry_run no
+ * stream may be passed (nothing is uploaded); on commit every declared file must
+ * arrive with its stream and no undeclared stream is accepted.
+ */
+function uploadDeobfuscationInput(
+  input: UploadDeobfuscationRpcInput,
+  mappingBody: ReadableStream<Uint8Array> | null,
+  symbolsBody: ReadableStream<Uint8Array> | null,
+): UploadDeobfuscationRequest {
+  const invalid = () => new PlayAdapterError(400, "deobfuscation_request_invalid", "Hands deobfuscation upload request is invalid");
+  const binding = discoveryInput(input);
+  const versionCode = positiveInteger(input.versionCode);
+  const expectedSha256 = typeof input.expectedSha256 === "string" ? input.expectedSha256.toLowerCase() : "";
+  const operationId = typeof input.operationId === "string" ? input.operationId : "";
+  const mode = input.mode;
+  if (
+    versionCode === null || versionCode > 2_100_000_000 || !SHA256.test(expectedSha256)
+    || !OPERATION_ID.test(operationId) || (mode !== "dry_run" && mode !== "commit")
+  ) {
+    throw invalid();
+  }
+  const files: UploadDeobfuscationRequest["files"] = [];
+  // Same order as promote: native symbols first, then the mapping.
+  for (const [symbolType, declared, stream] of [
+    ["nativeCode", input.symbols, symbolsBody],
+    ["proguard", input.mapping, mappingBody],
+  ] as Array<[DeobfuscationSymbolType, SymbolsRpcInput | null | undefined, ReadableStream<Uint8Array> | null]>) {
+    if (declared === null || declared === undefined) {
+      if (stream !== null) throw invalid();
+      continue;
+    }
+    if (mode === "dry_run") {
+      if (stream !== null) throw invalid();
+      const size = positiveInteger(declared.expectedSize);
+      const sha = typeof declared.expectedSha256 === "string" ? declared.expectedSha256.toLowerCase() : "";
+      if (size === null || !SHA256.test(sha)) throw invalid();
+      if (size > MAX_SYMBOLS_SIZE_BYTES) {
+        const kind = DEOBFUSCATION_FILE_KINDS[symbolType];
+        throw new PlayAdapterError(413, kind.tooLargeCode, `${kind.label} exceed the Google Play maximum size`);
+      }
+      files.push({ symbolType, expectedSha256: sha, expectedSize: size, body: null });
+      continue;
+    }
+    let checked: PromotionSymbolsRequest | null;
+    try {
+      checked = deobfuscationInput(symbolType, declared, stream);
+    } catch (error) {
+      if (error instanceof PlayAdapterError && error.code === "promotion_request_invalid") throw invalid();
+      throw error;
+    }
+    files.push({ symbolType, expectedSha256: checked!.expectedSha256, expectedSize: checked!.expectedSize, body: checked!.body });
+  }
+  if (files.length === 0) throw invalid();
+  return { packageName: binding.packageName, mode, versionCode, expectedSha256, operationId, files };
+}
+
 function storeListingPushInput(input: StoreListingPushRpcInput) {
   const binding = discoveryInput(input);
   const operationId = typeof input?.operationId === "string" ? input.operationId : "";
@@ -354,6 +414,33 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
         const resolved = await client(input, env);
         return { ok: true, value: await resolved.client.sendForReview(request) };
       } catch (error) {
+        return failure(error, operationId);
+      }
+    },
+
+    /**
+     * Upload deobfuscation files for a versionCode Play already holds, in their own
+     * edit (no track/rollout/bundle change). dry_run only checks the versionCode is
+     * on Play and deletes the edit. Any failure deletes the edit.
+     */
+    async uploadDeobfuscation(
+      input: UploadDeobfuscationRpcInput,
+      env: PlayAdapterEnv,
+      mappingBody: ReadableStream<Uint8Array> | null = null,
+      symbolsBody: ReadableStream<Uint8Array> | null = null,
+    ): Promise<AdapterResult<UploadDeobfuscationResult>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        // Validate before OAuth: a malformed request never reaches Google.
+        const request = uploadDeobfuscationInput(input, mappingBody, symbolsBody);
+        const resolved = await discoveryClient(input, env);
+        return { ok: true, value: await resolved.client.uploadDeobfuscation(request) };
+      } catch (error) {
+        // Release any stream that was never read (bad input, or the mapping after a
+        // refused symbols upload) so the caller's R2 read is not left waiting.
+        for (const stream of [mappingBody, symbolsBody]) {
+          if (stream instanceof ReadableStream && !stream.locked) await stream.cancel().catch(() => undefined);
+        }
         return failure(error, operationId);
       }
     },

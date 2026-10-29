@@ -1066,3 +1066,164 @@ describe("changesNotSentForReview and sendForReview", () => {
     expect(fixture.requests).toHaveLength(0);
   });
 });
+
+describe("uploadDeobfuscation (backfill files for a versionCode already on Play)", () => {
+  function steps(fixture: ReturnType<typeof googleFixture>) {
+    return fixture.requests.map((request) => {
+      const edit = /\/edits\/([^/:?]+)/.exec(request.url)?.[1] ?? "";
+      if (request.method === "POST" && /\/edits$/.test(request.url)) return "create";
+      if (request.method === "GET" && /\/bundles$/.test(request.url)) return `bundles@${edit}`;
+      const upload = /\/apks\/(\d+)\/deobfuscationFiles\/([A-Za-z]+)\?uploadType=media$/.exec(request.url);
+      if (upload) return `upload:${upload[2]}:${upload[1]}@${edit}`;
+      if (request.url.includes(":commit?")) return `commit@${edit}?${request.url.split("?")[1]}`;
+      if (request.method === "DELETE") return `delete@${edit}`;
+      return `other:${request.method} ${request.url}`;
+    });
+  }
+
+  function uploadInput(overrides: Record<string, unknown> = {}) {
+    return {
+      credential: binding.credential, packageName: PACKAGE, mode: "commit" as const, versionCode: 42,
+      expectedSha256: digest, operationId: "operation-3", mapping: mappingDeclaration(), symbols: symbolsDeclaration(),
+      ...overrides,
+    };
+  }
+
+  it("dry run inserts an edit, checks the versionCode is on Play, deletes the edit, and never uploads or commits", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput({ mode: "dry_run" }), environment());
+    expect(result).toEqual({ ok: true, value: {
+      mode: "dry_run", edit_id: "edit-1", package_name: PACKAGE, version_code: 42, version_on_play: true, commit: null,
+      files: [
+        { symbol_type: "nativeCode", sha256: symbolsDigest, size_bytes: symbolsBytes.byteLength, uploaded: false },
+        { symbol_type: "proguard", sha256: mappingDigest, size_bytes: mappingBytes.byteLength, uploaded: false },
+      ],
+    } });
+    expect(steps(fixture)).toEqual(["create", "bundles@edit-1", "delete@edit-1"]);
+  });
+
+  it("commit uploads each declared type with apkVersionCode, then commits without changesNotSentForReview and never touches a track", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput(), environment(), mappingBody(), symbolsBody());
+    expect(result).toEqual({ ok: true, value: {
+      mode: "commit", edit_id: "edit-1", package_name: PACKAGE, version_code: 42, version_on_play: true,
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+      files: [
+        { symbol_type: "nativeCode", sha256: symbolsDigest, size_bytes: symbolsBytes.byteLength, uploaded: true, edit: "upload_deobfuscation" },
+        { symbol_type: "proguard", sha256: mappingDigest, size_bytes: mappingBytes.byteLength, uploaded: true, edit: "upload_deobfuscation" },
+      ],
+    } });
+    expect(steps(fixture)).toEqual([
+      "create", "bundles@edit-1",
+      "upload:nativeCode:42@edit-1", "upload:proguard:42@edit-1",
+      "commit@edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW",
+    ]);
+    expect(fixture.mappingUploads).toEqual([{ sha256: mappingDigest, size: mappingBytes.byteLength }]);
+    expect(fixture.symbolsUploads).toEqual([{ sha256: symbolsDigest, size: symbolsBytes.byteLength }]);
+    expect(fixture.requests.some((request) => request.method === "PUT" || request.url.includes("/tracks"))).toBe(false);
+  });
+
+  it("uploads only the declared kind", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput({ symbols: null }), environment(), mappingBody(), null);
+    expect(result).toMatchObject({ ok: true, value: { files: [{ symbol_type: "proguard", uploaded: true }] } });
+    expect(steps(fixture)).toEqual(["create", "bundles@edit-1", "upload:proguard:42@edit-1", "commit@edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW"]);
+  });
+
+  it("refuses a versionCode Play does not hold with version_not_on_play and deletes the edit", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    for (const mode of ["dry_run", "commit"] as const) {
+      fixture.requests.length = 0;
+      const result = mode === "commit"
+        ? await service.uploadDeobfuscation(uploadInput(), environment(), mappingBody(), symbolsBody())
+        : await service.uploadDeobfuscation(uploadInput({ mode }), environment());
+      expect(result).toMatchObject({ ok: false, error: { status: 409, code: "version_not_on_play",
+        cause: { stage: "bundle_lookup", bundle_lookup: { count: 0, version_codes: [], wanted: 42 } } } });
+      expect(steps(fixture).slice(1)).toEqual([expect.stringMatching(/^bundles@/), expect.stringMatching(/^delete@/)]);
+    }
+    expect(fixture.mappingUploads).toHaveLength(0);
+  });
+
+  it("refuses when Play holds different bytes for the versionCode", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, "b".repeat(64));
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput({ mode: "dry_run" }), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "aab_integrity_mismatch" } });
+    expect(steps(fixture)).toEqual(["create", "bundles@edit-1", "delete@edit-1"]);
+  });
+
+  it("deletes the edit and never commits when Google refuses an upload", async () => {
+    const fixture = googleFixture({ mappingStatus: 403 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput(), environment(), mappingBody(), symbolsBody());
+    expect(result).toMatchObject({ ok: false, error: { status: 403, code: "play_api_rejected", cause: { stage: "upload_mapping" } } });
+    expect(steps(fixture)).toEqual(["create", "bundles@edit-1", "upload:nativeCode:42@edit-1", "upload:proguard:42@edit-1", "delete@edit-1"]);
+  });
+
+  it("deletes the edit when the streamed bytes do not match the declaration", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(
+      uploadInput({ symbols: null, mapping: mappingDeclaration({ expectedSha256: "c".repeat(64) }) }), environment(), mappingBody(), null,
+    );
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "mapping_integrity_mismatch" } });
+    expect(steps(fixture).at(-1)).toBe("delete@edit-1");
+    expect(steps(fixture).some((step) => step.startsWith("commit"))).toBe(false);
+  });
+
+  it("reports another change in review as play_edit_in_review and deletes the edit", async () => {
+    const fixture = googleFixture({ failCommitOf: "edit-1" });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput({ symbols: null }), environment(), mappingBody(), null);
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review" } });
+    expect(String((result as { error: { message: string } }).error.message)).toContain("the deobfuscation files were not committed");
+    expect(steps(fixture).at(-1)).toBe("delete@edit-1");
+  });
+
+  it("calls an unanswered commit ambiguous and still deletes the edit", async () => {
+    const fixture = googleFixture({ commitThrows: true });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.uploadDeobfuscation(uploadInput({ symbols: null }), environment(), mappingBody(), null);
+    expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_commit_ambiguous" } });
+    expect(steps(fixture).at(-1)).toBe("delete@edit-1");
+  });
+
+  it("validates input before OAuth", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const cases: Array<[Record<string, unknown>, ReadableStream<Uint8Array> | null, ReadableStream<Uint8Array> | null]> = [
+      [{ mode: "apply" }, mappingBody(), symbolsBody()],
+      [{ versionCode: 0 }, mappingBody(), symbolsBody()],
+      [{ expectedSha256: "nope" }, mappingBody(), symbolsBody()],
+      [{ operationId: "" }, mappingBody(), symbolsBody()],
+      [{ mapping: null, symbols: null }, null, null],
+      // commit: a declared file without its stream, or a stream without a declaration
+      [{}, mappingBody(), null],
+      [{ symbols: null }, mappingBody(), symbolsBody()],
+      // dry run never takes bytes
+      [{ mode: "dry_run" }, mappingBody(), null],
+      [{ mode: "dry_run", mapping: mappingDeclaration({ expectedSize: 0 }) }, null, null],
+    ];
+    for (const [overrides, mapping, symbols] of cases) {
+      const result = await service.uploadDeobfuscation(uploadInput(overrides) as never, environment(), mapping, symbols);
+      expect(result).toMatchObject({ ok: false, error: { status: 400, code: "deobfuscation_request_invalid" } });
+    }
+    const tooLarge = await service.uploadDeobfuscation(
+      uploadInput({ mode: "dry_run", symbols: null, mapping: mappingDeclaration({ expectedSize: 2_097_152_001 }) }), environment(),
+    );
+    expect(tooLarge).toMatchObject({ ok: false, error: { status: 413, code: "mapping_too_large" } });
+    expect(fixture.requests).toHaveLength(0);
+  });
+});

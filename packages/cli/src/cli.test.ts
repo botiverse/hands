@@ -2416,6 +2416,81 @@ describe("play distribution commands", () => {
     }
   });
 
+  it("play-upload-symbols is a dry run by default and sends mode=commit only with --commit", async () => {
+    const harness = await startPlayHarness({ writeExtra: {
+      mode: "dry_run", package_name: "build.raft.app", version_on_play: true,
+      files: [{ type: "proguard", sha256: "a".repeat(64), size_bytes: 282000000 }],
+    } });
+    try {
+      await harness.run("releases", "play-upload-symbols", "raft-android", "release-1", "--note", "backfill 11700009");
+      const dryRunText = harness.logs.join("\n");
+      expect(dryRunText).toContain("Dry run: nothing was written");
+      expect(dryRunText).toContain("would upload: proguard  282000000 bytes");
+      expect(dryRunText).toContain("--commit");
+
+      harness.logs.length = 0;
+      await harness.run("releases", "play-upload-symbols", "raft-android", "release-1", "--note", "backfill 11700009", "--commit");
+      const commitText = harness.logs.join("\n");
+      expect(commitText).toContain("no track or rollout change");
+      expect(commitText).toContain("rcpt-upload-symbols");
+      expect(commitText).toContain("uploaded: proguard");
+
+      // The revision is read from the release itself before every write.
+      const gets = harness.requests.filter((request) => request.method === "GET" && request.url === "/api/apps/app-1/releases/release-1");
+      expect(gets).toHaveLength(2);
+      const posts = harness.requests.filter((request) => request.method === "POST");
+      expect(posts).toEqual([
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/upload-symbols",
+          body: { mode: "dry_run", expected_revision: 7, approval: { note: "backfill 11700009" } },
+        },
+        {
+          method: "POST",
+          url: "/api/apps/app-1/releases/release-1/distributions/play/upload-symbols",
+          body: { mode: "commit", expected_revision: 7, approval: { note: "backfill 11700009" } },
+        },
+      ]);
+
+      harness.logs.length = 0;
+      await harness.run("--json", "releases", "play-upload-symbols", "raft-android", "release-1", "--note", "n");
+      expect(JSON.parse(harness.logs.join("\n"))).toMatchObject({ mode: "dry_run", version_on_play: true });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("play-upload-symbols parses --kinds, requires --note, and surfaces version_not_on_play without retry", async () => {
+    const harness = await startPlayHarness({
+      writeError: {
+        status: 409,
+        error: {
+          code: "gate_failed",
+          gate: "version_code",
+          failure_code: "version_not_on_play",
+          message: "Google Play holds no bundle for this versionCode",
+          receipt_id: "rcpt-failed",
+        },
+      },
+    });
+    try {
+      await expect(harness.run("releases", "play-upload-symbols", "raft-android", "release-1"))
+        .rejects.toThrow("required option '--note <note>' not specified");
+      await expect(harness.run("releases", "play-upload-symbols", "raft-android", "release-1", "--kinds", "mapping", "--note", "n"))
+        .rejects.toThrow("--kinds must be a comma-separated list of: proguard, nativeCode");
+      expect(harness.requests).toHaveLength(0);
+      await expect(harness.run(
+        "releases", "play-upload-symbols", "raft-android", "release-1", "--kinds", " nativeCode,proguard,proguard ", "--note", "n", "--commit",
+      )).rejects.toThrow("Play upload-symbols blocked by gate version_code: Google Play holds no bundle for this versionCode (failed-closed receipt rcpt-failed)");
+      const posts = harness.requests.filter((request) => request.method === "POST");
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.body).toEqual({ mode: "commit", kinds: ["proguard", "nativeCode"], expected_revision: 7, approval: { note: "n" } });
+      expect(harness.logs).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("halts and rolls back with expected_revision; rollback sends to_version_code", async () => {
     const harness = await startPlayHarness();
     try {

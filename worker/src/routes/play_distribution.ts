@@ -4,6 +4,7 @@ import type { Context } from "hono";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
+import { currentDeployToken } from "../lib/permissions";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
@@ -64,7 +65,8 @@ interface PlayReadback {
 interface GateFailure {
   code: "gate_failed" | "edit_conflict" | "version_conflict" | "play_api_error" | "hold_active" | "forbidden"
     | "edit_in_review" | "edit_state_unknown";
-  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes" | null;
+  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes"
+    | "deobfuscation_files" | null;
   message: string;
   receipt_id?: string | null;
   /** Specific, stable reason within the gate (e.g. play_release_notes_too_long). */
@@ -1158,6 +1160,362 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
       version_code: artifact.version_code,
       revision: input.expected_revision + 1,
       review,
+    });
+  } finally {
+    await releaseLock(c.env.DB, operationId);
+  }
+}
+
+/** Google Play deobfuscationFileType values Hands uploads. */
+export type PlayDeobfuscationKind = "proguard" | "nativeCode";
+const DEOBFUSCATION_KINDS: readonly PlayDeobfuscationKind[] = ["proguard", "nativeCode"];
+
+export interface PlayUploadSymbolsInput {
+  /** dry_run (default): check only, nothing written. commit: upload and commit. */
+  mode: "dry_run" | "commit";
+  /** Kinds to upload; omitted = every sealed deobfuscation asset the build has. */
+  kinds?: PlayDeobfuscationKind[];
+  expected_revision: number;
+  approval: { note: string };
+}
+
+export function normalizePlayUploadSymbolsInput(input: Partial<PlayUploadSymbolsInput>): PlayUploadSymbolsInput {
+  if (!input || typeof input !== "object") throw new Error("request body required");
+  const mode = input.mode ?? "dry_run";
+  if (mode !== "dry_run" && mode !== "commit") throw new Error("mode must be dry_run or commit");
+  const expectedRevision = positiveRevision(input.expected_revision);
+  if (expectedRevision === null) throw new Error("expected_revision must be a non-negative integer");
+  const note = typeof input.approval?.note === "string" ? input.approval.note.trim() : "";
+  if (!note) throw new Error("approval.note required");
+  let kinds: PlayDeobfuscationKind[] | undefined;
+  if (input.kinds !== undefined) {
+    if (!Array.isArray(input.kinds) || input.kinds.length === 0
+      || input.kinds.some((kind) => !DEOBFUSCATION_KINDS.includes(kind))) {
+      throw new Error("kinds must be a non-empty list of proguard and/or nativeCode");
+    }
+    kinds = DEOBFUSCATION_KINDS.filter((kind) => input.kinds!.includes(kind));
+  }
+  return { mode, expected_revision: expectedRevision, approval: { note }, ...(kinds ? { kinds } : {}) };
+}
+
+interface SelectedDeobfuscationFile {
+  type: PlayDeobfuscationKind;
+  asset: ReleaseSymbolsRow;
+}
+
+const DEOBFUSCATION_LABELS: Record<PlayDeobfuscationKind, { label: string; notSealed: string; tooLarge: string }> = {
+  proguard: { label: "R8/ProGuard mapping", notSealed: "mapping_not_sealed", tooLarge: "mapping_too_large" },
+  nativeCode: { label: "native debug symbols", notSealed: "symbols_not_sealed", tooLarge: "symbols_too_large" },
+};
+
+function plannedFiles(files: SelectedDeobfuscationFile[]) {
+  return files.map(({ type, asset }) => ({ type, sha256: asset.file_hash, size_bytes: asset.size_bytes }));
+}
+
+async function failedUploadSymbolsReceipt(
+  c: AdminContext,
+  artifact: ReleaseArtifactRow,
+  actor: string,
+  approvalNote: string,
+  files: SelectedDeobfuscationFile[],
+  reason: string,
+  details: unknown,
+) {
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  await insertReceipt(c.env.DB, {
+    id, appId: c.req.param("appId") ?? "", releaseId: artifact.release_id,
+    kind: "play-promotion", verdict: "failed-closed", artifact,
+    action: "upload-symbols", track: null,
+    notification: { action: "upload-symbols" },
+    payload: {
+      schema_version: 1,
+      kind: "play-promotion",
+      receipt_id: id,
+      created_at: createdAt,
+      artifact: receiptArtifact(artifact),
+      source: receiptSource(artifact),
+      signing: { upload_key_cert_sha256: artifact.upload_key_cert_sha256 },
+      actor,
+      action: "upload-symbols",
+      approvals: [{ approver: actor, at: createdAt, scope: `upload-symbols: ${approvalNote}` }],
+      files: plannedFiles(files).map((file) => ({ ...file, uploaded: false })),
+      play: { edit_id: "failed-closed", play_version_code: artifact.version_code, track_changed: false },
+      result: {
+        status: "failed-closed",
+        failure_code: reason,
+        failure_reason: `${reason}: ${JSON.stringify(details)}`,
+      },
+    },
+    actor,
+  });
+  c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
+  return id;
+}
+
+/** Map an adapter failure code onto the route's error model (shared by dry run and commit). */
+function uploadSymbolsAdapterFailure(code: string, message: string, receiptId: string | null): [400 | 409 | 502, GateFailure] {
+  if (code === "version_not_on_play") {
+    return [409, { code: "gate_failed", gate: "version_code", failure_code: code, message, receipt_id: receiptId }];
+  }
+  if (code === "aab_integrity_mismatch" || code === "mapping_integrity_mismatch" || code === "symbols_integrity_mismatch") {
+    return [409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId }];
+  }
+  if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
+    return [409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId }];
+  }
+  if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
+    return [502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId }];
+  }
+  return [502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId }];
+}
+
+/**
+ * Upload the build's sealed deobfuscation files (R8/ProGuard mapping and/or native
+ * debug symbols) to Google Play for a versionCode Play ALREADY holds, without
+ * touching any track, rollout or bundle. This is how a mapping is backfilled for a
+ * live version: promote refuses a versionCode that is not above the track maximum.
+ *
+ * Gates as send-for-review: authenticated human/agent publisher (deploy tokens are
+ * refused), expected_revision CAS, approval note, sealed AAB (its sha256 is what
+ * Play must hold for the versionCode), sealed requested files within Google's size
+ * bound, no live hold, verified/enabled binding for the package, and the
+ * package-scoped Play edit lock. No versionCode-vs-track check: the adapter checks
+ * that Play holds this versionCode (with the AAB's sha256) instead.
+ *
+ * dry_run (default): adapter inserts an edit, checks, deletes it. No R2 body read,
+ * no receipt, no revision bump. commit: bump revision, stream the files to the
+ * adapter (one edit: upload each, commit), write a play-promotion receipt with
+ * action "upload-symbols" on every outcome. play_distribution_state is never touched.
+ */
+export async function handleUploadPlaySymbols(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  let input: PlayUploadSymbolsInput;
+  try {
+    input = normalizePlayUploadSymbolsInput(await c.req.json<Partial<PlayUploadSymbolsInput>>());
+  } catch (error) {
+    return fail(c, 400, { code: "gate_failed", gate: "permission", message: (error as Error).message });
+  }
+  const actorType = currentActorInfo(c).type;
+  if (currentDeployToken(c) !== null || (actorType !== "human" && actorType !== "agent")) {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Uploading deobfuscation files to Google Play requires an authenticated human or agent publisher (not a deploy token)" });
+  }
+  const artifact = await getReleaseArtifact(c.env.DB, appId, releaseId);
+  if (!artifact) return fail(c, 400, { code: "gate_failed", gate: "channel", message: "release does not contain an Android AAB" });
+  if (artifact.release_revision !== input.expected_revision) {
+    return fail(c, 409, { code: "version_conflict", gate: null, message: `release revision is ${artifact.release_revision}, not ${input.expected_revision}` });
+  }
+  const metadata = jsonObject(artifact.metadata_json);
+  if (artifact.bundle_state !== "ready" || metadata.upload_state !== "ready" || metadata.verified_sha256 !== artifact.file_hash || metadata.verified_size_bytes !== artifact.size_bytes) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB is not sealed to its declared exact bytes" });
+  }
+  const assets: Record<PlayDeobfuscationKind, ReleaseSymbolsRow | null> = {
+    proguard: await getReleaseMapping(c.env.DB, appId, releaseId),
+    nativeCode: await getReleaseSymbols(c.env.DB, appId, releaseId),
+  };
+  const selected: SelectedDeobfuscationFile[] = [];
+  for (const type of input.kinds ?? DEOBFUSCATION_KINDS) {
+    const asset = assets[type];
+    const labels = DEOBFUSCATION_LABELS[type];
+    if (!asset) {
+      if (input.kinds) {
+        return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "no_symbols", message: `release's build has no ${labels.label} (${type}) to upload` });
+      }
+      continue;
+    }
+    // A declared-but-unsealed file fails closed, as in promote, instead of being skipped.
+    if (!sealed(asset)) {
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: labels.notSealed, message: `${labels.label} is not sealed to its declared exact bytes` });
+    }
+    if (asset.size_bytes > PLAY_DEOBFUSCATION_MAX_BYTES) {
+      return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: labels.tooLarge, message: `${labels.label} is ${asset.size_bytes} bytes; Google Play accepts at most ${PLAY_DEOBFUSCATION_MAX_BYTES}` });
+    }
+    selected.push({ type, asset });
+  }
+  if (selected.length === 0) {
+    return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "no_symbols", message: "release's build has no sealed R8/ProGuard mapping or native debug symbols" });
+  }
+  const hold = await c.env.DB.prepare(
+    "SELECT id FROM release_distribution_holds WHERE app_id = ?1 AND release_id = ?2 AND closed_at IS NULL LIMIT 1",
+  ).bind(appId, releaseId).first();
+  if (hold) return fail(c, 403, { code: "hold_active", gate: "live_hold", message: "release has an active distribution hold" });
+  if (!c.env.PLAY_RELEASE_SERVICE) {
+    return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
+  }
+  let binding;
+  try {
+    binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
+  } catch {
+    return fail(c, 502, { code: "play_api_error", gate: "permission", message: "Google Play credentials are unavailable for this app" });
+  }
+  if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Google Play must be bound, verified, and enabled for this app" });
+  }
+  if (binding.package_name !== artifact.package_name) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB package does not match this app's Google Play binding" });
+  }
+
+  const actor = currentActor(c);
+  const operationId = crypto.randomUUID();
+  const declaration = (type: PlayDeobfuscationKind) => {
+    const file = selected.find((item) => item.type === type);
+    return file ? { expectedSha256: file.asset.file_hash, expectedSize: file.asset.size_bytes } : null;
+  };
+  const adapterInput = {
+    credential: binding.credential,
+    packageName: binding.package_name,
+    versionCode: artifact.version_code,
+    expectedSha256: artifact.file_hash,
+    operationId,
+    mapping: declaration("proguard"),
+    symbols: declaration("nativeCode"),
+  };
+  const files = plannedFiles(selected);
+  // The dry run opens a Play edit too, so it takes the same package-scoped lock.
+  if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
+    return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
+  }
+  try {
+    if (input.mode === "dry_run") {
+      // Stored objects must still be there at their sealed size (metadata only, no body read).
+      for (const { type, asset } of selected) {
+        const head = await c.env.APK_BUCKET.head(asset.r2_key).catch(() => null);
+        if (!head || head.size !== asset.size_bytes) {
+          return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: `stored ${DEOBFUSCATION_LABELS[type].label} is missing or changed size` });
+        }
+      }
+      let reply;
+      try {
+        reply = await c.env.PLAY_RELEASE_SERVICE.uploadDeobfuscation({ ...adapterInput, mode: "dry_run" });
+      } catch {
+        return fail(c, 502, { code: "play_api_error", gate: null, message: "Play deobfuscation dry-run request failed" });
+      }
+      if (!reply?.ok) {
+        const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
+        const [status, failure] = uploadSymbolsAdapterFailure(code, reply?.error?.message ?? "Play deobfuscation dry run failed", null);
+        return fail(c, status, failure);
+      }
+      if (reply.value.version_on_play !== true || reply.value.version_code !== artifact.version_code || reply.value.package_name !== artifact.package_name) {
+        return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play dry-run answer did not match package/versionCode" });
+      }
+      return c.json({
+        mode: "dry_run",
+        version_code: artifact.version_code,
+        package_name: artifact.package_name,
+        files,
+        version_on_play: true,
+      });
+    }
+
+    const reserved = await c.env.DB.prepare(
+      `UPDATE releases SET revision = revision + 1, updated_at = ?1
+       WHERE app_id = ?2 AND id = ?3 AND revision = ?4`,
+    ).bind(Date.now(), appId, releaseId, input.expected_revision).run();
+    if (Number(reserved.meta?.changes ?? 0) !== 1) {
+      return fail(c, 409, { code: "version_conflict", gate: null, message: "release changed before the Play edit was reserved" });
+    }
+    const failed = (reason: string, details: unknown) =>
+      failedUploadSymbolsReceipt(c, artifact, actor, input.approval.note, selected, reason, details);
+    // No tee and no local re-hash: the adapter hashes every streamed byte and refuses
+    // to commit unless sha256 and size match the sealed identity declared here. A
+    // tee would buffer the slower branch in Worker memory (a mapping can be 100s of MB).
+    const bodies: Partial<Record<PlayDeobfuscationKind, ReadableStream<Uint8Array>>> = {};
+    for (const { type, asset } of selected) {
+      const label = DEOBFUSCATION_LABELS[type].label;
+      let object: R2ObjectBody | null;
+      try {
+        object = await c.env.APK_BUCKET.get(asset.r2_key);
+      } catch {
+        for (const body of Object.values(bodies)) await body.cancel().catch(() => undefined);
+        const receiptId = await failed("immutable_binding", { [`${type}_object_read`]: "failed" });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: `stored ${label} could not be read`, receipt_id: receiptId });
+      }
+      if (!object || object.size !== asset.size_bytes) {
+        for (const body of [...Object.values(bodies), object?.body]) await body?.cancel().catch(() => undefined);
+        const receiptId = await failed("immutable_binding", { [`${type}_object_size`]: object?.size ?? null });
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: `stored ${label} size changed`, receipt_id: receiptId });
+      }
+      bodies[type] = object.body;
+    }
+    let reply;
+    try {
+      reply = await c.env.PLAY_RELEASE_SERVICE.uploadDeobfuscation(
+        { ...adapterInput, mode: "commit" },
+        bodies.proguard ?? null,
+        bodies.nativeCode ?? null,
+      );
+    } catch {
+      const receiptId = await failed("play_api_error", { request: "failed" });
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play deobfuscation upload request failed", receipt_id: receiptId });
+    }
+    if (!reply?.ok) {
+      const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
+      const cause = receiptCause(reply?.error?.cause);
+      const receiptId = await failed("play_api_error", { code, ...(cause ? { cause } : {}) });
+      const [status, failure] = uploadSymbolsAdapterFailure(code, reply?.error?.message ?? "Play deobfuscation upload failed", receiptId);
+      return fail(c, status, failure);
+    }
+    const value = reply.value;
+    const acknowledged = selected.every(({ type, asset }) => (value.files ?? []).some((file) =>
+      file?.symbol_type === type && file.uploaded === true && file.sha256 === asset.file_hash && file.size_bytes === asset.size_bytes));
+    if (typeof value.edit_id !== "string" || !value.edit_id || value.mode !== "commit"
+      || value.version_code !== artifact.version_code || value.package_name !== artifact.package_name || !acknowledged) {
+      const receiptId = await failed("play_readback_mismatch", {
+        edit_id: typeof value.edit_id === "string" && IDENTIFIER_RE.test(value.edit_id) ? value.edit_id : null,
+        version_code: value.version_code,
+        acknowledged,
+      });
+      return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play answer did not acknowledge every file for this package/versionCode", receipt_id: receiptId });
+    }
+    const receiptId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const receiptFiles = files.map((file) => ({
+      ...file,
+      uploaded: true,
+      // Google exposes no GET for deobfuscation files; the upload response's
+      // symbolType (checked by the adapter and above) is the only acknowledgement.
+      provider_ack: `deobfuscationFile.symbolType=${file.type}`,
+    }));
+    await insertReceipt(c.env.DB, {
+      id: receiptId, appId, releaseId, kind: "play-promotion", verdict: "success",
+      artifact, action: "upload-symbols", track: null, editId: value.edit_id,
+      notification: { action: "upload-symbols", state_label: "符号文件已上传到 Google Play（未改动轨道）" },
+      payload: {
+        schema_version: 1,
+        kind: "play-promotion",
+        receipt_id: receiptId,
+        created_at: createdAt,
+        artifact: receiptArtifact(artifact),
+        source: receiptSource(artifact),
+        signing: { upload_key_cert_sha256: artifact.upload_key_cert_sha256 },
+        actor,
+        action: "upload-symbols",
+        approvals: [{ approver: actor, at: createdAt, scope: `upload-symbols: ${input.approval.note}` }],
+        files: receiptFiles,
+        play: {
+          edit_id: value.edit_id,
+          play_version_code: artifact.version_code,
+          version_on_play: true,
+          track_changed: false,
+          commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+          provider_uploads: (value.files ?? []).map((file) => ({
+            symbol_type: file.symbol_type, uploaded: file.uploaded === true, sha256: file.sha256, size_bytes: file.size_bytes,
+          })),
+        },
+        result: { status: "success" },
+      },
+      actor,
+    });
+    c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
+    return c.json({
+      mode: "commit",
+      receipt_id: receiptId,
+      edit_id: value.edit_id,
+      version_code: artifact.version_code,
+      package_name: artifact.package_name,
+      files: receiptFiles,
+      revision: input.expected_revision + 1,
     });
   } finally {
     await releaseLock(c.env.DB, operationId);

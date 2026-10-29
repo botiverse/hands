@@ -236,6 +236,7 @@ import {
   handleListReleaseReceipts,
   handlePromotePlayDistribution,
   handleSendPlayDistributionForReview,
+  handleUploadPlaySymbols,
   handleRollbackPlayDistribution,
 } from "./routes/play_distribution";
 import {
@@ -1083,6 +1084,12 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/promo
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review",
   requireAppRole("publisher"),
   handleSendPlayDistributionForReview,
+);
+// Backfill R8/ProGuard mapping / native symbols for a versionCode already on Play
+// (dry run by default). Never touches a track or rollout. Same lock as promote.
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols",
+  requireAppRole("publisher"),
+  handleUploadPlaySymbols,
 );
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/halt",
   requireAppRole("publisher"),

@@ -243,6 +243,40 @@ with `changes_not_sent_for_review: true`, and
 `POST /api/apps/:appId/releases/:releaseId/distributions/play/send-for-review`
 with `{track, expected_revision, approval: {note}}` (see OpenAPI).
 
+## Google Play: backfill mapping / native symbols for a live version
+
+`hands releases play-promote` only accepts a versionCode above the track
+maximum, so it cannot attach a mapping to a version that is already on Play.
+`play-upload-symbols` uploads the release build's sealed R8/ProGuard mapping
+(`proguard`) and/or native debug symbols zip (`nativeCode`) for its versionCode,
+which must already be on Google Play. It never changes a track, rollout, bundle
+or release notes.
+
+```bash
+# Dry run (the default): opens a Play edit, checks the versionCode is on Play,
+# deletes the edit and prints what would be uploaded. Nothing is written.
+hands releases play-upload-symbols raft-android <release> --note "backfill mapping"
+
+# Upload and commit (only the mapping in this example)
+hands releases play-upload-symbols raft-android <release> --kinds proguard \
+  --note "backfill mapping" --commit
+```
+
+- Needs the app **publisher** role as a signed-in human or agent; deploy tokens
+  are refused. Uses the same per-package Play edit lock as promote.
+- `--kinds` defaults to every sealed deobfuscation file on the build; a build
+  with none (or without a requested kind) fails with `no_symbols`.
+- Works for any versionCode Play already holds with the release's AAB; otherwise
+  it fails with `version_not_on_play`.
+- Any failure deletes the Play edit; nothing is half-committed. Re-running is
+  safe: an upload replaces the file of the same type for that versionCode.
+- `--commit` writes a receipt (`play-promotion` / `upload-symbols`); the dry run
+  writes none and leaves the release revision unchanged.
+
+API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols`
+with `{mode?: "dry_run" | "commit", kinds?, expected_revision, approval: {note}}`
+(see OpenAPI).
+
 ## Google Play Store Listing
 
 Update the Play store listing text (app name, short and full description,

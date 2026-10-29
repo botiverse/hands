@@ -9,6 +9,7 @@ import type {
   StoreListingPushRpcInput,
   StoreListingReadRpcInput,
   TrackMaximumRpcInput,
+  UploadDeobfuscationRpcInput,
 } from "./types";
 
 export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> {
@@ -40,6 +41,14 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
 
   sendForReview(input: SendForReviewRpcInput) {
     return this.service.sendForReview(input, this.env);
+  }
+
+  uploadDeobfuscation(
+    input: UploadDeobfuscationRpcInput,
+    mappingBody?: ReadableStream<Uint8Array> | null,
+    symbolsBody?: ReadableStream<Uint8Array> | null,
+  ) {
+    return this.service.uploadDeobfuscation(input, this.env, mappingBody ?? null, symbolsBody ?? null);
   }
 
   readTrackMaximum(input: TrackMaximumRpcInput) {
