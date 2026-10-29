@@ -1199,7 +1199,7 @@ export interface AscAppStoreVersion {
   buildRelationshipReturned: boolean;
 }
 
-type RawAppStoreVersion = {
+export type RawAppStoreVersion = {
   id?: unknown;
   attributes?: {
     versionString?: unknown;
@@ -1213,7 +1213,7 @@ type RawAppStoreVersion = {
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
-function toAppStoreVersion(raw: RawAppStoreVersion): AscAppStoreVersion | null {
+export function toAppStoreVersion(raw: RawAppStoreVersion): AscAppStoreVersion | null {
   if (typeof raw.id !== "string" || !raw.id) return null;
   const appStoreState = str(raw.attributes?.appStoreState);
   const appVersionState = str(raw.attributes?.appVersionState);

@@ -232,5 +232,24 @@ export function registerAppStoreRoutes(): RouteConfigList {
       502: error("Apple rejected the request."),
     },
   });
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/app-store/versions/{versionId}/preflight",
+    tags: ["App Store"],
+    summary: "Submission preflight: is this version ready for review? (read-only)",
+    description:
+      "Read-only: every App Store Connect call is a GET. Reads the version (+build), the build (processingState, expired, preReleaseVersion, usesNonExemptEncryption), every appStoreVersionLocalization and its screenshot sets, the app's primaryLocale, appInfo + appInfoLocalizations, the age rating declaration, appStoreReviewDetail, and review submissions. " +
+      "Returns {version_id, version_string, state, ready, findings: [{severity: error|warning|info, check, locale?, display_type?, resource?, message, fix?}], checked: [rule ids], not_checkable: [{check, reason}]}. " +
+      "resource uses Apple's associatedErrors form (e.g. /v1/appStoreVersionLocalizations/<id>), and a missing required field reads as Apple words it (\"You must provide a value for the attribute 'supportUrl'\"). " +
+      "A read that fails becomes a warning finding unreadable:<what> with Apple's status/code/detail rather than failing the whole preflight. ready is true only with no error finding, no unreadable read, and every rule run. App Privacy, pricing/availability, content rights and categories are listed in not_checkable.",
+    security: auth,
+    request: { params: AppVersionParams },
+    responses: {
+      200: success("Preflight report.", GenericObject),
+      403: error("App viewer role is required."),
+      404: error("Version does not belong to this app."),
+      502: error("Apple refused the version read itself."),
+    },
+  });
   return routes;
 }

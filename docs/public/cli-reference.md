@@ -587,6 +587,8 @@ hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id> [-
 hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json [--commit]
 # screenshots: shots/<locale>/<display_type>/NN.png, e.g. shots/en-US/APP_IPHONE_67/01.png
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots [--locales en-US,ja] [--commit]
+# read-only readiness check; exits 1 when any error is found
+hands app-store preflight raft-ios --version-name 1.17.0 [--json]
 hands app-store submit raft-ios --version-name 1.17.0 [--commit]
 hands app-store withdraw raft-ios --version-name 1.17.0 [--commit]
 # after approval (PENDING_DEVELOPER_RELEASE): release -- irreversible
@@ -599,6 +601,12 @@ other run-wide error), else `SCREENSHOTS_PENDING` if Apple was still processing
 uploaded screenshots. For pending sets, run the dry run again later: if every
 set is `unchanged`, files and order are confirmed; if a set shows `reorder` or
 `replace`, run `--commit` again.
+
+`preflight` is read-only (viewer role; Hands sends only GET requests to Apple).
+It prints findings grouped as errors, warnings and info, each with the check,
+locale / display type, Apple resource path (the same path Apple names in a
+refused submit's associated errors) and a fix. It exits 1 when there is any
+error. `submit` without `--commit` runs it too and prints its errors.
 
 `--release-type MANUAL|AFTER_APPROVAL` on `prepare` is applied to a created,
 reused or renamed version; without it an existing version keeps Apple's

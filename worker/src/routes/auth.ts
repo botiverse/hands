@@ -1747,6 +1747,15 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "get-app-store-preflight",
+        description: "Read-only submit readiness of a version: ready + findings (severity, check, locale, resource as in Apple's associatedErrors, message, fix). Viewer.",
+        endpoint: { method: "GET", path: "/api/apps/{app_id}/app-store/versions/{version_id}/preflight" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands app UUID." },
+          version_id: { type: "string", in: "path", required: true, description: "App Store version id." },
+        },
+      },
+      {
         name: "get-testflight-publish-status",
         description:
           "Refresh live App Store Connect processing, expiration, assigned groups, localizations, internal/external build state, and Beta App Review state for a Hands build. Read-only; requires app viewer.",
