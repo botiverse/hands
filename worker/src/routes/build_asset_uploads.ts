@@ -1027,7 +1027,9 @@ export async function handleAbortBuildAssetUpload(c: AdminContext) {
   }
   const cleanup = await deleteClaimedUploadObjects(c.env, row, receipt, now);
   if (!cleanup.deleted) {
-    return c.json({ error: "asset cleanup will be retried", code: "ASSET_UPLOAD_CLEANUP_RETRY" }, 503);
+    // The server retries this itself from cron; a caller retrying would duplicate work
+    // it is already scheduled to do, so say so rather than leaving the 503 ambiguous.
+    return c.json({ error: "asset cleanup will be retried", code: "ASSET_UPLOAD_CLEANUP_RETRY", retryable: false }, 503);
   }
   if (!await finalizeClaimedUploadCleanup(c.env, row, receipt, "aborted", currentActor(c), now)) {
     return c.json({ error: "asset cleanup ownership was lost", code: "ASSET_UPLOAD_CLEANUP_LOST" }, 409);
