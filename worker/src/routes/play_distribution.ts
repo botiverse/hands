@@ -222,6 +222,8 @@ interface AdapterDeobfuscationFile {
   http_status?: number;
   provider_reason?: string;
   provider_cause?: string;
+  /** Whether provider_cause was read from a Google identifier or inferred from prose. */
+  cause_source?: "structured" | "message";
 }
 
 /** Adapter-derived identifiers only; anything else is dropped, never persisted. */
@@ -259,6 +261,11 @@ function receiptDeobfuscationFile(
       http_status: httpStatus,
       provider_reason: pick(entry.provider_reason),
       provider_cause: pick(entry.provider_cause),
+      // Bounded to the two values the adapter emits: whether the cause was read from a
+      // Google identifier or inferred from the message. A receipt without it presents a
+      // guess and a statement identically.
+      cause_source: entry.cause_source === "structured" || entry.cause_source === "message"
+        ? entry.cause_source : undefined,
     };
     return {
       ...base,
@@ -583,7 +590,7 @@ type ReceiptProviderIdentifiers = {
   details?: Array<{ type?: string; reason?: string; domain?: string }>;
 };
 
-function receiptCause(value: unknown): { stage: string; provider_cause: string; provider_identifiers?: ReceiptProviderIdentifiers } | null {
+function receiptCause(value: unknown): { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers } | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
   const pick = (field: string): string | null => {
@@ -592,13 +599,21 @@ function receiptCause(value: unknown): { stage: string; provider_cause: string; 
   };
   const stage = pick("stage");
   const provider_cause = pick("provider_cause");
+  // Whether provider_cause came from a Google identifier or was inferred from the
+  // message text. Without it a receipt cannot vouch for its own classification: a
+  // guessed cause reads exactly like one Google stated. Bounded to the two values the
+  // adapter emits rather than passed through as free text.
+  const cause_source = source.cause_source === "structured" || source.cause_source === "message"
+    ? source.cause_source
+    : undefined;
   const provider_identifiers = receiptProviderIdentifiers(source.provider_identifiers);
   if (!stage && !provider_cause && !provider_identifiers) return null;
   return {
     ...(stage ? { stage } : {}),
     ...(provider_cause ? { provider_cause } : {}),
+    ...(cause_source ? { cause_source } : {}),
     ...(provider_identifiers ? { provider_identifiers } : {}),
-  } as { stage: string; provider_cause: string; provider_identifiers?: ReceiptProviderIdentifiers };
+  } as { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers };
 }
 
 /** A google.rpc @type URL, e.g. type.googleapis.com/google.rpc.ErrorInfo. */

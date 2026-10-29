@@ -1075,6 +1075,7 @@ describe("Play promotion route", () => {
             symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: false,
             edit: "existing_bundle", attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
             http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+            cause_source: "message",
             // A field outside the contract, and one with provider prose, must not reach the receipt.
             message: "Google said something", ...({ provider_cause_text: "free text <script>" } as object),
           } as never],
@@ -1088,6 +1089,9 @@ describe("Play promotion route", () => {
       present: true, sha256: sha(mapping), size_bytes: mapping.byteLength, edit: "existing_bundle",
       uploaded: false, attempt: "rejected", stage: "upload_mapping", error_code: "play_api_rejected",
       http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+      // Carried so a receipt can say whether the cause came from a Google identifier or
+      // was inferred from the message; without it a guess reads exactly like a statement.
+      cause_source: "message",
       provider_ack: null, post_commit_get: false,
     });
     expect(payload.play.bundle_uploaded).toBe(false);
@@ -1373,6 +1377,11 @@ describe("Play promotion route", () => {
           cause: {
             stage: "upload_mapping",
             provider_cause: "VERSION_CODE_CONFLICT",
+            // The cause here was inferred from prose, not read from a structured
+            // identifier -- exactly the case that produced this receipt. An out-of-vocabulary
+            // value must be dropped rather than carried.
+            cause_source: "message",
+            cause_source_bogus: "free text",
             provider_identifiers: {
               status: "INVALID_ARGUMENT",
               http_code: 400,
@@ -1401,6 +1410,7 @@ describe("Play promotion route", () => {
     expect(details.cause).toEqual({
       stage: "upload_mapping",
       provider_cause: "VERSION_CODE_CONFLICT",
+      cause_source: "message",
       provider_identifiers: {
         status: "INVALID_ARGUMENT",
         http_code: 400,
