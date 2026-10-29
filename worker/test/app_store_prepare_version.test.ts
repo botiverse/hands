@@ -135,7 +135,7 @@ describe("prepare renames the one editable, never-released version", () => {
     expect(json.code).toBe("VERSION_IN_FLIGHT");
     expect(json.next_action).toContain("release it");
     expect(json.next_action).toContain("release-app-store-version");
-    expect(json.next_action).toContain("hands app-store release <app> ver-112 --version 1.12.0 --commit");
+    expect(json.next_action).toContain("hands app-store release <app> ver-112 --version-name 1.12.0 --commit");
     expect(asc.writes()).toEqual([]);
   });
 
