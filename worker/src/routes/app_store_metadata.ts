@@ -7,13 +7,16 @@
  * returns 409 with the plan in both modes and writes nothing.
  *
  * Nothing here claims success it did not observe: every commit ends with a
- * read-back from Apple, and any failed, timed-out, or mismatched item makes the
- * whole response a failure with per-item detail.
+ * read-back from Apple, and any failed or mismatched item makes the whole
+ * response a failure with per-item detail. A screenshot that was uploaded and
+ * committed but that Apple is still processing when the poll budget runs out is
+ * reported as `uploaded_pending`: not a success, not a rejection.
  */
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { insertAuditLog } from "../lib/permissions";
 import {
+  AscApiError,
   type AscApiCredentials,
   type AscScreenshot,
   type AscVersionLocalization,
@@ -168,12 +171,51 @@ interface SetResult {
   locale: string;
   display_type: string;
   action: SetAction | null;
-  status: "ok" | "failed" | "not_attempted";
+  /**
+   * uploaded_pending: every image was uploaded and committed, none was rejected,
+   * but at least one was still processing at Apple when the poll budget ran out.
+   * The set's order and read-back were not done yet. Not a success.
+   */
+  status: "ok" | "failed" | "uploaded_pending" | "not_attempted";
   screenshot_set_id: string | null;
   deleted: string[];
   images: ImageResult[];
   readback?: { md5_order_match: boolean; all_complete: boolean; count: number };
   error?: Record<string, unknown>;
+}
+
+/**
+ * Timed-out states that mean "Apple accepted the upload and is still processing it":
+ * after the commit PATCH Apple moves a screenshot to UPLOAD_COMPLETE, then COMPLETE or
+ * FAILED. Any other state at the deadline (AWAITING_UPLOAD after a successful commit,
+ * UNKNOWN) is not a known in-progress state, so it stays a failure.
+ */
+const PENDING_TIMEOUT_STATES = new Set(["TIMEOUT(UPLOAD_COMPLETE)"]);
+
+const GLOBAL_HINT_RE = /\b(state|version|editable|locked?)\b/i;
+
+/**
+ * Whether an error thrown while committing one set should stop the remaining sets.
+ * The rule is conservative: an error is set-local only when it clearly is, and
+ * anything else stops the run (one clear error beats N identical ones).
+ *
+ * Set-local, later sets still run:
+ * - Apple's per-image outcome (assetDeliveryState FAILED) and a read-back mismatch.
+ *   These are not exceptions; commitSet records them on the set.
+ * - An AscApiError with HTTP 400, 409 or 422: Apple refused this specific request
+ *   (an invalid attribute, a conflict on this set or screenshot), unless its title or
+ *   detail mentions a state, the version, editability or a lock. Apple's 409
+ *   STATE_ERROR ("...because of the state of another resource") is therefore global.
+ *
+ * Global, later sets are reported not_attempted:
+ * - 401/403 (key revoked or lacks the role), 404 (version, localization or set gone),
+ *   429 (rate limited), 5xx, our own 502 for a malformed Apple response, network
+ *   errors, and anything that is not an AscApiError.
+ */
+export function isGlobalScreenshotError(error: unknown): boolean {
+  if (!(error instanceof AscApiError)) return true;
+  if (error.status !== 400 && error.status !== 409 && error.status !== 422) return true;
+  return GLOBAL_HINT_RE.test(`${error.message} ${error.detail ?? ""}`);
 }
 
 async function pollUntilDelivered(creds: AscApiCredentials, results: ImageResult[]) {
@@ -227,6 +269,9 @@ async function commitSet(creds: AscApiCredentials, plan: SetPlan): Promise<SetRe
         } catch (error) {
           item.error = String(errorBody(error).body.error ?? error);
           item.state = item.state === "NOT_STARTED" ? "RESERVE_FAILED" : `${item.state}_THEN_FAILED`;
+          // A global error (auth, rate limit, Apple down) would fail every later image
+          // the same way: stop this set and, via the handler, the run.
+          if (isGlobalScreenshotError(error)) throw error;
         }
       }
       await pollUntilDelivered(creds, result.images);
@@ -236,7 +281,11 @@ async function commitSet(creds: AscApiCredentials, plan: SetPlan): Promise<SetRe
       }
     }
     if (result.images.some((image) => image.state !== "COMPLETE")) {
-      result.status = "failed";
+      // Uploaded and committed, nothing rejected, only Apple's processing outran the
+      // poll: pending, not failed. Order and read-back are left to a later dry run.
+      const pendingOnly = result.images.every((image) => !image.error && image.screenshot_id
+        && (image.state === "COMPLETE" || PENDING_TIMEOUT_STATES.has(image.state)));
+      result.status = pendingOnly ? "uploaded_pending" : "failed";
       return result;
     }
     // Read back the set: order and checksums must equal the request, all COMPLETE.
@@ -250,10 +299,16 @@ async function commitSet(creds: AscApiCredentials, plan: SetPlan): Promise<SetRe
     if (!result.readback.md5_order_match || !result.readback.all_complete) result.status = "failed";
   } catch (error) {
     result.status = "failed";
-    result.error = errorBody(error).body;
+    result.error = { ...errorBody(error).body, scope: isGlobalScreenshotError(error) ? "global" : "set" };
   }
   return result;
 }
+
+/** What to do about sets Apple is still processing. No automatic retry. */
+export const SCREENSHOTS_PENDING_NEXT_ACTION =
+  "Apple is still processing some screenshots. Run the dry run again later: if every set is `unchanged`, files and order are confirmed; if a set shows `reorder` or `replace`, run --commit again.";
+
+const setName = (r: SetResult) => `${r.locale} ${r.display_type}`;
 
 function auditSets(results: SetResult[]) {
   return results.map((r) => ({
@@ -271,7 +326,10 @@ function auditSets(results: SetResult[]) {
  * screenshots already match the request by MD5 (Apple's sourceFileChecksum), in
  * order and all COMPLETE, is left alone; same files in another order are only
  * reordered; anything else is replaced (delete existing, upload, poll, order).
- * Commit stops at the first failed set; later sets are reported "not_attempted".
+ * Sets are committed independently: a set-local failure does not stop later sets.
+ * Only a global error (see isGlobalScreenshotError) stops the run; later sets are
+ * then reported "not_attempted". Outcome precedence: failed > uploaded_pending >
+ * committed / no_changes.
  */
 export async function handlePushAppStoreScreenshots(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -316,32 +374,54 @@ export async function handlePushAppStoreScreenshots(c: AdminContext) {
       return c.json({ ...base, outcome: "planned", sets: plans.map(planView), writes: 0 });
     }
     const results: SetResult[] = [];
-    let stopped = false;
+    let stoppedBy: SetResult | null = null;
     for (const plan of plans) {
-      if (stopped) {
+      if (stoppedBy) {
         results.push({ locale: plan.input.locale, display_type: plan.input.display_type, action: plan.action,
           status: "not_attempted", screenshot_set_id: plan.setId, deleted: [], images: [] });
         continue;
       }
       const result = await commitSet(creds, plan);
       results.push(result);
-      if (result.status !== "ok") stopped = true;
+      if (result.status === "failed" && result.error?.scope === "global") stoppedBy = result;
     }
-    const ok = results.every((r) => r.status === "ok");
-    const outcome = !ok ? "failed" : results.every((r) => r.action === "unchanged") ? "no_changes" : "committed";
+    const failedSets = results.filter((r) => r.status === "failed" || r.status === "not_attempted").map(setName);
+    const pendingSets = results.filter((r) => r.status === "uploaded_pending").map(setName);
+    const outcome = failedSets.length > 0 ? "failed"
+      : pendingSets.length > 0 ? "uploaded_pending"
+      : results.every((r) => r.action === "unchanged") ? "no_changes" : "committed";
     await insertAuditLog(c.env.DB, c, {
       app_id: appId, action: "app_store.screenshots",
       payload: { ...base, outcome, sets: auditSets(results) },
     });
-    if (!ok) {
+    const summary = { failed_sets: failedSets, pending_sets: pendingSets };
+    if (failedSets.length > 0) {
+      const stop = stoppedBy
+        ? `; stopped at ${setName(stoppedBy)} on an error that would affect every set (${String(stoppedBy.error?.error ?? "unknown")}), later sets not attempted`
+        : "";
       return c.json({
         ...base, ok: false, outcome,
-        error: "one or more screenshot sets did not reach the requested state; see sets[].images[].state",
+        error: `${failedSets.length} screenshot set(s) did not reach the requested state${stop}; see sets[].images[].state`,
         code: "SCREENSHOTS_FAILED",
+        ...summary,
+        next_action: pendingSets.length > 0
+          ? `Fix the failed sets and push again. ${SCREENSHOTS_PENDING_NEXT_ACTION}`
+          : "Fix the failed sets and push again.",
         sets: results,
       }, 502);
     }
-    return c.json({ ...base, ok: true, outcome, sets: results });
+    if (pendingSets.length > 0) {
+      // 202: Apple accepted the uploads and is still processing them. ok stays false.
+      return c.json({
+        ...base, ok: false, outcome,
+        error: `${pendingSets.length} screenshot set(s) uploaded but still processing at Apple: ${pendingSets.join(", ")}`,
+        code: "SCREENSHOTS_PENDING",
+        ...summary,
+        next_action: SCREENSHOTS_PENDING_NEXT_ACTION,
+        sets: results,
+      }, 202);
+    }
+    return c.json({ ...base, ok: true, outcome, ...summary, sets: results });
   } catch (error) {
     return fail(c, error);
   }

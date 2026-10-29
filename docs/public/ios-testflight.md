@@ -401,11 +401,29 @@ what Apple stores as `sourceFileChecksum`:
   operations, commit with the MD5, poll `assetDeliveryState` until `COMPLETE`,
   set the order, then read the set back.
 
-Commit stops at the first failed set (later sets are `not_attempted`). Any
-image that ends `FAILED` or does not finish within the poll budget makes the
-response 502 `SCREENSHOTS_FAILED`, with each image's id and state; it is never
-reported as success. Because a replace deletes before it uploads, a failed
-replace can leave a set partly filled: fix the cause and push again.
+Each set is committed on its own: one set failing does not stop the others.
+Only an error that would hit every set (Apple rejects the API key with 401/403,
+404, rate limit, Apple 5xx, a 409 about the version's state, or any error that
+is not clearly about that one set) stops the run; later sets are then
+`not_attempted`. Each set ends in one of:
+
+- `ok`: uploaded, `COMPLETE`, ordered, and read back;
+- `failed`: an image ended `FAILED`, Apple refused a request for the set, or
+  the read-back did not match;
+- `uploaded_pending`: every image was uploaded and committed and none was
+  rejected, but Apple was still processing at least one when the poll budget
+  ran out. Not a success: the set's order and read-back were not done yet;
+- `not_attempted`: skipped after a run-stopping error.
+
+The response lists `failed_sets` and `pending_sets`. Any failed or
+not-attempted set makes it 502 `SCREENSHOTS_FAILED` (this wins over pending);
+otherwise any pending set makes it 202 `SCREENSHOTS_PENDING` with `ok: false`.
+The CLI exits non-zero for both and prints the code. For pending sets: Apple is
+still processing some screenshots. Run the dry run again later: if every set is
+`unchanged`, files and order are confirmed; if a set shows `reorder` or
+`replace`, run `--commit` again. Nothing is retried automatically. Because a
+replace deletes before it uploads, a failed replace can leave a set partly
+filled: fix the cause and push again.
 
 Every prepare, listing, and screenshot call (dry runs included) is recorded in
 the app audit log (`app_store.prepare_version`, `app_store.localizations`,

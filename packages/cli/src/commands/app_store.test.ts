@@ -154,4 +154,38 @@ describe("hands app-store", () => {
     expect(text).toContain("BLOCKED (missing_required_fields: keywords, supportUrl) ja");
     expect(text).toContain("BLOCKED (version_not_editable) fr-FR");
   });
+
+  it("screenshots push --commit fails with its own code when Apple is still processing, and FAILED wins over pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hands-shots-"));
+    await mkdir(join(root, "en-US", "APP_IPHONE_67"), { recursive: true });
+    await copyFile(`${FIXTURES}phone-1080x1920.png`, join(root, "en-US", "APP_IPHONE_67", "01.png"));
+    const next = "Apple is still processing some screenshots. Run the dry run again later: if every set is `unchanged`, files and order are confirmed; if a set shows `reorder` or `replace`, run --commit again.";
+    const set = (locale: string, status: string) => ({ locale, display_type: "APP_IPHONE_67", action: "replace", status, images: [] });
+    const reply = (status: number, body: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status })));
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line: unknown) => { errors.push(String(line)); });
+    const argv = ["app-store", "screenshots", "push", APP_ID, "--version-id", "ver-117", "--dir", root, "--commit"];
+
+    reply(202, { ok: false, outcome: "uploaded_pending", code: "SCREENSHOTS_PENDING", error: "1 screenshot set(s) uploaded but still processing at Apple: en-US APP_IPHONE_67",
+      failed_sets: [], pending_sets: ["en-US APP_IPHONE_67"], next_action: next, sets: [set("en-US", "uploaded_pending")] });
+    const pending = await run(argv).catch((e) => e);
+    expect(pending.name).toBe("QuiverApiError");
+    expect(pending.body.code).toBe("SCREENSHOTS_PENDING");
+    expect(pending.body.next_action).toBe(next);
+    expect(errors.join("\n")).toContain("en-US APP_IPHONE_67: replace -> uploaded_pending");
+    expect(errors.join("\n")).toContain("Uploaded, still processing at Apple: en-US APP_IPHONE_67");
+
+    errors.length = 0;
+    reply(502, { ok: false, outcome: "failed", code: "SCREENSHOTS_FAILED", error: "1 screenshot set(s) did not reach the requested state",
+      failed_sets: ["en-US APP_IPHONE_67"], pending_sets: ["ja APP_IPHONE_67"], next_action: `Fix the failed sets and push again. ${next}`,
+      sets: [set("en-US", "failed"), set("ja", "uploaded_pending")] });
+    const failed = await run(argv).catch((e) => e);
+    expect(failed.body.code).toBe("SCREENSHOTS_FAILED");
+    expect(errors.join("\n")).toContain("Failed: en-US APP_IPHONE_67");
+    expect(errors.join("\n")).toContain("Uploaded, still processing at Apple: ja APP_IPHONE_67");
+
+    reply(200, { ok: true, outcome: "committed", failed_sets: [], pending_sets: [], sets: [set("en-US", "ok")] });
+    const ok = await run(argv);
+    expect(ok.out.join("\n")).toContain("Committed and read back from Apple.");
+  });
 });
