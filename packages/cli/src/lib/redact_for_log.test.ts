@@ -31,3 +31,16 @@ describe("redaction of a non-JSON 5xx body", () => {
     expect(printed).not.toContain("SUPERSECRET");
   });
 });
+
+describe("redaction covers a Bearer header echoed into the body", () => {
+  it("strips a bare Bearer token", () => {
+    const out = redactForLog("upstream said: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig");
+    expect(out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+    expect(out).toContain("Bearer <redacted>");
+  });
+
+  it("strips the authorization key/value form", () => {
+    expect(redactForLog('authorization="xyz123"')).not.toContain("xyz123");
+    expect(redactForLog("authorization: xyz123")).not.toContain("xyz123");
+  });
+});

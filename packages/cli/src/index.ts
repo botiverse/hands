@@ -180,8 +180,13 @@ program.parseAsync(process.argv).catch((err) => {
     // intermediary answered (a Cloudflare 5xx carries an HTML page). Printing a bounded,
     // redacted excerpt is the only way to tell those apart from a single CI run -- and
     // without it the body is discarded and the failure is unattributable.
+    // >= 400, not >= 500: an intermediary can answer a 4xx too, and those bodies are
+    // the same HTML (a Cloudflare 413 for an oversized body, a 403 for a block). Our own
+    // 4xx all come from `c.json`, so they never reach here. The exception is the public
+    // history routes, which do return plain text -- the CLI does not call them today, so
+    // if one of them is ever wired in, narrow this rather than accept the noise.
     const status = (err as { status?: unknown }).status;
-    if (typeof status === "number" && status >= 500 && typeof body === "string") {
+    if (typeof status === "number" && status >= 400 && typeof body === "string") {
       console.error(`Status: ${status}`);
       console.error(`Body (first 500 bytes): ${redactForLog(body).slice(0, 500)}`);
     }
