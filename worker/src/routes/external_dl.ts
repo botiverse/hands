@@ -29,6 +29,7 @@ import type { Context } from "hono";
 import { usesHostedAssets } from "../lib/release_resolver";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { presignR2DownloadUrl } from "../lib/r2_presign";
+import { readR2WithRetry } from "../lib/r2_read_retry";
 
 type DlTargetRow = {
   target: string;
@@ -128,13 +129,13 @@ async function serveHostedAsset(
     contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
   }, Number.isFinite(configuredTtl) ? configuredTtl : 3600, c.req.method === "HEAD" ? "HEAD" : "GET");
   if (directUrl) {
-    if (!await c.env.APK_BUCKET.head(asset.r2_key)) return null;
+    if (!await readR2WithRetry("head", () => c.env.APK_BUCKET.head(asset.r2_key))) return null;
     // The release/key is immutable, but the URL's signature expires. Never
     // cache this redirect as immutable or clients will retain an expired URL.
     return new Response(null, { status: 302, headers: { location: directUrl, ...noStore } });
   }
 
-  const object = await c.env.APK_BUCKET.get(asset.r2_key);
+  const object = await readR2WithRetry("get", () => c.env.APK_BUCKET.get(asset.r2_key));
   if (!object) return null;
 
   const headers = new Headers();

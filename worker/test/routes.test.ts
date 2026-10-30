@@ -7885,6 +7885,21 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(sums.status).toBe(200);
     expect(await sums.text()).toBe("deadbeef  raft-computer-linux-x64\n");
 
+    const hostedGet = hostedBucket.get;
+    let getAttempts = 0;
+    hostedBucket.get = async (key: string) => {
+      getAttempts += 1;
+      if (getAttempts === 1) throw new Error("get: We encountered an internal error. Please try again. (10001)");
+      return hostedGet(key);
+    };
+    const retriedGet = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "sha256sums" }),
+    );
+    expect(retriedGet.status).toBe(200);
+    expect(await retriedGet.text()).toBe("deadbeef  raft-computer-linux-x64\n");
+    expect(getAttempts).toBe(2);
+    hostedBucket.get = hostedGet;
+
     // 4. Fail closed. An unknown or misspelled kind must NOT fall back to the
     //    main binary: returning 200 with the wrong bytes is a "successful
     //    error" that a checksum step would silently trust.
@@ -7968,11 +7983,19 @@ describe("quiver public API v2 — scope resolution", () => {
     });
     const oldGet = hostedBucket.get;
     hostedBucket.get = async () => { throw new Error("direct downloads must not stream through the Worker"); };
-    hostedBucket.head = async (key: string) => objects[key] === undefined ? null : { key };
+    const signedHead = hostedBucket.head;
+    let headAttempts = 0;
+    hostedBucket.head = async (key: string) => {
+      headAttempts += 1;
+      if (headAttempts === 1) throw new Error("head: We encountered an internal error. Please try again. (10001)");
+      return signedHead(key);
+    };
     const direct = await handleExternalReleaseDl(
       dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
     );
     expect(direct.status).toBe(302);
+    expect(headAttempts).toBe(2);
+    hostedBucket.head = signedHead;
     expect(direct.headers.get("cache-control")).toBe("no-store");
     expect(await direct.text()).toBe("");
     const directUrl = new URL(direct.headers.get("location")!);
