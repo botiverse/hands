@@ -4981,6 +4981,190 @@ describe("quiver releases — draft lifecycle", () => {
     });
   });
 
+  describe("release:rolled_back webhook", () => {
+    function rollbackContext(releaseId: string, body: unknown, waited: Promise<unknown>[]) {
+      return {
+        env,
+        req: {
+          param: (name: string) =>
+            name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
+          json: async () => body,
+          query: () => undefined,
+        },
+        get: (key: string) =>
+          key === "admin_actor" ? "tester" : key === "org_id" ? "default" : undefined,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      } as any;
+    }
+
+    async function rollbackPayloads(eventType: string): Promise<any[]> {
+      const { results } = await env.DB
+        .prepare("SELECT event_type, payload_json FROM webhook_deliveries WHERE event_type = ?")
+        .bind(eventType)
+        .all();
+      return results.map((r: any) => JSON.parse(r.payload_json));
+    }
+
+    const rolledBackPayloads = () => rollbackPayloads("release:rolled_back");
+    const channelEmptiedPayloads = () => rollbackPayloads("release:channel_emptied");
+
+    async function subscribeRollback(events = ["release:rolled_back"]) {
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-rollback", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(events), 1, now, now).run();
+    }
+
+    it("cancel restores the fallback and emits cancelled -> restored", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:rolled_back", "release:channel_emptied"]);
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handleDeleteRelease(rollbackContext("rel-draft", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:rolled_back:rel-active:2");
+      expect(payloads[0]).toMatchObject({
+        event: "release:rolled_back",
+        payload: {
+          app_id: "app-release",
+          release_id: "rel-active",
+          build_id: "build-active",
+          app_slug: "release-app",
+          platform: "android",
+          channel: "main",
+          version_code: 1,
+          previous_version_code: 2,
+          previous_version: "1.0.0",
+          version_transition: "1.0.0 → 1.0.0",
+          version_code_transition: "2 → 1",
+          rollout: 100,
+          reactivated: true,
+        },
+      });
+      expect(await channelEmptiedPayloads()).toHaveLength(0);
+    });
+
+    it("emits channel_emptied when cancel leaves no active release", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:rolled_back", "release:channel_emptied"]);
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handleDeleteRelease(rollbackContext("rel-active", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+      expect(await rolledBackPayloads()).toHaveLength(0);
+      const payloads = await channelEmptiedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:channel_emptied:rel-active:1");
+      expect(payloads[0].payload).toMatchObject({
+        release_id: "rel-active",
+        build_id: "build-active",
+        version_code: 1,
+        channel: "main",
+        rollout: 0,
+      });
+    });
+
+    it("does not call a channel empty while another scoped release remains active", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:channel_emptied"]);
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind("group-rollback", "app-release", "QA", null, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft", status: "active",
+        scopes: [{ scope_type: "device_group", scope_value: "group-rollback" }],
+      }, "tester", "rel-canary");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handleDeleteRelease(rollbackContext("rel-active", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+      expect(await channelEmptiedPayloads()).toHaveLength(0);
+    });
+
+    it("does not announce a fallback that the restore statement did not restore", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const db = env.DB as any;
+      const originalBatch = db.batch.bind(db);
+      let cancelBatch = true;
+      db.batch = async (statements: any[]) => {
+        const results = await originalBatch(statements);
+        if (cancelBatch) {
+          cancelBatch = false;
+          results[2].meta.changes = 0;
+        }
+        return results;
+      };
+      const waited: Promise<unknown>[] = [];
+      try {
+        expect((await handleDeleteRelease(rollbackContext("rel-draft", {}, waited))).status).toBe(200);
+        await Promise.all(waited);
+      } finally {
+        db.batch = originalBatch;
+      }
+      expect(await rolledBackPayloads()).toHaveLength(0);
+    });
+
+    it("uses the same direction for an explicit rollback", async () => {
+      const { createRelease, handleRollbackRelease } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handleRollbackRelease(rollbackContext("rel-active", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:rolled_back:rel-active:2");
+      expect(payloads[0].payload).toMatchObject({
+        release_id: "rel-active",
+        build_id: "build-active",
+        version_code: 1,
+        previous_version_code: 2,
+        version_code_transition: "2 → 1",
+        reactivated: true,
+      });
+    });
+
+    it("does not suppress a committed rollback when a later publish already superseded it", async () => {
+      const { createRelease, emitReleaseRolledBack } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      // rel-active is already superseded again. The deferred rollback emit still
+      // describes an activation that really happened and must not disappear.
+      await emitReleaseRolledBack(env as any, "default", "app-release", {
+        release_id: "rel-active", app_id: "app-release", build_id: "build-active",
+        channel_id: "ch-main", revision: 2, displacedVersion: { code: 2, name: "1.0.0" },
+      });
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].payload.version_code_transition).toBe("2 → 1");
+    });
+  });
+
   it("publishes a device-group draft without superseding the full fallback release", async () => {
     const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
     const now = Date.now();
