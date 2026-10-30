@@ -12,7 +12,8 @@
  *   release:new           - release activated (created active or published)
  *   release:draft_created - draft release created (QA/integration trigger)
  *   release:superseded - release marked superseded by a new one
- *   release:rolled_back - explicit rollback
+ *   release:rolled_back - explicit rollback or fallback restored by cancel
+ *   release:channel_emptied - cancel left no active release in the channel
  *   release:cancelled   - release cancelled
  *   build:succeeded     - build parsing succeeded
  *   build:failed        - build parsing failed
@@ -33,7 +34,7 @@ const WEBHOOK_EVENT_TYPES = [
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
-  "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
+  "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:channel_emptied", "release:cancelled",
   "release:published",
   "build:succeeded", "build:failed",
 ] as const;

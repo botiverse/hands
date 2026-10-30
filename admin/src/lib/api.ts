@@ -1573,6 +1573,7 @@ export type WebhookEventType =
   | "release:draft_created"
   | "release:superseded"
   | "release:rolled_back"
+  | "release:channel_emptied"
   | "release:cancelled"
   | "build:succeeded"
   | "build:failed";
@@ -1587,6 +1588,7 @@ export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
   "release:draft_created",
   "release:superseded",
   "release:rolled_back",
+  "release:channel_emptied",
   "release:cancelled",
   "build:succeeded",
   "build:failed",
