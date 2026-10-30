@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
+import { readR2WithRetry } from "../lib/r2_read_retry";
 
 type ElectronAssetRow = {
   id: string;
@@ -100,7 +101,7 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
     );
   }
 
-  const object = await c.env.APK_BUCKET.get(asset.r2_key);
+  const object = await readR2WithRetry("get", () => c.env.APK_BUCKET.get(asset.r2_key));
   if (!object) return c.json({ error: "object not found" }, 404);
 
   const headers = new Headers();
@@ -145,9 +146,9 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
     });
   }
   if (range) {
-    const partial = await c.env.APK_BUCKET.get(asset.r2_key, {
+    const partial = await readR2WithRetry("get", () => c.env.APK_BUCKET.get(asset.r2_key, {
       range: { offset: range.start, length: range.length },
-    });
+    }));
     if (!partial) return c.json({ error: "object not found" }, 404);
     // Length must describe the bytes actually returned, not the whole object.
     headers.set("content-length", String(range.length));
