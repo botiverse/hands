@@ -118,3 +118,44 @@ describe("later reporter database failures", () => {
     expect(calls.business).toBe(1); expect(calls.readback).toBe(0);
   });
 });
+
+describe("transient D1 wording the reporter routes previously misreported", () => {
+  // A brief D1 outage showed up as HTTP 500 rather than 503 with Retry-After, so the caller
+  // was told "we are broken" for a condition that resolves on its own. These are the
+  // wordings the upload path already treated as transient; the reporter path did not.
+  it.each([
+    "D1_ERROR: database is locked: SQLITE_BUSY",
+    "D1_ERROR: database is busy",
+    "D1_ERROR: backend temporarily unavailable",
+    "D1_ERROR: connection reset by peer",
+    "Network error",
+  ])("maps %s to a retryable 503 rather than a 500", async message => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { env } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(await response.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
+    expect(errors).not.toHaveBeenCalled();
+    info.mockRestore();
+    errors.mockRestore();
+  });
+
+  it.each([
+    "D1_ERROR: UNIQUE constraint failed: app_reporter_routes.app_id",
+    "D1_ERROR: no such column: route_subject",
+  ])("still reports %s as a terminal failure", async message => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const { env } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(500);
+    // Reporter routes deliberately do not console.error (the sealed diagnostic carries the
+    // detail); the assertion that matters is that this is NOT turned into a retryable 503.
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(errors).not.toHaveBeenCalled();
+    info.mockRestore();
+    errors.mockRestore();
+  });
+});
