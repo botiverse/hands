@@ -598,7 +598,9 @@ link. Internal distribution also includes selected groups and
 Chinese notification line (for example, `测试组：Botiverse、Team B`) containing
 all selected group names; an unnamed group falls back to its ID. It is absent
 on upload and Apple callback events, so scalar notification templates can
-leave the line blank. This confirms internal availability, not that a tester
+leave the line blank. Internal distribution also carries `what_to_test` and
+`source_commit` (see [Test notes and source commit](#test-notes-and-source-commit)).
+This confirms internal availability, not that a tester
 received an email. The operation success receipt and delivery rows commit
 atomically; repeating the same operation receipt does not duplicate deliveries.
 
@@ -629,6 +631,31 @@ delivered with every other field unchanged. The `build` key itself is always
 present, so a consumer must treat `null` as "version unknown, open the link"
 rather than as an absent field. Events whose resource is not a build (e.g.
 `app_store:version_state_changed`) always report `build: null`.
+
+### Test notes and source commit
+
+`testflight:external_state_changed` and `testflight:internal_distribution_ready`
+also carry two keys for rendering a "ready to test" card:
+
+```json
+"what_to_test": { "zh-Hans": "测试登录流程", "en-US": "Check the login flow" },
+"source_commit": "0123456789abcdef0123456789abcdef01234567"
+```
+
+`what_to_test` maps locale to the build's TestFlight **What to Test** text,
+each truncated to 1000 characters; blank locales are dropped. On the external
+event Hands reads `GET /v1/builds/{id}/betaBuildLocalizations` for the build
+named by the `build` lookup (5 s budget). On the internal event it uses the
+publish readback, falling back to the `what_to_test` sent with the publish
+request; no extra Apple call is made.
+
+`source_commit` is `provenance_json.source_commit` of the Hands iOS build with
+the same build number (the internal event prefers the published Hands build
+itself). It is set when the build was uploaded with `--source-commit`.
+
+Both are best effort and never block delivery: the keys are always present on
+these two events and are `null` when the build, its localizations, or a
+matching Hands build cannot be read. Other event types do not carry them.
 
 ### `version_string` on version state events
 

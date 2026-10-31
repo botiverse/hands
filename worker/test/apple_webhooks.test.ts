@@ -585,6 +585,83 @@ describe("Apple ingress — build identity enrichment", () => {
     expect(latestPayload(sql).payload.groups_display).toBeUndefined();
   });
 
+  /** Apple answers for an external-state event whose build has test notes. */
+  function cardFetch(localizations: (url: string) => Response, calls: string[] = []) {
+    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/v1/buildBetaDetails/")) {
+        return json({
+          data: {
+            type: "builds", id: "asc-build-1", attributes: { version: "11400009" },
+            relationships: { preReleaseVersion: { data: { type: "preReleaseVersions", id: "pre-1" } } },
+          },
+          included: [{ type: "preReleaseVersions", id: "pre-1", attributes: { version: "1.14.0" } }],
+        });
+      }
+      if (url.includes("/betaBuildLocalizations")) return localizations(url);
+      return json({ data: [], included: [] });
+    });
+  }
+  function insertHandsBuild(sql: Database.Database, provenance: unknown, versionCode = 11400009) {
+    sql.prepare(
+      `INSERT INTO builds(id,app_id,version_name,version_code,provenance_json,created_at,updated_at)
+       VALUES(?,'app','1.14.0',?,?,0,0)`,
+    ).run(`hands-${versionCode}-${Math.random()}`, versionCode, JSON.stringify(provenance));
+  }
+
+  it("carries the build's What to Test and source commit on the external-state card", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    insertHandsBuild(sql, { source_commit: "0123456789abcdef0123456789abcdef01234567", ci_provider: "github" });
+    // Same build number, no commit recorded (e.g. a QA build): must not shadow the row above.
+    insertHandsBuild(sql, {});
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", cardFetch(() => new Response(JSON.stringify({ data: [
+      { id: "l1", attributes: { locale: "zh-Hans", whatsNew: "测试登录" } },
+      { id: "l2", attributes: { locale: "en-US", whatsNew: "x".repeat(1500) } },
+      { id: "l3", attributes: { locale: "ja", whatsNew: "  " } },
+    ] }), { status: 200, headers: { "content-type": "application/json" } }), calls));
+
+    expect((await send(betaEvent())).status).toBe(200);
+    const payload = latestPayload(sql).payload;
+    // Keyed by the build id Apple returned, not the buildBetaDetails id.
+    expect(calls).toContain("https://api.appstoreconnect.apple.com/v1/builds/asc-build-1/betaBuildLocalizations?limit=200");
+    expect(payload.what_to_test).toEqual({ "zh-Hans": "测试登录", "en-US": "x".repeat(1000) });
+    expect(payload.source_commit).toBe("0123456789abcdef0123456789abcdef01234567");
+    // Additive: the existing card fields are unchanged.
+    expect(payload.build).toEqual({ version: "1.14.0", version_code: "11400009" });
+    expect(payload.state).toBe("READY_FOR_BETA_TESTING");
+  });
+
+  it("delivers with what_to_test null when the localization read fails", async () => {
+    const { sql, send } = await setup();
+    await withAscCredentials(sql);
+    vi.stubGlobal("fetch", cardFetch(() => new Response("boom", { status: 500 })));
+
+    expect((await send(betaEvent())).status).toBe(200);
+    const payload = latestPayload(sql).payload;
+    // Best effort: both keys present, null, and the rest of the card intact.
+    expect("what_to_test" in payload).toBe(true);
+    expect(payload.what_to_test).toBeNull();
+    expect("source_commit" in payload).toBe(true);
+    expect(payload.source_commit).toBeNull();
+    expect(payload.build).toEqual({ version: "1.14.0", version_code: "11400009" });
+  });
+
+  it("keeps card fields off events other than external state", async () => {
+    const { sql, send } = await setup();
+    vi.stubGlobal("fetch", vi.fn());
+    expect((await send(fixture("version-only"))).status).toBe(200);
+    const row = sql.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE event_type='app_store:version_state_changed' LIMIT 1",
+    ).get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect("what_to_test" in payload).toBe(false);
+    expect("source_commit" in payload).toBe(false);
+  });
+
   it("ingests a TestFlight crash with build identity and an internal log attachment", async () => {
     const { sql, send, env } = await setup();
     await withAscCredentials(sql);

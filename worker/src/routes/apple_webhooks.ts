@@ -1,7 +1,8 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
-import { ascRequest, AscApiError, getBetaCrashLogText, getBetaFeedbackCrashSubmission, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
+import { ascRequest, AscApiError, getBetaBuildLocalizations, getBetaCrashLogText, getBetaFeedbackCrashSubmission, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
+import { lookupSourceCommit, whatToTestMap } from "../lib/testflight_events";
 import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
@@ -60,6 +61,8 @@ interface Config {
  */
 /** Budget for the two extra round trips that resolve beta group names. */
 const GROUPS_TIMEOUT_MS = 4000;
+/** Budget for the What to Test read on external-state events. */
+const WHAT_TO_TEST_TIMEOUT_MS = 5000;
 
 const BUILD_LOOKUP: Partial<Record<string, string>> = {
   buildBetaDetailExternalBuildStateUpdated: "/build",
@@ -110,6 +113,9 @@ async function resolveBuildIdentity(
   resourceType: string,
   resourceId: string,
   lookupPath: string | undefined,
+  // Receives the ASC build id when the lookup followed a `/build` relationship.
+  // Kept out of BuildIdentity: that object is forwarded verbatim as `build`.
+  resolved?: { ascBuildId?: string },
 ): Promise<BuildIdentity | null> {
   // buildUploads is accepted alongside buildBetaDetails because its attributes
   // already hold cfBundleShortVersionString / cfBundleVersion. Reading the wrong
@@ -122,6 +128,7 @@ async function resolveBuildIdentity(
   try {
     const res = await ascRequest<{
       data?: {
+        id?: unknown;
         attributes?: {
           version?: unknown;
           cfBundleVersion?: unknown;
@@ -151,6 +158,8 @@ async function resolveBuildIdentity(
     // build number "version" and needs the included preReleaseVersion for the
     // marketing string.
     const attributes = res?.data?.attributes;
+    if (resolved && lookupPath === "/build" && typeof res?.data?.id === "string" && text(res.data.id, 64))
+      resolved.ascBuildId = res.data.id;
     const buildNumberRaw =
       resourceType === "buildUploads" ? attributes?.cfBundleVersion : attributes?.version;
     const buildNumber =
@@ -199,6 +208,9 @@ async function resolveBuildIdentity(
  * unexpected payload shape — collapses to `null`, so the caller can queue the
  * notification unconditionally. This is the ONE place the "a version lookup
  * must not cost a real state-change event" guarantee lives.
+ *
+ * `whatToTest` is filled only for the external-state event, under the same
+ * contract: it stays null whenever the build or its localizations cannot be read.
  */
 async function resolveBuildIdentityForEvent(
   env: Env,
@@ -208,21 +220,34 @@ async function resolveBuildIdentityForEvent(
   eventType: string,
   resourceType: string,
   resourceId: string,
-): Promise<BuildIdentity | null> {
+): Promise<{ identity: BuildIdentity | null; whatToTest: Record<string, string> | null }> {
+  const none = { identity: null, whatToTest: null };
   const candidatePath = Object.hasOwn(BUILD_LOOKUP, eventType)
     ? BUILD_LOOKUP[eventType]
     : undefined;
   // An empty path is a real entry meaning "read this resource's own attributes", so
   // the guard must test for absence, not falsiness. `!candidatePath` rejected the
   // buildUploads entry before the resolver ever saw it.
-  if (candidatePath === undefined) return null;
+  if (candidatePath === undefined) return none;
   // Bind after the guard: the closure below would otherwise widen it back to
   // `string | undefined`.
   const lookupPath: string = candidatePath;
   try {
     const creds = await getAscCredentials(env.DB, encKey, appId);
-    const identity = await resolveBuildIdentity(creds, resourceType, resourceId, lookupPath);
-    if (!identity) return identity;
+    const resolved: { ascBuildId?: string } = {};
+    const identity = await resolveBuildIdentity(creds, resourceType, resourceId, lookupPath, resolved);
+    if (!identity) return none;
+    let whatToTest: Record<string, string> | null = null;
+    // The card for this event shows the build's test notes. Keyed by the build id
+    // Apple returned from `/build`, never guessed from the buildBetaDetails id.
+    if (eventType === "buildBetaDetailExternalBuildStateUpdated" && creds && resolved.ascBuildId) {
+      try {
+        whatToTest = whatToTestMap(await getBetaBuildLocalizations(
+          creds, resolved.ascBuildId, AbortSignal.timeout(WHAT_TO_TEST_TIMEOUT_MS)));
+      } catch {
+        // Test notes are decoration on a notification that must still be delivered.
+      }
+    }
     // Groups are only meaningful for the external-state event, and only a build id
     // can be queried. Two extra round trips fit in their own budget rather than
     // borrowing the single-hop one the identity lookup was designed around.
@@ -238,9 +263,9 @@ async function resolveBuildIdentityForEvent(
         // Groups are decoration on a notification that must still be delivered.
       }
     }
-    return identity;
+    return { identity, whatToTest };
   } catch {
-    return null;
+    return none;
   }
 }
 
@@ -571,7 +596,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
   // every pre-existing field is unchanged. Note the payload always carries the
   // `build` key, so a consumer must treat null as "version unknown" rather
   // than as an absent field (match the previous shape if you compare payloads).
-  const buildIdentity = await resolveBuildIdentityForEvent(
+  const { identity: buildIdentity, whatToTest } = await resolveBuildIdentityForEvent(
     c.env,
     c.env.ASC_CRED_ENC_KEY,
     config.app_id,
@@ -587,6 +612,11 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     resourceType,
     resourceId,
   );
+  // External-state cards also show the code identity: the Hands build with this
+  // build number, if CI recorded its commit. Best effort like the rest.
+  const sourceCommit = d.type === "buildBetaDetailExternalBuildStateUpdated" && buildIdentity?.version_code
+    ? await lookupSourceCommit(c.env.DB, config.app_id, { versionCode: buildIdentity.version_code })
+    : null;
   const crashIngest = d.type === "betaFeedbackCrashSubmissionCreated"
     ? await prepareTestflightCrashIngest(c.env, config.app_id, resourceId, buildIdentity, now)
     : null;
@@ -611,6 +641,12 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       // version_state_changed only: the marketing version of the resource, or null
       // with version_lookup "failed". Absent on other events.
       ...(versionLookup ?? {}),
+      // external_state_changed only, always both keys (null when unavailable): the
+      // build's What to Test (locale -> text, 1000 chars each) and source commit.
+      // Same keys the internal_distribution_ready operation event carries.
+      ...(d.type === "buildBetaDetailExternalBuildStateUpdated"
+        ? { what_to_test: whatToTest, source_commit: sourceCommit }
+        : {}),
       // The same rendering shape the internal-beta operation event already emits, so a
       // downstream template reads one field for every TestFlight notification.
       // Omitted entirely when the groups were not resolved: an empty string would
