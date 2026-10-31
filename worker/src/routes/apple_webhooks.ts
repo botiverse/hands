@@ -291,20 +291,20 @@ interface TestflightCrashIngest {
  * by app-reported crashes. The Apple event id is the idempotency boundary; the
  * deterministic ticket and attachment ids make provider retries harmless too.
  */
-async function prepareTestflightCrashIngest(
+export async function prepareTestflightCrashIngest(
   env: Env,
-  config: Config,
+  appId: string,
   resourceId: string,
   buildIdentity: BuildIdentity | null,
   now: number,
 ): Promise<TestflightCrashIngest | null> {
   try {
     if (!env.ASC_CRED_ENC_KEY) return null;
-    const creds = await getAscCredentials(env.DB, env.ASC_CRED_ENC_KEY, config.app_id);
+    const creds = await getAscCredentials(env.DB, env.ASC_CRED_ENC_KEY, appId);
     if (!creds) return null;
-    const submission = await getBetaFeedbackCrashSubmission(creds, resourceId);
+    const submission = await getBetaFeedbackCrashSubmission(creds, resourceId, AbortSignal.timeout(5000));
     const attributes = submission.attributes ?? {};
-    const ticketId = `testflight-crash:${config.app_id}:${resourceId}`;
+    const ticketId = `testflight-crash:${appId}:${resourceId}`;
     const metadata = {
       source: "testflight",
       submission_id: resourceId,
@@ -324,7 +324,7 @@ async function prepareTestflightCrashIngest(
                ?10, NULL, NULL, ?11, NULL, NULL, NULL, ?12, ?12)`,
     ).bind(
       ticketId,
-      config.app_id,
+      appId,
       (comment || "TestFlight crash submission").slice(0, 500),
       buildIdentity?.version ?? null,
       buildIdentity?.version_code ?? null,
@@ -336,18 +336,18 @@ async function prepareTestflightCrashIngest(
       resourceId,
       now,
     )];
-    const logText = await getBetaCrashLogText(creds, resourceId);
+    const logText = await getBetaCrashLogText(creds, resourceId, AbortSignal.timeout(5000));
     if (logText) {
       const bytes = new TextEncoder().encode(logText);
       if (bytes.byteLength <= 2 * 1024 * 1024) {
-        const r2Key = `feedback/${config.app_id}/testflight/${resourceId}.ips`;
+        const r2Key = `feedback/${appId}/testflight/${resourceId}.ips`;
         await env.APK_BUCKET.put(r2Key, bytes, { httpMetadata: { contentType: "text/plain" } });
         statements.push(env.DB.prepare(
           `INSERT OR IGNORE INTO feedback_attachments
            (id, ticket_id, r2_key, filename, content_type, size_bytes, origin, visibility, created_at)
            VALUES (?1, ?2, ?3, ?4, 'text/plain', ?5, 'system', 'internal', ?6)`,
         ).bind(
-          `testflight-crash-log:${config.app_id}:${resourceId}`,
+          `testflight-crash-log:${appId}:${resourceId}`,
           ticketId,
           r2Key,
           `testflight-crash-${resourceId}.ips`,
@@ -588,7 +588,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     resourceId,
   );
   const crashIngest = d.type === "betaFeedbackCrashSubmissionCreated"
-    ? await prepareTestflightCrashIngest(c.env, config, resourceId, buildIdentity, now)
+    ? await prepareTestflightCrashIngest(c.env, config.app_id, resourceId, buildIdentity, now)
     : null;
   const payload = JSON.stringify({
     event: spec[0],
