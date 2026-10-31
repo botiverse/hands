@@ -597,11 +597,14 @@ export async function addBuildToBetaGroups(
 export async function getBetaBuildLocalizations(
   creds: AscApiCredentials,
   ascBuildId: string,
+  signal?: AbortSignal,
 ): Promise<BetaBuildLocalizationResource[]> {
   const res = await ascRequest<{ data: BetaBuildLocalizationResource[] }>(
     creds,
     "GET",
     `/v1/builds/${encodeURIComponent(ascBuildId)}/betaBuildLocalizations?limit=200`,
+    undefined,
+    signal,
   );
   return res.data ?? [];
 }
