@@ -3,8 +3,11 @@
 The business Worker emits `hands_http_response` for final `/api/` responses,
 including OpenAPI validation, authentication refusals, and handler failures.
 The record contains method, route template, status, duration, timestamp and
-Cloudflare request ID. It contains no bodies, full URLs, query strings,
-account identities or credentials. Successful responses provide the denominator.
+request ID. It prefers an incoming `X-Trace-Id` only when its value is exactly
+32 lowercase hex characters (the W3C trace id), and otherwise falls back to the
+Cloudflare `cf-ray`. No other headers, bodies, full URLs, query strings,
+account identities or credentials are recorded. Successful responses provide
+the denominator.
 
 Run the agent-side collector with the deployed production configuration:
 
