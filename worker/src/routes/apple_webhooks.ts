@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { AdminContext } from "../lib/permissions";
 import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
-import { ascRequest, AscApiError, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
+import { ascRequest, AscApiError, getBetaCrashLogText, getBetaFeedbackCrashSubmission, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
 import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
@@ -33,6 +33,14 @@ const EVENT_MAP = {
     "newState",
     "oldState",
   ],
+  betaFeedbackCrashSubmissionCreated: [
+    "testflight:crash_submission_created",
+    "betaFeedbackCrashSubmissions",
+    "createdDate",
+    // A creation event has no previous state. The timestamp still goes through
+    // the same required-string validation as the state-transition events.
+    "",
+  ],
 } as const;
 
 interface Config {
@@ -55,6 +63,7 @@ const GROUPS_TIMEOUT_MS = 4000;
 
 const BUILD_LOOKUP: Partial<Record<string, string>> = {
   buildBetaDetailExternalBuildStateUpdated: "/build",
+  betaFeedbackCrashSubmissionCreated: "/build",
   // Unlike buildBetaDetails, a buildUploads resource carries the version strings on
   // itself, so no relationship has to be followed: the empty path means "read this
   // resource's own attributes".
@@ -107,7 +116,7 @@ async function resolveBuildIdentity(
   // resource shape must still fail closed, which is why the types stay an explicit
   // allowlist rather than "anything goes".
   const supportedResource =
-    resourceType === "buildBetaDetails" || resourceType === "buildUploads";
+    resourceType === "buildBetaDetails" || resourceType === "buildUploads" || resourceType === "betaFeedbackCrashSubmissions";
   if (!creds || lookupPath === undefined || !supportedResource)
     return null;
   try {
@@ -134,7 +143,7 @@ async function resolveBuildIdentity(
       // would be a request Apple may reject, so the include is only added for the
       // resource that actually has one.
       `/v1/${resourceType}/${encodeURIComponent(resourceId)}${lookupPath}` +
-        (resourceType === "buildBetaDetails" ? "?include=preReleaseVersion" : ""),
+        (resourceType === "buildBetaDetails" || resourceType === "betaFeedbackCrashSubmissions" ? "?include=preReleaseVersion" : ""),
       undefined,
       AbortSignal.timeout(5000),
     );
@@ -273,6 +282,89 @@ async function resolveVersionStringForEvent(
   }
 }
 
+interface TestflightCrashIngest {
+  ticketId: string;
+  statements: ReturnType<Env["DB"]["prepare"]>[];
+}
+
+/** Persist a tester-shared crash for the same feedback/crash triage surface used
+ * by app-reported crashes. The Apple event id is the idempotency boundary; the
+ * deterministic ticket and attachment ids make provider retries harmless too.
+ */
+async function prepareTestflightCrashIngest(
+  env: Env,
+  config: Config,
+  resourceId: string,
+  buildIdentity: BuildIdentity | null,
+  now: number,
+): Promise<TestflightCrashIngest | null> {
+  try {
+    if (!env.ASC_CRED_ENC_KEY) return null;
+    const creds = await getAscCredentials(env.DB, env.ASC_CRED_ENC_KEY, config.app_id);
+    if (!creds) return null;
+    const submission = await getBetaFeedbackCrashSubmission(creds, resourceId);
+    const attributes = submission.attributes ?? {};
+    const ticketId = `testflight-crash:${config.app_id}:${resourceId}`;
+    const metadata = {
+      source: "testflight",
+      submission_id: resourceId,
+      build: buildIdentity,
+      app_uptime_ms: attributes.appUptimeInMilliseconds ?? null,
+      connection_type: attributes.connectionType ?? null,
+      battery_percentage: attributes.batteryPercentage ?? null,
+    };
+    const comment = typeof attributes.comment === "string" ? attributes.comment.trim() : "";
+    const statements = [env.DB.prepare(
+      `INSERT OR IGNORE INTO feedback_tickets
+       (id, app_id, kind, status, message, contact, version_name, version_code,
+        channel, device_id, device_model, os_version, arch, locale,
+        metadata_json, client_ip_hash, signature, submission_id,
+        submission_fingerprint, reporter_id, reporter_integration_id, created_at, updated_at)
+       VALUES (?1, ?2, 'crash', 'open', ?3, NULL, ?4, ?5, 'testflight', NULL, ?6, ?7, ?8, ?9,
+               ?10, NULL, NULL, ?11, NULL, NULL, NULL, ?12, ?12)`,
+    ).bind(
+      ticketId,
+      config.app_id,
+      (comment || "TestFlight crash submission").slice(0, 500),
+      buildIdentity?.version ?? null,
+      buildIdentity?.version_code ?? null,
+      attributes.deviceModel ?? null,
+      attributes.osVersion ?? null,
+      attributes.architecture ?? null,
+      attributes.locale ?? null,
+      JSON.stringify(metadata),
+      resourceId,
+      now,
+    )];
+    const logText = await getBetaCrashLogText(creds, resourceId);
+    if (logText) {
+      const bytes = new TextEncoder().encode(logText);
+      if (bytes.byteLength <= 2 * 1024 * 1024) {
+        const r2Key = `feedback/${config.app_id}/testflight/${resourceId}.ips`;
+        await env.APK_BUCKET.put(r2Key, bytes, { httpMetadata: { contentType: "text/plain" } });
+        statements.push(env.DB.prepare(
+          `INSERT OR IGNORE INTO feedback_attachments
+           (id, ticket_id, r2_key, filename, content_type, size_bytes, origin, visibility, created_at)
+           VALUES (?1, ?2, ?3, ?4, 'text/plain', ?5, 'system', 'internal', ?6)`,
+        ).bind(
+          `testflight-crash-log:${config.app_id}:${resourceId}`,
+          ticketId,
+          r2Key,
+          `testflight-crash-${resourceId}.ips`,
+          bytes.byteLength,
+          now,
+        ));
+      }
+    }
+    return { ticketId, statements };
+  } catch {
+    // A notification is still useful when detail/log enrichment is unavailable.
+    // Never include Apple's response or the crash-log body in this warning.
+    console.warn("testflight_crash_ingest_failed", JSON.stringify({ submission_id: resourceId }));
+    return null;
+  }
+}
+
 const text = (v: unknown, max = 256): v is string =>
   typeof v === "string" &&
   v.length > 0 &&
@@ -363,6 +455,7 @@ export async function handleCreateAppleWebhook(c: AdminContext) {
         "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED",
         "BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED",
         "BUILD_UPLOAD_STATE_UPDATED",
+        "BETA_FEEDBACK_CRASH_SUBMISSION_CREATED",
       ],
     },
     201,
@@ -494,6 +587,9 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
     resourceType,
     resourceId,
   );
+  const crashIngest = d.type === "betaFeedbackCrashSubmissionCreated"
+    ? await prepareTestflightCrashIngest(c.env, config, resourceId, buildIdentity, now)
+    : null;
   const payload = JSON.stringify({
     event: spec[0],
     event_id: eventId,
@@ -507,8 +603,9 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       resource: { type: resourceType, id: resourceId },
       previous_state: attrs[spec[3]] ?? null,
       state: attrs[spec[2]],
-      occurred_at: attrs.timestamp ?? null,
+      occurred_at: attrs.timestamp ?? attrs.createdDate ?? null,
       app_store_connect_url: `https://appstoreconnect.apple.com/apps/${config.apple_app_id}`,
+      ticket_id: crashIngest?.ticketId ?? null,
       /** Version this event is about, or null when it could not be resolved. */
       build: buildIdentity,
       // version_state_changed only: the marketing version of the resource, or null
@@ -537,6 +634,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
       `INSERT OR IGNORE INTO apple_webhook_events (app_id,event_id,event_type,body_sha256,receipt_nonce,received_at)
       SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM apple_webhook_configs WHERE id=?7 AND enabled=1)`,
     ).bind(config.app_id, d.id, d.type, digest, nonce, now, config.id),
+    ...(crashIngest?.statements ?? []),
     c.env.DB.prepare(
       `INSERT INTO webhook_deliveries (id,webhook_id,event_type,external_event_id,payload_json,signing_secret,status,attempts,max_attempts,next_attempt_at,created_at,updated_at)
       SELECT lower(hex(randomblob(16))),w.id,?1,?2,?3,w.secret,'pending',0,3,?4,?4,?4 FROM webhooks w
@@ -571,6 +669,7 @@ const APPLE_EVENT_TYPES = [
   "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED",
   "BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED",
   "BUILD_UPLOAD_STATE_UPDATED",
+  "BETA_FEEDBACK_CRASH_SUBMISSION_CREATED",
 ];
 type AppleWebhookResource = {
   id: string;
