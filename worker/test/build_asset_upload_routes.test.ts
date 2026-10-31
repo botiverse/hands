@@ -79,7 +79,9 @@ class MemoryR2 {
     };
   }
 
-  async put(key: string, value: ReadableStream<Uint8Array>) {
+  readonly putSha256 = new Map<string, string>();
+
+  async put(key: string, value: ReadableStream<Uint8Array>, options?: { sha256?: string }) {
     const reader = value.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -93,6 +95,10 @@ class MemoryR2 {
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    if (options?.sha256) {
+      this.putSha256.set(key, options.sha256);
+      if (createHash("sha256").update(bytes).digest("hex") !== options.sha256.toLowerCase()) throw new Error("R2 sha256 mismatch");
+    }
     this.objects.set(key, bytes);
     return { key, size };
   }
@@ -574,6 +580,7 @@ describe("direct build asset upload routes", () => {
     const completedBody = await completed.json() as any;
     expect(completed.status).toBe(200);
     expect(completedBody).toMatchObject({ state: "ready", file_hash: hash, size_bytes: bytes.length });
+    expect(bucket.putSha256.get(completedBody.r2_key)).toBe(hash);
     expect(bucket.objects.has(attempt.staging_key)).toBe(false);
     expect(Buffer.from(bucket.objects.get(completedBody.r2_key)!)).toEqual(bytes);
     expect(sqlite.prepare("SELECT state FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id)).toEqual({ state: "ready" });
@@ -619,7 +626,10 @@ describe("direct build asset upload routes", () => {
     );
     expect(completed.status).toBe(422);
     expect(bucket.objects.has(attempt.staging_key)).toBe(true);
-    expect(bucket.objects.has(finalKey)).toBe(true);
+    // Native R2 integrity rejection stores no bad final object; cleanup still
+    // records and retries the exact final key from the seal ledger.
+    expect(bucket.objects.has(finalKey)).toBe(false);
+    expect(bucket.deleted).toContain(finalKey);
     expect(sqlite.prepare(
       "SELECT state, cleanup_state FROM build_asset_ingest_attempt WHERE asset_id = ?",
     ).get(body.asset_id)).toEqual({ state: "failed", cleanup_state: "expired" });
