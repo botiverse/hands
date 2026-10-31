@@ -13,6 +13,8 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
   const route = [...c.req.matchedRoutes].reverse()
     .find((r) => !r.path.includes("*"))?.path ?? "unmatched";
   const ray = c.req.header("cf-ray") ?? "";
+  const traceId = c.req.header("x-trace-id") ?? "";
+  const requestId = /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null;
   const isReporterFailure = c.res.status >= 500 && (
     (c.req.method === "GET" && route === "/api/apps/:appId/reporter-feedback")
     || (c.req.method === "PUT" && route === "/api/apps/:appId/reporter-feedback/route-subject")
@@ -27,7 +29,8 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
     route,
     status: c.res.status,
     duration_ms: Math.max(0, Date.now() - started),
-    request_id: /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null,
+    request_id: requestId,
+    trace_id: /^[a-f0-9]{32}$/.test(traceId) ? traceId : null,
   }));
 };
 
