@@ -564,6 +564,13 @@ outbound payload carries `ticket_id`, never the crash-log body. A crash
 submission reports a tester chose to share it, not the total crash count for
 the build.
 
+To backfill existing submissions, an app admin can call
+`POST /api/apps/{appId}/testflight-crashes/backfill` with the same optional
+`build`, `version`, and `limit` filters as the pull endpoint. It uses the same
+idempotent ingest and returns `ticket_ids` and `failed_submission_ids`; a repeat
+run does not create duplicate tickets. This is the supported way to recover
+history and any submission whose earlier ingest failed.
+
 Hands verifies `x-apple-signature` over the exact request bytes, limits the
 body to 64 KiB, and commits the event receipt and matching outbound deliveries
 atomically. Replayed event IDs do not create extra deliveries; reuse of an ID

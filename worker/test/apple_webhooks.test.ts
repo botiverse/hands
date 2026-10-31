@@ -643,6 +643,21 @@ describe("Apple ingress — build identity enrichment", () => {
     });
     expect(put).toHaveBeenCalledOnce();
     expect(row.payload_json).not.toContain("logText");
+
+    const replay = await send({
+      data: {
+        id: "crash-event",
+        type: "betaFeedbackCrashSubmissionCreated",
+        version: 1,
+        attributes: { createdDate: "2026-10-31T05:00:00Z" },
+        relationships: { instance: { data: { type: "betaFeedbackCrashSubmissions", id: "crash-1" } } },
+      },
+    });
+    expect(replay.status).toBe(200);
+    expect((await replay.json() as any).duplicate).toBe(true);
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM feedback_tickets WHERE id='testflight-crash:app:crash-1'").get()).toEqual({ n: 1 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM feedback_attachments WHERE ticket_id='testflight-crash:app:crash-1'").get()).toEqual({ n: 1 });
+    expect(put).toHaveBeenCalledTimes(2);
   });
 
   it("names the build for a buildUploads event from the resource's own attributes", async () => {

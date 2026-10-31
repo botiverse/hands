@@ -188,6 +188,7 @@ import {
   handleCloseTestflightCrash,
   handleCloseTestflightFeedback,
   handleGetTestflightCrashLog,
+  handleBackfillTestflightCrashes,
   handleListTestflightCrashes,
   handleListTestflightFeedback,
 } from "./routes/testflight_crashes";
@@ -1372,6 +1373,7 @@ bindAdmin("delete", "/api/apps/:appId/testflight-feedback/:submissionId",
   requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
   handleCloseTestflightFeedback,
 );
+bindAdmin("post", "/api/apps/:appId/testflight-crashes/backfill", requireAppRole("admin"), handleBackfillTestflightCrashes);
 bindAdmin("get", "/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
 bindAdmin("get", "/api/apps/:appId/testflight-crashes/:submissionId/log",
   requireAppRole("viewer"),

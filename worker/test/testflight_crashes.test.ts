@@ -6,6 +6,7 @@ import {
   handleCloseTestflightFeedback,
   handleListTestflightFeedback,
   handleGetTestflightCrashLog,
+  handleBackfillTestflightCrashes,
   handleListTestflightCrashes,
   parseCrashLimit,
 } from "../src/routes/testflight_crashes";
@@ -29,10 +30,14 @@ async function testCreds() {
 async function setup(platform = "ios") {
   const creds = await testCreds();
   const encrypted = await encryptP8(creds.p8, "test-key");
+  const statements: Array<{ sql: string; params: unknown[] }> = [];
   const db = {
     prepare(sql: string) {
-      return {
-        bind() {
+      const statement = {
+        sql,
+        params: [] as unknown[],
+        bind(...params: unknown[]) {
+          this.params = params;
           return this;
         },
         async first() {
@@ -53,8 +58,13 @@ async function setup(platform = "ios") {
           }
           return null;
         },
+        async run() { return { meta: { changes: 1 } }; },
+        async execute() { return { meta: { changes: 1 } }; },
       };
+      statements.push(statement);
+      return statement;
     },
+    batch: async (statements: Array<{ execute: () => unknown }>) => statements.map((statement) => statement.execute()),
   };
   const calls: string[] = [];
   vi.stubGlobal(
@@ -151,13 +161,14 @@ async function setup(platform = "ios") {
     }),
   );
   const app = new Hono();
+  app.post("/api/apps/:appId/testflight-crashes/backfill", handleBackfillTestflightCrashes as any);
   app.get("/api/apps/:appId/testflight-crashes", handleListTestflightCrashes as any);
   app.get("/api/apps/:appId/testflight-crashes/:submissionId/log", handleGetTestflightCrashLog as any);
   app.get("/api/apps/:appId/testflight-feedback", handleListTestflightFeedback as any);
   app.delete("/api/apps/:appId/testflight-crashes/:submissionId", handleCloseTestflightCrash as any);
   app.delete("/api/apps/:appId/testflight-feedback/:submissionId", handleCloseTestflightFeedback as any);
   const env = { DB: db, ASC_CRED_ENC_KEY: "test-key" } as any;
-  return { app, env, calls };
+  return { app, env, calls, statements };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -236,6 +247,25 @@ describe("TestFlight crash pull", () => {
       }),
     ]);
     expect(JSON.stringify(body)).not.toContain("tester@example.com");
+  });
+
+  it("backfills crashes with the same idempotent ingest and no outbound log body", async () => {
+    const { app, env, statements } = await setup();
+    const put = vi.fn(async () => ({}));
+    env.APK_BUCKET = { put } as any;
+    const res = await app.request("/api/apps/app-1/testflight-crashes/backfill?build=11200001", { method: "POST" }, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      requested: 1,
+      ticket_ids: ["testflight-crash:app-1:crash-1"],
+      failed_submission_ids: [],
+      filter: { build: "11200001", version: null, limit: 20 },
+    });
+    expect(statements.some((statement) => statement.sql.includes("INSERT OR IGNORE INTO feedback_tickets"))).toBe(true);
+    expect(statements.some((statement) => statement.sql.includes("INSERT OR IGNORE INTO feedback_attachments"))).toBe(true);
+    expect(put).toHaveBeenCalledOnce();
+    expect(JSON.stringify(statements)).not.toContain("logText");
   });
 
   it("closes a crash or screenshot submission via Apple's DELETE only when explicitly called", async () => {

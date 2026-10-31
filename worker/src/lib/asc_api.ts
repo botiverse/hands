@@ -1077,11 +1077,14 @@ export async function listBetaFeedbackCrashSubmissions(
 export async function getBetaFeedbackCrashSubmission(
   creds: AscApiCredentials,
   submissionId: string,
+  signal?: AbortSignal,
 ): Promise<BetaFeedbackCrashSubmission> {
   const res = await ascRequest<{ data: BetaFeedbackCrashSubmission }>(
     creds,
     "GET",
     `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}`,
+    undefined,
+    signal,
   );
   return res.data;
 }
@@ -1090,11 +1093,14 @@ export async function getBetaFeedbackCrashSubmission(
 export async function getBetaCrashLogText(
   creds: AscApiCredentials,
   submissionId: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const res = await ascRequest<{ data?: { attributes?: { logText?: string | null } } | null }>(
     creds,
     "GET",
     `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}/crashLog`,
+    undefined,
+    signal,
   );
   return res.data?.attributes?.logText ?? null;
 }
