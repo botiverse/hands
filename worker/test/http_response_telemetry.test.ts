@@ -44,6 +44,22 @@ describe("server grants validator and final HTTP telemetry", () => {
     expect(JSON.stringify(record)).not.toContain("private-");
   });
 
+  it.each([
+    { trace: "8da5b07607d2b9ec7855ba04c573ac60", ray: "a44e64ee3aee0f23-SIN", expected: "8da5b07607d2b9ec7855ba04c573ac60" },
+    { trace: "8DA5B07607D2B9EC7855BA04C573AC60", ray: "a44e64ee3aee0f23-SIN", expected: "a44e64ee3aee0f23-SIN" },
+    { trace: "not-a-trace-id", ray: "", expected: null },
+  ])("uses only a 32-lowercase-hex X-Trace-Id before cf-ray: %j", async ({ trace, ray, expected }) => {
+    const { app, log } = harness();
+    const response = await app.request("/api/apps/app-id/server-grants", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-trace-id": trace, "cf-ray": ray },
+      body: JSON.stringify({ server_slug: "botiverse" }),
+    });
+    expect(response.status).toBe(201);
+    const record = JSON.parse(log.mock.calls[0]![1] as string);
+    expect(record.request_id).toBe(expected);
+  });
+
   it("captures auth refusal, handler error and unmatched requests once each", async () => {
     const { app, log } = harness();
     app.get("/api/auth-denied", (c) => c.json({ error: "secret-error" }, 403));
