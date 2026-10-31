@@ -947,6 +947,10 @@ jobs:
             echo "Missing GitHub secret HANDS_RAFT_CLIENT_SECRET." >&2
             exit 1
           fi
+          if [[ -z "${RAFT_BOT_ENC_KEY:-}" ]]; then
+            echo "Missing GitHub secret HANDS_RAFT_BOT_ENC_KEY." >&2
+            exit 1
+          fi
           if [[ -z "${ASC_CRED_ENC_KEY:-}" ]]; then
             echo "Missing GitHub secret HANDS_ASC_CRED_ENC_KEY." >&2
             exit 1
@@ -976,9 +980,7 @@ jobs:
           config=wrangler.hands.generated.jsonc
           printf '%s' "${SIGNED_URL_SECRET}" | pnpm exec wrangler secret put SIGNED_URL_SECRET --config "${config}"
           printf '%s' "${RAFT_CLIENT_SECRET}" | pnpm exec wrangler secret put RAFT_CLIENT_SECRET --config "${config}"
-          if [[ -n "${RAFT_BOT_ENC_KEY:-}" ]]; then
-            printf '%s' "${RAFT_BOT_ENC_KEY}" | pnpm exec wrangler secret put RAFT_BOT_ENC_KEY --config "${config}"
-          fi
+          printf '%s' "${RAFT_BOT_ENC_KEY}" | pnpm exec wrangler secret put RAFT_BOT_ENC_KEY --config "${config}"
           printf '%s' "${ASC_CRED_ENC_KEY}" | pnpm exec wrangler secret put ASC_CRED_ENC_KEY --config "${config}"
           printf '%s' "${AGC_CRED_ENC_KEY}" | pnpm exec wrangler secret put AGC_CRED_ENC_KEY --config "${config}"
           if [[ -n "${PLAY_CRED_ENC_KEYS:-}" ]]; then

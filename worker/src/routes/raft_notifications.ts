@@ -25,7 +25,6 @@ interface AppContextRow {
 
 interface BotInstallationRow {
   id: string;
-  app_id: string;
   server_id: string;
   installation_id: string;
   credential_id: string;
@@ -45,6 +44,7 @@ interface NotificationSubscriptionRow {
   channel_target: string;
   events_json: string;
   enabled: number;
+  bot_installation_id: string;
   webhook_id: string;
   created_by: string | null;
   created_at: number;
@@ -107,7 +107,7 @@ function apiOrigin(env: Env): string {
 }
 
 function botEncryptionSecret(env: Env): string {
-  const secret = env.RAFT_BOT_ENC_KEY ?? env.RAFT_CLIENT_SECRET;
+  const secret = env.RAFT_BOT_ENC_KEY;
   if (!secret) throw new RaftBotApiError(503, "RAFT_BOT_ENC_KEY_NOT_CONFIGURED");
   return secret;
 }
@@ -185,14 +185,14 @@ async function appContext(db: D1Database, appId: string): Promise<AppContextRow 
   ).bind(appId).first<AppContextRow>();
 }
 
-async function botForApp(db: D1Database, appId: string, serverId: string): Promise<BotInstallationRow | null> {
+async function botForServer(db: D1Database, serverId: string): Promise<BotInstallationRow | null> {
   return db.prepare(
-    `SELECT id, app_id, server_id, installation_id, credential_id, agent_id,
+    `SELECT id, server_id, installation_id, credential_id, agent_id,
             handle, key_ciphertext_b64, key_iv_b64, state, created_at, updated_at
      FROM raft_bot_installations
-     WHERE app_id = ?1 AND server_id = ?2
+     WHERE server_id = ?1
      LIMIT 1`,
-  ).bind(appId, serverId).first<BotInstallationRow>();
+  ).bind(serverId).first<BotInstallationRow>();
 }
 
 function basicAuth(env: Env): string {
@@ -294,9 +294,10 @@ export async function handleGetRaftNotifications(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await appContext(c.env.DB, appId);
   if (!app) return c.json({ error: "app not found" }, 404);
-  const bot = await botForApp(c.env.DB, appId, app.server_id);
+  const bot = await botForServer(c.env.DB, app.server_id);
   const { results } = await c.env.DB.prepare(
     `SELECT id, app_id, server_id, channel_target, events_json, enabled,
+            bot_installation_id,
             webhook_id, created_by, created_at, updated_at, archived_at
      FROM raft_notification_subscriptions
      WHERE app_id = ?1 AND archived_at IS NULL
@@ -315,33 +316,25 @@ export async function handleConnectRaftBot(c: AdminContext) {
   if (!app) return c.json({ error: "app not found" }, 404);
   const body = parseJsonRecord(await c.req.json().catch(() => ({})));
   const rotate = body.rotate === true;
-  const existing = await botForApp(c.env.DB, appId, app.server_id);
+  const existing = await botForServer(c.env.DB, app.server_id);
   if (existing && !rotate) return c.json({ bot: publicBot(existing) });
 
   try {
+    // Validate the dedicated KEK before minting a one-time provider key. A
+    // missing encryption secret must not leave an unrecoverable credential at
+    // Raft that Hands cannot persist.
+    const encryptionSecret = botEncryptionSecret(c.env);
     const installationId = await lookupInstallation(c.env, app.server_id);
-    let token: { credentialId: string; apiKey: string; agentId: string | null; handle: string | null };
-    try {
-      token = await mintBotToken(c.env, installationId, rotate);
-    } catch (error) {
-      // A previous process may have minted a key before its D1 write.  There is
-      // no safe way to recover that one-time key, so an explicit reconnect may
-      // rotate it and establish a known key for Hands.
-      if (!existing && error instanceof RaftBotApiError && error.code === "credential_exists") {
-        token = await mintBotToken(c.env, installationId, true);
-      } else {
-        throw error;
-      }
-    }
-    const encrypted = await encryptP8(token.apiKey, botEncryptionSecret(c.env));
+    const token = await mintBotToken(c.env, installationId, rotate);
+    const encrypted = await encryptP8(token.apiKey, encryptionSecret);
     const now = Date.now();
     const id = existing?.id ?? crypto.randomUUID();
     await c.env.DB.prepare(
       `INSERT INTO raft_bot_installations
-         (id, app_id, server_id, installation_id, credential_id, agent_id, handle,
+         (id, server_id, installation_id, credential_id, agent_id, handle,
           key_ciphertext_b64, key_iv_b64, state, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?10)
-       ON CONFLICT(app_id, server_id) DO UPDATE SET
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?9)
+       ON CONFLICT(server_id) DO UPDATE SET
          installation_id = excluded.installation_id,
          credential_id = excluded.credential_id,
          agent_id = excluded.agent_id,
@@ -352,7 +345,6 @@ export async function handleConnectRaftBot(c: AdminContext) {
          updated_at = excluded.updated_at`,
     ).bind(
       id,
-      appId,
       app.server_id,
       installationId,
       token.credentialId,
@@ -362,7 +354,7 @@ export async function handleConnectRaftBot(c: AdminContext) {
       encrypted.iv_b64,
       now,
     ).run();
-    const saved = await botForApp(c.env.DB, appId, app.server_id);
+    const saved = await botForServer(c.env.DB, app.server_id);
     return c.json({ bot: publicBot(saved) });
   } catch (error) {
     return providerErrorResponse(c, error);
@@ -373,7 +365,7 @@ export async function handleCreateRaftNotification(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await appContext(c.env.DB, appId);
   if (!app) return c.json({ error: "app not found" }, 404);
-  const bot = await botForApp(c.env.DB, appId, app.server_id);
+  const bot = await botForServer(c.env.DB, app.server_id);
   if (!bot || bot.state !== "active") {
     return c.json({ error: "RAFT_BOT_NOT_CONNECTED", detail: "Connect the Hands App Bot before adding a destination." }, 409);
   }
@@ -400,16 +392,17 @@ export async function handleCreateRaftNotification(c: AdminContext) {
       ).bind(id, app.org_id, appId, webhookUrl, webhookSecret, JSON.stringify(parsed.events), actor.id, now),
       c.env.DB.prepare(
         `INSERT INTO raft_notification_subscriptions
-           (id, app_id, server_id, channel_target, events_json, enabled, webhook_id,
-            created_by, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?8)`,
-      ).bind(id, appId, app.server_id, channelTarget, JSON.stringify(parsed.events), id, actor.id, now),
+           (id, app_id, server_id, channel_target, events_json, enabled,
+            bot_installation_id, webhook_id, created_by, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?9)`,
+      ).bind(id, appId, app.server_id, channelTarget, JSON.stringify(parsed.events), bot.id, id, actor.id, now),
     ]);
   } catch {
     return c.json({ error: "notification destination already exists or could not be created" }, 409);
   }
   const saved = await c.env.DB.prepare(
     `SELECT id, app_id, server_id, channel_target, events_json, enabled,
+            bot_installation_id,
             webhook_id, created_by, created_at, updated_at, archived_at
      FROM raft_notification_subscriptions WHERE id = ?1`,
   ).bind(id).first<NotificationSubscriptionRow>();
@@ -585,13 +578,14 @@ export async function handleTestRaftNotification(c: AdminContext) {
   const subscriptionId = c.req.param("subscriptionId") ?? "";
   const row = await c.env.DB.prepare(
     `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled,
+            s.bot_installation_id,
             s.webhook_id, s.created_by, s.created_at, s.updated_at, s.archived_at
      FROM raft_notification_subscriptions s
      WHERE s.id = ?1 AND s.app_id = ?2 AND s.archived_at IS NULL`,
   ).bind(subscriptionId, appId).first<NotificationSubscriptionRow>();
   if (!row) return c.json({ error: "notification destination not found" }, 404);
   if (row.enabled !== 1) return c.json({ error: "notification destination is disabled" }, 409);
-  const bot = await botForApp(c.env.DB, appId, row.server_id);
+  const bot = await botForServer(c.env.DB, row.server_id);
   if (!bot || bot.state !== "active") return c.json({ error: "RAFT_BOT_NOT_CONNECTED" }, 409);
   try {
     const sent = await sendBotMessage(
@@ -612,6 +606,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   const body = await c.req.text();
   const row = await c.env.DB.prepare(
     `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled,
+            s.bot_installation_id,
             s.webhook_id, s.created_by, s.created_at, s.updated_at, s.archived_at,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
             w.archived_at AS webhook_archived_at
@@ -636,7 +631,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   }
   const events = parseStoredEvents(row.events_json);
   if (events.length > 0 && !events.includes(event) && !events.includes("*")) return c.json({ ok: true, skipped: true });
-  const bot = await botForApp(c.env.DB, row.app_id, row.server_id);
+  const bot = await botForServer(c.env.DB, row.server_id);
   if (!bot || bot.state !== "active") return c.json({ error: "bot unavailable" }, 503);
 
   const objectKey = await notificationObjectKey(eventBody);
@@ -680,8 +675,10 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     : thread?.parent_message_id
       ? `${row.channel_target}:${thread.parent_message_id.slice(0, 8)}`
       : row.channel_target;
-  const deliveryId = c.req.header("X-Hands-Delivery-Id") ?? await sha256Hex(body);
-  const idempotencyKey = `hands-raft:${subscriptionId}:${deliveryId}`.slice(0, 240);
+  // The delivery header is metadata outside the signed body and can change on
+  // a replay. Derive the provider idempotency key only from the signed payload
+  // so the same event cannot be sent again with a substituted delivery id.
+  const idempotencyKey = `hands-raft:${subscriptionId}:${await sha256Hex(body)}`.slice(0, 240);
   try {
     const sent = await sendBotMessage(c.env, bot, target, formatRaftNotificationMessage(eventBody), idempotencyKey);
     const now = Date.now();

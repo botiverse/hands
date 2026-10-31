@@ -44,8 +44,10 @@ such as `#proj-mobile-release`, and select the events that belong there. A
 single app can have multiple channel destinations with different event sets;
 each destination can be enabled, disabled, tested, or removed.
 
-Hands stores the bot credential encrypted on the server and never displays it
-in the console. Existing webhook producers use the same delivery queue and
+Hands stores one encrypted bot credential per Raft server installation and
+never displays it in the console. Connecting another Hands app on that same
+server reuses the installation credential instead of rotating it. Existing
+webhook producers use the same delivery queue and
 retry policy, and repeated changes for the same release, build, ticket, or app
 version stay in one Raft thread. Provider credentials, crash attachments, and
 untrusted provider prose are not included in these messages. Apple's review

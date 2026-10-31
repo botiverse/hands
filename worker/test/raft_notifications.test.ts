@@ -48,15 +48,15 @@ async function harness() {
     CREATE TABLE raft_notification_subscriptions (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, server_id TEXT NOT NULL,
       channel_target TEXT NOT NULL, events_json TEXT NOT NULL, enabled INTEGER NOT NULL,
-      webhook_id TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL,
+      bot_installation_id TEXT NOT NULL, webhook_id TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL, archived_at INTEGER
     );
     CREATE TABLE raft_bot_installations (
-      id TEXT PRIMARY KEY, app_id TEXT NOT NULL, server_id TEXT NOT NULL,
+      id TEXT PRIMARY KEY, server_id TEXT NOT NULL,
       installation_id TEXT NOT NULL, credential_id TEXT NOT NULL, agent_id TEXT,
       handle TEXT, key_ciphertext_b64 TEXT NOT NULL, key_iv_b64 TEXT NOT NULL,
       state TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-      UNIQUE(app_id, server_id)
+      UNIQUE(server_id), UNIQUE(installation_id)
     );
     CREATE TABLE raft_notification_threads (
       subscription_id TEXT NOT NULL, object_key TEXT NOT NULL,
@@ -67,18 +67,18 @@ async function harness() {
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
   sqlite.prepare("INSERT INTO apps (id, org_id, archived) VALUES (?, 'org-1', 0)").run(APP_ID);
   sqlite.prepare("INSERT INTO webhooks (id, secret, enabled, archived_at) VALUES ('webhook-1', ?, 1, NULL)").run(SECRET);
-  sqlite.prepare(
-    `INSERT INTO raft_notification_subscriptions
-       (id, app_id, server_id, channel_target, events_json, enabled, webhook_id, created_at, updated_at)
-     VALUES (?, ?, 'server-1', '#releases', '["app_store:version_state_changed"]', 1, 'webhook-1', 1, 1)`,
-  ).run(SUBSCRIPTION_ID, APP_ID);
   const encrypted = await encryptP8(BOT_KEY, "enc-secret");
   sqlite.prepare(
     `INSERT INTO raft_bot_installations
-       (id, app_id, server_id, installation_id, credential_id, agent_id, handle,
+       (id, server_id, installation_id, credential_id, agent_id, handle,
         key_ciphertext_b64, key_iv_b64, state, created_at, updated_at)
-     VALUES ('bot-1', ?, 'server-1', 'installation-1', 'credential-1', 'agent-1', 'hands-bot', ?, ?, 'active', 1, 1)`,
-  ).run(APP_ID, encrypted.ciphertext_b64, encrypted.iv_b64);
+     VALUES ('bot-1', 'server-1', 'installation-1', 'credential-1', 'agent-1', 'hands-bot', ?, ?, 'active', 1, 1)`,
+  ).run(encrypted.ciphertext_b64, encrypted.iv_b64);
+  sqlite.prepare(
+    `INSERT INTO raft_notification_subscriptions
+       (id, app_id, server_id, channel_target, events_json, enabled, bot_installation_id, webhook_id, created_at, updated_at)
+     VALUES (?, ?, 'server-1', '#releases', '["app_store:version_state_changed"]', 1, 'bot-1', 'webhook-1', 1, 1)`,
+  ).run(SUBSCRIPTION_ID, APP_ID);
   const env = {
     DB: d1(sqlite),
     RAFT_API_ORIGIN: "https://api.raft.test",
@@ -103,7 +103,7 @@ async function harness() {
     }), env);
   };
   const getConfig = () => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications`), env);
-  const connect = (rotate = false) => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications/connect`, {
+  const connect = (appId = APP_ID, rotate = false) => app.fetch(new Request(`https://hands.test/api/apps/${appId}/raft-notifications/connect`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ rotate }),
@@ -158,11 +158,29 @@ describe("Hands-managed Raft notifications", () => {
       if (String(input).endsWith("/api/oauth/installations/lookup")) return Response.json({ installation_id: "installation-1" });
       return Response.json({ credentialId: "credential-2", apiKey: "sk_agent_replacement", agentId: "agent-2" });
     });
-    const response = await connect(true);
+    const response = await connect(APP_ID, true);
     const text = await response.text();
     expect(response.status).toBe(200);
     expect(text).not.toContain("sk_agent_replacement");
     expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one server installation key across Hands apps without rotating it", async () => {
+    const { connect, sqlite } = await harness();
+    sqlite.prepare("INSERT INTO apps (id, org_id, archived) VALUES ('app-2', 'org-1', 0)").run();
+    const provider = vi.spyOn(globalThis, "fetch");
+    const response = await connect("app-2", false);
+    expect(response.status).toBe(200);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("fails before minting when the dedicated bot encryption key is absent", async () => {
+    const { connect, env } = await harness();
+    delete (env as unknown as Record<string, unknown>).RAFT_BOT_ENC_KEY;
+    const provider = vi.spyOn(globalThis, "fetch");
+    const response = await connect(APP_ID, true);
+    expect(response.status).toBe(503);
+    expect(provider).not.toHaveBeenCalled();
   });
 
   it("verifies the generic webhook signature before sending", async () => {

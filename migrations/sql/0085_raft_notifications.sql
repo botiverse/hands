@@ -1,6 +1,6 @@
 -- Hands-managed Raft App Bot destinations.
 --
--- A bot installation is one encrypted credential per (Hands app, Raft server).
+-- A bot installation is one encrypted credential per Raft server installation.
 -- A notification subscription owns a hidden generic webhook row so every
 -- existing webhook producer gets the same queue/retry behavior.  The hidden
 -- row is deliberately linked here instead of exposing the bot credential or
@@ -8,7 +8,6 @@
 
 CREATE TABLE IF NOT EXISTS raft_bot_installations (
   id                    TEXT PRIMARY KEY,
-  app_id                TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
   server_id             TEXT NOT NULL,
   installation_id       TEXT NOT NULL,
   credential_id         TEXT NOT NULL,
@@ -19,7 +18,8 @@ CREATE TABLE IF NOT EXISTS raft_bot_installations (
   state                 TEXT NOT NULL DEFAULT 'active',
   created_at            INTEGER NOT NULL,
   updated_at            INTEGER NOT NULL,
-  UNIQUE (app_id, server_id)
+  UNIQUE (server_id),
+  UNIQUE (installation_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_raft_bot_installations_server
@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS raft_notification_subscriptions (
   channel_target        TEXT NOT NULL,
   events_json           TEXT NOT NULL DEFAULT '[]',
   enabled               INTEGER NOT NULL DEFAULT 1,
+  bot_installation_id   TEXT NOT NULL REFERENCES raft_bot_installations(id) ON DELETE RESTRICT,
   webhook_id            TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
   created_by            TEXT REFERENCES raft_accounts(id) ON DELETE SET NULL,
   created_at            INTEGER NOT NULL,
