@@ -169,8 +169,9 @@ async function authorize(
   c: ReporterContext,
   permission: "feedback:read" | "feedback:comment",
   endpoint: Endpoint,
+  deadline?: number,
 ) {
-  const auth = await authenticateReporter(c, permission);
+  const auth = await authenticateReporter(c, permission, deadline);
   if (!auth.ok) return auth;
   setReporterFailureStage(c, "audit_hash");
   const pseudonym = await reporterHash(c, auth.principal);
@@ -375,7 +376,8 @@ async function unreadTotal(
 
 export async function handleListReporterFeedback(c: ReporterContext) {
   const startedAt = performance.now();
-  const authorized = await authorize(c, "feedback:read", "list");
+  const deadline = Date.now() + 3500;
+  const authorized = await authorize(c, "feedback:read", "list", deadline);
   if (!authorized.ok) return authorized.response;
   const authorizedAt = performance.now();
   const limit = Math.min(50, Math.max(1, Number(c.req.query("limit") ?? "20") || 20));
@@ -459,7 +461,7 @@ export async function handleListReporterFeedback(c: ReporterContext) {
     ticketStatement,
     unreadTotalStatement(c, authorized.principal),
     auditReadStatement(c, authorized.principal, authorized.pseudonym, "list"),
-  ]));
+  ]), { deadline });
   const results = (ticketResult?.results ?? []) as Record<string, unknown>[];
   const unreadRow = unreadResult?.results[0] as { unread_total?: number } | undefined;
   const totalUnread = Math.max(0, unreadRow?.unread_total ?? 0);

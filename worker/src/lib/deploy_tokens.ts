@@ -94,6 +94,7 @@ export async function loadDeployToken(
   env: Env,
   token: string | undefined,
   recoverTransientLookup = false,
+  options: { deadline?: number } = {},
 ): Promise<AppDeployToken | null> {
   if (!token?.startsWith(`${TOKEN_PREFIX}_`)) return null;
   const tokenHash = await hashDeployToken(token);
@@ -130,7 +131,7 @@ export async function loadDeployToken(
   // Both statements are safe to replay with these same bindings: the SELECT
   // rechecks revocation, and last_used_at is set to the same fixed timestamp.
   const execute = () => env.DB.batch([lookup, touch]);
-  const [lookupResult] = await (recoverTransientLookup ? recoverIdempotentD1Lookup(execute) : execute());
+  const [lookupResult] = await (recoverTransientLookup ? recoverIdempotentD1Lookup(execute, options) : execute());
   const row = lookupResult?.results[0] as
     | (Omit<AppDeployToken, "scopes"> & { scopes_json: string | null })
     | undefined;

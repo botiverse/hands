@@ -167,4 +167,49 @@ describe("D1 internal errors and response budget", () => {
     expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
     expect(calls.lookup).toBe(1); expect(calls.rate).toBe(0); expect(calls.business).toBe(0);
   }, 8000);
+
+  it("shares one response budget across token lookup and list query", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    env.DB.batch = async statements => {
+      const first = (statements[0] as unknown as { sql: string }).sql;
+      if (first.includes("FROM app_deploy_tokens")) {
+        calls.lookup++;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return batch(statements);
+      }
+      if (first.includes("FROM feedback_tickets")) {
+        calls.business++;
+        return new Promise(() => {});
+      }
+      return batch(statements);
+    };
+    const started = Date.now();
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    const elapsed = Date.now() - started;
+    expect(response.status).toBe(503);
+    expect(elapsed).toBeGreaterThanOrEqual(3500);
+    expect(elapsed).toBeLessThan(5000);
+    expect(calls.lookup).toBe(2); expect(calls.business).toBe(1); expect(calls.rate).toBe(1);
+  }, 8000);
+
+  it("recovers a list retry after the first audit insert already committed", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    let listCalls = 0;
+    env.DB.batch = async statements => {
+      const first = (statements[0] as unknown as { sql: string }).sql;
+      if (first.includes("FROM feedback_tickets")) {
+        listCalls++;
+        if (listCalls === 1) throw new Error("D1 lookup deadline exceeded");
+        expect(statements.some(statement => (statement as unknown as { sql: string }).sql.includes("INSERT OR IGNORE INTO feedback_reporter_access_audits"))).toBe(true);
+      }
+      return batch(statements);
+    };
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(200);
+    expect(listCalls).toBe(2);
+  });
 });

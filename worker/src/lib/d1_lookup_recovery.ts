@@ -32,9 +32,9 @@ async function withinBudget<T>(operation: () => Promise<T>, remainingMs: number)
 
 export async function recoverIdempotentD1Lookup<T>(
   operation: () => Promise<T>,
-  options: { budgetMs?: number } = {},
+  options: { budgetMs?: number; deadline?: number } = {},
 ): Promise<T> {
-  const deadline = Date.now() + (options.budgetMs ?? DEFAULT_LOOKUP_BUDGET_MS);
+  const deadline = options.deadline ?? Date.now() + (options.budgetMs ?? DEFAULT_LOOKUP_BUDGET_MS);
   const remaining = () => Math.max(0, deadline - Date.now());
   try {
     return await withinBudget(operation, remaining());
