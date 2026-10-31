@@ -936,7 +936,7 @@ export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
   return c.json({
     service: "hands",
     summary:
-      "These `raft integration invoke` actions are deprecated. Install the Hands CLI and use its native commands; you authenticate once and subsequent commands use the Hands token directly.",
+      "Install the Hands CLI and use its native commands. The manifest keeps only agent-login, migration-help, and the temporary feedback bridge; you authenticate once and subsequent CLI commands use the Hands token directly.",
     install: [
       "npm install -g @botiverse/hands-cli",
       "Then run `hands --help` for the full command list, or see the CLI reference below.",
@@ -950,7 +950,7 @@ export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
     },
     migration: [
       "Replace `raft integration invoke --service hands-4cc7a2 --action <name>` with the matching `hands` command.",
-      "e.g. whoami → `hands whoami`; list-apps → `hands apps list`; list-feedback → `hands feedback list <app>`. Run `hands --help` for the complete mapping.",
+      "e.g. whoami → `hands whoami`; list-apps → `hands apps list`; list-feedback → `hands feedback list <app>`; get-feedback → `hands feedback show <app> <ticket>`; comment-feedback → `hands feedback comment <app> <ticket> <text>`; presign-feedback-attachment → `hands feedback download-attachment <app> <ticket> <attachment>`. Run `hands --help` for the complete mapping.",
     ],
     docs: {
       cli_reference: `${origin}/docs/cli-reference`,
@@ -959,27 +959,27 @@ export async function handleAgentMigrationHelp(c: Context<{ Bindings: Env }>) {
   });
 }
 
+const EXPOSED_MANIFEST_ACTIONS = new Set([
+  "agent-login",
+  "migration-help",
+  // Temporary support-lane bridge: remove these only after the feedback
+  // consumers have migrated to the CLI and verified their readback flow.
+  "list-feedback",
+  "get-feedback",
+  "presign-feedback-attachment",
+  "update-feedback",
+  "comment-feedback",
+]);
+
 export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
   const origin = appOrigin(c);
   // Never edge-cache the manifest — the integration daemon must always see the
   // current action list (a stale cached copy makes schema changes invisible).
   c.header("Cache-Control", "no-store");
-  // Every action in this manifest except `agent-login` and `migration-help` is
-  // deprecated: callers should install the Hands CLI and use its native commands.
-  // That is ONE service-level fact, so it is stated once here rather than
-  // repeated on all 82 deprecated actions.
-  //
-  // Why it moved out of the per-action descriptions: the old approach prepended a
-  // 108-byte notice to every deprecated action, which cost 8,856 B of a manifest
-  // with a hard 64 KiB ceiling set by the consumer (exceeding it takes every
-  // agent-facing action offline). No machine contract changes either way -- the
-  // deprecation state is not a structured field, and descriptions still carry each
-  // action's own text.
   const service = c.env.RAFT_CLIENT_ID || "hands-4cc7a2";
   const migrationHelpNotice =
-    `All actions except agent-login and migration-help are deprecated: ` +
-    `run \`raft integration invoke --service ${service} --action migration-help\`, ` +
-    `or install the Hands CLI.`;
+    `Use the Hands CLI for operations; run \`raft integration invoke --service ${service} --action migration-help\` for install and login guidance. ` +
+    `Feedback actions remain temporarily while support consumers complete their CLI migration.`;
   return c.json({
     schema: "raft-agent-manifest.v0",
     service: c.env.RAFT_CLIENT_ID || "quiver",
@@ -1001,13 +1001,9 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
       url: `${origin}/api/auth/me`,
       method: "GET",
     },
-    // HTTP API actions an agent can self-serve via `raft integration invoke`.
-    // Paths are relative to execution.base_url. Actions cover release,
-    // TestFlight/AppGallery, exact QA artifacts, and feedback triage without
-    // returning provider credentials or interpreting raw attachments.
-    // All EXISTING actions are retained with unchanged machine contracts.
-    // Deprecation is NOT repeated per action any more: it is stated once in the
-    // top-level `description` above. Only `agent-login` and `migration-help` are new.
+    // Only bootstrap, migration help, and the temporary support-lane feedback
+    // bridge are exposed. The underlying HTTP routes are unchanged; the CLI is
+    // the supported surface for every other operation.
     actions: [
       {
         // NOTE: kept as valid raft-agent-manifest.v0 (name/description/endpoint/parameters
@@ -2045,6 +2041,6 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
           "How to install the Hands CLI, authenticate once (`hands login`), and migrate each deprecated action to its native `hands` command. Read this if you are still calling actions via `raft integration invoke`.",
         endpoint: { method: "GET", path: "/api/agent/migration-help" },
       },
-    ],
+    ].filter((action) => EXPOSED_MANIFEST_ACTIONS.has(action.name)),
   });
 }
