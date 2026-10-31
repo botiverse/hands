@@ -33,6 +33,7 @@ export function reporterBearerValue(c: ReporterContext): string | null {
 export async function authenticateReporter(
   c: ReporterContext,
   required: FeedbackTokenPermission,
+  deadline?: number,
 ): Promise<
   | { ok: true; principal: ReporterPrincipal }
   | { ok: false; response: Response }
@@ -92,7 +93,7 @@ export async function authenticateReporter(
   setReporterFailureStage(c, "token_lookup");
   let token: AppDeployToken | null;
   try {
-    token = await loadDeployToken(c.env, bearer, true);
+    token = await loadDeployToken(c.env, bearer, true, deadline === undefined ? {} : { deadline });
   } catch (error) {
     if (!isTransientD1LookupError(error)) throw error;
     // Fail closed: no principal is admitted and no downstream mutation runs.
