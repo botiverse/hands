@@ -1,4 +1,4 @@
-import { isTransientD1LookupError } from "../lib/d1_lookup_recovery";
+import { isTransientD1LookupError, recoverIdempotentD1Lookup } from "../lib/d1_lookup_recovery";
 import { setReporterFailureStage } from "../lib/reporter_failure";
 import type { Context } from "hono";
 import { authenticateReporter, type ReporterPrincipal } from "../lib/reporter_auth";
@@ -452,11 +452,14 @@ export async function handleListReporterFeedback(c: ReporterContext) {
       decodedCursor.id,
       limit + 1,
     );
-  const [ticketResult, unreadResult] = await c.env.DB.batch([
+  // The statements are constructed once, so a retry replays only read queries
+  // and the same fixed-id audit insert. Never move a rate counter or business
+  // write into this recovery batch.
+  const [ticketResult, unreadResult] = await recoverIdempotentD1Lookup(() => c.env.DB.batch([
     ticketStatement,
     unreadTotalStatement(c, authorized.principal),
     auditReadStatement(c, authorized.principal, authorized.pseudonym, "list"),
-  ]);
+  ]));
   const results = (ticketResult?.results ?? []) as Record<string, unknown>[];
   const unreadRow = unreadResult?.results[0] as { unread_total?: number } | undefined;
   const totalUnread = Math.max(0, unreadRow?.unread_total ?? 0);

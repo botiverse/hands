@@ -4,7 +4,7 @@ const { default: worker } = await import("../src/index");
 afterEach(() => vi.restoreAllMocks());
 const appId = "11111111-1111-4111-8111-111111111111";
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error, laterFailure?: { stage: "route_bind" | "route_readback" | "list_query"; error: Error }) {
+function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error, laterFailure?: { stage: "route_bind" | "route_readback" | "list_query"; error: Error; count?: number }) {
   const calls = { lookup: 0, rate: 0, business: 0, readback: 0, touches: [] as unknown[][] };
   const row = { id: "token", app_id: appId, app_slug: "test", name: "reporter", token_prefix: "qvdt", app_role: null, scopes_json: JSON.stringify(["feedback:read", "feedback:route"]), reporter_integration_id: "integration", reporter_integration_active: 1, revoked_at: null, expires_at: null };
   const result = (results: unknown[] = [], changes = 0) => ({ success: true, results, meta: { changes } });
@@ -19,7 +19,7 @@ function fixture(failures: number, error = new Error("D1_ERROR: backend request 
       }
       if (first.includes("INSERT INTO feedback_reporter_rate_windows")) { calls.rate++; if (rateError && calls.rate === 1) throw rateError; return [result([{ request_count: 1 }]), result([{ request_count: 1 }])]; }
       calls.business++;
-      if (laterFailure && laterFailure.stage !== "route_readback") throw laterFailure.error;
+      if (laterFailure && laterFailure.stage !== "route_readback" && calls.business <= (laterFailure.count ?? Number.POSITIVE_INFINITY)) throw laterFailure.error;
       return statements.map((_, index) => result([], first.includes("INSERT OR IGNORE INTO app_reporter_routes") && index === 0 ? 1 : 0));
     },
   };
@@ -104,7 +104,7 @@ describe("later reporter database failures", () => {
     expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
     expect(await response.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
     expect(calls.lookup).toBe(1); expect(calls.rate).toBe(stage === "list_query" ? 1 : 0);
-    expect(calls.business).toBe(1); expect(calls.readback).toBe(stage === "route_readback" ? 1 : 0);
+    expect(calls.business).toBe(stage === "list_query" ? 2 : 1); expect(calls.readback).toBe(stage === "route_readback" ? 1 : 0);
     expect(errors).not.toHaveBeenCalled();
     const sealed = log.mock.calls.filter(call => call[0] === "hands_reporter_failure_detail");
     expect(sealed).toHaveLength(1); expect(JSON.parse(sealed[0]![1] as string)).toMatchObject({ failure_stage: stage });
@@ -117,4 +117,54 @@ describe("later reporter database failures", () => {
     expect(response.status).toBe(500); expect(response.headers.get("Retry-After")).toBeNull();
     expect(calls.business).toBe(1); expect(calls.readback).toBe(0);
   });
+});
+
+describe("D1 internal errors and response budget", () => {
+  it.each(["GET", "PUT"])("retries one D1 internal lookup error on %s without replaying business writes", async method => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(1, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request(method), env, ctx as any);
+    expect(response.status).toBe(method === "GET" ? 200 : 201);
+    expect(calls.lookup).toBe(2); expect(calls.business).toBe(1);
+  });
+
+  it("retries the list query once on a D1 internal error", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage: "list_query", error: new Error("D1_ERROR: internal error; reference = test"), count: 1 });
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(200);
+    expect(calls.business).toBe(2); expect(calls.rate).toBe(1); expect(calls.lookup).toBe(1);
+  });
+
+  it("returns 503 for an exhausted D1 internal lookup error without retrying the rate write", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(10, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
+    expect(calls.lookup).toBe(2); expect(calls.rate).toBe(0); expect(calls.business).toBe(0);
+  });
+
+  it("classifies a D1 internal rate failure as transient without replaying the increment", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(calls.rate).toBe(1); expect(calls.business).toBe(0);
+  });
+
+  it("returns 503 within the read budget when D1 never answers", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    env.DB.batch = async statements => {
+      if ((statements[0] as unknown as { sql: string }).sql.includes("FROM app_deploy_tokens")) {
+        calls.lookup++;
+        return new Promise(() => {});
+      }
+      return batch(statements);
+    };
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
+    expect(calls.lookup).toBe(1); expect(calls.rate).toBe(0); expect(calls.business).toBe(0);
+  }, 8000);
 });
