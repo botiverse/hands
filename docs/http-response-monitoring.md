@@ -3,9 +3,10 @@
 The business Worker emits `hands_http_response` for final `/api/` responses,
 including OpenAPI validation, authentication refusals, and handler failures.
 The record contains method, route template, status, duration, timestamp and
-request ID. It prefers an incoming `X-Trace-Id` only when its value is exactly
-32 lowercase hex characters (the W3C trace id), and otherwise falls back to the
-Cloudflare `cf-ray`. No other headers, bodies, full URLs, query strings,
+request ID. `request_id` retains the Cloudflare `cf-ray`. A valid incoming
+`X-Trace-Id` is additionally recorded as `trace_id` only when its value is
+exactly 32 lowercase hex characters (the W3C trace id); missing or malformed
+values leave it null. No other headers, bodies, full URLs, query strings,
 account identities or credentials are recorded. Successful responses provide
 the denominator.
 
