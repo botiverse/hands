@@ -1564,32 +1564,60 @@ export const forceUpdate = (
 // =============================================================================
 
 export type WebhookEventType =
+  | "testflight:upload_processing"
+  | "testflight:internal_distribution_ready"
+  | "testflight:crash_submission_created"
+  | "app_store:version_state_changed"
+  | "testflight:external_state_changed"
+  | "app_store:build_upload_state_changed"
   | "feedback:new"
   | "feedback:comment_created"
   | "feedback:status_changed"
   | "crash:new_group"
   | "crash:spike"
+  | "error:new_group"
+  | "error:spike"
+  | "appgallery:invitation_state_changed"
+  | "appgallery:package_state_changed"
+  | "google_play:submission_succeeded"
+  | "google_play:submission_failed"
+  | "google_play:release_state_changed"
   | "release:new"
   | "release:draft_created"
   | "release:superseded"
   | "release:rolled_back"
   | "release:channel_emptied"
   | "release:cancelled"
+  | "release:published"
   | "build:succeeded"
   | "build:failed";
 
 export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
+  "testflight:upload_processing",
+  "testflight:internal_distribution_ready",
+  "testflight:crash_submission_created",
+  "app_store:version_state_changed",
+  "testflight:external_state_changed",
+  "app_store:build_upload_state_changed",
   "feedback:new",
   "feedback:comment_created",
   "feedback:status_changed",
   "crash:new_group",
   "crash:spike",
+  "error:new_group",
+  "error:spike",
+  "appgallery:invitation_state_changed",
+  "appgallery:package_state_changed",
+  "google_play:submission_succeeded",
+  "google_play:submission_failed",
+  "google_play:release_state_changed",
   "release:new",
   "release:draft_created",
   "release:superseded",
   "release:rolled_back",
   "release:channel_emptied",
   "release:cancelled",
+  "release:published",
   "build:succeeded",
   "build:failed",
 ];
@@ -1657,6 +1685,77 @@ export const listWebhookDeliveries = (orgId: string, webhookId: string) =>
   request<{ deliveries: WebhookDelivery[] }>(
     `/api/orgs/${orgId}/webhooks/${webhookId}/deliveries`,
     { admin: true },
+  );
+
+// Hands-managed Raft App Bot notifications.
+
+export interface RaftNotificationBot {
+  connected: boolean;
+  state: string;
+  installation_id: string | null;
+  agent_id: string | null;
+  handle: string | null;
+  updated_at: number | null;
+}
+
+export interface RaftNotificationSubscription {
+  id: string;
+  app_id: string;
+  server_id: string;
+  channel_target: string;
+  events: WebhookEventType[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RaftNotificationConfig {
+  bot: RaftNotificationBot;
+  events: WebhookEventType[];
+  subscriptions: RaftNotificationSubscription[];
+}
+
+export const getRaftNotificationConfig = (appId: string) =>
+  request<RaftNotificationConfig>(`/api/apps/${appId}/raft-notifications`, { admin: true });
+
+export const connectRaftBot = (appId: string, rotate = false) =>
+  request<{ bot: RaftNotificationBot }>(`/api/apps/${appId}/raft-notifications/connect`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify({ rotate }),
+  });
+
+export const createRaftNotification = (
+  appId: string,
+  input: { channel_target: string; events: WebhookEventType[] },
+) =>
+  request<{ subscription: RaftNotificationSubscription }>(`/api/apps/${appId}/raft-notifications`, {
+    method: "POST",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const updateRaftNotification = (
+  appId: string,
+  subscriptionId: string,
+  input: { events?: WebhookEventType[]; enabled?: boolean },
+) =>
+  request<{ ok: true }>(`/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}`, {
+    method: "PATCH",
+    admin: true,
+    body: JSON.stringify(input),
+  });
+
+export const deleteRaftNotification = (appId: string, subscriptionId: string) =>
+  request<{ ok: true }>(`/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}`, {
+    method: "DELETE",
+    admin: true,
+  });
+
+export const testRaftNotification = (appId: string, subscriptionId: string) =>
+  request<{ ok: true; message_id: string }>(
+    `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/test`,
+    { method: "POST", admin: true },
   );
 
 // ---- Release shares (P1: share management tab) ----

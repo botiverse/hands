@@ -26,7 +26,7 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
-const WEBHOOK_EVENT_TYPES = [
+export const WEBHOOK_EVENT_TYPES = [
   "testflight:upload_processing", "testflight:internal_distribution_ready", "testflight:crash_submission_created",
   "app_store:version_state_changed", "testflight:external_state_changed", "app_store:build_upload_state_changed",
   "feedback:new", "feedback:comment_created", "feedback:status_changed",
@@ -64,6 +64,7 @@ export async function handleListWebhooks(c: AdminContext) {
     `SELECT id, org_id, app_id, url, events_json, enabled, created_at, updated_at, archived_at
      FROM webhooks
      WHERE org_id = ?1 AND archived_at IS NULL
+       AND url NOT LIKE '%/api/internal/raft-notifications/%'
      ORDER BY created_at DESC`,
   ).bind(orgId).all<Omit<WebhookRow, "secret">>();
   return c.json({
@@ -239,6 +240,7 @@ export async function handleListAppWebhooks(c: AdminContext) {
      FROM webhooks w
      JOIN apps a ON a.id = w.app_id AND a.org_id = w.org_id
      WHERE w.app_id = ?1 AND w.archived_at IS NULL
+       AND w.url NOT LIKE '%/api/internal/raft-notifications/%'
      ORDER BY w.created_at DESC`,
   ).bind(appId).all<Omit<WebhookRow, "secret" | "archived_at">>();
   return c.json({ webhooks: rows.map((w) => ({ ...w, secret_set: true })) });
@@ -926,7 +928,7 @@ async function readResponseBodyPrefix(
   return new TextDecoder().decode(prefix.subarray(0, length));
 }
 
-async function hmacSha256Hex(secret: string, body: string): Promise<string> {
+export async function hmacSha256Hex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),

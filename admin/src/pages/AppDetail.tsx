@@ -58,6 +58,15 @@ import {
   listOrgs,
   transferApp,
   getAppStoreReview,
+  connectRaftBot,
+  createRaftNotification,
+  deleteRaftNotification,
+  getRaftNotificationConfig,
+  testRaftNotification,
+  updateRaftNotification,
+  WEBHOOK_EVENT_TYPES,
+  type WebhookEventType,
+  type RaftNotificationSubscription,
   addDeviceGroupMember,
   createDeviceGroup,
   deleteDeviceGroup,
@@ -1126,6 +1135,9 @@ export function AppSettings({ appId }: { appId: string }) {
 
         {/* TestFlight upload credentials — iOS apps only */}
 
+        {/* Hands-managed Raft App Bot notifications */}
+        <RaftNotificationsPanel appId={appId} />
+
         {/* Default release channel picker */}
         <DefaultChannelPicker appId={appId} app={app} isOrgAdmin={isOrgAdmin} />
 
@@ -1259,6 +1271,131 @@ export function AppSettings({ appId }: { appId: string }) {
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function RaftNotificationsPanel({ appId }: { appId: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const config = useQuery({
+    queryKey: ["raft-notifications", appId],
+    queryFn: () => getRaftNotificationConfig(appId),
+  });
+  const [channelTarget, setChannelTarget] = useState("");
+  const [events, setEvents] = useState<WebhookEventType[]>(WEBHOOK_EVENT_TYPES);
+
+  useEffect(() => {
+    if (config.data?.events?.length && events.length === 0) setEvents(config.data.events);
+  }, [config.data?.events]);
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ["raft-notifications", appId] });
+  const connect = useMutation({
+    mutationFn: () => connectRaftBot(appId),
+    onSuccess: () => { toast.show({ kind: "success", title: "Hands App Bot connected" }); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: "Could not connect App Bot", description: (error as Error).message }),
+  });
+  const create = useMutation({
+    mutationFn: () => createRaftNotification(appId, { channel_target: channelTarget.trim(), events }),
+    onSuccess: () => { toast.show({ kind: "success", title: "Raft notification destination added" }); setChannelTarget(""); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: "Could not add destination", description: (error as Error).message }),
+  });
+  const update = useMutation({
+    mutationFn: (input: { id: string; enabled: boolean }) => updateRaftNotification(appId, input.id, { enabled: input.enabled }),
+    onSuccess: refresh,
+    onError: (error) => toast.show({ kind: "error", title: "Could not update destination", description: (error as Error).message }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteRaftNotification(appId, id),
+    onSuccess: () => { toast.show({ kind: "success", title: "Raft notification destination removed" }); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: "Could not remove destination", description: (error as Error).message }),
+  });
+  const test = useMutation({
+    mutationFn: (id: string) => testRaftNotification(appId, id),
+    onSuccess: () => toast.show({ kind: "success", title: "Test message sent" }),
+    onError: (error) => toast.show({ kind: "error", title: "Test message failed", description: (error as Error).message }),
+  });
+
+  if (config.isLoading) return <div className="border-t border-line-hairline pt-3 text-xs text-foreground-muted">Loading Raft notifications…</div>;
+  if (config.error) return <div className="border-t border-line-hairline pt-3 text-xs text-danger-strong">Could not load Raft notification settings: {(config.error as Error).message}</div>;
+  const bot = config.data?.bot;
+  const subscriptions = config.data?.subscriptions ?? [];
+  const toggleEvent = (event: WebhookEventType) => setEvents((current) => current.includes(event) ? current.filter((item) => item !== event) : [...current, event]);
+
+  return (
+    <div className="border-t border-line-hairline pt-3 space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-foreground-strong">Raft notifications</h3>
+        <p className="text-xs text-foreground-muted mt-1">
+          Choose the Raft channel and Hands events that this app should post. The bot key stays encrypted in Hands and is never shown here.
+        </p>
+      </div>
+      <div className="rounded-md bg-fill-muted p-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs">
+          <div className="font-medium">App Bot: {bot?.connected ? "connected" : "not connected"}</div>
+          <div className="text-foreground-muted mt-1">
+            {bot?.connected ? (bot.handle ? `Handle ${bot.handle}` : "The bot is ready to send.") : "A Raft server owner/admin must grant the bot before connecting."}
+          </div>
+        </div>
+        {!bot?.connected && <Button variant="outline" size="xs" onClick={() => connect.mutate()} disabled={connect.isPending}>{connect.isPending ? "Connecting…" : "Connect App Bot"}</Button>}
+      </div>
+      {bot?.connected && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="min-w-64 flex-1">
+              <Label htmlFor={`raft-channel-${appId}`}>Target channel</Label>
+              <Input id={`raft-channel-${appId}`} value={channelTarget} onChange={(event) => setChannelTarget(event.target.value)} placeholder="#proj-mobile-release" />
+            </div>
+            <Button variant="outline" size="xs" onClick={() => create.mutate()} disabled={!channelTarget.trim() || events.length === 0 || create.isPending}>{create.isPending ? "Adding…" : "Add destination"}</Button>
+          </div>
+          <div>
+            <div className="text-xs font-medium mb-1">Events</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+              {WEBHOOK_EVENT_TYPES.map((event) => (
+                <label key={event} className="flex items-center gap-2 text-xs text-foreground-muted">
+                  <Checkbox checked={events.includes(event)} onCheckedChange={() => toggleEvent(event)} />
+                  <span>{event}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          {subscriptions.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium">Configured destinations</div>
+              {subscriptions.map((subscription) => (
+                <RaftNotificationRow key={subscription.id} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || test.isPending || remove.isPending} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RaftNotificationRow({
+  subscription,
+  onToggle,
+  onTest,
+  onDelete,
+  busy,
+}: {
+  subscription: RaftNotificationSubscription;
+  onToggle: (enabled: boolean) => void;
+  onTest: () => void;
+  onDelete: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-line-hairline p-2 flex flex-wrap items-center gap-2">
+      <div className="min-w-48 flex-1">
+        <div className="font-mono text-xs">{subscription.channel_target}</div>
+        <div className="text-[11px] text-foreground-muted mt-1">{subscription.events.length} event{subscription.events.length === 1 ? "" : "s"}</div>
+      </div>
+      <Badge variant={subscription.enabled ? "success" : "muted"}>{subscription.enabled ? "enabled" : "disabled"}</Badge>
+      <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? "Disable" : "Enable"}</Button>
+      <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>Test</Button>
+      <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>Remove</Button>
     </div>
   );
 }

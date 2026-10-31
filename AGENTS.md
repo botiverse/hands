@@ -16,6 +16,12 @@ R2.
 4. Create or reuse an isolated worktree for code changes.
 5. Report progress in the task thread, not as a new root message.
 
+An explicit user or task request authorizes the implementation work it names,
+including local edits, a signed commit, a Stamp branch push, and opening a PR.
+Do not add a confirmation step for those routine, reviewable actions. Ask only
+when the next action is outside that authorization, such as merging, deploying,
+publishing, or writing production data or secrets.
+
 ## Git Access Through Stamp
 
 Agents clone, push, open PRs, review and merge through Stamp
