@@ -155,6 +155,7 @@ describe("Apple ingress", () => {
       "app_store:version_state_changed",
       "testflight:external_state_changed",
       "app_store:build_upload_state_changed",
+      "testflight:crash_submission_created",
     ];
     const created = await app.request(
       "/api/apps/app/webhooks",
@@ -582,6 +583,66 @@ describe("Apple ingress — build identity enrichment", () => {
     }));
     expect((await send(betaEvent())).status).toBe(200);
     expect(latestPayload(sql).payload.groups_display).toBeUndefined();
+  });
+
+  it("ingests a TestFlight crash with build identity and an internal log attachment", async () => {
+    const { sql, send, env } = await setup();
+    await withAscCredentials(sql);
+    const put = vi.fn(async () => ({}));
+    env.APK_BUCKET = { put } as any;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      if (url === "https://api.appstoreconnect.apple.com/v1/betaFeedbackCrashSubmissions/crash-1/build?include=preReleaseVersion") {
+        return json({
+          data: {
+            type: "builds", id: "asc-build-1",
+            attributes: { version: "11701001" },
+            relationships: { preReleaseVersion: { data: { type: "preReleaseVersions", id: "pre-1" } } },
+          },
+          included: [{ type: "preReleaseVersions", id: "pre-1", attributes: { version: "1.17.1" } }],
+        });
+      }
+      if (url === "https://api.appstoreconnect.apple.com/v1/betaFeedbackCrashSubmissions/crash-1") {
+        return json({ data: { id: "crash-1", attributes: { comment: "Test crash", deviceModel: "iPhone 15", osVersion: "26.0", architecture: "arm64" } } });
+      }
+      if (url === "https://api.appstoreconnect.apple.com/v1/betaFeedbackCrashSubmissions/crash-1/crashLog") {
+        return json({ data: { attributes: { logText: "Exception Type: test" } } });
+      }
+      return json({ data: [], included: [] });
+    }));
+
+    const response = await send({
+      data: {
+        id: "crash-event",
+        type: "betaFeedbackCrashSubmissionCreated",
+        version: 1,
+        attributes: { createdDate: "2026-10-31T05:00:00Z" },
+        relationships: { instance: { data: { type: "betaFeedbackCrashSubmissions", id: "crash-1" } } },
+      },
+    });
+    expect(response.status).toBe(200);
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries WHERE event_type='testflight:crash_submission_created'").get() as any;
+    const payload = JSON.parse(row.payload_json);
+    expect(payload.payload).toMatchObject({
+      resource: { type: "betaFeedbackCrashSubmissions", id: "crash-1" },
+      state: "2026-10-31T05:00:00Z",
+      occurred_at: "2026-10-31T05:00:00Z",
+      previous_state: null,
+      ticket_id: "testflight-crash:app:crash-1",
+      build: { version: "1.17.1", version_code: "11701001" },
+    });
+    expect(payload.payload).not.toHaveProperty("crash_log");
+    expect(row.payload_json).not.toContain("logText");
+    expect(sql.prepare("SELECT kind,message,version_name,version_code,channel,device_model,os_version,arch FROM feedback_tickets WHERE id='testflight-crash:app:crash-1'").get()).toEqual({
+      kind: "crash", message: "Test crash", version_name: "1.17.1", version_code: 11701001,
+      channel: "testflight", device_model: "iPhone 15", os_version: "26.0", arch: "arm64",
+    });
+    expect(sql.prepare("SELECT r2_key,filename,origin,visibility FROM feedback_attachments WHERE ticket_id='testflight-crash:app:crash-1'").get()).toEqual({
+      r2_key: "feedback/app/testflight/crash-1.ips", filename: "testflight-crash-crash-1.ips", origin: "system", visibility: "internal",
+    });
+    expect(put).toHaveBeenCalledOnce();
+    expect(row.payload_json).not.toContain("logText");
   });
 
   it("names the build for a buildUploads event from the resource's own attributes", async () => {

@@ -512,7 +512,7 @@ hands api POST /api/apps/{app_id}/apple-webhook/register
 
 Hands calls Apple using the stored credentials, discovers an existing subscription
 for this exact callback URL before creating one, and reads it back to verify the
-URL, enabled state, and all three event types. The result reveals no secret.
+URL, enabled state, and all four event types. The result reveals no secret.
 If Apple refuses the operation, the response names the failure stage and upstream
 status; use an App Store Connect key with permission to manage webhooks.
 Registration alone does not prove a real review notification reached your team.
@@ -525,13 +525,14 @@ new URL and secret; previous event receipts survive rotation.
 
 In App Store Connect, open **Users and Access → Integrations → Additional →
 Webhooks**, create a webhook, paste the returned URL and secret, and select
-**the same Apple app** specified by `apple_app_id`. Select these three triggers:
+**the same Apple app** specified by `apple_app_id`. Select these four triggers:
 
 | Apple trigger | Hands outbound event |
 | --- | --- |
 | `APP_STORE_VERSION_APP_VERSION_STATE_UPDATED` | `app_store:version_state_changed` |
 | `BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED` | `testflight:external_state_changed` |
 | `BUILD_UPLOAD_STATE_UPDATED` | `app_store:build_upload_state_changed` |
+| `BETA_FEEDBACK_CRASH_SUBMISSION_CREATED` | `testflight:crash_submission_created` |
 
 Choose **Test** and check the delivery's successful HTTP response in Apple's
 recent deliveries. Authenticated test pings and unsupported event types are
@@ -552,6 +553,16 @@ are then null. The resource ID identifies the Apple version/build, not a Hands
 build ID or a human-readable version number. No credentials or full Apple
 payloads are forwarded. Display the event's timestamp and state transition;
 out-of-order delivery must not overwrite an assumed current status.
+
+For `testflight:crash_submission_created`, `resource` identifies the crash
+submission, `state` and `occurred_at` contain Apple's `createdDate`, and
+`previous_state` is null. Hands follows the submission's `build` relationship
+to add the same best-effort `build` identity used by other TestFlight events.
+It also creates an idempotent crash ticket in the normal feedback triage
+surface and stores the `.ips` log as an internal attachment (up to 2 MiB). The
+outbound payload carries `ticket_id`, never the crash-log body. A crash
+submission reports a tester chose to share it, not the total crash count for
+the build.
 
 Hands verifies `x-apple-signature` over the exact request bytes, limits the
 body to 64 KiB, and commits the event receipt and matching outbound deliveries
