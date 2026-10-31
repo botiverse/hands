@@ -9,7 +9,7 @@ import {
   handleRaftNotificationWebhook,
   notificationObjectKey,
 } from "../src/routes/raft_notifications";
-import { hmacSha256Hex } from "../src/routes/webhooks";
+import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex } from "../src/routes/webhooks";
 
 function d1(sqlite: Database.Database): D1Database {
   const prepare = (sql: string) => {
@@ -44,7 +44,11 @@ async function harness() {
   sqlite.exec(`
     CREATE TABLE organizations (id TEXT PRIMARY KEY, external_provider TEXT NOT NULL, external_id TEXT NOT NULL);
     CREATE TABLE apps (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE webhooks (id TEXT PRIMARY KEY, secret TEXT NOT NULL, enabled INTEGER NOT NULL, archived_at INTEGER);
+    CREATE TABLE webhooks (
+      id TEXT PRIMARY KEY, org_id TEXT, app_id TEXT, url TEXT, secret TEXT NOT NULL,
+      events_json TEXT, enabled INTEGER NOT NULL, archived_at INTEGER,
+      created_at INTEGER, updated_at INTEGER
+    );
     CREATE TABLE raft_notification_subscriptions (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, server_id TEXT NOT NULL,
       channel_target TEXT NOT NULL, events_json TEXT NOT NULL, enabled INTEGER NOT NULL,
@@ -66,7 +70,9 @@ async function harness() {
   `);
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
   sqlite.prepare("INSERT INTO apps (id, org_id, archived) VALUES (?, 'org-1', 0)").run(APP_ID);
-  sqlite.prepare("INSERT INTO webhooks (id, secret, enabled, archived_at) VALUES ('webhook-1', ?, 1, NULL)").run(SECRET);
+  sqlite.prepare(
+    "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, archived_at, created_at, updated_at) VALUES ('webhook-1', 'org-1', ?, 'https://hands.test/api/internal/raft-notifications/sub-1', ?, '[]', 1, NULL, 1, 1)",
+  ).run(APP_ID, SECRET);
   const encrypted = await encryptP8(BOT_KEY, "enc-secret");
   sqlite.prepare(
     `INSERT INTO raft_bot_installations
@@ -87,6 +93,8 @@ async function harness() {
     RAFT_BOT_ENC_KEY: "enc-secret",
   } as unknown as Env;
   const app = new Hono<{ Bindings: Env }>();
+  app.patch("/api/apps/:appId/webhooks/:webhookId", handleUpdateAppWebhook);
+  app.delete("/api/apps/:appId/webhooks/:webhookId", handleDeleteAppWebhook);
   app.post("/api/apps/:appId/raft-notifications/connect", handleConnectRaftBot);
   app.get("/api/apps/:appId/raft-notifications", handleGetRaftNotifications);
   app.post("/api/internal/raft-notifications/:subscriptionId", handleRaftNotificationWebhook);
@@ -108,7 +116,12 @@ async function harness() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ rotate }),
   }), env);
-  return { sqlite, env, request, getConfig, connect };
+  const mutateHiddenWebhook = () => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/webhooks/webhook-1`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ events: ["build:failed"] }),
+  }), env);
+  return { sqlite, env, request, getConfig, connect, mutateHiddenWebhook };
 }
 
 const body = (state: string) => ({
@@ -181,6 +194,13 @@ describe("Hands-managed Raft notifications", () => {
     const response = await connect(APP_ID, true);
     expect(response.status).toBe(503);
     expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the internal webhook row through generic mutation routes", async () => {
+    const { mutateHiddenWebhook, sqlite } = await harness();
+    const response = await mutateHiddenWebhook();
+    expect(response.status).toBe(404);
+    expect(sqlite.prepare("SELECT events_json FROM webhooks WHERE id = 'webhook-1'").pluck().get()).toBe("[]");
   });
 
   it("verifies the generic webhook signature before sending", async () => {
