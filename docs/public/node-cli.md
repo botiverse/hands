@@ -261,13 +261,15 @@ when its logic or pinned policy changes. The current CLI sidecar flags are for
 runner binaries and `SHA256SUMS`; keep an installer script on its own stable
 CDN contract until a first-class installer artifact is available.
 
-For a generic Hands example, the script can query the public release metadata
-at
-`https://hands.build/public/v2/apps/my-cli/latest?channel=main&product_type=cli-binary`.
-If you put the script behind your own CDN, keep that project-owned address
-stable (for example, `https://cdn.example.com/my-cli/install.sh`) and have the
-script resolve the Hands metadata, download the platform binary, and check its
-digest. Neither form exposes Hands storage details.
+For a generic Hands example, a published target has a short channel URL:
+`https://hands.build/dl/my-cli/main/linux-x64`. Hands resolves the channel to an
+immutable release and redirects to the current artifact URL. Use the public
+latest/update endpoint when the script needs the selected version's digest and
+size before downloading. If you put the script behind your own CDN, keep that
+project-owned address stable (for example,
+`https://cdn.example.com/my-cli/install.sh`) and have the script resolve Hands
+metadata, download the target, and check its digest. None of these URLs expose
+Hands storage details.
 
 ## CI checklist
 
