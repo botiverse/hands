@@ -3,6 +3,7 @@
 #import <execinfo.h>
 #import <dlfcn.h>
 #import <fcntl.h>
+#import <math.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <pthread.h>
@@ -12,6 +13,7 @@
 #import <string.h>
 #import <unistd.h>
 
+#import "HandsCrashBuild.h"
 #import "HandsFeedbackClient.h"
 
 static NSUInteger const HandsMaxStoredCrashes = 5;
@@ -112,6 +114,28 @@ static NSString *HandsJSONString(id object) {
     return data ? ([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"") : @"";
 }
 
+// Captured once at install (see HandsCrashBuild.h); the sidecar records the
+// build that crashed, which a later launch uploads.
+static void HandsCaptureCrashBuild(void) {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary ?: @{};
+    id name = info[@"CFBundleShortVersionString"];
+    id code = info[@"CFBundleVersion"];
+    NSString *commit = HandsBuildCommit(info);
+    HandsCrashBuildCapture([name isKindOfClass:NSString.class] ? [(NSString *)name UTF8String] : NULL,
+                           [code isKindOfClass:NSString.class] ? [(NSString *)code UTF8String] : NULL,
+                           commit.UTF8String);
+}
+
+NSDictionary<NSString *, id> *HandsCrashBuildSidecarFields(void) {
+    if (!HandsCrashBuildIsCaptured()) return @{};
+    long long code = 0;
+    return @{
+        @"version_name" : HandsStringFromCString(HandsCrashBuildVersionName()),
+        @"version_code" : HandsCrashBuildVersionCode(&code) ? @(code) : NSNull.null,
+        @"commit" : HandsStringFromCString(HandsCrashBuildCommit()),
+    };
+}
+
 static void HandsWriteMetaFile(NSString *logPath,
                                      NSString *exceptionClass,
                                      NSString *exceptionMessage,
@@ -119,7 +143,7 @@ static void HandsWriteMetaFile(NSString *logPath,
                                      NSString *reason,
                                      NSArray<NSDictionary *> *frames) {
     NSArray<NSDictionary *> *binaryImages = HandsCurrentBinaryImages();
-    NSDictionary *meta = @{
+    NSMutableDictionary *meta = [@{
         @"exception_class" : exceptionClass ?: @"IosCrash",
         @"exception_message" : exceptionMessage ?: @"",
         @"top_frame" : topFrame ?: @"",
@@ -127,7 +151,8 @@ static void HandsWriteMetaFile(NSString *logPath,
         @"crash_at" : @((long long)(NSDate.date.timeIntervalSince1970 * 1000.0)),
         @"binary_images" : binaryImages,
         @"frames" : frames ?: @[],
-    };
+    } mutableCopy];
+    [meta addEntriesFromDictionary:HandsCrashBuildSidecarFields()];
     NSData *data = [NSJSONSerialization dataWithJSONObject:meta options:0 error:nil];
     NSString *metaPath = [[logPath stringByDeletingPathExtension] stringByAppendingString:@".meta.json"];
     [data writeToFile:metaPath atomically:YES];
@@ -431,6 +456,26 @@ static void HandsInstallBinaryImageCache(void) {
     });
 }
 
+void HandsWriteSignalMetaFile(const char *metaPath, const char *signalName, long long crashAtMillis) {
+    int metaFd = open(metaPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (metaFd < 0) return;
+    char meta[256];
+    size_t off = 0;
+    HandsSafeAppend(meta, sizeof(meta), &off, "{\"exception_class\":\"");
+    HandsSafeAppend(meta, sizeof(meta), &off, signalName);
+    HandsSafeAppend(meta, sizeof(meta), &off, "\",\"exception_message\":\"fatal signal\",\"reason\":\"signal\",\"crash_at\":");
+    HandsSafeAppendNumber(meta, sizeof(meta), &off, crashAtMillis);
+    HandsSafeAppend(meta, sizeof(meta), &off, ",");
+    HandsSafeWriteAll(metaFd, meta, off);
+    // Crashed build, preformatted at install; ends with a comma or is empty.
+    size_t buildLength = 0;
+    const char *build = HandsCrashBuildJSONFields(&buildLength);
+    HandsSafeWriteAll(metaFd, build, buildLength);
+    HandsWriteBinaryImagesJSON(metaFd);
+    HandsSafeWriteAll(metaFd, ",\"frames\":[]}", 13);
+    close(metaFd);
+}
+
 /// Async-signal context (task #76): the guaranteed record uses only
 /// async-signal-safe calls — time/open/write/close plus local char math.
 /// The meta sidecar is written FIRST so a report exists even if the
@@ -462,20 +507,7 @@ static void HandsHandleSignal(int signalNumber) {
     HandsSafeAppend(metaPath, sizeof(metaPath), &off, "/crash-");
     HandsSafeAppendNumber(metaPath, sizeof(metaPath), &off, ts);
     HandsSafeAppend(metaPath, sizeof(metaPath), &off, ".meta.json");
-    int metaFd = open(metaPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (metaFd >= 0) {
-        char meta[256];
-        off = 0;
-        HandsSafeAppend(meta, sizeof(meta), &off, "{\"exception_class\":\"");
-        HandsSafeAppend(meta, sizeof(meta), &off, name);
-        HandsSafeAppend(meta, sizeof(meta), &off, "\",\"exception_message\":\"fatal signal\",\"reason\":\"signal\",\"crash_at\":");
-        HandsSafeAppendNumber(meta, sizeof(meta), &off, ts);
-        HandsSafeAppend(meta, sizeof(meta), &off, ",");
-        HandsSafeWriteAll(metaFd, meta, off);
-        HandsWriteBinaryImagesJSON(metaFd);
-        HandsSafeWriteAll(metaFd, ",\"frames\":[]}", 13);
-        close(metaFd);
-    }
+    HandsWriteSignalMetaFile(metaPath, name, ts);
 
     // Log file with a fixed header (still fully safe calls only).
     char logPath[640];
@@ -566,6 +598,33 @@ static NSString *HandsZipDiagnostics(NSArray<NSString *> *paths, NSString *stamp
     return zipPath;
 }
 
+static NSString *HandsNonEmptyTrimmed(id value) {
+    if (![value isKindOfClass:NSString.class]) return nil;
+    NSString *trimmed = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return trimmed.length > 0 ? trimmed : nil;
+}
+
+static NSNumber *HandsReportableVersionCode(id value) {
+    if (![value isKindOfClass:NSNumber.class]) return nil;
+    if (CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return nil;
+    double asDouble = [(NSNumber *)value doubleValue];
+    if (!isfinite(asDouble) || asDouble != floor(asDouble)) return nil;
+    if (asDouble < 0 || asDouble > (double)HANDS_CRASH_BUILD_MAX_VERSION_CODE) return nil;
+    return @([(NSNumber *)value longLongValue]);
+}
+
+NSDictionary<NSString *, id> *HandsCrashBuildExtras(NSDictionary *meta) {
+    if (![meta isKindOfClass:NSDictionary.class]) meta = @{};
+    NSString *name = HandsNonEmptyTrimmed(meta[@"version_name"]);
+    NSNumber *code = HandsReportableVersionCode(meta[@"version_code"]);
+    NSString *commit = HandsNonEmptyTrimmed(meta[@"commit"]);
+    return @{
+        @"version_name" : name ?: NSNull.null,
+        @"version_code" : code ?: NSNull.null,
+        @"commit" : commit ?: NSNull.null,
+    };
+}
+
 @implementation HandsCrashReporter
 
 + (void)install {
@@ -574,6 +633,8 @@ static NSString *HandsZipDiagnostics(NSArray<NSString *> *paths, NSString *stamp
         NSString *dir = HandsCrashDirPath();
         [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
         [dir getCString:gHandsCrashDir maxLength:sizeof(gHandsCrashDir) encoding:NSUTF8StringEncoding];
+        // Before the handlers go in, so every sidecar carries the build.
+        HandsCaptureCrashBuild();
         HandsInstallBinaryImageCache();
 
         gHandsPreviousExceptionHandler = NSGetUncaughtExceptionHandler();
@@ -662,7 +723,7 @@ static NSString *HandsZipDiagnostics(NSArray<NSString *> *paths, NSString *stamp
             [message appendFormat:@"\nat %@", topFrame];
         }
 
-        NSMutableDictionary<NSString *, NSString *> *extras = [@{
+        NSMutableDictionary<NSString *, id> *extras = [@{
             @"crash_exception_class" : exceptionClass,
             @"crash_top_frame" : topFrame,
             @"crash_reason" : [meta[@"reason"] isKindOfClass:NSString.class] ? meta[@"reason"] : @"",
@@ -676,6 +737,8 @@ static NSString *HandsZipDiagnostics(NSArray<NSString *> *paths, NSString *stamp
         if (framesJSON.length > 0) {
             extras[@"crash_frames"] = framesJSON;
         }
+        // The crashed build, not this launch's (#858).
+        [extras addEntriesFromDictionary:HandsCrashBuildExtras(meta)];
 
         // Attach app-owned diagnostics (if a provider is registered): the app
         // hands over raw file paths, the SDK zips them into a single

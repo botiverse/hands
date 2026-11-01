@@ -14,7 +14,7 @@ static NSTimeInterval const HandsUploadTimeout = 120.0;
 
 // Hands iOS SDK version — reported in feedback/crash environment metadata.
 // Keep in sync with Hands.podspec on release.
-static NSString *const kHandsSDKVersion = @"0.2.1";
+static NSString *const kHandsSDKVersion = @"0.2.2";
 
 // Server-enforced: at most 9 attachments per ticket.
 static NSUInteger const HandsMaxAttachments = 9;
@@ -73,7 +73,7 @@ static NSString *HandsBatteryStateString(UIDeviceBatteryState state) {
 // The app's build git commit, injected into Info.plist at build time. The SDK
 // only reports it; the host build is responsible for setting one of these keys
 // (preferred: HandsBuildCommit). Returns nil when not injected.
-static NSString *HandsBuildCommit(NSDictionary *info) {
+NSString *HandsBuildCommit(NSDictionary *info) {
     for (NSString *key in @[ @"HandsBuildCommit", @"GitCommit", @"CommitHash" ]) {
         id value = info[key];
         if ([value isKindOfClass:NSString.class] && [(NSString *)value length] > 0) {
@@ -117,7 +117,7 @@ static NSError *HandsErrorWithMessage(NSInteger code, NSString *detail) {
 
 @implementation HandsFeedbackClient
 
-+ (NSDictionary<NSString *, id> *)metadataWithExtras:(NSDictionary<NSString *, NSString *> *)extras {
++ (NSDictionary<NSString *, id> *)metadataWithExtras:(NSDictionary<NSString *, id> *)extras {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary ?: @{};
     UIDevice *device = UIDevice.currentDevice;
     NSMutableDictionary<NSString *, id> *metadata = [NSMutableDictionary dictionary];
@@ -172,8 +172,14 @@ static NSError *HandsErrorWithMessage(NSInteger code, NSString *detail) {
     }
 
     // Caller-supplied extras (crash_* fields etc.) override/augment the above.
-    [extras enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSString *value, BOOL *stop) {
-        metadata[key] = value;
+    // NSNull removes the key: a deferred crash upload uses it to leave an
+    // unknown crashed build off the ticket instead of stamping this launch's.
+    [extras enumerateKeysAndObjectsUsingBlock:^(NSString *key, id value, BOOL *stop) {
+        if (value == NSNull.null) {
+            [metadata removeObjectForKey:key];
+        } else {
+            metadata[key] = value;
+        }
     }];
     return metadata;
 }
@@ -181,7 +187,7 @@ static NSError *HandsErrorWithMessage(NSInteger code, NSString *detail) {
 + (void)submitWithMessage:(NSString *)message
                      kind:(NSString *)kind
           attachmentPaths:(NSArray<NSString *> *)attachmentPaths
-                   extras:(NSDictionary<NSString *, NSString *> *)extras
+                   extras:(NSDictionary<NSString *, id> *)extras
                completion:(void (^)(NSString *_Nullable, NSError *_Nullable))completion {
     HandsConfig *config = Hands.config;
     if (!config) {
@@ -239,7 +245,7 @@ static NSError *HandsErrorWithMessage(NSInteger code, NSString *detail) {
     }];
 }
 
-+ (NSString *)metadataTextWithExtras:(NSDictionary<NSString *, NSString *> *)extras {
++ (NSString *)metadataTextWithExtras:(NSDictionary<NSString *, id> *)extras {
     NSDictionary *metadata = [self metadataWithExtras:extras];
     NSData *metadataData = [NSJSONSerialization dataWithJSONObject:metadata options:0 error:nil];
     NSString *metadataText = metadataData
