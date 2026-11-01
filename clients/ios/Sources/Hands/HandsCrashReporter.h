@@ -41,4 +41,21 @@ typedef NSArray<NSString *> *_Nullable (^HandsDiagnosticsProvider)(int64_t crash
 
 @end
 
+// ---- SDK-internal, exposed for tests ----
+
+/// The crashed-build fields the NSException path puts in its sidecar, same
+/// shape as Android #587: "" for an unknown name or commit, NSNull (JSON
+/// null) for an unknown code. Empty before +install captured the build.
+FOUNDATION_EXTERN NSDictionary<NSString *, id> *HandsCrashBuildSidecarFields(void);
+
+/// Writes the fatal-signal .meta.json sidecar at metaPath. Async-signal-safe
+/// (open/write/close only); includes the build captured at install.
+FOUNDATION_EXTERN void HandsWriteSignalMetaFile(const char *metaPath, const char *signalName, long long crashAtMillis);
+
+/// Ticket metadata for the crashed build recorded in a sidecar:
+/// version_name / version_code / commit. A missing, empty or invalid value
+/// maps to NSNull, which removes the key, so the uploading launch's build is
+/// never stamped onto an older crash (Android #587 behaviour).
+FOUNDATION_EXTERN NSDictionary<NSString *, id> *HandsCrashBuildExtras(NSDictionary *meta);
+
 NS_ASSUME_NONNULL_END

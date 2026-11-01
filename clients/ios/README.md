@@ -6,7 +6,7 @@ crash reporting. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.1'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.2'
 ```
 
 ## Configure & start
@@ -56,6 +56,10 @@ attached automatically.
   server resolver computes image offsets as `address - load_address`.
 - Reports upload as `kind=crash` tickets on the next launch and are grouped
   by signature server-side; retention cap 5 pending reports on disk.
+- The ticket's `version_name`, `version_code` and `commit` are the build that
+  crashed, captured at install and stored with the report, not the launch
+  that uploads it. Reports written before 0.2.2 carry no build and upload
+  without these fields rather than with the uploader's.
 
 Known v1 gaps: no all-threads dump, no Mach exception handling. dSYM
 symbolication requires the matching server/CLI dSYM asset resolver rollout.
