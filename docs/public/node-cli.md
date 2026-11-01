@@ -43,23 +43,19 @@ hands channels list raft-computer-cli
 
 Create an app-scoped deploy token for CI. A publisher token is sufficient and
 carries `app:read`, `app:publish`, and `feedback:write`; the build and release
-routes themselves need only the first two. App admin is needed to mint or
-revoke a token, not to use it in CI.
+routes use the publisher app role. `app:admin` is not needed by the publish
+job. App admin is needed to mint or revoke a token, not to use it in CI.
 
 ```bash
 # Run once as an app admin. The secret is printed only once.
 hands deploy-tokens create raft-computer-cli --name github-ci --role publisher
 ```
 
-If the CI token must have exactly the two build/release permissions, an app
-admin can mint a role-free token through the same authenticated API:
-
-```bash
-hands api POST /api/apps/<app-id>/deploy-tokens --data '{
-  "name": "github-ci",
-  "scopes": ["app:read", "app:publish"]
-}'
-```
+The API also supports explicit permission scopes for integrations whose routes
+accept them, but the current build and release routes require the publisher app
+role. Do not replace the publisher role with a role-free scope-only token for
+this flow; it will be rejected. The publisher role is still app-scoped and
+cannot publish a different app.
 
 Store the result in the CI secret store and expose it only to the publish job:
 
@@ -265,18 +261,22 @@ when its logic or pinned policy changes. The current CLI sidecar flags are for
 runner binaries and `SHA256SUMS`; keep an installer script on its own stable
 CDN contract until a first-class installer artifact is available.
 
-The script may use a stable address such as
-`https://cdn.raft.build/computer/install.sh`; that address can resolve to the
-current release without exposing Hands storage details. The script then obtains
-the public Hands metadata, downloads the platform binary, and checks its digest.
+For a generic Hands example, the script can query the public release metadata
+at
+`https://hands.build/public/v2/apps/my-cli/latest?channel=main&product_type=cli-binary`.
+If you put the script behind your own CDN, keep that project-owned address
+stable (for example, `https://cdn.example.com/my-cli/install.sh`) and have the
+script resolve the Hands metadata, download the platform binary, and check its
+digest. Neither form exposes Hands storage details.
 
 ## CI checklist
 
 - Build every target once and record the exact bytes, digest, and size.
 - Use one hosted publish invocation per version, or register every external
   target before creating the draft release.
-- Use an app-scoped token with `app:read` and `app:publish`; keep it in CI
-  secrets only.
+- Use an app-scoped `publisher` token (its effective set includes
+  `app:read`/`app:publish`); keep it in CI secrets only. `app:admin` is not
+  required by the publish job.
 - Prefer `--draft` and publish after release notes and target coverage are
   reviewed.
 - Treat source URLs and target identities as immutable release inputs.
