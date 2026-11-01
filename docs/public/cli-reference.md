@@ -9,6 +9,8 @@ order: 9
 
 `@botiverse/hands-cli` is the command-line client for Hands. Use it from local scripts or CI to inspect apps, upload Android builds, and publish releases.
 
+For the end-to-end Node/CLI release flow, see [Ship a Node CLI](node-cli.md).
+
 ## Install
 
 Install it globally:
