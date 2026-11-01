@@ -261,15 +261,30 @@ when its logic or pinned policy changes. The current CLI sidecar flags are for
 runner binaries and `SHA256SUMS`; keep an installer script on its own stable
 CDN contract until a first-class installer artifact is available.
 
-For a generic Hands example, a published target has a short channel URL:
-`https://hands.build/dl/my-cli/main/linux-x64`. Hands resolves the channel to an
-immutable release and redirects to the current artifact URL. Use the public
-latest/update endpoint when the script needs the selected version's digest and
-size before downloading. If you put the script behind your own CDN, keep that
-project-owned address stable (for example,
-`https://cdn.example.com/my-cli/install.sh`) and have the script resolve Hands
-metadata, download the target, and check its digest. None of these URLs expose
-Hands storage details.
+For a generic Hands example, a published **binary target** has a short channel
+URL: `https://hands.build/dl/my-cli/main/linux-x64`. Hands resolves the channel
+to an immutable release and redirects to the current artifact URL.
+
+That short route does not address `install.sh` today: its path must be a
+`platform-arch` target, and `?kind=sh` is not a filetype selector. If a script
+is stored as the current hosted-asset fallback (`platform=linux`, `arch=null`,
+`filetype=sh`), fetch the public metadata, select that asset, then follow its
+short-lived signed URL:
+
+```bash
+curl -fsSL \
+  -H 'X-Hands-Client-Platform: linux' \
+  'https://hands.build/public/v2/apps/my-cli/latest?channel=main&product_type=cli-binary'
+# Select assets[] where platform=linux, arch=null, filetype=sh.
+curl -fL -o install.sh "$DOWNLOAD_URL"
+echo "$SHA256  install.sh" | sha256sum --check --strict
+test "$(wc -c < install.sh)" -eq "$SIZE_BYTES"
+```
+
+If you put the script behind your own CDN, keep that project-owned address
+stable (for example, `https://cdn.example.com/my-cli/install.sh`) and have the
+script resolve Hands metadata, download the target, and check its digest. None
+of these URLs expose Hands storage details.
 
 ## CI checklist
 
