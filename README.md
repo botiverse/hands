@@ -91,6 +91,7 @@ Worker configuration:
 
 - `RAFT_CLIENT_ID` in `worker/wrangler.jsonc`
 - `RAFT_CLIENT_SECRET` as a Worker secret (`wrangler secret put RAFT_CLIENT_SECRET`)
+- `RAFT_BOT_ENC_KEY` as a separate Worker secret for encrypting Raft App Bot keys. Set it directly in Cloudflare (for example, `openssl rand -base64 48 | pnpm exec wrangler secret put RAFT_BOT_ENC_KEY --config <production-config>`); it stays with the Worker across deploys and is deliberately not copied into GitHub Actions secrets.
 - `app.hands.build` is the canonical dashboard/login origin. `hands.build` remains the business/API origin for SDKs, CLI/agents, share/download pages, release notes, and docs.
 - Product links and docs use `app.hands.build` for the dashboard and `hands.build` for business surfaces. Both hostnames continue serving compatible Worker routes during the transition; there is no forced cross-domain redirect.
 - Login starts from `app.hands.build`, carries a short-lived signed per-attempt `state` through Raft, and binds that state to an HttpOnly per-attempt browser proof cookie scoped to `hands.build` and its dashboard subdomain. The registered `https://hands.build/login/raft/callback` validates both before exchanging the one-time Raft code, then returns a signed Hands JWT to the dashboard in the URL fragment. The SPA stores the JWT locally and sends `Authorization: Bearer`; the proof cookie is not a Hands session and is deleted after the login handoff.
@@ -120,7 +121,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the worktree workflow and merge rules
 
 GitHub Actions owns production publishing so local machines do not need long-lived npm or Cloudflare credentials.
 
-Publishing and deploys read their npm, Cloudflare, and Hands Worker secrets from the repository's GitHub Actions secrets — configured in the repository settings, not documented here.
+Publishing and deploys read their npm, Cloudflare, and Hands Worker secrets from the repository's GitHub Actions secrets — configured in the repository settings, not documented here. The Raft App Bot KEK is intentionally the exception: `RAFT_BOT_ENC_KEY` lives only in the Cloudflare Worker secret store.
 
 Workflows:
 

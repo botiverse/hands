@@ -28,11 +28,31 @@ Each app has a left sidebar with its sections; the app switcher at the top of th
 - Access: direct app members, deploy tokens, and Raft server visibility.
 - Audit: recent app activity.
 - Settings: app name/description, app icon, client key, default channel,
-  public version history toggle, archive. Archived apps can be **purged**
+  Raft notifications, public version history toggle, archive. Archived apps can be **purged**
   (permanent delete of the app, its builds/releases/tickets, and all stored
   files — requires typing the slug to confirm; `POST /api/apps/:id/purge`).
 
 Create one Hands app per product distribution target. For example, an Android app should have its own Hands app and release channels.
+
+### Raft notifications
+
+App administrators can open **Settings → Raft notifications** to have Hands
+post selected webhook events as the app's Raft App Bot. A server owner or admin
+must first grant the bot to the Hands app in Raft, and a human must add that bot
+to each target channel. Then click **Connect App Bot**, enter a channel target
+such as `#proj-mobile-release`, and select the events that belong there. A
+single app can have multiple channel destinations with different event sets;
+each destination can be enabled, disabled, tested, or removed.
+
+Hands stores one encrypted bot credential per Raft server installation and
+never displays it in the console. Connecting another Hands app on that same
+server reuses the installation credential instead of rotating it. Existing
+webhook producers use the same delivery queue and
+retry policy, and repeated changes for the same release, build, ticket, or app
+version stay in one Raft thread. Provider credentials, crash attachments, and
+untrusted provider prose are not included in these messages. Apple's review
+rejection notification includes the version, state, time, and App Store Connect
+link; the rejection text itself still has to be read in App Store Connect.
 
 ## Releases
 

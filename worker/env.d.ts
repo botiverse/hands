@@ -206,6 +206,8 @@ declare global {
   interface Env {
     ADMIN_API_TOKEN?: string;
     RAFT_CLIENT_SECRET?: string;
+    /** AES-GCM key used to encrypt the per-installation Raft App Bot key. */
+    RAFT_BOT_ENC_KEY?: string;
     RAFT_ORIGIN?: string;
     RAFT_API_ORIGIN?: string;
     RAFT_CLIENT_ID?: string;
