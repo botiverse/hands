@@ -39,6 +39,10 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     return this.service.pushStoreListings(input, this.env);
   }
 
+  applySubscriptionProduct(input: PlayDiscoveryInput & { product: unknown; mode: "dry_run" | "commit"; regionsVersion: string }) {
+    return this.service.applySubscriptionProduct(input, this.env);
+  }
+
   sendForReview(input: SendForReviewRpcInput) {
     return this.service.sendForReview(input, this.env);
   }

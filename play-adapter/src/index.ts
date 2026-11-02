@@ -3,6 +3,7 @@ import { PlayAdapterError } from "./errors";
 import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
 import { resumableUploadOptions } from "./resumable_upload";
 import { pushStoreListings, readStoreListings, storeListingImagesInput, storeListingsInput } from "./store_listing";
+import { normalizeProduct, reconcileProduct } from "./subscription_products";
 import type {
   AdapterResult,
   DeobfuscationSymbolType,
@@ -340,6 +341,15 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
   }
 
   return {
+    async applySubscriptionProduct(input: PlayDiscoveryInput & { product: unknown; mode: "dry_run" | "commit"; regionsVersion: string }, env: PlayAdapterEnv) {
+      try {
+        if (input?.mode !== "dry_run" && input?.mode !== "commit") throw new PlayAdapterError(400, "subscription_request_invalid", "mode must be dry_run or commit");
+        if (typeof input.regionsVersion !== "string" || !/^\d{4}\/\d{2}$/.test(input.regionsVersion)) throw new PlayAdapterError(400, "subscription_request_invalid", "regionsVersion must be YYYY/MM");
+        const desired = normalizeProduct(input.product);
+        const resolved = await discoveryClient(input, env);
+        return { ok: true as const, value: await reconcileProduct(resolved.client, resolved.binding.packageName, desired, input.mode, input.regionsVersion) };
+      } catch (error) { return failure(error, null); }
+    },
     /** edits.details.get + edits.listings.list in a throwaway edit. */
     async readStoreListings(input: StoreListingReadRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<StoreListingReadResult>> {
       try {

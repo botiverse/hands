@@ -31,6 +31,7 @@ import { registerChannelCommands } from "./commands/channels.js";
 import { registerWebhookCommands } from "./commands/webhooks.js";
 import { registerTestflightCommands } from "./commands/testflight.js";
 import { registerAgcCommands } from "./commands/agc.js";
+import { registerStoreProductsCommands } from "./commands/store_products.js";
 import { registerStoreListingCommands } from "./commands/store_listing.js";
 import { registerAppStoreCommands } from "./commands/app_store.js";
 import { registerApiCommand } from "./commands/api.js";
@@ -88,6 +89,8 @@ Common recipes:
                                                        OHOS .app → AppGallery invitation-test version
   hands agc submit <app> <submission> --group <id>    Submit it to Huawei review for a test group
   hands agc status <app> <submission>                 Huawei review / testing state (refreshed)
+  hands store-products apply <app> --file products.json [--commit]
+                                                       Preview or reconcile subscription products
   hands store-listing pull <app> --out listing.json   Google Play listing text as JSON
   hands store-listing push <app> --listing listing.json [--commit]
                                                        Dry-run (default) or commit listing text to Play
@@ -137,6 +140,7 @@ registerWebhookCommands(program);
 registerTestflightCommands(program);
 registerAgcCommands(program);
 registerStoreListingCommands(program);
+registerStoreProductsCommands(program);
 registerAppStoreCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);

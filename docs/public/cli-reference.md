@@ -1011,3 +1011,8 @@ Example: `1.0.3-rc2` becomes `versionName=1.0.3-rc2` and `versionCode=1000302`.
 ## Security
 
 Do not paste deploy tokens, package tokens, signing passwords, or keystore data into public chat, issue comments, logs, or release notes. Store them in the CI secret store and pass them to Hands through environment variables.
+
+
+## Store subscription products
+
+Use `hands store-products apply <app> --file products.json` to preview subscription changes, then add `--commit` after review. See [Store subscription products](./store-products.md) for the file format, price and activation behavior, and recovery procedure.

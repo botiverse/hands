@@ -1,3 +1,4 @@
+import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
 import { pollGooglePlayReleases } from "./lib/play_release_poll";
 import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook, handleRegisterAppleWebhook } from "./routes/apple_webhooks";
@@ -399,7 +400,8 @@ const bindRoute = (
   handlers: HandlerOrMw[],
 ) => {
   const cfg = specIndex.get(`${method.toUpperCase()} ${honoPathToSpecPath(path)}`);
-  if (cfg && isJsonBoundRoute(cfg)) {
+  // This route must consume its own bounded stream before parsing JSON.
+  if (cfg && cfg.path !== "/api/apps/{appId}/store-products" && isJsonBoundRoute(cfg)) {
     const mw = handlers.slice(0, -1);
     target.openapi({ ...cfg, middleware: mw }, handlers[handlers.length - 1]);
   } else {
@@ -1014,6 +1016,7 @@ bindAdmin("put", "/api/apps/:appId/reporter-integrations/:integrationId/webhooks
 // sit at the publisher (ship) tier rather than admin.
 bindAdmin("put", "/api/apps/:appId/feature-flags/:key", requireAppRole("publisher"), handleUpdateFeatureFlag);
 
+bindAdmin("post", "/api/apps/:appId/store-products", requireAppRole("admin"), handleApplyStoreProduct);
 bindAdmin("get", "/api/apps/:appId/builds", requireAppRole("viewer"), handleListBuilds);
 bindAdmin("post", "/api/apps/:appId/builds", requireAppRole("publisher"), handleCreateBuild);
 bindAdmin("post", "/api/apps/:appId/builds/publish-version",
