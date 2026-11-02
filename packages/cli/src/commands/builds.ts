@@ -1736,13 +1736,14 @@ export function registerBuildCommands(program: Command): void {
       "--kind <kind>",
       "proguard-mapping | native-symbols | dsym. Inferred from the filename when omitted.",
     )
+    .option("--platform <platform>", "Platform for native symbols when the build type does not identify one.")
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         buildId: string,
         filePath: string,
-        opts: { kind?: string; json?: boolean },
+        opts: { kind?: string; platform?: string; json?: boolean },
       ) => {
         if (!existsSync(filePath)) throw new Error(`missing file: ${filePath}`);
         const kind = opts.kind ?? inferSymbolKind(filePath);
@@ -1752,10 +1753,13 @@ export function registerBuildCommands(program: Command): void {
               "Only debug symbols can be attached to an existing build.",
           );
         }
+        if (opts.platform && kind !== "native-symbols") throw new Error("--platform is only valid for native-symbols");
+        if (opts.platform && !/^[a-z0-9][a-z0-9-]{0,99}$/.test(opts.platform)) throw new Error("--platform must contain lowercase letters, numbers or hyphens");
         const appId = await resolveAppId(appIdOrSlug);
+        const platform = opts.platform ?? await symbolPlatform(appId, buildId, kind);
         const asset = await uploadDirectBuildAsset(appId, buildId, filePath, {
           artifact_kind: kind,
-          platform: inferSymbolPlatform(filePath),
+          platform,
           arch: null,
           filetype: SYMBOL_FILETYPE[kind] ?? "mapping.txt",
         });
@@ -2533,9 +2537,17 @@ function inferSymbolKind(filePath: string): string {
   return "native-symbols";
 }
 
-/** A ProGuard mapping describes Android code; dSYM and native symbols are Apple-side. */
-function inferSymbolPlatform(filePath: string): string {
-  return inferSymbolKind(filePath) === "proguard-mapping" ? "android" : "ios";
+/** Native archives can describe multiple platforms; use the actual build type. */
+async function symbolPlatform(appId: string, buildId: string, kind: string): Promise<string> {
+  if (kind === "proguard-mapping") return "android";
+  if (kind === "dsym") return "ios";
+  const build = await apiRequest<{ product_type?: unknown }>(`/api/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}`);
+  switch (build.product_type) {
+    case "android-apk": return "android";
+    case "ohos-app": return "ohos";
+    case "ios-ipa": return "ios";
+    default: throw new Error("Cannot determine the native-symbols platform for this build type; supply --platform");
+  }
 }
 
 /**
