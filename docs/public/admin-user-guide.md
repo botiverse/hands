@@ -54,6 +54,11 @@ access. The `feedback:comment_created` and `feedback:status_changed` events are
 emitted for reporter-owned tickets. Updates for the same ticket and destination
 are posted in its existing Raft thread.
 
+TestFlight notifications can include test group names and a short excerpt of a
+developer's testing notes. Select a channel whose members may see these details.
+HTTP(S) URLs and Raft mentions in the excerpt are neutralized. A Play status
+notification distinguishes a first observed snapshot from a later transition.
+
 Hands stores one encrypted bot credential per Raft server installation and
 never displays it in the console. Connecting another Hands app on that same
 server reuses the installation credential instead of rotating it. Existing

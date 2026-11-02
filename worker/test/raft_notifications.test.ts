@@ -3,12 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
+import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
+import { notificationObjectKey } from "../src/lib/raft_notification_identity";
 import {
-  formatRaftNotificationMessage,
   handleConnectRaftBot,
   handleGetRaftNotifications,
   handleRaftNotificationWebhook,
-  notificationObjectKey,
 } from "../src/routes/raft_notifications";
 import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex } from "../src/routes/webhooks";
 
@@ -174,7 +174,67 @@ describe("Hands-managed Raft notifications", () => {
       expect(message.startsWith(`${emoji} **Hands · ${event}**`)).toBe(true);
       expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     }
-    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("**Hands · app_store:version_state_changed**")).toBe(true);
+    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **Hands · app_store:version_state_changed**")).toBe(true);
+  });
+
+  it("keeps release context and identifies a first Play observation", () => {
+    const message = formatRaftNotificationMessage({
+      event: "google_play:release_state_changed", app_id: "abad63e9-e760-42e9-92df-f418735f32ea",
+      payload: {
+        package_name: "build.example.app", track: "alpha", version_code: 11800003,
+        state: "PUBLISHED", state_label: "Track available", observation_display: "First observation, not a new change",
+        rollout_percent: 20,
+      },
+    });
+    expect(message.startsWith("▶️ **Hands · google_play:release_state_changed**")).toBe(true);
+    expect(message).toContain("observation: First observation, not a new change");
+    expect(message).toContain("description: Track available");
+    expect(message).toContain("track: alpha");
+    expect(message).toContain("rollout: 20%");
+    const release = formatRaftNotificationMessage({
+      event: "release:published", payload: { rollout: 100, version_transition: "1.0 → 1.1", version_code_transition: "1 → 2" },
+    });
+    expect(release).toContain("🚀 **Hands · release:published**");
+    expect(release).toContain("version transition: 1.0 → 1.1");
+    expect(release).toContain("version code transition: 1 → 2");
+    expect(release).toContain("rollout: 100%");
+  });
+
+  it("uses common safe fields for events without a custom presentation", () => {
+    const message = formatRaftNotificationMessage({
+      event: "release:draft_created",
+      payload: { version: "1.2.3", rollout: 25, state: "draft", message: "private text" },
+    });
+    expect(message.startsWith("**Hands · release:draft_created**")).toBe(true);
+    expect(message).toContain("version: 1.2.3");
+    expect(message).toContain("rollout: 25%");
+    expect(message).not.toContain("private text");
+    expect(formatRaftNotificationMessage({ event: "release", payload: { rollout: 25 } })).not.toContain("rollout:");
+  });
+
+  it("shows bounded, safe TestFlight notes and group context only for TestFlight", () => {
+    const payload = {
+      groups_display: "Test group: internal",
+      what_to_test: { "zh-Hans": `Check @admin #release https://example.test/private ${"x".repeat(600)}` },
+      source_commit: "a1b2c3d4",
+    };
+    const message = formatRaftNotificationMessage({ event: "testflight:internal_distribution_ready", payload });
+    expect(message.startsWith("✈️ **Hands · testflight:internal_distribution_ready**")).toBe(true);
+    expect(message).toContain("groups: Test group: internal");
+    expect(message).toContain("Test notes (zh-Hans): Check @\u200badmin #\u200brelease \\[link\\]");
+    expect(message).toContain("source commit: a1b2c3d4");
+    expect(message).toContain("…");
+    expect(message).not.toContain("https://example.test");
+    expect(formatRaftNotificationMessage({ event: "release:published", payload })).not.toContain("Test notes");
+  });
+
+  it("separates Play state threads by package, track and version", async () => {
+    const state = (track: string, version: number, value: string) => ({
+      event: "google_play:release_state_changed", payload: { package_name: "build.example.app", track, version_code: version, state: value },
+    });
+    expect(await notificationObjectKey(state("alpha", 1, "IN_REVIEW"))).toBe(await notificationObjectKey(state("alpha", 1, "PUBLISHED")));
+    expect(await notificationObjectKey(state("alpha", 1, "PUBLISHED"))).not.toBe(await notificationObjectKey(state("production", 1, "PUBLISHED")));
+    expect(await notificationObjectKey(state("alpha", 1, "PUBLISHED"))).not.toBe(await notificationObjectKey(state("alpha", 2, "PUBLISHED")));
   });
 
   it("renders a bounded feedback preview, app identity, and a usable CLI command", () => {
@@ -211,6 +271,25 @@ describe("Hands-managed Raft notifications", () => {
     }));
     expect(message.length).toBeLessThanOrEqual(4000);
     expect(message).toContain(`View more: \`hands feedback show sample-app ${TICKET_ID}\``);
+  });
+
+  it("keeps the snapshot warning, review link, and time when release fields are long", () => {
+    const long = "x".repeat(500);
+    const message = formatRaftNotificationMessage({
+      event: "app_store:version_state_changed", delivered_at: 1793556592575,
+      payload: {
+        status: long, previous_status: long, state: "REJECTED", previous_state: long,
+        version_string: long, version_name: long, build_number: long, version_code: long,
+        track: long, channel: long, distribution: long, platform: long,
+        observation_display: "First observation, not a new change",
+        app_store_connect_url: "https://appstoreconnect.apple.com/apps/123",
+      },
+    });
+    expect(message.length).toBeLessThanOrEqual(4000);
+    expect(message).toContain("observation: First observation, not a new change");
+    expect(message).toContain("Review: https://appstoreconnect.apple.com/apps/123");
+    expect(message).toContain("Apple's review message is available in App Store Connect.");
+    expect(message).toContain("occurred: 2026-11-01T18:09:52.575Z");
   });
 
   it("shows a delivered-at millisecond timestamp as readable UTC and preserves provider timestamps", () => {

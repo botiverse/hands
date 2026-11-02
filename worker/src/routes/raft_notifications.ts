@@ -13,6 +13,8 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
+import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
+import { isFeedbackThreadEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -71,47 +73,11 @@ class RaftBotApiError extends Error {
 }
 
 const CHANNEL_TARGET_RE = /^#[^\s:#]{1,120}$/;
-const MAX_MESSAGE_LENGTH = 4_000;
-const MAX_FIELD_LENGTH = 500;
-const MAX_FEEDBACK_PREVIEW_LENGTH = 180;
-const FEEDBACK_THREAD_EVENTS = new Set(["feedback:new", "feedback:comment_created", "feedback:status_changed"]);
-const FEEDBACK_EVENT_EMOJI = new Map<string, string>([
-  ["feedback:new", "📮"],
-  ["feedback:comment_created", "💬"],
-  ["feedback:status_changed", "🔄"],
-]);
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CLI_APP_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/i;
-
 function safeProviderCode(value: unknown, fallback: string): string {
   return typeof value === "string" && /^[a-z0-9_]{1,80}$/.test(value)
     ? value
     : fallback;
 }
-
-const SAFE_PAYLOAD_FIELDS: Array<[string, string]> = [
-  ["kind", "kind"],
-  ["status", "status"],
-  ["previous status", "previous_status"],
-  ["state", "state"],
-  ["previous state", "previous_state"],
-  ["version", "version_string"],
-  ["version", "version"],
-  ["version name", "version_name"],
-  ["build", "build_number"],
-  ["version code", "version_code"],
-  ["track", "track"],
-  ["channel", "channel"],
-  ["distribution", "distribution"],
-  ["platform", "platform"],
-  ["failure code", "failure_code"],
-  ["reason code", "reason_code"],
-  ["ticket", "ticket_id"],
-  ["release", "release_id"],
-  ["build id", "build_id"],
-  ["package", "package_name"],
-  ["source", "source"],
-];
 
 function apiOrigin(env: Env): string {
   const origin = env.RAFT_API_ORIGIN ?? env.RAFT_ORIGIN ?? "https://api.raft.build";
@@ -517,125 +483,14 @@ async function sendBotMessage(
   return { messageId };
 }
 
-function safeValue(value: unknown): string | null {
-  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return null;
-  const text = String(value).replace(/[\r\n]+/g, " ").trim();
-  return text.length > 0 ? text.slice(0, MAX_FIELD_LENGTH) : null;
-}
-
-function notificationPayload(body: Record<string, unknown>): Record<string, unknown> {
-  return parseJsonRecord(body.payload);
-}
-
-// User-supplied text is not a source of Raft mentions, links, or Markdown.
-// Break both Raft sigils before escaping Markdown, and omit URLs (which can be
-// signed or contain credentials). This is a preview, not a secret scrubber.
-function safePreview(value: unknown, limit: number): string | null {
-  if (typeof value !== "string") return null;
-  const cleaned = value.replace(/https?:\/\/[^\s]+/gi, "[link]").replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim();
-  if (!cleaned) return null;
-  const chars = Array.from(cleaned);
-  const shortened = chars.length > limit ? `${chars.slice(0, limit).join("")}…` : cleaned;
-  return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
-}
-
-interface NotificationApp {
-  id: string;
-  slug: string | null;
-  name: string | null;
-}
-
-export function formatRaftNotificationMessage(body: Record<string, unknown>, knownApp?: NotificationApp): string {
-  const event = safeValue(body.event) ?? "hands:event";
-  const payload = notificationPayload(body);
-  const app = parseJsonRecord(payload.app);
-  const build = parseJsonRecord(payload.build);
-  const emoji = FEEDBACK_EVENT_EMOJI.get(event);
-  const lines = [`${emoji ? `${emoji} ` : ""}**Hands · ${event}**`];
-  const appId = safeValue(knownApp?.id) ?? safeValue(body.app_id) ?? safeValue(app.id);
-  const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
-  const appName = safePreview(knownApp?.name, 160) ?? safePreview(app.name, 160) ?? safePreview(appSlug, 160);
-  const appIdDisplay = safePreview(appId, 160);
-  if (appName && appIdDisplay) lines.push(`App: ${appName} (${appIdDisplay})`);
-  else if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
-  if (event === "feedback:new" && (payload.kind === "feedback" || payload.kind === "bug")) {
-    const preview = safePreview(payload.message, MAX_FEEDBACK_PREVIEW_LENGTH);
-    if (preview) lines.push(`Feedback: ${preview}`);
-  }
-  const seen = new Set<string>();
-  for (const [label, key] of SAFE_PAYLOAD_FIELDS) {
-    if (seen.has(label)) continue;
-    const value = safePreview(safeValue(payload[key]) ?? safeValue(build[key]), MAX_FIELD_LENGTH);
-    if (!value) continue;
-    seen.add(label);
-    lines.push(`${label}: ${value}`);
-  }
-  const link = safeValue(payload.app_store_connect_url);
-  if (link && /^https:\/\/appstoreconnect\.apple\.com\//.test(link)) lines.push(`Review: ${link}`);
-  if (event === "app_store:version_state_changed" && payload.state === "REJECTED") {
-    lines.push("Apple's review message is available in App Store Connect.");
-  }
-  // Hands-generated delivery timestamps are milliseconds. Preserve a
-  // provider's own occurrence timestamp as-is, since its units may differ.
-  const deliveredAt = typeof body.delivered_at === "number"
-    && Number.isFinite(body.delivered_at) && Math.abs(body.delivered_at) <= 8.64e15
-    ? new Date(body.delivered_at).toISOString()
-    : safeValue(body.delivered_at);
-  const occurred = safePreview(safeValue(payload.occurred_at) ?? deliveredAt, MAX_FIELD_LENGTH);
-  if (occurred) lines.push(`occurred: ${occurred}`);
-  let footer: string | null = null;
-  const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
-  // The CLI treats any 36-character, five-part value as an app id. Avoid
-  // generating an ambiguous slug that the CLI would resolve as a different id.
-  const slugLooksLikeId = appSlug?.length === 36 && appSlug.split("-").length === 5;
-  const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
-    ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
-  if (FEEDBACK_THREAD_EVENTS.has(event) && ticketId && cliApp) {
-    footer = `📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``;
-  }
-  const content = lines.join("\n");
-  if (!footer) return content.slice(0, MAX_MESSAGE_LENGTH);
-  return `${content.slice(0, MAX_MESSAGE_LENGTH - footer.length - 1)}\n${footer}`;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-export async function notificationObjectKey(body: Record<string, unknown>): Promise<string> {
-  const payload = notificationPayload(body);
-  const event = typeof body.event === "string" ? body.event : "event";
-  // Reuse the original feedback:new key so existing new-ticket parents remain
-  // the parent of subsequent comment and status events after this upgrade.
-  if (FEEDBACK_THREAD_EVENTS.has(event) && typeof payload.ticket_id === "string" && payload.ticket_id.length > 0) {
-    return `feedback:new:${payload.ticket_id.slice(0, 160)}`;
-  }
-  const resource = parseJsonRecord(payload.resource);
-  const candidates = [
-    payload.ticket_id,
-    payload.release_id,
-    payload.build_id,
-    payload.version_id,
-    payload.submission_id,
-    payload.app_store_version_id,
-    resource.id,
-    payload.version_string,
-    payload.package_name,
-  ];
-  const first = candidates.find((value) => typeof value === "string" || typeof value === "number");
-  if (first !== undefined) return `${String(body.event ?? "event")}:${String(first).slice(0, 160)}`;
-  return `${String(body.event ?? "event")}:${(await sha256Hex(JSON.stringify(payload))).slice(0, 32)}`;
-}
-
 async function preserveLegacyFeedbackThread(
   db: D1Database,
   subscriptionId: string,
   body: Record<string, unknown>,
   objectKey: string,
 ): Promise<"ready" | "pending" | "absent"> {
-  const payload = notificationPayload(body);
-  if (typeof body.event !== "string" || !FEEDBACK_THREAD_EVENTS.has(body.event)
+  const payload = parseJsonRecord(body.payload);
+  if (!isFeedbackThreadEvent(body.event)
     || typeof payload.ticket_id !== "string" || !payload.ticket_id) return "absent";
   const ticket = payload.ticket_id.slice(0, 160);
   const legacy = await db.prepare(
