@@ -1329,6 +1329,13 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
         <p className="text-xs text-foreground-muted mt-1">
           Choose the Raft channel and Hands events that this app should post. The bot key stays encrypted in Hands and is never shown here.
         </p>
+        <p className="text-xs text-foreground-muted mt-1">
+          A Raft server owner/admin must grant the Hands App Bot. Connect it, add it to the target channel, choose events, and use Test to confirm delivery.{" "}
+          <a className="underline" href="/docs/admin-user-guide/#raft-notifications">Raft notification setup guide</a>
+        </p>
+        <p className="text-xs text-foreground-muted mt-1">
+          Feedback notifications can include a short excerpt of user-submitted text. Choose a channel whose members may see it.
+        </p>
       </div>
       <div className="rounded-md bg-fill-muted p-3 flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs">
