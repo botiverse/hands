@@ -27,18 +27,18 @@ and the `main`, `preview`, and `nightly` channels:
 
 ```bash
 hands apps create \
-  --slug raft-computer-cli \
-  --name "Raft Computer CLI" \
+  --slug my-cli \
+  --name "My CLI" \
   --platform node \
-  --description "Cross-platform Raft Computer command line client"
+  --description "Cross-platform command line client"
 ```
 
 An existing Node app can be used instead. Inspect its channel ids and slugs
 with:
 
 ```bash
-hands apps get raft-computer-cli
-hands channels list raft-computer-cli
+hands apps get my-cli
+hands channels list my-cli
 ```
 
 Create an app-scoped deploy token for CI. A publisher token is sufficient and
@@ -48,7 +48,7 @@ job. App admin is needed to mint or revoke a token, not to use it in CI.
 
 ```bash
 # Run once as an app admin. The secret is printed only once.
-hands deploy-tokens create raft-computer-cli --name github-ci --role publisher
+hands deploy-tokens create my-cli --name github-ci --role publisher
 ```
 
 The API also supports explicit permission scopes for integrations whose routes
@@ -94,12 +94,12 @@ targets and one release. `--runner` and `--sha256sums`, when used, are also
 paired by position.
 
 ```bash
-hands builds publish-cli-binary raft-computer-cli \
+hands builds publish-cli-binary my-cli \
   --version-name 1.4.0 \
   --channel main \
-  --target darwin-arm64 --binary dist/raft-darwin-arm64 \
-  --target linux-x64 --binary dist/raft-linux-x64 \
-  --target win32-x64 --binary dist/raft-win32-x64 \
+  --target darwin-arm64 --binary dist/my-cli-darwin-arm64 \
+  --target linux-x64 --binary dist/my-cli-linux-x64 \
+  --target win32-x64 --binary dist/my-cli-win32-x64 \
   --source-commit "$GIT_COMMIT" \
   --ci-provider github \
   --ci-run-id "$GITHUB_RUN_ID" \
@@ -119,11 +119,11 @@ second build for the same version coordinate.
 Review and publish the draft explicitly:
 
 ```bash
-hands releases show raft-computer-cli <release-id>
-hands releases update raft-computer-cli <release-id> \
+hands releases show my-cli <release-id>
+hands releases update my-cli <release-id> \
   --changelog-file en=release-notes/en.md \
   --changelog-file zh=release-notes/zh.md
-hands releases publish raft-computer-cli <release-id>
+hands releases publish my-cli <release-id>
 ```
 
 `releases publish` reads the current release revision and exact stored scopes
@@ -139,18 +139,18 @@ activate a release.
 
 Hash the exact bytes that the declared URL serves. The URL must be HTTPS,
 credential-free, and stable for the lifetime of the release. A versioned path
-such as `https://cdn.example.com/raft/1.4.0/linux-x64` is preferable to a
+such as `https://cdn.example.com/my-cli/1.4.0/linux-x64` is preferable to a
 mutable `latest` URL.
 
 Register every target with the same version name. The first call creates the
 external build; later calls attach additional targets to that build:
 
 ```bash
-hands builds publish-version raft-computer-cli \
+hands builds publish-version my-cli \
   --version-name 1.4.0 \
   --channel main \
   --target linux-x64 \
-  --source-url https://cdn.example.com/raft/1.4.0/linux-x64 \
+  --source-url https://cdn.example.com/my-cli/1.4.0/linux-x64 \
   --raw-sha256 "$LINUX_SHA256" \
   --raw-size "$LINUX_SIZE" \
   --node-version 22.23.2 \
@@ -158,11 +158,11 @@ hands builds publish-version raft-computer-cli \
   --ci-provider github \
   --ci-run-id "$GITHUB_RUN_ID"
 
-hands builds publish-version raft-computer-cli \
+hands builds publish-version my-cli \
   --version-name 1.4.0 \
   --channel main \
   --target darwin-arm64 \
-  --source-url https://cdn.example.com/raft/1.4.0/darwin-arm64 \
+  --source-url https://cdn.example.com/my-cli/1.4.0/darwin-arm64 \
   --raw-sha256 "$MAC_SHA256" \
   --raw-size "$MAC_SIZE" \
   --node-version 22.23.2
@@ -183,7 +183,7 @@ hands api POST /api/apps/<app-id>/releases/draft --data '{
   "product_type": "cli-binary",
   "release_type": "stable",
   "scopes": [{"scope_type": "full", "scope_value": "all"}],
-  "changelog": "Raft Computer 1.4.0"
+  "changelog": "My CLI 1.4.0"
 }'
 ```
 
@@ -216,25 +216,25 @@ external artifacts:
 
 ```bash
 curl -fsSL \
-  'https://hands.build/public/v2/apps/raft-computer-cli/latest?channel=main&product_type=cli-binary'
+  'https://hands.build/public/v2/apps/my-cli/latest?channel=main&product_type=cli-binary'
 ```
 
 The response includes `assets[]` entries with `platform`, `arch`, `filetype`,
-`size_bytes`, `sha256`, and `download_url`. Hosted assets use a short-lived
-signed object URL. External assets use a release-bound Hands URL that redirects
-to the declared CDN URL. Keep the Hands URL, follow redirects, and verify the
-bytes before executing them:
+`size_bytes`, `sha256`, and `download_url`. For hosted assets, `download_url`
+is a time-limited Hands URL that redirects to storage. External assets use a
+release-bound Hands URL that redirects to the declared CDN URL. Follow redirects
+and verify the bytes before executing them:
 
 ```bash
-curl -fL -o raft-computer "$DOWNLOAD_URL"
-echo "$SHA256  raft-computer" | sha256sum --check --strict
-test "$(wc -c < raft-computer)" -eq "$SIZE_BYTES"
+curl -fL -o my-cli "$DOWNLOAD_URL"
+echo "$SHA256  my-cli" | sha256sum --check --strict
+test "$(wc -c < my-cli)" -eq "$SIZE_BYTES"
 ```
 
 For an installed CLI, use the update-check endpoint with the current SemVer:
 
 ```text
-GET /public/v2/apps/raft-computer-cli/updates/check
+GET /public/v2/apps/my-cli/updates/check
     ?channel=main
     &product_type=cli-binary
     &current_version=1.3.2
@@ -244,8 +244,20 @@ GET /public/v2/apps/raft-computer-cli/updates/check
 
 The Node updater in `@botiverse/hands-node` calls this endpoint, selects the
 matching target, follows the download URL, and verifies `sha256` and
-`size_bytes`. A pinned channel such as `pinned:1.3.2` asks Hands for that exact
-version when it is still available.
+`size_bytes`. To request a specific available version, use `version=` instead
+of a channel value:
+
+```text
+GET /public/v2/apps/my-cli/updates/check
+    ?version=1.3.2
+    &product_type=cli-binary
+    &current_version=1.2.0
+    &platform=linux
+    &arch=x64
+```
+
+A version request searches eligible active and superseded releases across
+channels and remains subject to availability and rollout checks.
 
 ## 6. Installer scripts and CDN addresses
 
@@ -269,7 +281,7 @@ That short route does not address `install.sh` today: its path must be a
 `platform-arch` target, and `?kind=sh` is not a filetype selector. If a script
 is stored as the current hosted-asset fallback (`platform=linux`, `arch=null`,
 `filetype=sh`), fetch the public metadata, select that asset, then follow its
-short-lived signed URL:
+time-limited Hands download URL and redirects:
 
 ```bash
 curl -fsSL \
