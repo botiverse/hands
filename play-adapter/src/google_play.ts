@@ -345,6 +345,47 @@ export class GooglePlayClient {
     }
   }
 
+  /** Subscription products are not Play edits; page the app-scoped catalogue. */
+  async listSubscriptionProducts(packageName: string): Promise<Array<Record<string, unknown>>> {
+    const base = `${API_ROOT}/applications/${encodeURIComponent(packageName)}/subscriptions`;
+    const rows: Array<Record<string, unknown>> = [];
+    const seen = new Set<string>();
+    let token: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const query = new URLSearchParams({ pageSize: "1000", ...(token ? { pageToken: token } : {}) });
+      const result = await this.requestJson<{ subscriptions?: unknown; nextPageToken?: unknown }>(`${base}?${query}`);
+      const items = result.subscriptions ?? [];
+      if (!Array.isArray(items) || items.length > 1000 || items.some(x => !x || typeof x !== "object" || Array.isArray(x))) {
+        throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned an invalid subscription list");
+      }
+      rows.push(...items as Array<Record<string, unknown>>);
+      const next = result.nextPageToken;
+      if (next === undefined || next === "") return rows;
+      if (typeof next !== "string" || next.length > 2048 || seen.has(next)) {
+        throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned invalid subscription pagination");
+      }
+      seen.add(next); token = next;
+    }
+    throw new PlayAdapterError(502, "play_subscription_limit", "Google Play subscription list exceeds the page limit");
+  }
+
+  async createSubscriptionProduct(packageName: string, productId: string, body: Record<string, unknown>, regionsVersion: string): Promise<unknown> {
+    const query = new URLSearchParams({ productId, "regionsVersion.version": regionsVersion });
+    return this.requestJson(`${API_ROOT}/applications/${encodeURIComponent(packageName)}/subscriptions?${query}`,
+      { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async updateSubscriptionProduct(packageName: string, productId: string, body: Record<string, unknown>, fields: string[], regionsVersion: string): Promise<unknown> {
+    const query = new URLSearchParams({ updateMask: fields.join(","), "regionsVersion.version": regionsVersion });
+    return this.requestJson(`${API_ROOT}/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}?${query}`,
+      { method: "PATCH", body: JSON.stringify(body) });
+  }
+
+  async activateSubscriptionBasePlan(packageName: string, productId: string, basePlanId: string): Promise<unknown> {
+    return this.requestJson(`${API_ROOT}/applications/${encodeURIComponent(packageName)}/subscriptions/${encodeURIComponent(productId)}/basePlans/${encodeURIComponent(basePlanId)}:activate`,
+      { method: "POST", body: "{}" });
+  }
+
   async listReleaseStates(packageName: string, track: string): Promise<ReleaseSummary[]> {
     const result = await this.requestJson<{ releases?: unknown }>(
       `${API_ROOT}/applications/${encodeURIComponent(packageName)}/tracks/${encodeURIComponent(track)}/releases`,

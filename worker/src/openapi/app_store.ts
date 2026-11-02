@@ -90,6 +90,14 @@ const StatusQuery = z.object({
 export function registerAppStoreRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
   routes.push({
+    method: "post", path: "/api/apps/{appId}/store-products", tags: ["App Store", "Android distribution"],
+    summary: "Preview or reconcile one subscription product",
+    description: "App admin only. Explicit store and mode are required. dry_run reads the provider without writes; commit reconciles one app-scoped subscription, returning per-step results. Apple accepts at most five price territories per request; the CLI chunks larger lists. Omitted prices preserve existing prices; Google activation without a price is pending. Store writes are non-transactional. An uncertain failure retains an operation lock for operator recovery; no timeout-only lock expiry is used. See the store products guide for the request fields and recovery procedure.",
+    security: auth,
+    request: { params: AppIdParam, body: { content: json(z.object({ store: z.enum(["apple", "google"]), mode: z.enum(["dry_run", "commit"]), product: z.any(), regionsVersion: z.string().optional(), screenshot: z.object({ fileName: z.string(), base64: z.string() }).optional() })), required: true } },
+    responses: { 200: success("Planned, committed, unchanged, or pending.", GenericObject), 400: error("Invalid input or store platform."), 403: error("App admin role or store binding required."), 409: error("Provider conflict or existing operation lock."), 413: error("Request exceeds the size limit."), 502: error("Store operation failed or its outcome is uncertain."), 503: error("Store service unavailable.") },
+  });
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/app-store/versions",
     tags: ["App Store"],

@@ -55,6 +55,13 @@ type GooglePlayImageType = import("./src/lib/play_images").PlayImageType;
 type GooglePlayAiGeneratedState = import("./src/lib/play_images").PlayAiGeneratedState;
 
 interface GooglePlayAdapterService {
+  applySubscriptionProduct?(input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+    product: unknown; mode: "dry_run" | "commit"; regionsVersion: string;
+  }): Promise<GooglePlayAdapterResult<{
+    product_id: string; mode: "dry_run" | "commit"; outcome: "planned" | "committed" | "no_changes" | "failed" | "pending";
+    changes: Array<{ resource: string; action: "create" | "update" | "activate" | "unchanged" | "deferred"; before?: unknown; after?: unknown }>;
+    completed: string[]; error?: { code: string; message: string };
+  }>>;
   readStoreListings(input: Pick<GooglePlayBindingInput, "credential" | "packageName">): Promise<GooglePlayAdapterResult<{
     package_name: string;
     default_language: string | null;
