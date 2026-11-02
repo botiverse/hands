@@ -24,6 +24,7 @@ type GooglePlayAdapterResult<T> =
       // the worker stops compiling instead of silently writing a receipt without it.
       error: { status: number; code: string; message: string; cause?: {
         stage?: string;
+        response_shape?: { status: number; body_empty: boolean; json_parsed: boolean };
         provider_cause?: string;
         cause_source?: "structured" | "message";
         provider_identifiers?: { http_code?: number };
