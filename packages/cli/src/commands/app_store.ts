@@ -34,6 +34,13 @@ interface StatusResponse {
   pending_submission: { id: string; state: string | null } | null;
 }
 
+/** Pending-submission text; a rejected one needs a fix and a resubmit, not waiting. */
+export function describePendingSubmission(pending: StatusResponse["pending_submission"]): string {
+  if (!pending) return "none";
+  if (pending.state === "UNRESOLVED_ISSUES") return `${pending.id} (UNRESOLVED_ISSUES — Apple rejected; fix then submit again)`;
+  return `${pending.id} (${pending.state})`;
+}
+
 async function status(appId: string, versionString: string, platform?: string): Promise<StatusResponse> {
   return apiRequest<StatusResponse>(`/api/apps/${appId}/app-store/status`, {
     query: { version_string: versionString, ...(platform ? { platform } : {}) },
@@ -47,6 +54,57 @@ async function resolveVersionId(appId: string, opts: { versionName?: string; ver
   if (!opts.versionName) throw new Error("pass --version-name <marketing version> or --version-id <ASC version id>");
   return (await status(appId, opts.versionName, opts.platform)).version_id;
 }
+
+export interface PreflightFinding {
+  severity: "error" | "warning" | "info";
+  check: string;
+  locale?: string;
+  display_type?: string;
+  resource?: string;
+  message: string;
+  fix?: string;
+}
+
+export interface PreflightReport {
+  version_id: string;
+  version_string: string | null;
+  state: string | null;
+  ready: boolean;
+  findings: PreflightFinding[];
+  checked: string[];
+  not_checkable: Array<{ check: string; reason: string }>;
+}
+
+async function preflight(appId: string, versionId: string): Promise<PreflightReport> {
+  return apiRequest<PreflightReport>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/preflight`);
+}
+
+const SEVERITY_HEADINGS: Array<[PreflightFinding["severity"], string]> = [["error", "Errors"], ["warning", "Warnings"], ["info", "Info"]];
+
+/** Findings grouped by severity, one row each: check, locale/display type, message, resource, fix. */
+export function formatPreflight(report: PreflightReport, opts: { only?: PreflightFinding["severity"][] } = {}): string {
+  const lines: string[] = [];
+  lines.push(`Preflight ${report.version_string ?? "?"} (${report.version_id}, ${report.state ?? "unknown"}): ${report.ready ? "READY" : "NOT READY"}`);
+  for (const [severity, heading] of SEVERITY_HEADINGS) {
+    if (opts.only && !opts.only.includes(severity)) continue;
+    const rows = report.findings.filter((f) => f.severity === severity);
+    if (rows.length === 0) continue;
+    lines.push(`${heading} (${rows.length}):`);
+    for (const f of rows) {
+      const where = [f.locale, f.display_type].filter(Boolean).join(" ");
+      lines.push(`  ${f.check.padEnd(28)} ${where ? `${where}: ` : ""}${f.message}`);
+      if (f.resource) lines.push(`      resource: ${f.resource}`);
+      if (f.fix) lines.push(`      fix: ${f.fix}`);
+    }
+  }
+  if (!opts.only) {
+    lines.push(`Checked: ${report.checked.join(", ") || "(none)"}`);
+    for (const n of report.not_checkable) lines.push(`Not checked: ${n.check} -- ${n.reason}`);
+  }
+  return lines.join("\n");
+}
+
+export const hasPreflightErrors = (report: PreflightReport) => report.findings.some((f) => f.severity === "error");
 
 export interface ScreenshotSetPlan {
   locale: string;
@@ -159,10 +217,27 @@ export function formatScreenshotResult(body: any): string {
       lines.push(`      #${image.index + 1} ${image.screenshot_id ?? "-"} ${image.state}${image.error ? ` (${image.error})` : ""}${image.errors?.length ? ` ${image.errors.map((e: any) => e.code).join(",")}` : ""}`);
     }
   }
+  // Failed and pending sets are listed apart: pending is not a rejection, but not done either.
+  // What to do next comes from the server's next_action (printed with the error code).
+  if (body.failed_sets?.length) lines.push(`Failed: ${body.failed_sets.join(", ")}`);
+  if (body.pending_sets?.length) lines.push(`Uploaded, still processing at Apple: ${body.pending_sets.join(", ")}`);
   if (body.outcome === "planned") lines.push("Dry run: nothing was written. Run again with --commit to apply.");
   else if (body.outcome === "no_changes") lines.push("No changes: Apple already has these screenshots in this order.");
   else if (body.outcome === "committed") lines.push("Committed and read back from Apple.");
   return lines.join("\n");
+}
+
+/**
+ * Worker answers 202 SCREENSHOTS_PENDING (ok: false) when Apple accepted the uploads but
+ * is still processing them. That is not success: turn it into an error so the command
+ * exits non-zero with its own code (SCREENSHOTS_FAILED, a 502, already throws).
+ */
+export function assertScreenshotsConfirmed<T>(body: T): T {
+  const b = body as { ok?: unknown; error?: unknown; code?: unknown } | null;
+  if (b && typeof b === "object" && b.ok === false) {
+    throw new QuiverApiError(202, body, String(b.error ?? b.code ?? "screenshot push not confirmed"));
+  }
+  return body;
 }
 
 function preview(value: string | null | undefined): string {
@@ -178,7 +253,8 @@ export function formatLocalizationResult(body: any): string {
   const v = body.version;
   if (v) lines.push(`Version ${v.version_string} (${v.id}, ${v.state})`);
   for (const plan of body.localizations ?? []) {
-    lines.push(`  ${plan.blocker ? `BLOCKED (${plan.blocker})` : plan.action.padEnd(9)} ${plan.locale}`);
+    const missing = plan.blocker === "missing_required_fields" && plan.missing_fields?.length ? `: ${plan.missing_fields.join(", ")}` : "";
+    lines.push(`  ${plan.blocker ? `BLOCKED (${plan.blocker}${missing})` : plan.action.padEnd(9)} ${plan.locale}`);
     for (const field of plan.changed_fields ?? []) {
       lines.push(`      ${field}: ${preview(plan.before?.[field])} -> ${preview(plan.after?.[field])}`);
     }
@@ -206,7 +282,7 @@ export function parseLocalizationsFile(raw: unknown): Record<string, Record<stri
 }
 
 export function registerAppStoreCommands(program: Command): void {
-  const group = program.command("app-store").description("App Store release through Hands: prepare, listing text, screenshots, submit, withdraw, release, status. Writes need --commit.");
+  const group = program.command("app-store").description("App Store release through Hands: prepare, listing text, screenshots, preflight, submit, withdraw, release, status. Writes need --commit.");
 
   group
     .command("status <appIdOrSlug>")
@@ -217,7 +293,21 @@ export function registerAppStoreCommands(program: Command): void {
     .action(async (appIdOrSlug: string, opts: { versionName: string; platform?: string; json?: boolean }) => {
       const result = await status(await resolveAppId(appIdOrSlug), opts.versionName, opts.platform);
       if (jsonRequested(program, opts.json)) { console.log(JSON.stringify(result, null, 2)); return; }
-      console.log(`${result.version_string} ${result.version_id}: ${result.state}; build ${result.build_attached ? "attached" : "not attached"}; pending submission: ${result.pending_submission ? `${result.pending_submission.id} (${result.pending_submission.state})` : "none"}`);
+      console.log(`${result.version_string} ${result.version_id}: ${result.state}; build ${result.build_attached ? "attached" : "not attached"}; pending submission: ${describePendingSubmission(result.pending_submission)}`);
+    });
+
+  group
+    .command("preflight <appIdOrSlug>")
+    .description("Read-only submission readiness of one version: build, listing fields, app info, screenshots, review details, open submissions. Exits non-zero when any error is found.")
+    .option("--version-name <version>", "Marketing version, e.g. 1.17.0 (resolved to its ASC id).")
+    .option("--version-id <id>", "ASC appStoreVersions id.")
+    .option("--platform <platform>", "Platform for --version-name lookup: IOS (default) or MAC_OS.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { versionName?: string; versionId?: string; platform?: string; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const report = await preflight(appId, await resolveVersionId(appId, opts));
+      console.log(jsonRequested(program, opts.json) ? JSON.stringify(report, null, 2) : formatPreflight(report));
+      if (hasPreflightErrors(report)) process.exitCode = 1;
     });
 
   group
@@ -275,8 +365,8 @@ export function registerAppStoreCommands(program: Command): void {
       const versionId = await resolveVersionId(appId, opts);
       const { request, parts } = await buildScreenshotRequest(sets, opts.commit ? "commit" : "dry_run");
       const json = jsonRequested(program, opts.json);
-      const result = await withDetail(json, formatScreenshotResult, () =>
-        postMultipart<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/screenshots`, request, parts));
+      const result = await withDetail(json, formatScreenshotResult, async () => assertScreenshotsConfirmed(
+        await postMultipart<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/screenshots`, request, parts)));
       console.log(json ? JSON.stringify(result, null, 2) : formatScreenshotResult(result));
     });
 
@@ -304,7 +394,7 @@ export function registerAppStoreCommands(program: Command): void {
 
   group
     .command("submit <appIdOrSlug>")
-    .description("Submit a prepared version for App Store review. Without --commit, only shows what would be submitted.")
+    .description("Submit a prepared version for App Store review. Without --commit, only shows what would be submitted and the preflight errors.")
     .requiredOption("--version-name <version>", "Marketing version to submit.")
     .option("--platform <platform>", "IOS (default) or MAC_OS.")
     .option("--commit", "Really submit for review.", false)
@@ -314,13 +404,26 @@ export function registerAppStoreCommands(program: Command): void {
       const current = await status(appId, opts.versionName, opts.platform);
       const json = jsonRequested(program, opts.json);
       if (!opts.commit) {
-        if (json) { console.log(JSON.stringify({ mode: "dry_run", would_submit: current }, null, 2)); return; }
-        console.log(`Dry run: would submit ${current.version_string} (${current.version_id}, ${current.state}; build ${current.build_attached ? "attached" : "NOT attached"}). Pending submission: ${current.pending_submission ? `${current.pending_submission.id} (${current.pending_submission.state})` : "none"}.`);
+        // Readiness from the read-only preflight. A server without the route (or a
+        // failed read) must not break the dry run, so its failure is only reported.
+        let report: PreflightReport | null = null;
+        let preflightError: string | null = null;
+        try { report = await preflight(appId, current.version_id); } catch (error) { preflightError = error instanceof Error ? error.message : String(error); }
+        if (json) { console.log(JSON.stringify({ mode: "dry_run", would_submit: current, preflight: report, ...(preflightError ? { preflight_error: preflightError } : {}) }, null, 2)); return; }
+        console.log(`Dry run: would submit ${current.version_string} (${current.version_id}, ${current.state}; build ${current.build_attached ? "attached" : "NOT attached"}). Pending submission: ${describePendingSubmission(current.pending_submission)}.`);
+        if (report) {
+          console.log(formatPreflight(report, { only: ["error"] }));
+          if (hasPreflightErrors(report)) console.log("Apple will likely refuse this submission; fix the errors above (details: hands app-store preflight).");
+        } else {
+          console.log(`Preflight unavailable: ${preflightError}`);
+        }
         console.log("Run again with --commit to submit for review.");
         return;
       }
       const result = await apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(current.version_id)}/submit`, { method: "POST" });
-      console.log(json ? JSON.stringify(result, null, 2) : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
+      console.log(json ? JSON.stringify(result, null, 2) : result.resubmitted
+        ? `Resubmitted ${current.version_string} (${current.version_id}) in its rejected review submission ${result.submission_id}.`
+        : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
     });
 
   group

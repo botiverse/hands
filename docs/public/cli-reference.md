@@ -7,6 +7,8 @@ order: 9
 
 # CLI Reference
 
+For publishing and installing self-contained Node CLI binaries, see [Ship a Node CLI](node-cli.md).
+
 `@botiverse/hands-cli` is the command-line client for Hands. Use it from local scripts or CI to inspect apps, upload Android builds, and publish releases.
 
 ## Install
@@ -242,6 +244,13 @@ API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`
 with `changes_not_sent_for_review: true`, and
 `POST /api/apps/:appId/releases/:releaseId/distributions/play/send-for-review`
 with `{track, expected_revision, approval: {note}}` (see OpenAPI).
+
+On a later promotion of the same release, Hands can omit a mapping upload when
+an earlier successful receipt confirms the exact file and Play still holds the
+same AAB. The new receipt cites the earlier receipt as historical evidence; Play
+does not offer a mapping readback, so this does not verify its current contents.
+Without that evidence, Hands continues to attempt the upload. To explicitly
+replace the mapping, use `play-upload-symbols` below.
 
 ## Google Play: backfill mapping / native symbols for a live version
 
@@ -583,14 +592,30 @@ hands app-store status raft-ios --version-name 1.17.0
 hands app-store prepare raft-ios --version-name 1.17.0 --build <asc-build-id> [--commit]
 # listing text: { "en-US": { "description": "...", "keywords": "...", "promotionalText": "...",
 #                 "whatsNew": "...", "supportUrl": "...", "marketingUrl": "..." } }
+# a locale new to the version needs description, keywords and supportUrl
 hands app-store localizations push raft-ios --version-name 1.17.0 --file listing.json [--commit]
 # screenshots: shots/<locale>/<display_type>/NN.png, e.g. shots/en-US/APP_IPHONE_67/01.png
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots [--locales en-US,ja] [--commit]
+# read-only readiness check; exits 1 when any error is found
+hands app-store preflight raft-ios --version-name 1.17.0 [--json]
 hands app-store submit raft-ios --version-name 1.17.0 [--commit]
 hands app-store withdraw raft-ios --version-name 1.17.0 [--commit]
 # after approval (PENDING_DEVELOPER_RELEASE): release -- irreversible
 hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 [--build <asc-build-id>] [--commit]
 ```
+
+`screenshots push --commit` exits non-zero unless every set is `ok`: code
+`SCREENSHOTS_FAILED` if any set failed (or was not attempted after an auth or
+other run-wide error), else `SCREENSHOTS_PENDING` if Apple was still processing
+uploaded screenshots. For pending sets, run the dry run again later: if every
+set is `unchanged`, files and order are confirmed; if a set shows `reorder` or
+`replace`, run `--commit` again.
+
+`preflight` is read-only (viewer role; Hands sends only GET requests to Apple).
+It prints findings grouped as errors, warnings and info, each with the check,
+locale / display type, Apple resource path (the same path Apple names in a
+refused submit's associated errors) and a fix. It exits 1 when there is any
+error. `submit` without `--commit` runs it too and prints its errors.
 
 `--release-type MANUAL|AFTER_APPROVAL` on `prepare` is applied to a created,
 reused or renamed version; without it an existing version keeps Apple's

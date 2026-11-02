@@ -4,7 +4,7 @@ const { default: worker } = await import("../src/index");
 afterEach(() => vi.restoreAllMocks());
 const appId = "11111111-1111-4111-8111-111111111111";
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error, laterFailure?: { stage: "route_bind" | "route_readback" | "list_query"; error: Error }) {
+function fixture(failures: number, error = new Error("D1_ERROR: backend request failed", { cause: new Error("Network connection lost") }), revoked = false, rateError?: Error, laterFailure?: { stage: "route_bind" | "route_readback" | "list_query"; error: Error; count?: number }) {
   const calls = { lookup: 0, rate: 0, business: 0, readback: 0, touches: [] as unknown[][] };
   const row = { id: "token", app_id: appId, app_slug: "test", name: "reporter", token_prefix: "qvdt", app_role: null, scopes_json: JSON.stringify(["feedback:read", "feedback:route"]), reporter_integration_id: "integration", reporter_integration_active: 1, revoked_at: null, expires_at: null };
   const result = (results: unknown[] = [], changes = 0) => ({ success: true, results, meta: { changes } });
@@ -19,7 +19,7 @@ function fixture(failures: number, error = new Error("D1_ERROR: backend request 
       }
       if (first.includes("INSERT INTO feedback_reporter_rate_windows")) { calls.rate++; if (rateError && calls.rate === 1) throw rateError; return [result([{ request_count: 1 }]), result([{ request_count: 1 }])]; }
       calls.business++;
-      if (laterFailure && laterFailure.stage !== "route_readback") throw laterFailure.error;
+      if (laterFailure && laterFailure.stage !== "route_readback" && calls.business <= (laterFailure.count ?? Number.POSITIVE_INFINITY)) throw laterFailure.error;
       return statements.map((_, index) => result([], first.includes("INSERT OR IGNORE INTO app_reporter_routes") && index === 0 ? 1 : 0));
     },
   };
@@ -104,7 +104,7 @@ describe("later reporter database failures", () => {
     expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
     expect(await response.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
     expect(calls.lookup).toBe(1); expect(calls.rate).toBe(stage === "list_query" ? 1 : 0);
-    expect(calls.business).toBe(1); expect(calls.readback).toBe(stage === "route_readback" ? 1 : 0);
+    expect(calls.business).toBe(stage === "list_query" ? 2 : 1); expect(calls.readback).toBe(stage === "route_readback" ? 1 : 0);
     expect(errors).not.toHaveBeenCalled();
     const sealed = log.mock.calls.filter(call => call[0] === "hands_reporter_failure_detail");
     expect(sealed).toHaveLength(1); expect(JSON.parse(sealed[0]![1] as string)).toMatchObject({ failure_stage: stage });
@@ -119,43 +119,157 @@ describe("later reporter database failures", () => {
   });
 });
 
-describe("transient D1 wording the reporter routes previously misreported", () => {
-  // A brief D1 outage showed up as HTTP 500 rather than 503 with Retry-After, so the caller
-  // was told "we are broken" for a condition that resolves on its own. These are the
-  // wordings the upload path already treated as transient; the reporter path did not.
+describe("D1 internal errors and response budget", () => {
+  it.each(["GET", "PUT"])("retries one D1 internal lookup error on %s without replaying business writes", async method => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(1, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request(method), env, ctx as any);
+    expect(response.status).toBe(method === "GET" ? 200 : 201);
+    expect(calls.lookup).toBe(2); expect(calls.business).toBe(1);
+  });
+
+  it("retries the list query once on a D1 internal error", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage: "list_query", error: new Error("D1_ERROR: internal error; reference = test"), count: 1 });
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(200);
+    expect(calls.business).toBe(2); expect(calls.rate).toBe(1); expect(calls.lookup).toBe(1);
+  });
+
+  it("returns 503 for an exhausted D1 internal lookup error without retrying the rate write", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(10, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
+    expect(calls.lookup).toBe(2); expect(calls.rate).toBe(0); expect(calls.business).toBe(0);
+  });
+
+  it("classifies a D1 internal rate failure as transient without replaying the increment", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, new Error("D1_ERROR: internal error; reference = test"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(calls.rate).toBe(1); expect(calls.business).toBe(0);
+  });
+
+  it("returns 503 within the read budget when D1 never answers", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    env.DB.batch = async statements => {
+      if ((statements[0] as unknown as { sql: string }).sql.includes("FROM app_deploy_tokens")) {
+        calls.lookup++;
+        return new Promise(() => {});
+      }
+      return batch(statements);
+    };
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503); expect(response.headers.get("Retry-After")).toBe("1");
+    expect(calls.lookup).toBe(1); expect(calls.rate).toBe(0); expect(calls.business).toBe(0);
+  }, 8000);
+
+  it("shares one response budget across token lookup and list query", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    env.DB.batch = async statements => {
+      const first = (statements[0] as unknown as { sql: string }).sql;
+      if (first.includes("FROM app_deploy_tokens")) {
+        calls.lookup++;
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return batch(statements);
+      }
+      if (first.includes("FROM feedback_tickets")) {
+        calls.business++;
+        return new Promise(() => {});
+      }
+      return batch(statements);
+    };
+    const started = Date.now();
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    const elapsed = Date.now() - started;
+    expect(response.status).toBe(503);
+    expect(elapsed).toBeGreaterThanOrEqual(3500);
+    expect(elapsed).toBeLessThan(5000);
+    expect(calls.lookup).toBe(2); expect(calls.business).toBe(1); expect(calls.rate).toBe(1);
+  }, 8000);
+
+  it("recovers a list retry after the first audit insert already committed", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {}); vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0);
+    const batch = env.DB.batch;
+    let listCalls = 0;
+    env.DB.batch = async statements => {
+      const first = (statements[0] as unknown as { sql: string }).sql;
+      if (first.includes("FROM feedback_tickets")) {
+        listCalls++;
+        if (listCalls === 1) throw new Error("D1 lookup deadline exceeded");
+        expect(statements.some(statement => (statement as unknown as { sql: string }).sql.includes("INSERT OR IGNORE INTO feedback_reporter_access_audits"))).toBe(true);
+      }
+      return batch(statements);
+    };
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(200);
+    expect(listCalls).toBe(2);
+  });
+});
+
+describe("additional transient D1 errors", () => {
   it.each([
     "D1_ERROR: database is locked: SQLITE_BUSY",
     "D1_ERROR: database is busy",
     "D1_ERROR: backend temporarily unavailable",
     "D1_ERROR: connection reset by peer",
     "Network error",
-  ])("maps %s to a retryable 503 rather than a 500", async message => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const { env } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
+    "fetch failed",
+    "D1_ERROR: database overloaded",
+    "D1_ERROR: request timed out",
+  ])("maps %s at the binding stage to 503 without replaying the write", async message => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
     const response = await worker.fetch(request("PUT"), env, ctx as any);
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("1");
-    expect(await response.json()).toEqual({ error: "reporter backend temporarily unavailable", code: "REPORTER_BACKEND_UNAVAILABLE" });
-    expect(errors).not.toHaveBeenCalled();
-    info.mockRestore();
-    errors.mockRestore();
+    expect(await response.json()).toMatchObject({ code: "REPORTER_BACKEND_UNAVAILABLE" });
+    expect(calls.business).toBe(1);
+    expect(calls.readback).toBe(0);
+  });
+
+  it("retries a transient token lookup once but never replays a route write", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(1, new Error("D1_ERROR", { cause: new Error("database is busy") }));
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(201);
+    expect(calls.lookup).toBe(2);
+    expect(calls.business).toBe(1);
+  });
+
+  it("does not replay the rate increment when D1 reports busy", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, new Error("D1_ERROR: database is busy"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(calls.rate).toBe(1);
+    expect(calls.business).toBe(0);
+    const detail = log.mock.calls.find(call => call[0] === "hands_reporter_failure_detail");
+    expect(JSON.parse(detail![1] as string)).toMatchObject({ failure_stage: "rate_limit", failure_code: "sqlite_busy" });
   });
 
   it.each([
-    "D1_ERROR: UNIQUE constraint failed: app_reporter_routes.app_id",
-    "D1_ERROR: no such column: route_subject",
-  ])("still reports %s as a terminal failure", async message => {
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    const { env } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
-    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    new Error("D1_ERROR: database is locked", { cause: new Error("SQLITE_CONSTRAINT: unique constraint failed") }),
+    new Error("D1_COLUMN_NOTFOUND: fetch failed"),
+    new Error("D1_ERROR: no such column: backend temporarily unavailable"),
+  ])("keeps a deterministic error terminal even if another message looks transient", async error => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(10, error);
+    const response = await worker.fetch(request("GET"), env, ctx as any);
     expect(response.status).toBe(500);
-    // Reporter routes deliberately do not console.error (the sealed diagnostic carries the
-    // detail); the assertion that matters is that this is NOT turned into a retryable 503.
     expect(response.headers.get("Retry-After")).toBeNull();
-    expect(errors).not.toHaveBeenCalled();
-    info.mockRestore();
-    errors.mockRestore();
+    expect(calls.lookup).toBe(1);
+    expect(calls.business).toBe(0);
   });
 });

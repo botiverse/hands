@@ -215,33 +215,33 @@ describe("agent-login route (real authMiddleware)", () => {
   });
 });
 
-describe("manifest: actions retained + deprecated, migration-help added", () => {
-  it("keeps existing actions, adds agent-login + migration-help, states deprecation once", async () => {
+describe("manifest: minimal CLI-first actions", () => {
+  it("exposes only bootstrap, migration help, and the temporary feedback bridge", async () => {
     const app = new Hono();
     app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
     const res = await app.request("/.well-known/raft-agent-manifest.json", {}, { RAFT_CLIENT_ID: "hands-4cc7a2" } as any);
     const body = (await res.json()) as any;
     const names = body.actions.map((a: any) => a.name);
-    // existing actions retained + the two new ones present
-    for (const n of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) expect(names).toContain(n);
 
-    // Deprecation is ONE service-level fact, stated once at the top level, instead of
-    // a 108-byte prefix repeated on 82 actions (which cost 8,856 B of a 64 KiB budget).
-    // Must be in `description`: raft-source's validateAgentManifestV0 rebuilds the
-    // object from a fixed allowlist and DROPS unknown top-level keys, so a bespoke
-    // field would never reach an agent. `description` is in that allowlist.
-    expect(body.description).toContain("deprecated");
+    expect(names).toEqual([
+      "agent-login",
+      "list-feedback",
+      "get-feedback",
+      "presign-feedback-attachment",
+      "update-feedback",
+      "comment-feedback",
+      "migration-help",
+    ]);
+    expect(body.description).toContain("Hands CLI");
     expect(body.description).toContain("migration-help");
 
-    // No action carries the notice in its description any more -- neither the old
-    // ones (which used to be prefixed) nor the two new ones.
-    for (const name of ["help", "whoami", "list-apps", "agent-login", "migration-help"]) {
-      const action = body.actions.find((a: any) => a.name === name);
-      expect(action.description.startsWith("Deprecated")).toBe(false);
+    // The support lane depends on these exact machine contracts while its CLI
+    // migration is verified. All other HTTP routes remain available directly.
+    for (const name of ["list-feedback", "get-feedback", "presign-feedback-attachment", "update-feedback", "comment-feedback"]) {
+      expect(body.actions.find((a: any) => a.name === name).endpoint.path).toContain("/feedback");
     }
-
-    // machine contract unchanged: help still GET /api/agent/help
-    expect(body.actions.find((a: any) => a.name === "help").endpoint).toEqual({ method: "GET", path: "/api/agent/help" });
+    expect(body.actions.find((a: any) => a.name === "agent-login").endpoint).toEqual({ method: "POST", path: "/api/auth/agent/login" });
+    expect(body.actions.find((a: any) => a.name === "migration-help").endpoint).toEqual({ method: "GET", path: "/api/agent/migration-help" });
   });
 
   it("stays inside the 64 KiB manifest budget with room to grow", async () => {
@@ -376,46 +376,5 @@ describe("manifest: stays under the consumer payload limit", () => {
     // Guard the guard: an empty/erroring response would trivially pass a size test.
     expect(body).toContain("update-feedback");
     expect(bytes).toBeLessThanOrEqual(BUDGET);
-  });
-});
-
-// The manifest is the contract an agent codes against, so an authorization or
-// confirmation rule that exists in the handler must be stated here. #762's
-// byte-trim removed the confirmation requirement from expire-testflight-build;
-// Kirby caught it (task #301 follow-up). Pinned so a future size trim cannot
-// silently drop a rule again: if the description shrinks past this, the test says
-// which rule went missing instead of a reviewer having to diff prose.
-describe("manifest: expire-testflight-build states its confirmation rule", () => {
-  it("keeps the exact-confirmation requirement the handler enforces", async () => {
-    const app = new Hono();
-    app.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
-    const res = await app.request(
-      "/.well-known/raft-agent-manifest.json",
-      {},
-      { RAFT_CLIENT_ID: "hands-4cc7a2" } as any,
-    );
-    const body = (await res.json()) as any;
-    const action = body.actions.find((a: any) => a.name === "expire-testflight-build");
-    expect(action).toBeTruthy();
-
-    // assertExpireConfirmation() rejects a mismatch with EXPIRE_CONFIRMATION_MISMATCH
-    // (409) and the route requires app admin; the manifest must say both.
-    // Assert the SENTENCE, not loose keywords: the surrounding text already
-    // mentions "confirmations" and "app admin", so a keyword match passes even
-    // when the requirement clause itself was deleted (caught by mutation).
-    expect(action.description).toContain(
-      "Requires app admin plus exact version/build confirmation of the immutable build",
-    );
-    // The three body confirmations the handler actually reads must stay declared.
-    const bodyParams = Object.entries(action.parameters ?? {})
-      .filter(([, p]: [string, any]) => p.in === "body")
-      .map(([k]) => k)
-      .sort();
-    expect(bodyParams).toEqual([
-      "asc_build_id",
-      "bundle_id",
-      "confirm_build_number",
-      "confirm_version",
-    ]);
   });
 });

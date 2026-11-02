@@ -258,6 +258,8 @@ export interface PromotionRequest {
   releaseNotes?: LocalizedReleaseNote[] | null;
   /** Commit with changesNotSentForReview=true (every edit of this promotion). */
   changesNotSentForReview?: boolean;
+  /** Internal RPC contract: do not upload a new bundle if mapping was omitted. */
+  requireExistingBundle?: boolean;
 }
 
 /** Read-only release summaries; lifecycle is distinct from edits.tracks status. */

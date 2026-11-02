@@ -30,9 +30,11 @@ import {
   getReviewSubmissionVersionId,
   listAppStoreVersions,
   listReviewSubmissions,
+  listVersionLocalizations,
   ascRequest,
   renameAppStoreVersion,
   resolveAscAppId,
+  resubmitReviewSubmission,
   setVersionLocalization,
   submitVersionForReview,
   updateAppStoreVersion,
@@ -107,6 +109,20 @@ function stateOf(version: AscAppStoreVersion): string | null {
 
 /** Review states at which Apple will not accept a new submission for the platform. */
 const IN_REVIEW_STATES = new Set(["WAITING_FOR_REVIEW", "IN_REVIEW"]);
+/** A review submission that was created but never submitted. */
+const DRAFT_STATE = "READY_FOR_REVIEW";
+/**
+ * Apple rejected the submission. It stays open (Apple refuses a new submission for
+ * the platform meanwhile): the developer fixes the version and resubmits the same
+ * submission, or cancels it.
+ */
+const UNRESOLVED_STATE = "UNRESOLVED_ISSUES";
+/**
+ * Submissions a withdraw-by-version may cancel: under review, rejected but still
+ * open, or a never-submitted draft. Each of them holds the version and blocks a
+ * fresh submission for the platform.
+ */
+const WITHDRAWABLE_STATES = new Set([...IN_REVIEW_STATES, UNRESOLVED_STATE, DRAFT_STATE]);
 
 export class AppStoreReleaseError extends Error {
   constructor(
@@ -163,7 +179,7 @@ export async function ascAppIdFor(c: AdminContext, appId: string): Promise<strin
  * Unmatched ids return 404 rather than 403: the caller has no business learning
  * whether that id exists elsewhere.
  */
-async function assertOwnedVersion(
+export async function assertOwnedVersion(
   creds: AscApiCredentials,
   ascAppId: string,
   versionId: string,
@@ -205,6 +221,11 @@ export function errorBody(error: unknown): { status: number; body: Record<string
       code: "ASC_API_REJECTED",
       status: error.status,
       ...(error.detail ? { provider_cause: error.detail } : {}),
+      // Apple's actual blockers when the top-level detail only says "check associated errors".
+      ...(error.associated.length > 0 ? { provider_associated_errors: error.associated } : {}),
+      ...(error.code ? { provider_code: error.code } : {}),
+      ...(error.source ? { provider_source: error.source } : {}),
+      ...(error.others.length > 0 ? { provider_errors: error.others } : {}),
     } };
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -508,7 +529,7 @@ export async function handlePrepareAppStoreVersion(c: AdminContext) {
   }
 }
 
-/** Upsert per-locale What's New, one locale per entry. */
+/** Update per-locale What's New, one locale per entry. Never creates a localization. */
 export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const versionId = c.req.param("versionId") ?? "";
@@ -524,6 +545,13 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
   try {
     const creds = await loadCredentials(c, appId);
     await assertOwnedVersion(creds, await ascAppIdFor(c, appId), versionId);
+    // A localization created with only whatsNew lacks supportUrl etc. and Apple refuses review.
+    const present = new Set((await listVersionLocalizations(creds, versionId)).map((l) => l.locale));
+    const missing = entries.map(([locale]) => locale).filter((locale) => !present.has(locale));
+    if (missing.length > 0) {
+      return c.json({ error: `no localization for ${missing.join(", ")} on this version; nothing written`, code: "LOCALIZATION_MISSING", locales: missing,
+        next_action: "create it with hands app-store localizations push (description, keywords, supportUrl, whatsNew), then retry" }, 409);
+    }
     const written: string[] = [];
     for (const [locale, text] of entries) {
       if (typeof text !== "string") {
@@ -549,6 +577,12 @@ export async function handleSetAppStoreReleaseNotes(c: AdminContext) {
  * Refuses when another submission for the platform is already waiting or in
  * review: App Store Connect would reject it anyway, but a named error tells the
  * caller to withdraw first instead of guessing.
+ *
+ * A rejected (UNRESOLVED_ISSUES) submission for the platform is still open and
+ * blocks a new one. If it carries this version, the fix has been made and the same
+ * submission is sent back (resubmitted: true); if it carries another version, the
+ * caller has to withdraw it or resubmit that version, so the route refuses and
+ * names it rather than letting Apple fail the create.
  */
 export async function handleSubmitAppStoreVersion(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -574,13 +608,45 @@ export async function handleSubmitAppStoreVersion(c: AdminContext) {
     // Submit on the version's own platform; hardcoding IOS would fail for a MAC_OS
     // version and silently claim the wrong one.
     const target = await findAppStoreVersionById(creds, ascAppId, versionId);
-    const { submissionId } = await submitVersionForReview(creds, ascAppId, versionId, target?.platform ?? "IOS");
+    const platform = target?.platform ?? "IOS";
+    // A submission without a platform is treated as this platform's, as for drafts
+    // below: guessing "other platform" would let a blocking submission slip past.
+    const unresolved = submissions.filter((s) => s.state === UNRESOLVED_STATE && (s.platform ?? platform) === platform);
+    for (const submission of unresolved) {
+      if ((await getReviewSubmissionVersionId(creds, submission.id)) !== versionId) continue;
+      // The version is already an item of this submission; only flip it back to submitted.
+      await resubmitReviewSubmission(creds, submission.id);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "app_store.submit",
+        payload: { version_id: versionId, submission_id: submission.id, resubmitted: true },
+      });
+      return c.json({ version_id: versionId, submission_id: submission.id, submitted: true, resubmitted: true, reused_draft: false });
+    }
+    if (unresolved.length > 0) {
+      const blocker = unresolved[0]!;
+      const owner = await getReviewSubmissionVersionId(creds, blocker.id);
+      return c.json({
+        error: "a rejected review submission (UNRESOLVED_ISSUES) for another version is still open for this platform",
+        code: "UNRESOLVED_SUBMISSION_PENDING",
+        submission_id: blocker.id,
+        submission_state: blocker.state,
+        version_id: owner,
+        next_action: `withdraw it first (withdraw-app-store-version with submission_id ${blocker.id}), or fix ${owner ? `version ${owner}` : "the version it holds"} and submit that version again`,
+      }, 409);
+    }
+    // Reuse an open draft for this platform (left behind by an earlier attempt that
+    // failed after creating it) rather than creating another.
+    const draft = submissions.find((s) => s.state === DRAFT_STATE && (s.platform ?? platform) === platform);
+    const { submissionId, reused } = await submitVersionForReview(creds, ascAppId, versionId, platform, {
+      ...(draft ? { reuseSubmissionId: draft.id } : {}),
+    });
     await insertAuditLog(c.env.DB, c, {
       app_id: appId,
       action: "app_store.submit",
-      payload: { version_id: versionId, submission_id: submissionId },
+      payload: { version_id: versionId, submission_id: submissionId, reused_draft: reused },
     });
-    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true });
+    return c.json({ version_id: versionId, submission_id: submissionId, submitted: true, reused_draft: reused });
   } catch (error) {
     return fail(c, error);
   }
@@ -915,7 +981,7 @@ export async function handleWithdrawAppStoreVersion(c: AdminContext) {
     const ascAppId = await ascAppIdFor(c, appId);
     await assertOwnedVersion(creds, ascAppId, versionId);
     for (const submission of await listReviewSubmissions(creds, ascAppId)) {
-      if (!submission.state || !IN_REVIEW_STATES.has(submission.state)) continue;
+      if (!submission.state || !WITHDRAWABLE_STATES.has(submission.state)) continue;
       if ((await getReviewSubmissionVersionId(creds, submission.id)) !== versionId) continue;
       await cancelReviewSubmission(creds, submission.id);
       await insertAuditLog(c.env.DB, c, {
@@ -947,7 +1013,12 @@ export async function handleGetAppStoreReleaseStatus(c: AdminContext) {
       return c.json({ error: "version not found", code: "VERSION_NOT_FOUND" }, 404);
     }
     const submissions = await listReviewSubmissions(creds, ascAppId);
-    const pending = submissions.find((s) => s.state && IN_REVIEW_STATES.has(s.state)) ?? null;
+    // A rejected submission is still open and blocks the next one, so it is reported
+    // as pending too; its state (UNRESOLVED_ISSUES) tells the caller it needs a fix
+    // and a resubmit, not waiting. Only this platform's (or platform-less) ones count.
+    const pending = submissions.find((s) =>
+      s.state && (IN_REVIEW_STATES.has(s.state) || s.state === UNRESOLVED_STATE)
+      && (s.platform ?? platform) === platform) ?? null;
     return c.json({
       version_id: version.id,
       version_string: version.versionString,

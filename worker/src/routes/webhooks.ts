@@ -12,7 +12,8 @@
  *   release:new           - release activated (created active or published)
  *   release:draft_created - draft release created (QA/integration trigger)
  *   release:superseded - release marked superseded by a new one
- *   release:rolled_back - explicit rollback
+ *   release:rolled_back - explicit rollback or fallback restored by cancel
+ *   release:channel_emptied - cancel left no active release in the channel
  *   release:cancelled   - release cancelled
  *   build:succeeded     - build parsing succeeded
  *   build:failed        - build parsing failed
@@ -25,15 +26,15 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 
-const WEBHOOK_EVENT_TYPES = [
-  "testflight:upload_processing", "testflight:internal_distribution_ready",
+export const WEBHOOK_EVENT_TYPES = [
+  "testflight:upload_processing", "testflight:internal_distribution_ready", "testflight:crash_submission_created",
   "app_store:version_state_changed", "testflight:external_state_changed", "app_store:build_upload_state_changed",
   "feedback:new", "feedback:comment_created", "feedback:status_changed",
   "crash:new_group", "crash:spike", "error:new_group", "error:spike",
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
-  "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:cancelled",
+  "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:channel_emptied", "release:cancelled",
   "release:published",
   "build:succeeded", "build:failed",
 ] as const;
@@ -53,6 +54,23 @@ interface WebhookRow {
   archived_at: number | null;
 }
 
+const INTERNAL_RAFT_WEBHOOK_MARKER = "/api/internal/raft-notifications/";
+
+async function isInternalRaftWebhook(
+  db: D1Database,
+  webhookId: string,
+  scopeColumn: "org_id" | "app_id",
+  scopeId: string,
+): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT 1 AS internal FROM webhooks
+     WHERE id = ?1 AND ${scopeColumn} = ?2
+       AND url LIKE ?3
+     LIMIT 1`,
+  ).bind(webhookId, scopeId, `%${INTERNAL_RAFT_WEBHOOK_MARKER}%`).first<{ internal: number }>();
+  return row?.internal === 1;
+}
+
 // ============================================================================
 // Org webhook CRUD
 // ============================================================================
@@ -63,6 +81,7 @@ export async function handleListWebhooks(c: AdminContext) {
     `SELECT id, org_id, app_id, url, events_json, enabled, created_at, updated_at, archived_at
      FROM webhooks
      WHERE org_id = ?1 AND archived_at IS NULL
+       AND url NOT LIKE '%/api/internal/raft-notifications/%'
      ORDER BY created_at DESC`,
   ).bind(orgId).all<Omit<WebhookRow, "secret">>();
   return c.json({
@@ -120,6 +139,9 @@ export async function handleCreateWebhook(c: AdminContext) {
 export async function handleDeleteWebhook(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "org_id", orgId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   // Soft-delete (set archived_at) so the scheduled reaper can identify and
   // terminalize pending deliveries without attempting the retired endpoint.
   await c.env.DB.prepare(
@@ -131,6 +153,9 @@ export async function handleDeleteWebhook(c: AdminContext) {
 export async function handleUpdateWebhook(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "org_id", orgId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     url?: string;
     events?: WebhookEventType[];
@@ -172,6 +197,9 @@ export async function handleUpdateWebhook(c: AdminContext) {
 export async function handleListDeliveries(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "org_id", orgId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   const { results: deliveries } = await c.env.DB.prepare(
     `SELECT id, webhook_id, event_type, status, attempts, max_attempts,
             last_attempt_at, next_attempt_at, last_response_status,
@@ -238,6 +266,7 @@ export async function handleListAppWebhooks(c: AdminContext) {
      FROM webhooks w
      JOIN apps a ON a.id = w.app_id AND a.org_id = w.org_id
      WHERE w.app_id = ?1 AND w.archived_at IS NULL
+       AND w.url NOT LIKE '%/api/internal/raft-notifications/%'
      ORDER BY w.created_at DESC`,
   ).bind(appId).all<Omit<WebhookRow, "secret" | "archived_at">>();
   return c.json({ webhooks: rows.map((w) => ({ ...w, secret_set: true })) });
@@ -283,6 +312,9 @@ export async function handleCreateAppWebhook(c: AdminContext) {
 export async function handleUpdateAppWebhook(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "app_id", appId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     url?: unknown;
     events?: unknown;
@@ -329,6 +361,9 @@ export async function handleUpdateAppWebhook(c: AdminContext) {
 export async function handleDeleteAppWebhook(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "app_id", appId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   // Soft-delete, same as the org route, so the reaper terminalizes pending
   // deliveries instead of posting to a retired endpoint.
   const result = await c.env.DB.prepare(
@@ -342,6 +377,9 @@ export async function handleDeleteAppWebhook(c: AdminContext) {
 export async function handleListAppWebhookDeliveries(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, "app_id", appId)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
   const owned = await c.env.DB.prepare(
     "SELECT 1 AS ok FROM webhooks WHERE id = ?1 AND app_id = ?2",
   ).bind(webhookId, appId).first<{ ok: number }>();
@@ -925,7 +963,7 @@ async function readResponseBodyPrefix(
   return new TextDecoder().decode(prefix.subarray(0, length));
 }
 
-async function hmacSha256Hex(secret: string, body: string): Promise<string> {
+export async function hmacSha256Hex(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),

@@ -718,7 +718,7 @@ describe("feedback material delta production routes", () => {
     ).get(ticketId)).toEqual({ apps: 0, tickets: 0, comments: 0, integrations: 0, state: 0 });
   });
 
-  it("publishes the admin route in OpenAPI and the agent action manifest", async () => {
+  it("publishes the admin route in OpenAPI without adding another manifest action", async () => {
     expect(openApiDocument.paths?.["/api/apps/{appId}/feedback/material-delta"]?.get).toBeDefined();
     const response = await handleAgentManifest({
       env: { RAFT_CLIENT_ID: "hands-test" },
@@ -727,9 +727,6 @@ describe("feedback material delta production routes", () => {
       json: (data: unknown, status = 200) => Response.json(data, { status }),
     } as any);
     const manifest = await response.json() as any;
-    expect(manifest.actions.find((action: any) => action.name === "list-feedback-material-delta"))
-      .toMatchObject({
-        endpoint: { method: "GET", path: "/api/apps/{app_id}/feedback/material-delta" },
-      });
+    expect(manifest.actions.find((action: any) => action.name === "list-feedback-material-delta")).toBeUndefined();
   });
 });

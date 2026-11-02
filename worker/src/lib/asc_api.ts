@@ -76,14 +76,96 @@ export async function createAscJwt(
   return `${header}.${payload}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
+/** One entry of Apple's `meta.associatedErrors`: which resource is blocking, and why. */
+export interface AscAssociatedError {
+  resource: string;
+  code: string | null;
+  detail: string | null;
+}
+
+/** One of Apple's `errors[]` entries after the first, bounded. */
+export interface AscErrorEntry {
+  code: string | null;
+  title: string | null;
+  detail: string | null;
+  source: string | null;
+}
+
 export class AscApiError extends Error {
   status: number;
   detail: string | null;
-  constructor(status: number, message: string, detail: string | null = null) {
+  /** Apple's machine code for errors[0], e.g. STATE_ERROR.ENTITY_STATE_INVALID. */
+  code: string | null = null;
+  /** errors[0].source.pointer (or .parameter): the attribute or query parameter at fault. */
+  source: string | null = null;
+  /** errors[1..], which Apple uses when one request has several faults. */
+  others: AscErrorEntry[] = [];
+  /**
+   * Apple's per-resource reasons. A refusal like "This resource cannot be reviewed,
+   * please check associated errors to see why." names nothing by itself; the actual
+   * blockers (missing screenshots, missing localization fields, ...) are only here.
+   */
+  associated: AscAssociatedError[];
+  constructor(status: number, message: string, detail: string | null = null, associated: AscAssociatedError[] = []) {
     super(message);
     this.status = status;
     this.detail = detail;
+    this.associated = associated;
   }
+}
+
+const MAX_ASSOCIATED_ERRORS = 30;
+const MAX_ASSOCIATED_TEXT = 300;
+const MAX_OTHER_ERRORS = 10;
+
+const boundedText = (v: unknown) => (typeof v === "string" && v ? v.slice(0, MAX_ASSOCIATED_TEXT) : null);
+
+/** One `errors[]` entry as {code, title, detail, source}; null for a non-object entry. */
+export function parseAscErrorEntry(error: unknown): AscErrorEntry | null {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return null;
+  const e = error as { code?: unknown; title?: unknown; detail?: unknown; source?: unknown };
+  const source = e.source && typeof e.source === "object" ? (e.source as { pointer?: unknown; parameter?: unknown }) : null;
+  return {
+    code: boundedText(e.code),
+    title: boundedText(e.title),
+    detail: boundedText(e.detail),
+    source: boundedText(source?.pointer) ?? boundedText(source?.parameter),
+  };
+}
+
+/** errors[1..] as bounded entries; junk entries are skipped, never thrown on. */
+export function parseOtherAscErrors(errors: unknown): AscErrorEntry[] {
+  if (!Array.isArray(errors)) return [];
+  const out: AscErrorEntry[] = [];
+  for (const error of errors.slice(1)) {
+    if (out.length >= MAX_OTHER_ERRORS) break;
+    const entry = parseAscErrorEntry(error);
+    if (entry) out.push(entry);
+  }
+  return out;
+}
+
+/** Flatten `errors[].meta.associatedErrors` ({ "<resource path>": [{code, detail}] }), bounded. */
+export function parseAssociatedErrors(errors: unknown): AscAssociatedError[] {
+  const out: AscAssociatedError[] = [];
+  if (!Array.isArray(errors)) return out;
+  const text = (v: unknown) => (typeof v === "string" && v ? v.slice(0, MAX_ASSOCIATED_TEXT) : null);
+  for (const error of errors) {
+    const map = (error as { meta?: { associatedErrors?: unknown } })?.meta?.associatedErrors;
+    if (!map || typeof map !== "object") continue;
+    for (const [resource, list] of Object.entries(map as Record<string, unknown>)) {
+      if (!Array.isArray(list)) continue;
+      for (const item of list) {
+        if (out.length >= MAX_ASSOCIATED_ERRORS) return out;
+        // A null/primitive entry must not throw here: that would replace Apple's
+        // original AscApiError with a TypeError.
+        if (!item || typeof item !== "object") continue;
+        const i = item as { code?: unknown; detail?: unknown; title?: unknown };
+        out.push({ resource: resource.slice(0, MAX_ASSOCIATED_TEXT), code: text(i.code), detail: text(i.detail) ?? text(i.title) });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -118,11 +200,17 @@ export async function ascRequest<T>(
     const errors = (parsed as { errors?: Array<{ title?: string; detail?: string }> })
       ?.errors;
     const first = errors?.[0];
-    throw new AscApiError(
+    const error = new AscApiError(
       res.status,
       first?.title ?? `App Store Connect API ${method} ${path} failed (${res.status})`,
       first?.detail ?? (parsed ? null : text.slice(0, 500) || null),
+      parseAssociatedErrors(errors),
     );
+    const head = Array.isArray(errors) ? parseAscErrorEntry(errors[0]) : null;
+    error.code = head?.code ?? null;
+    error.source = head?.source ?? null;
+    error.others = parseOtherAscErrors(errors);
+    throw error;
   }
   return parsed as T;
 }
@@ -509,11 +597,14 @@ export async function addBuildToBetaGroups(
 export async function getBetaBuildLocalizations(
   creds: AscApiCredentials,
   ascBuildId: string,
+  signal?: AbortSignal,
 ): Promise<BetaBuildLocalizationResource[]> {
   const res = await ascRequest<{ data: BetaBuildLocalizationResource[] }>(
     creds,
     "GET",
     `/v1/builds/${encodeURIComponent(ascBuildId)}/betaBuildLocalizations?limit=200`,
+    undefined,
+    signal,
   );
   return res.data ?? [];
 }
@@ -989,11 +1080,14 @@ export async function listBetaFeedbackCrashSubmissions(
 export async function getBetaFeedbackCrashSubmission(
   creds: AscApiCredentials,
   submissionId: string,
+  signal?: AbortSignal,
 ): Promise<BetaFeedbackCrashSubmission> {
   const res = await ascRequest<{ data: BetaFeedbackCrashSubmission }>(
     creds,
     "GET",
     `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}`,
+    undefined,
+    signal,
   );
   return res.data;
 }
@@ -1002,11 +1096,14 @@ export async function getBetaFeedbackCrashSubmission(
 export async function getBetaCrashLogText(
   creds: AscApiCredentials,
   submissionId: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   const res = await ascRequest<{ data?: { attributes?: { logText?: string | null } } | null }>(
     creds,
     "GET",
     `/v1/betaFeedbackCrashSubmissions/${encodeURIComponent(submissionId)}/crashLog`,
+    undefined,
+    signal,
   );
   return res.data?.attributes?.logText ?? null;
 }
@@ -1111,7 +1208,7 @@ export interface AscAppStoreVersion {
   buildRelationshipReturned: boolean;
 }
 
-type RawAppStoreVersion = {
+export type RawAppStoreVersion = {
   id?: unknown;
   attributes?: {
     versionString?: unknown;
@@ -1125,7 +1222,7 @@ type RawAppStoreVersion = {
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
-function toAppStoreVersion(raw: RawAppStoreVersion): AscAppStoreVersion | null {
+export function toAppStoreVersion(raw: RawAppStoreVersion): AscAppStoreVersion | null {
   if (typeof raw.id !== "string" || !raw.id) return null;
   const appStoreState = str(raw.attributes?.appStoreState);
   const appVersionState = str(raw.attributes?.appVersionState);
@@ -1328,11 +1425,12 @@ export async function attachBuildToVersion(
 }
 
 /**
- * Upsert the per-locale "What's New" text.
+ * Update the per-locale "What's New" text of an existing localization.
  *
- * Locales are independent resources; one call per locale, and an existing
- * localization is patched rather than created so re-running a submission after a
- * rejection updates the copy instead of failing on a duplicate.
+ * Locales are independent resources; one call per locale. A missing localization is
+ * NOT created: a localization holding only whatsNew lacks description/keywords/
+ * supportUrl, and Apple then refuses the review submission
+ * (ENTITY_ERROR.ATTRIBUTE.REQUIRED). Create it with the listing-text push instead.
  */
 export async function setVersionLocalization(
   creds: AscApiCredentials,
@@ -1346,21 +1444,14 @@ export async function setVersionLocalization(
   const match = (existing.data ?? []).find(
     (l) => typeof l.attributes?.locale === "string" && l.attributes.locale === locale,
   );
-  if (match?.id) {
-    await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(match.id)}`, {
-      data: {
-        type: "appStoreVersionLocalizations",
-        id: match.id,
-        attributes: { whatsNew },
-      },
-    });
-    return;
+  if (!match?.id) {
+    throw new Error(`no ${locale} localization on version ${versionId}; create it with hands app-store localizations push`);
   }
-  await ascRequest(creds, "POST", "/v1/appStoreVersionLocalizations", {
+  await ascRequest(creds, "PATCH", `/v1/appStoreVersionLocalizations/${encodeURIComponent(match.id)}`, {
     data: {
       type: "appStoreVersionLocalizations",
-      attributes: { locale, whatsNew },
-      relationships: { appStoreVersion: { data: { type: "appStoreVersions", id: versionId } } },
+      id: match.id,
+      attributes: { whatsNew },
     },
   });
 }
@@ -1439,14 +1530,15 @@ export async function getReviewSubmissionVersionId(
   submissionId: string,
 ): Promise<string | null> {
   const res = await ascRequest<{
-    data?: Array<{ relationships?: { appStoreVersionForReview?: { data?: { id?: unknown } } } }>;
+    data?: Array<{ relationships?: { appStoreVersion?: { data?: { id?: unknown } } } }>;
     // Same trap as the version lookups: JSON:API omits the relationship unless it is
-    // requested. Without this the loop always falls through to null, so the withdraw
-    // path -- which compares this against the target version id -- never matched and
-    // reported "canceled: true" without cancelling anything.
-  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50&include=appStoreVersionForReview`);
+    // requested. On reviewSubmissionItems the relationship is `appStoreVersion`;
+    // `appStoreVersionForReview` belongs to reviewSubmissions and Apple answers it here
+    // with 400 "'appStoreVersionForReview' is not a valid relationship name"
+    // (observed 2026-10-29 on raft-ios 1.17.0).
+  }>(creds, "GET", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}/items?limit=50&include=appStoreVersion`);
   for (const item of res.data ?? []) {
-    const id = item.relationships?.appStoreVersionForReview?.data?.id;
+    const id = item.relationships?.appStoreVersion?.data?.id;
     if (typeof id === "string" && id) return id;
   }
   return null;
@@ -1469,33 +1561,19 @@ export async function cancelReviewSubmission(
   });
 }
 
-/** Create, populate and submit a review in one call so a half-submitted review cannot linger. */
-export async function submitVersionForReview(
+/**
+ * Send an UNRESOLVED_ISSUES submission back to Apple after the version was fixed.
+ *
+ * After a rejection the submission stays open with the version still in it as an
+ * item, and Apple will not open a new submission for the platform until this one is
+ * resubmitted or cancelled. So resubmitting is only `submitted: true` on the same
+ * resource -- adding the version as an item again is refused because it is already
+ * there.
+ */
+export async function resubmitReviewSubmission(
   creds: AscApiCredentials,
-  ascAppId: string,
-  versionId: string,
-  platform: string,
-): Promise<{ submissionId: string }> {
-  const created = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/reviewSubmissions", {
-    data: {
-      type: "reviewSubmissions",
-      attributes: { platform },
-      relationships: { app: { data: { type: "apps", id: ascAppId } } },
-    },
-  });
-  const submissionId = created.data?.id;
-  if (typeof submissionId !== "string" || !submissionId) {
-    throw new AscApiError(502, "review_submission_malformed", "App Store Connect did not return a submission id");
-  }
-  await ascRequest(creds, "POST", "/v1/reviewSubmissionItems", {
-    data: {
-      type: "reviewSubmissionItems",
-      relationships: {
-        reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
-        appStoreVersionForReview: { data: { type: "appStoreVersions", id: versionId } },
-      },
-    },
-  });
+  submissionId: string,
+): Promise<void> {
   await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
     data: {
       type: "reviewSubmissions",
@@ -1503,7 +1581,69 @@ export async function submitVersionForReview(
       attributes: { submitted: true },
     },
   });
-  return { submissionId };
+}
+
+/**
+ * Create (or reuse), populate and submit a review in one call so a half-submitted
+ * review cannot linger.
+ *
+ * `reuseSubmissionId` is an existing READY_FOR_REVIEW draft for the same platform.
+ * A draft is what a failed earlier attempt leaves behind (step 1 succeeded, a later
+ * step did not); App Store Connect keeps one open draft per platform, so creating a
+ * second one instead of reusing it is at best clutter.
+ *
+ * When this call created the draft itself and a later step fails, the draft is
+ * cancelled best-effort before the error is rethrown.
+ */
+export async function submitVersionForReview(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  versionId: string,
+  platform: string,
+  opts: { reuseSubmissionId?: string } = {},
+): Promise<{ submissionId: string; reused: boolean }> {
+  let submissionId = opts.reuseSubmissionId ?? null;
+  const reused = submissionId !== null;
+  if (!submissionId) {
+    const created = await ascRequest<{ data?: { id?: string } }>(creds, "POST", "/v1/reviewSubmissions", {
+      data: {
+        type: "reviewSubmissions",
+        attributes: { platform },
+        relationships: { app: { data: { type: "apps", id: ascAppId } } },
+      },
+    });
+    submissionId = typeof created.data?.id === "string" && created.data.id ? created.data.id : null;
+    if (!submissionId) {
+      throw new AscApiError(502, "review_submission_malformed", "App Store Connect did not return a submission id");
+    }
+  }
+  try {
+    // The item's relationship to the version is `appStoreVersion`.
+    // `appStoreVersionForReview` is the relationship on the reviewSubmission itself;
+    // sent here it is rejected with "The provided entity includes an unknown relationship".
+    await ascRequest(creds, "POST", "/v1/reviewSubmissionItems", {
+      data: {
+        type: "reviewSubmissionItems",
+        relationships: {
+          reviewSubmission: { data: { type: "reviewSubmissions", id: submissionId } },
+          appStoreVersion: { data: { type: "appStoreVersions", id: versionId } },
+        },
+      },
+    });
+    await ascRequest(creds, "PATCH", `/v1/reviewSubmissions/${encodeURIComponent(submissionId)}`, {
+      data: {
+        type: "reviewSubmissions",
+        id: submissionId,
+        attributes: { submitted: true },
+      },
+    });
+  } catch (error) {
+    if (!reused) {
+      await cancelReviewSubmission(creds, submissionId).catch(() => undefined);
+    }
+    throw error;
+  }
+  return { submissionId, reused };
 }
 
 // ---------- App Store version localizations (listing text) ----------

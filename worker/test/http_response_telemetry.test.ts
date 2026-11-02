@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { httpResponseTelemetry } from "../src/middleware/http_response_telemetry";
+import { httpResponseTelemetry, reporterErrorHandler } from "../src/middleware/http_response_telemetry";
+import { setReporterFailureStage } from "../src/lib/reporter_failure";
 import { registerReleaseRoutes } from "../src/openapi/releases";
 
 afterEach(() => vi.restoreAllMocks());
@@ -44,6 +45,22 @@ describe("server grants validator and final HTTP telemetry", () => {
     expect(JSON.stringify(record)).not.toContain("private-");
   });
 
+  it.each([
+    { trace: "8da5b07607d2b9ec7855ba04c573ac60", ray: "a44e64ee3aee0f23-SIN", expectedTrace: "8da5b07607d2b9ec7855ba04c573ac60", expectedRequest: "a44e64ee3aee0f23-SIN" },
+    { trace: "8DA5B07607D2B9EC7855BA04C573AC60", ray: "a44e64ee3aee0f23-SIN", expectedTrace: null, expectedRequest: "a44e64ee3aee0f23-SIN" },
+    { trace: "not-a-trace-id", ray: "", expectedTrace: null, expectedRequest: null },
+  ])("records cf-ray and a valid 32-lowercase-hex X-Trace-Id separately: %j", async ({ trace, ray, expectedTrace, expectedRequest }) => {
+    const { app, log } = harness();
+    const response = await app.request("/api/apps/app-id/server-grants", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-trace-id": trace, "cf-ray": ray },
+      body: JSON.stringify({ server_slug: "botiverse" }),
+    });
+    expect(response.status).toBe(201);
+    const record = JSON.parse(log.mock.calls[0]![1] as string);
+    expect(record).toMatchObject({ request_id: expectedRequest, trace_id: expectedTrace });
+  });
+
   it("captures auth refusal, handler error and unmatched requests once each", async () => {
     const { app, log } = harness();
     app.get("/api/auth-denied", (c) => c.json({ error: "secret-error" }, 403));
@@ -57,5 +74,23 @@ describe("server grants validator and final HTTP telemetry", () => {
     expect(records[2].route).toBe("unmatched");
     expect(JSON.stringify(records)).not.toContain("secret");
     expect(JSON.stringify(records)).not.toContain("private-id");
+  });
+});
+
+
+describe("reporter failure classification boundaries", () => {
+  it.each([
+    { stage: "audit_hash", message: "fetch failed" },
+    { stage: "session_verify", message: "Network connection lost" },
+  ] as const)("keeps a non-D1 $stage failure as 500 even when its text looks transient", async ({ stage, message }) => {
+    const app = new OpenAPIHono();
+    app.onError(reporterErrorHandler);
+    app.get("/api/apps/:appId/reporter-feedback", c => {
+      setReporterFailureStage(c, stage);
+      throw new Error(message);
+    });
+    const response = await app.request("/api/apps/app-id/reporter-feedback");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Retry-After")).toBeNull();
   });
 });

@@ -910,12 +910,11 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
   }
 
   const limited = limitObjectBody(object.body, row.size_bytes);
-  const [hashStream, sealStream] = limited.tee();
   const abort = new AbortController();
-  const fixed = fixedLengthBody(sealStream, row.size_bytes, abort.signal);
+  const fixed = fixedLengthBody(limited, row.size_bytes, abort.signal);
   const contentType = String((JSON.parse(row.metadata_json) as Record<string, unknown>).content_type ?? "application/octet-stream");
-  // A failed PUT must cancel both stream branches, including the fixed-length
-  // pump, so it cannot leave verification waiting for a consumer forever.
+  // A failed PUT must cancel the fixed-length pump too, so verification cannot
+  // wait forever for an abandoned consumer.
   let failurePhase: string | null = null;
   const failTogether = <T>(operation: Promise<T>, phase: string): Promise<T> => operation.catch((error: unknown) => { failurePhase ??= phase; abort.abort(error); throw error; });
   // Time each stage so a stalled verification says WHICH stage stalled. Without this the
@@ -933,37 +932,49 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     if (entries.length === 0) return "unknown";
     return entries.sort((a, b) => b[1] - a[1])[0]?.[0] ?? "unknown";
   };
-  const [hashResult, pumpResult, putResult] = await Promise.allSettled([
-    timed(failTogether(hashBody(hashStream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal: abort.signal })), "staging_stream"), "staging_stream"),
+  const [pumpResult, putResult] = await Promise.allSettled([
     timed(failTogether(fixed.pump, "seal_stream"), "seal_stream"),
     timed(failTogether(c.env.APK_BUCKET.put(finalKey, fixed.readable, {
       httpMetadata: { contentType },
       customMetadata: { sha256: row.file_hash, build_id: buildId, asset_id: assetId },
+      // R2 verifies the digest while streaming the single seal consumer. A tee
+      // plus a slower JavaScript hash consumer buffers unread bytes in memory.
+      sha256: row.file_hash,
     }), "seal_write"), "seal_write"),
   ]);
   const verifyElapsedMs = Date.now() - verifyStartedAt;
-  if (hashResult.status === "rejected" || pumpResult.status === "rejected" || putResult.status === "rejected") {
-    const failures = [hashResult, pumpResult, putResult].filter((result) => result.status === "rejected");
+  if (pumpResult.status === "rejected" || putResult.status === "rejected") {
+    const failures = [pumpResult, putResult].filter((result) => result.status === "rejected");
     const integrityFailure = failures.find((result) => result.status === "rejected" && result.reason instanceof UploadStreamSizeError);
     if (!integrityFailure) {
-      return retryStorageVerification(c, row, leaseId, failurePhase ?? "staging_stream", { phase: slowestStage(), elapsedMs: verifyElapsedMs });
+      // R2 rejects a digest mismatch without storing the object. Only on this
+      // failure path, distinguish that terminal integrity failure from a
+      // retryable storage error without reintroducing a second success consumer.
+      let actual: { sha256: string; size: number } | null = null;
+      let readFailed = false;
+      try {
+        const failedObject = await c.env.APK_BUCKET.get(row.staging_key);
+        if (failedObject?.body) actual = await hashBody(failedObject.body);
+      } catch { readFailed = true; }
+      if (actual && (actual.size !== row.size_bytes || actual.sha256 !== row.file_hash.toLowerCase())) {
+        if (!await failVerification(c, row, leaseId, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", { phase: slowestStage(), elapsedMs: verifyElapsedMs })) {
+          return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
+        }
+        return c.json({
+          error: "uploaded asset does not match the declared exact bytes",
+          code: "ASSET_UPLOAD_INTEGRITY_MISMATCH",
+          reason: actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", retryable: false,
+          expected: { sha256: row.file_hash, size_bytes: row.size_bytes },
+          actual: { sha256: actual.sha256, size_bytes: actual.size },
+        }, 422);
+      }
+      return retryStorageVerification(c, row, leaseId, readFailed ? "staging_stream" : failurePhase ?? "seal_write", { phase: slowestStage(), elapsedMs: verifyElapsedMs });
     }
     if (!await failVerification(c, row, leaseId, "stream_size_mismatch", { phase: slowestStage(), elapsedMs: verifyElapsedMs })) return completeUploadContention(c, appId, buildId, assetId);
     return c.json({ error: "streamed asset size differs from declaration", code: "ASSET_UPLOAD_INTEGRITY_MISMATCH", reason: "stream_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: (integrityFailure.reason as UploadStreamSizeError).actualBytes } }, 422);
   }
-  const actual = hashResult.value;
-  if (actual.size !== row.size_bytes || actual.sha256 !== row.file_hash.toLowerCase()) {
-    if (!await failVerification(c, row, leaseId, actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", { phase: slowestStage(), elapsedMs: verifyElapsedMs })) {
-      return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
-    }
-    return c.json({
-      error: "uploaded asset does not match the declared exact bytes",
-      code: "ASSET_UPLOAD_INTEGRITY_MISMATCH",
-      reason: actual.size !== row.size_bytes ? "size_mismatch" : "sha256_mismatch", retryable: false,
-      expected: { sha256: row.file_hash, size_bytes: row.size_bytes },
-      actual: { sha256: actual.sha256, size_bytes: actual.size },
-    }, 422);
-  }
+  // The native R2 checksum gate succeeded, so the declared values are verified.
+  const actual = { sha256: row.file_hash.toLowerCase(), size: row.size_bytes };
   let finalHead: R2Object | null;
   try { finalHead = await c.env.APK_BUCKET.head(finalKey); }
   catch { return retryStorageVerification(c, row, leaseId, "seal_readback"); }

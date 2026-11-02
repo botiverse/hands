@@ -87,18 +87,21 @@ describe("App Store version lookup asks Apple for the build relationship", () =>
 });
 
 describe("submission item lookup asks Apple for the version relationship", () => {
-  it("requests include=appStoreVersionForReview", async () => {
+  it("requests include=appStoreVersion (the item's relationship), not appStoreVersionForReview", async () => {
+    // Apple, 2026-10-29: 400 "'appStoreVersionForReview' is not a valid relationship name"
+    // for GET /v1/reviewSubmissions/{id}/items?include=appStoreVersionForReview.
     const calls = mockAsc({ data: [] });
     await getReviewSubmissionVersionId(await realCreds(), "sub-1").catch(() => undefined);
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[0]).toContain("include=appStoreVersionForReview");
+    expect(calls[0]).toContain("include=appStoreVersion");
+    expect(calls[0]).not.toContain("appStoreVersionForReview");
     vi.unstubAllGlobals();
   });
 
   it("identifies the version a submission carries", async () => {
     mockAsc({
       data: [
-        { relationships: { appStoreVersionForReview: { data: { id: "ver-9" } } } },
+        { relationships: { appStoreVersion: { data: { id: "ver-9" } } } },
       ],
     });
     expect(await getReviewSubmissionVersionId(await realCreds(), "sub-1")).toBe("ver-9");

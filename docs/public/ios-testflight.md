@@ -229,7 +229,7 @@ Raft integration actions:
 - `prepare-app-store-version`, `set-app-store-localizations`,
   `set-app-store-release-notes`, `submit-app-store-version`,
   `withdraw-app-store-version`, `release-app-store-version`,
-  `get-app-store-release-status`
+  `get-app-store-release-status`, `get-app-store-preflight`
   (screenshots are multipart; use the CLI)
 
 Agents pass Hands app/build ids and stable beta group ids. The integration
@@ -265,7 +265,8 @@ hands app-store localizations push raft-ios --version-name 1.17.0 --file listing
 # 3. screenshots: shots/<locale>/<display_type>/NN.png
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots              # plan
 hands app-store screenshots push raft-ios --version-name 1.17.0 --dir shots --commit
-# 4. review
+# 4. review: preflight (read-only), then submit
+hands app-store preflight raft-ios --version-name 1.17.0
 hands app-store submit raft-ios --version-name 1.17.0 --commit
 hands app-store status raft-ios --version-name 1.17.0
 hands app-store withdraw raft-ios --version-name 1.17.0 --commit
@@ -273,6 +274,47 @@ hands app-store withdraw raft-ios --version-name 1.17.0 --commit
 hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id>            # plan
 hands app-store release raft-ios <asc-version-id> --version-name 1.17.0 --build <asc-build-id> --commit
 ```
+
+### Preflight: is the version ready for review?
+
+`GET /api/apps/{appId}/app-store/versions/{versionId}/preflight` (app viewer)
+is read-only: every call Hands makes to App Store Connect is a GET. CLI:
+`hands app-store preflight <app> --version-name 1.17.0 [--json]` exits 1 when
+any error is found; `hands app-store submit` without `--commit` prints the
+errors too. Submit itself is not blocked by it.
+
+The response is `{version_id, version_string, state, ready, findings, checked,
+not_checkable}`. Each finding has `severity` (`error`, `warning`, `info`),
+`check`, optional `locale` / `display_type`, `resource`, `message` and `fix`.
+`resource` uses the paths Apple uses in a refused submit's associated errors
+(for example `/v1/appStoreVersionLocalizations/<id>`), and a missing field
+reads as Apple words it ("You must provide a value for the attribute
+'supportUrl'").
+
+| Check | Severity |
+| --- | --- |
+| `version_state`: editable (`PREPARE_FOR_SUBMISSION`, `DEVELOPER_REJECTED`, `REJECTED`, `METADATA_REJECTED`, `INVALID_BINARY`) | error otherwise; `WAITING_FOR_REVIEW` / `IN_REVIEW` is info |
+| `build`: attached, `VALID`, not expired | error |
+| `build`: build's version string differs from the App Store version | warning |
+| `export_compliance`: `usesNonExemptEncryption` unset on the build | warning |
+| `copyright` empty | warning |
+| `localization_required_fields`: description, keywords, supportUrl per locale | error |
+| `localization_whats_new`: empty whatsNew (required unless first version) | info |
+| `localization_lengths`: description 4000, keywords 100, promotionalText 170, whatsNew 4000 | warning |
+| `app_info_localizations`: each version locale has an app name; privacy policy URL on the primary locale | error (privacy URL on other locales: warning) |
+| `screenshots`: primary locale has a 6.9"/6.5" iPhone set (`APP_IPHONE_67` / `APP_IPHONE_65`); every screenshot `COMPLETE` | error |
+| `screenshots`: other locales without screenshots fall back to the primary | info |
+| `screenshots`: iPad sets exist but none 13" (`APP_IPAD_PRO_3GEN_129`) on the primary | warning; when Hands cannot tell whether the app runs on iPad, info |
+| `review_detail`: contact first/last name, phone, email; demo account name and password when `demoAccountRequired` | error |
+| `age_rating`: no age rating declaration | warning |
+| `review_submission`: another version holds an open submission (`WAITING_FOR_REVIEW`, `IN_REVIEW`, `UNRESOLVED_ISSUES`) | error; this version's own submission or a draft is info |
+
+A resource Apple refuses to return becomes a warning `unreadable:<what>` with
+Apple's status, code and detail; the rules that need it are listed in
+`not_checkable`. `ready` is true only with no error, no unreadable resource,
+and every rule run. App Privacy answers are not in the public App Store
+Connect API, and pricing/availability, content rights and categories are not
+read yet: they are always listed in `not_checkable`.
 
 ### Prepare: one unreleased version per platform
 
@@ -352,7 +394,12 @@ Fields are Apple's `appStoreVersionLocalizations` attributes: `description`
 (at most 4000 characters), `keywords` (100), `promotionalText` (170),
 `whatsNew` (4000), `marketingUrl`, `supportUrl` (http or https). Only supplied
 fields are written; an existing locale is patched with the changed fields
-only, a missing locale is created. While Apple holds the version only
+only, a missing locale is created. Creating a locale requires `description`,
+`keywords` and `supportUrl` (Apple accepts the create without them but then
+refuses review); without them the plan entry is blocked with
+`missing_required_fields` and lists `missing_fields`. The What's New endpoint
+(`.../notes`) only updates existing locales and returns 409
+`LOCALIZATION_MISSING` for one that does not exist. While Apple holds the version only
 `promotionalText` may change; other fields return 409
 `LOCALIZATION_PLAN_BLOCKED`. Commit reads every requested field back and fails
 with `READBACK_MISMATCH` if Apple holds anything else. App name and subtitle
@@ -396,11 +443,29 @@ what Apple stores as `sourceFileChecksum`:
   operations, commit with the MD5, poll `assetDeliveryState` until `COMPLETE`,
   set the order, then read the set back.
 
-Commit stops at the first failed set (later sets are `not_attempted`). Any
-image that ends `FAILED` or does not finish within the poll budget makes the
-response 502 `SCREENSHOTS_FAILED`, with each image's id and state; it is never
-reported as success. Because a replace deletes before it uploads, a failed
-replace can leave a set partly filled: fix the cause and push again.
+Each set is committed on its own: one set failing does not stop the others.
+Only an error that would hit every set (Apple rejects the API key with 401/403,
+404, rate limit, Apple 5xx, a 409 about the version's state, or any error that
+is not clearly about that one set) stops the run; later sets are then
+`not_attempted`. Each set ends in one of:
+
+- `ok`: uploaded, `COMPLETE`, ordered, and read back;
+- `failed`: an image ended `FAILED`, Apple refused a request for the set, or
+  the read-back did not match;
+- `uploaded_pending`: every image was uploaded and committed and none was
+  rejected, but Apple was still processing at least one when the poll budget
+  ran out. Not a success: the set's order and read-back were not done yet;
+- `not_attempted`: skipped after a run-stopping error.
+
+The response lists `failed_sets` and `pending_sets`. Any failed or
+not-attempted set makes it 502 `SCREENSHOTS_FAILED` (this wins over pending);
+otherwise any pending set makes it 202 `SCREENSHOTS_PENDING` with `ok: false`.
+The CLI exits non-zero for both and prints the code. For pending sets: Apple is
+still processing some screenshots. Run the dry run again later: if every set is
+`unchanged`, files and order are confirmed; if a set shows `reorder` or
+`replace`, run `--commit` again. Nothing is retried automatically. Because a
+replace deletes before it uploads, a failed replace can leave a set partly
+filled: fix the cause and push again.
 
 Every prepare, listing, and screenshot call (dry runs included) is recorded in
 the app audit log (`app_store.prepare_version`, `app_store.localizations`,
@@ -447,7 +512,7 @@ hands api POST /api/apps/{app_id}/apple-webhook/register
 
 Hands calls Apple using the stored credentials, discovers an existing subscription
 for this exact callback URL before creating one, and reads it back to verify the
-URL, enabled state, and all three event types. The result reveals no secret.
+URL, enabled state, and all four event types. The result reveals no secret.
 If Apple refuses the operation, the response names the failure stage and upstream
 status; use an App Store Connect key with permission to manage webhooks.
 Registration alone does not prove a real review notification reached your team.
@@ -460,13 +525,14 @@ new URL and secret; previous event receipts survive rotation.
 
 In App Store Connect, open **Users and Access → Integrations → Additional →
 Webhooks**, create a webhook, paste the returned URL and secret, and select
-**the same Apple app** specified by `apple_app_id`. Select these three triggers:
+**the same Apple app** specified by `apple_app_id`. Select these four triggers:
 
 | Apple trigger | Hands outbound event |
 | --- | --- |
 | `APP_STORE_VERSION_APP_VERSION_STATE_UPDATED` | `app_store:version_state_changed` |
 | `BUILD_BETA_DETAIL_EXTERNAL_BUILD_STATE_UPDATED` | `testflight:external_state_changed` |
 | `BUILD_UPLOAD_STATE_UPDATED` | `app_store:build_upload_state_changed` |
+| `BETA_FEEDBACK_CRASH_SUBMISSION_CREATED` | `testflight:crash_submission_created` |
 
 Choose **Test** and check the delivery's successful HTTP response in Apple's
 recent deliveries. Authenticated test pings and unsupported event types are
@@ -487,6 +553,23 @@ are then null. The resource ID identifies the Apple version/build, not a Hands
 build ID or a human-readable version number. No credentials or full Apple
 payloads are forwarded. Display the event's timestamp and state transition;
 out-of-order delivery must not overwrite an assumed current status.
+
+For `testflight:crash_submission_created`, `resource` identifies the crash
+submission, `state` and `occurred_at` contain Apple's `createdDate`, and
+`previous_state` is null. Hands follows the submission's `build` relationship
+to add the same best-effort `build` identity used by other TestFlight events.
+It also creates an idempotent crash ticket in the normal feedback triage
+surface and stores the `.ips` log as an internal attachment (up to 2 MiB). The
+outbound payload carries `ticket_id`, never the crash-log body. A crash
+submission reports a tester chose to share it, not the total crash count for
+the build.
+
+To backfill existing submissions, an app admin can call
+`POST /api/apps/{appId}/testflight-crashes/backfill` with the same optional
+`build`, `version`, and `limit` filters as the pull endpoint. It uses the same
+idempotent ingest and returns `ticket_ids` and `failed_submission_ids`; a repeat
+run does not create duplicate tickets. This is the supported way to recover
+history and any submission whose earlier ingest failed.
 
 Hands verifies `x-apple-signature` over the exact request bytes, limits the
 body to 64 KiB, and commits the event receipt and matching outbound deliveries
@@ -515,7 +598,9 @@ link. Internal distribution also includes selected groups and
 Chinese notification line (for example, `测试组：Botiverse、Team B`) containing
 all selected group names; an unnamed group falls back to its ID. It is absent
 on upload and Apple callback events, so scalar notification templates can
-leave the line blank. This confirms internal availability, not that a tester
+leave the line blank. Internal distribution also carries `what_to_test` and
+`source_commit` (see [Test notes and source commit](#test-notes-and-source-commit)).
+This confirms internal availability, not that a tester
 received an email. The operation success receipt and delivery rows commit
 atomically; repeating the same operation receipt does not duplicate deliveries.
 
@@ -546,6 +631,31 @@ delivered with every other field unchanged. The `build` key itself is always
 present, so a consumer must treat `null` as "version unknown, open the link"
 rather than as an absent field. Events whose resource is not a build (e.g.
 `app_store:version_state_changed`) always report `build: null`.
+
+### Test notes and source commit
+
+`testflight:external_state_changed` and `testflight:internal_distribution_ready`
+also carry two keys for rendering a "ready to test" card:
+
+```json
+"what_to_test": { "zh-Hans": "测试登录流程", "en-US": "Check the login flow" },
+"source_commit": "0123456789abcdef0123456789abcdef01234567"
+```
+
+`what_to_test` maps locale to the build's TestFlight **What to Test** text,
+each truncated to 1000 characters; blank locales are dropped. On the external
+event Hands reads `GET /v1/builds/{id}/betaBuildLocalizations` for the build
+named by the `build` lookup (5 s budget). On the internal event it uses the
+publish readback, falling back to the `what_to_test` sent with the publish
+request; no extra Apple call is made.
+
+`source_commit` is `provenance_json.source_commit` of the Hands iOS build with
+the same build number (the internal event prefers the published Hands build
+itself). It is set when the build was uploaded with `--source-commit`.
+
+Both are best effort and never block delivery: the keys are always present on
+these two events and are `null` when the build, its localizations, or a
+matching Hands build cannot be read. Other event types do not carry them.
 
 ### `version_string` on version state events
 

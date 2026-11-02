@@ -31,13 +31,23 @@ export type ActiveReleaseCandidate = {
 /** One canonical active/non-QA candidate query for every public download surface. */
 export async function loadActiveReleaseCandidates(
   db: D1Database,
-  args: { appId: string; channelId: string; productType?: string | null | undefined },
+  args: {
+    appId: string; channelId: string; productType?: string | null | undefined;
+    /** Restrict to already-available, fully public releases at this time. */
+    fullPublicAt?: number | undefined;
+    /** Use when only the newest eligible release can be consumed. */
+    mostRecentOnly?: boolean | undefined;
+  },
 ): Promise<ActiveReleaseCandidate[]> {
   const withProduct = Boolean(args.productType);
   // Match every equivalent name at once: a channel may hold releases seeded before the
   // rename and after it, and the resolver must see both or it will report "no active
   // release" for a product that plainly has one.
   const productNames = equivalentsOf(args.productType);
+  const bindValues: Array<string | number> = [args.appId, args.channelId, ...productNames];
+  const fullPublic = args.fullPublicAt !== undefined;
+  if (args.fullPublicAt !== undefined) bindValues.push(args.fullPublicAt);
+  const publicTimeParam = `?${bindValues.length}`;
   const statement = db.prepare(
     `SELECT r.id, r.build_id, r.created_at,
             COALESCE(r.activated_at, r.created_at) AS activated_at,
@@ -48,15 +58,18 @@ export async function loadActiveReleaseCandidates(
        ${withProduct ? `AND r.product_type IN (${productNames.map((_, i) => `?${i + 3}`).join(",")})` : ""}
        AND r.status = 'active'
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+       ${fullPublic ? `AND b.status = 'succeeded' AND r.hidden = 0
+         AND (r.rollout_cohort_count IS NULL OR r.rollout_cohort_count >= 100)
+         AND (r.availability_at IS NULL OR r.availability_at <= ${publicTimeParam})
+         AND EXISTS (SELECT 1 FROM release_scopes s
+                     WHERE s.release_id = r.id AND s.scope_type = 'full' AND s.scope_value = 'all')` : ""}
      -- Total order, deliberately: without the id tie-break two releases activated in the same
      -- millisecond come back in planner order, so callers would see a different "current
      -- release" run to run. This is the resolver behind the installer path.
-     ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC`,
+     ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC
+     ${args.mostRecentOnly ? "LIMIT 1" : ""}`,
   );
-  const result = await (withProduct
-    ? statement.bind(args.appId, args.channelId, ...productNames)
-    : statement.bind(args.appId, args.channelId)
-  ).all<ActiveReleaseCandidate>();
+  const result = await statement.bind(...bindValues).all<ActiveReleaseCandidate>();
   return result.results;
 }
 

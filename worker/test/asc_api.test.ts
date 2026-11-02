@@ -117,7 +117,49 @@ describe("ascRequest", () => {
       status: 403,
       message: "NOT_AUTHORIZED",
       detail: "Key lacks access",
+      code: null,
+      source: null,
+      others: [],
     } satisfies Partial<AscApiError>);
+  });
+
+  it("keeps Apple's code, source and every error, not just the first", async () => {
+    // 2026-10-29: a review refusal named supportUrl only in the code/pointer of the
+    // errors that were dropped.
+    const { creds } = await generateTestCreds();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ errors: [
+      { status: "409", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: "A required attribute is missing.",
+        detail: "You must provide a value for the attribute 'supportUrl'", source: { pointer: "/data/attributes/supportUrl" } },
+      null, "junk", 7, ["x"],
+      { code: "PARAMETER_ERROR.INVALID", title: "bad filter", source: { parameter: "filter[platform]" } },
+      { code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "keywords", source: "not-an-object" },
+    ] }), { status: 409 })));
+    const error = (await ascRequest(creds, "POST", "/v1/appStoreVersionLocalizations", {}).catch((e: unknown) => e)) as AscApiError;
+    expect(error).toBeInstanceOf(AscApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      message: "A required attribute is missing.",
+      detail: "You must provide a value for the attribute 'supportUrl'",
+      code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED",
+      source: "/data/attributes/supportUrl",
+    });
+    expect(error.others).toEqual([
+      { code: "PARAMETER_ERROR.INVALID", title: "bad filter", detail: null, source: "filter[platform]" },
+      { code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: null, detail: "keywords", source: null },
+    ]);
+  });
+
+  it("bounds the extra errors and their text", async () => {
+    const { parseOtherAscErrors, parseAscErrorEntry } = await import("../src/lib/asc_api");
+    const long = "x".repeat(1000);
+    const many = [{}, ...Array.from({ length: 25 }, () => ({ code: long, title: long, detail: long, source: { pointer: long } }))];
+    const out = parseOtherAscErrors(many);
+    expect(out).toHaveLength(10);
+    for (const field of ["code", "title", "detail", "source"] as const) expect(out[0]![field]!.length).toBe(300);
+    expect(parseOtherAscErrors(undefined)).toEqual([]);
+    expect(parseOtherAscErrors({ errors: [] })).toEqual([]);
+    expect(parseAscErrorEntry(null)).toBeNull();
+    expect(parseAscErrorEntry({ source: { pointer: 5, parameter: "limit" } })).toEqual({ code: null, title: null, detail: null, source: "limit" });
   });
 });
 
@@ -345,9 +387,61 @@ describe("App Store submission", () => {
     expect(calls[0]!.method).toBe("POST");
     expect(calls[0]!.url).toContain("/v1/reviewSubmissions");
     expect(calls[1]!.url).toContain("/v1/reviewSubmissionItems");
-    expect(calls[1]!.body.data.relationships.appStoreVersionForReview.data.id).toBe("ver-1");
+    // The item relates to the version as `appStoreVersion`; `appStoreVersionForReview`
+    // is the reviewSubmission's relationship and Apple rejects it here with
+    // "The provided entity includes an unknown relationship" (1.17.0, 2026-10-29).
+    expect(calls[1]!.body.data.relationships.appStoreVersion.data.id).toBe("ver-1");
+    expect(calls[1]!.body.data.relationships.appStoreVersionForReview).toBeUndefined();
     expect(calls[2]!.method).toBe("PATCH");
     expect(calls[2]!.body.data.attributes).toEqual({ submitted: true });
+    expect(result.reused).toBe(false);
+  });
+
+  it("reuses a given draft instead of creating a second submission", async () => {
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({}));
+    const result = await submitVersionForReview(creds, "app-1", "ver-1", "IOS", { reuseSubmissionId: "sub-draft" });
+    expect(result).toEqual({ submissionId: "sub-draft", reused: true });
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/v1/reviewSubmissions"))).toBe(false);
+    expect(calls[0]!.body.data.relationships.reviewSubmission.data.id).toBe("sub-draft");
+    expect(calls[1]!.url).toContain("/v1/reviewSubmissions/sub-draft");
+  });
+
+  it("cancels the draft it created when adding the version fails, and rethrows", async () => {
+    // Otherwise every failed attempt leaves an empty draft behind in App Store Connect.
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    const { creds } = await withFetch(() => ({}));
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (method === "POST" && u.endsWith("/v1/reviewSubmissions")) return new Response(JSON.stringify({ data: { id: "sub-new" } }));
+      if (u.endsWith("/v1/reviewSubmissionItems")) {
+        return new Response(JSON.stringify({ errors: [{ status: "409", detail: "nope" }] }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    await expect(submitVersionForReview(creds, "app-1", "ver-1", "IOS")).rejects.toThrow();
+    const cancel = calls.find((c) => c.method === "PATCH" && c.url.includes("/v1/reviewSubmissions/sub-new"));
+    expect(cancel?.body.data.attributes).toEqual({ canceled: true });
+    expect(calls.some((c) => c.body?.data?.attributes?.submitted === true)).toBe(false);
+  });
+
+  it("does not cancel a reused draft when a later step fails", async () => {
+    // The draft predates this call; cancelling it is a decision for the caller.
+    const { submitVersionForReview } = await import("../src/lib/asc_api");
+    const calls: Array<{ url: string; method: string; body: any }> = [];
+    const { creds } = await withFetch(() => ({}));
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u.endsWith("/v1/reviewSubmissionItems")) {
+        return new Response(JSON.stringify({ errors: [{ status: "409", detail: "nope" }] }), { status: 409 });
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    await expect(submitVersionForReview(creds, "app-1", "ver-1", "IOS", { reuseSubmissionId: "sub-draft" })).rejects.toThrow();
+    expect(calls.some((c) => c.body?.data?.attributes?.canceled === true)).toBe(false);
   });
 
   it("patches an existing localization instead of creating a duplicate", async () => {
@@ -361,5 +455,48 @@ describe("App Store submission", () => {
     expect(calls[1]!.method).toBe("PATCH");
     expect(calls[1]!.url).toContain("/appStoreVersionLocalizations/loc-zh");
     expect(calls[1]!.body.data.attributes).toEqual({ whatsNew: "修复若干问题" });
+  });
+
+  it("never creates a missing localization with only whatsNew", async () => {
+    // A whatsNew-only localization lacks supportUrl; Apple then refuses review.
+    const { setVersionLocalization } = await import("../src/lib/asc_api");
+    const { creds, calls } = await withFetch(() => ({ data: [{ id: "loc-en", attributes: { locale: "en-US" } }] }));
+    await expect(setVersionLocalization(creds, "ver-1", "ja", "新機能")).rejects.toThrow(/localizations push/);
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+});
+
+describe("ASC associated errors", () => {
+  it("keeps Apple's per-resource blockers from meta.associatedErrors", async () => {
+    // "This resource cannot be reviewed, please check associated errors to see why."
+    // names nothing; the blockers are only in meta.associatedErrors (1.17.0, 2026-10-29).
+    const { parseAssociatedErrors } = await import("../src/lib/asc_api");
+    const out = parseAssociatedErrors([{
+      status: "409", code: "STATE_ERROR.ENTITY_STATE_INVALID",
+      title: "appStoreVersions with id 'v1' is not in valid state.",
+      detail: "This resource cannot be reviewed, please check associated errors to see why.",
+      meta: { associatedErrors: {
+        "/v1/appScreenshotSets/s1": [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" }],
+        "/v1/appInfoLocalizations/l1": [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: "name required" }],
+      } },
+    }]);
+    expect(out).toEqual([
+      { resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" },
+      { resource: "/v1/appInfoLocalizations/l1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "name required" },
+    ]);
+  });
+
+  it("is bounded and tolerates junk", async () => {
+    const { parseAssociatedErrors } = await import("../src/lib/asc_api");
+    expect(parseAssociatedErrors(undefined)).toEqual([]);
+    expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": "nope" } } }])).toEqual([]);
+    // null, string and number entries are skipped without throwing; valid ones survive.
+    expect(parseAssociatedErrors([{ meta: { associatedErrors: { "/x": [null, "s", 7, { code: "C", detail: "ok" }] } } }]))
+      .toEqual([{ resource: "/x", code: "C", detail: "ok" }]);
+    expect(parseAssociatedErrors([null, "s", 7])).toEqual([]);
+    const many = Array.from({ length: 50 }, () => ({ code: "C", detail: "d".repeat(1000) }));
+    const out = parseAssociatedErrors([{ meta: { associatedErrors: { "/x": many } } }]);
+    expect(out).toHaveLength(30);
+    expect(out[0]!.detail!.length).toBe(300);
   });
 });

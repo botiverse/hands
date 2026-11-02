@@ -80,6 +80,42 @@ describe("verified TestFlight operation notifications", () => {
     expect(payload.version).toBe("1.13.0");
     expect(payload.build_number).toBe("11300004");
   });
+  it("carries What to Test from the readback and the Hands build's source commit", async () => {
+    const { db, sql } = setup("testflight-publish");
+    sql.exec(`INSERT INTO builds(id,app_id,version_name,version_code,provenance_json,created_at,updated_at)
+      VALUES('hands-build','app','1.13.0',11300004,'{"source_commit":"abc1234def","ci_provider":"github"}',0,0)`);
+    await completeTestflightOperation(db, "app", "operation", "testflight-publish", {
+      ...publish, hands_build_id: "hands-build",
+      localizations: [{ id: "l1", locale: "zh-Hans", whats_new: "测试支付" },
+        { id: "l2", locale: "en-US", whats_new: "y".repeat(1200) }, { id: "l3", locale: "ja", whats_new: null }],
+    });
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload.what_to_test).toEqual({ "zh-Hans": "测试支付", "en-US": "y".repeat(1000) });
+    expect(payload.source_commit).toBe("abc1234def");
+    // Additive only.
+    expect(payload.build).toEqual({ version: "1.13.0", version_code: "11300004" });
+  });
+  it("falls back to the requested What to Test and matches the commit by build number", async () => {
+    const { db, sql } = setup("testflight-publish");
+    sql.exec(`UPDATE operation_logs SET input='{"version_code":11300004,"what_to_test":{"en-US":"Check login"}}';
+      INSERT INTO builds(id,app_id,version_name,version_code,provenance_json,created_at,updated_at)
+      VALUES('other-build','other','1.13.0',11300004,'{"source_commit":"wrong-app"}',0,0),
+        ('hands-build','app','1.13.0',11300004,'{"source_commit":"fedcba9"}',0,0);`);
+    await completeTestflightOperation(db, "app", "operation", "testflight-publish", { ...publish, localizations: [] });
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload.what_to_test).toEqual({ "en-US": "Check login" });
+    expect(payload.source_commit).toBe("fedcba9");
+  });
+  it("reports null card fields when neither notes nor a Hands build exist", async () => {
+    const { db, sql } = setup("testflight-publish");
+    await completeTestflightOperation(db, "app", "operation", "testflight-publish", publish);
+    const row = sql.prepare("SELECT payload_json FROM webhook_deliveries LIMIT 1").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload).toHaveProperty("what_to_test", null);
+    expect(payload).toHaveProperty("source_commit", null);
+  });
   it("serializes all selected internal group names for scalar templates and excludes other groups", async () => {
     const { db, sql } = setup("testflight-publish");
     await completeTestflightOperation(db, "app", "operation", "testflight-publish", {

@@ -14,41 +14,36 @@ full command surface, the [CLI Reference](cli-reference.md).
 
 ## Choose the right auth surface
 
-Hands supports both Raft manifest actions and the local CLI, but their sessions
-are intentionally separate:
+`@botiverse/hands-cli` is the supported surface for interactive agent/admin
+actions and CI. The Raft manifest retains only `agent-login` and
+`migration-help`, plus the five feedback actions temporarily needed while
+support consumers finish migrating to this CLI flow. Other manifest actions
+are no longer exposed; their HTTP API routes are unchanged.
 
-- `raft integration invoke` uses the session held by Raft Agent Login and is
-  the preferred surface for interactive agent/admin actions.
-- `@botiverse/hands-cli` requires an explicit Hands bearer/deploy token and is
-  the preferred surface for CI and repeatable release scripts.
+The Raft Agent Login session and the CLI session are intentionally separate.
+Do not scrape cookies or callback handoffs to bridge them. Inside a managed
+Raft agent, `hands login` uses the manifest's `agent-login` action and stores a
+refreshable Hands session for subsequent commands. Humans use the browser
+login flow; CI uses an explicit deploy token.
 
-An integration login is not exported to the CLI through environment
-variables. Do not scrape cookies or callback handoffs to bridge the two.
-
-## 1. Get a CLI token
-
-For app-scoped automation, an admin can create a deploy token through the
-Hands console or the Raft integration:
+## 1. Authenticate the CLI
 
 ```bash
-raft integration login --service hands-4cc7a2
-raft integration invoke --service hands-4cc7a2 \
-  --action create-deploy-token \
-  --param app_id=<app-uuid> \
-  --data-json '{"name":"agent-cli","app_role":"publisher"}' \
-  --json
+npm install -g @botiverse/hands-cli
+hands login
+hands whoami
 ```
 
-Store the one-time raw token in a private secret manager, then export it for
-the CLI:
+For app-scoped CI automation, an app admin can instead create a deploy token:
 
 ```bash
-export HANDS_BEARER_TOKEN=<deploy-token>
+hands deploy-tokens create <app> --name agent-cli --role publisher --json
 ```
 
-Use a `viewer` token for read-only triage and `publisher` only when the script
-must upload or mutate releases. Revoke and replace any token whose initial
-secret-store write fails.
+Store the one-time raw token in a private secret manager, then export it as
+`HANDS_AUTH_TOKEN` for the CLI. Use a `viewer` token for read-only triage and
+`publisher` only when the script must mutate tickets or releases. Revoke and
+replace any token whose initial secret-store write fails.
 
 ## 2. Run the CLI
 

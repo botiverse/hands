@@ -16,7 +16,10 @@ const R2_KEY = "electron/build/installer.exe";
 
 type RangeArg = { offset: number; length?: number } | undefined;
 
-function makeApp(rangeSeen: { value: RangeArg } = { value: undefined }) {
+function makeApp(
+  rangeSeen: { value: RangeArg } = { value: undefined },
+  getImpl?: (key: string, opts?: { range?: RangeArg }) => Promise<any>,
+) {
   const app = new Hono<{ Bindings: any }>();
   app.get("/electron/:slug/:channel/:file", handleElectronGenericAsset as any);
   const env = {
@@ -47,7 +50,7 @@ function makeApp(rangeSeen: { value: RangeArg } = { value: undefined }) {
       }),
     },
     APK_BUCKET: {
-      get: async (_key: string, opts?: { range?: RangeArg }) => {
+      get: getImpl ?? (async (_key: string, opts?: { range?: RangeArg }) => {
         rangeSeen.value = opts?.range;
         const r = opts?.range;
         const slice = r ? FILE_BYTES.slice(r.offset, r.offset + (r.length ?? FILE_BYTES.length)) : FILE_BYTES;
@@ -56,7 +59,7 @@ function makeApp(rangeSeen: { value: RangeArg } = { value: undefined }) {
           httpEtag: '"etag-test"',
           writeHttpMetadata: (h: Headers) => h.set("content-type", "application/octet-stream"),
         };
-      },
+      }),
     },
   };
   return { app, env };
@@ -164,6 +167,23 @@ describe("electron download route — Range", () => {
     // the documented "no range support" answer that makes clients re-download in full.
     expect(res.status).toBe(200);
     expect(seen.value).toBeUndefined();
+    expect(new Uint8Array(await res.arrayBuffer()).length).toBe(FILE_BYTES.length);
+  });
+
+  it("retries a transient R2 get failure on the real download route", async () => {
+    let attempts = 0;
+    const { app, env } = makeApp({ value: undefined }, async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("get: We encountered an internal error. Please try again. (10001)");
+      return {
+        body: FILE_BYTES,
+        httpEtag: '"etag-test"',
+        writeHttpMetadata: (h: Headers) => h.set("content-type", "application/octet-stream"),
+      };
+    });
+    const res = await app.request("/electron/raft-desktop/main/installer.exe", {}, env as any);
+    expect(res.status).toBe(200);
+    expect(attempts).toBe(2);
     expect(new Uint8Array(await res.arrayBuffer()).length).toBe(FILE_BYTES.length);
   });
 });

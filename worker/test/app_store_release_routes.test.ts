@@ -4,6 +4,7 @@ import {
   handlePrepareAppStoreVersion,
   handleSetAppStoreReleaseNotes,
   handleWithdrawAppStoreVersion,
+  handleGetAppStoreReleaseStatus,
 } from "../src/routes/app_store_release";
 
 /**
@@ -11,7 +12,7 @@ import {
  * external, hard-to-undo effect, so the cases that matter are the ones where it must
  * REFUSE.
  */
-async function makeContext(body: unknown, opts: { submissions?: Array<{ id: string; state: string }> } = {}) {
+async function makeContext(body: unknown, opts: { query?: Record<string, string> } = {}) {
   const appId = "app-1";
   // Answer per statement instead of returning one object for every query: a blanket
   // stub makes a query against a column that does not exist look fine (that is how
@@ -27,6 +28,8 @@ async function makeContext(body: unknown, opts: { submissions?: Array<{ id: stri
           if (/FROM channels/i.test(sql)) return { bundle_id: "build.raft.app" };
           return {};
         },
+        // The audit row written after a successful submit.
+        run: async () => ({ meta: { changes: 1 } }),
       }),
     }),
   };
@@ -34,7 +37,7 @@ async function makeContext(body: unknown, opts: { submissions?: Array<{ id: stri
     env: { DB: db, ASC_CRED_ENC_KEY: "k" },
     req: {
       param: (name: string) => (name === "appId" ? appId : name === "versionId" ? "ver-1" : ""),
-      query: () => undefined,
+      query: (name: string) => opts.query?.[name],
       json: async () => body,
     },
     get: () => "test:publisher",
@@ -82,7 +85,7 @@ describe("App Store submission guards", () => {
         return new Response(JSON.stringify({ data: [{ id: "sub-9", attributes: { state: "WAITING_FOR_REVIEW" } }] }));
       }
       if (u.includes("/reviewSubmissions/sub-9/items")) {
-        return new Response(JSON.stringify({ data: [{ relationships: { appStoreVersionForReview: { data: { id: "ver-old" } } } }] }));
+        return new Response(JSON.stringify({ data: [{ relationships: { appStoreVersion: { data: { id: "ver-old" } } } }] }));
       }
       return new Response(JSON.stringify({ data: {} }));
     }));
@@ -92,6 +95,29 @@ describe("App Store submission guards", () => {
     expect(body.code).toBe("REVIEW_ALREADY_PENDING");
     expect(body.submission_id).toBe("sub-9");
     expect(body.version_id).toBe("ver-old");
+  });
+
+  it("reuses an open READY_FOR_REVIEW draft left by an earlier failed attempt", async () => {
+    // A failed attempt can leave the draft created in step 1 behind; the retry must
+    // put the version into that draft rather than open a second one.
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      if (method !== "GET") writes.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.17.0", platform: "IOS" } }] }));
+      }
+      if (u.includes("/reviewSubmissions?")) {
+        return new Response(JSON.stringify({ data: [{ id: "sub-draft", attributes: { state: "READY_FOR_REVIEW", platform: "IOS" } }] }));
+      }
+      return new Response(JSON.stringify({ data: {} }));
+    }));
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ submission_id: "sub-draft", submitted: true, reused_draft: true });
+    expect(writes.some((w) => w.method === "POST" && w.url.endsWith("/v1/reviewSubmissions"))).toBe(false);
+    expect(writes[0]!.body.data.relationships.reviewSubmission.data.id).toBe("sub-draft");
   });
 
   it("refuses to reuse a version Apple is holding, so an in-review 1.12 cannot be modified", async () => {
@@ -152,6 +178,45 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
+  function notesApple(locales: string[]) {
+    const writes: Array<{ method: string; url: string; body: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      if (u.includes("/appStoreVersions?")) return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.17.0" } }] }));
+      if (method !== "GET") {
+        writes.push({ method, url: u, body: JSON.parse(String(init!.body)) });
+        return new Response(JSON.stringify({ data: {} }));
+      }
+      if (u.includes("/appStoreVersionLocalizations")) {
+        return new Response(JSON.stringify({ data: locales.map((locale) => ({ id: `loc-${locale}`, attributes: { locale } })) }));
+      }
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    return writes;
+  }
+
+  it("refuses What's New for a locale with no localization, writing nothing", async () => {
+    // Creating it with only whatsNew leaves supportUrl unset and Apple refuses review.
+    const writes = notesApple(["en-US"]);
+    const res = await handleSetAppStoreReleaseNotes(await makeContext({ notes: { "en-US": "Bug fixes", ja: "不具合を修正" } }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ code: "LOCALIZATION_MISSING", locales: ["ja"] });
+    expect(body.next_action).toContain("hands app-store localizations push");
+    expect(writes).toEqual([]);
+  });
+
+  it("updates What's New on existing locales with a PATCH", async () => {
+    const writes = notesApple(["en-US", "ja"]);
+    const res = await handleSetAppStoreReleaseNotes(await makeContext({ notes: { "en-US": "Bug fixes", ja: "不具合を修正" } }));
+    expect(res.status).toBe(200);
+    expect(writes.map((w) => `${w.method} ${w.url.replace(/^https:\/\/[^/]+/, "")}`)).toEqual([
+      "PATCH /v1/appStoreVersionLocalizations/loc-en-US",
+      "PATCH /v1/appStoreVersionLocalizations/loc-ja",
+    ]);
+    expect(writes[1]!.body.data.attributes).toEqual({ whatsNew: "不具合を修正" });
+  });
+
   it("refuses a submission id belonging to another app, with no write", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
       const u = String(url);
@@ -186,5 +251,123 @@ describe("App Store submission guards", () => {
     );
     expect(res.status).toBe(400);
     expect((await res.json() as any).code).toBe("INVALID_RELEASE_TYPE");
+  });
+});
+
+/**
+ * A rejected submission (UNRESOLVED_ISSUES) stays open and Apple refuses a new one for
+ * the platform until it is resubmitted or cancelled. `owner` is the version its item
+ * holds; every non-GET is recorded.
+ */
+function stubUnresolved(owner: string | null, writes: Array<{ url: string; method: string; body: any }>) {
+  vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+    const u = String(url); const method = init?.method ?? "GET";
+    if (method !== "GET") {
+      writes.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response(JSON.stringify({ data: {} }));
+    }
+    if (u.includes("/appStoreVersions?")) {
+      return new Response(JSON.stringify({ data: [{ id: "ver-1", attributes: { versionString: "1.17.0", platform: "IOS", appVersionState: "REJECTED" } }] }));
+    }
+    if (u.includes("/reviewSubmissions?")) {
+      return new Response(JSON.stringify({ data: [
+        { id: "sub-done", attributes: { state: "COMPLETE", platform: "IOS" } },
+        { id: "sub-rej", attributes: { state: "UNRESOLVED_ISSUES", platform: "IOS" } },
+      ] }));
+    }
+    if (u.includes("/reviewSubmissions/sub-rej/items")) {
+      return new Response(JSON.stringify({ data: owner ? [{ relationships: { appStoreVersion: { data: { id: owner } } } }] : [] }));
+    }
+    return new Response(JSON.stringify({ data: [] }));
+  }));
+}
+
+describe("App Store rejected (UNRESOLVED_ISSUES) submissions", () => {
+  it("resubmits the rejected submission that holds this version, without a new submission or item", async () => {
+    // The version is already an item of the open submission: creating a submission is
+    // refused by Apple while it is open, and adding the item again fails.
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    stubUnresolved("ver-1", writes);
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ submission_id: "sub-rej", submitted: true, resubmitted: true });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: "PATCH" });
+    expect(writes[0]!.url).toMatch(/\/v1\/reviewSubmissions\/sub-rej$/);
+    expect(writes[0]!.body.data.attributes).toEqual({ submitted: true });
+  });
+
+  it("refuses when the rejected submission holds another version, and writes nothing", async () => {
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    stubUnresolved("ver-old", writes);
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body).toMatchObject({ code: "UNRESOLVED_SUBMISSION_PENDING", submission_id: "sub-rej", submission_state: "UNRESOLVED_ISSUES", version_id: "ver-old" });
+    expect(body.next_action).toContain("sub-rej");
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses when the rejected submission's version cannot be read, rather than resubmitting it", async () => {
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    stubUnresolved(null, writes);
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(409);
+    expect((await res.json() as any)).toMatchObject({ code: "UNRESOLVED_SUBMISSION_PENDING", version_id: null });
+    expect(writes).toEqual([]);
+  });
+
+  it("withdraw by version cancels the rejected submission holding it", async () => {
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    stubUnresolved("ver-1", writes);
+    const res = await handleWithdrawAppStoreVersion(await makeContext({ version_id: "ver-1" }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ submission_id: "sub-rej", version_id: "ver-1", canceled: true });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.url).toMatch(/\/v1\/reviewSubmissions\/sub-rej$/);
+    expect(writes[0]!.body.data.attributes).toEqual({ canceled: true });
+  });
+
+  it("status reports the rejected submission as pending", async () => {
+    const writes: Array<{ url: string; method: string; body: any }> = [];
+    stubUnresolved("ver-1", writes);
+    const res = await handleGetAppStoreReleaseStatus(await makeContext({}, { query: { version_string: "1.17.0" } }));
+    expect(res.status).toBe(200);
+    expect((await res.json() as any).pending_submission).toEqual({ id: "sub-rej", state: "UNRESOLVED_ISSUES" });
+    expect(writes).toEqual([]);
+  });
+});
+
+describe("App Store error body", () => {
+  it("passes Apple's associated errors through to the caller", async () => {
+    const { errorBody } = await import("../src/routes/app_store_release");
+    const { AscApiError } = await import("../src/lib/asc_api");
+    const { status, body } = errorBody(new AscApiError(409, "not in valid state", "check associated errors",
+      [{ resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" }]));
+    expect(status).toBe(502);
+    expect(body.provider_associated_errors).toEqual([
+      { resource: "/v1/appScreenshotSets/s1", code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", detail: "screenshots required" },
+    ]);
+    expect(errorBody(new AscApiError(409, "x")).body.provider_associated_errors).toBeUndefined();
+  });
+
+  it("passes Apple's code, source and further errors through, only when present", async () => {
+    const { errorBody } = await import("../src/routes/app_store_release");
+    const { AscApiError } = await import("../src/lib/asc_api");
+    const error = new AscApiError(409, "A required attribute is missing.", "supportUrl required");
+    error.code = "ENTITY_ERROR.ATTRIBUTE.REQUIRED";
+    error.source = "/data/attributes/supportUrl";
+    error.others = [{ code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED", title: null, detail: "keywords required", source: "/data/attributes/keywords" }];
+    expect(errorBody(error).body).toMatchObject({
+      code: "ASC_API_REJECTED",
+      provider_cause: "supportUrl required",
+      provider_code: "ENTITY_ERROR.ATTRIBUTE.REQUIRED",
+      provider_source: "/data/attributes/supportUrl",
+      provider_errors: error.others,
+    });
+    const bare = errorBody(new AscApiError(409, "x")).body;
+    expect(bare).not.toHaveProperty("provider_code");
+    expect(bare).not.toHaveProperty("provider_source");
+    expect(bare).not.toHaveProperty("provider_errors");
   });
 });

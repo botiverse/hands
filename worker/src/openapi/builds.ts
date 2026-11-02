@@ -218,6 +218,31 @@ export function registerBuildRoutes(): RouteConfigList {
   });
 
   routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/testflight-crashes/backfill",
+    tags: ["TestFlight"],
+    summary: "Backfill TestFlight crash submissions into feedback triage",
+    description:
+      "Reads existing crash submissions from Apple and idempotently creates Hands crash tickets and internal log attachments using the same ingest as the Apple webhook. Accepts the same build/version/limit filters. Returns ticket and failed submission ids. Requires app admin.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        build: z.string().optional(),
+        version: z.string().optional(),
+        limit: z.string().optional(),
+      }),
+    },
+    responses: {
+      200: success("Backfill completed; ticket and failed submission ids returned.", GenericObject),
+      400: error("Invalid filter, or the app/bundle id/ASC credentials are not configured for iOS."),
+      403: error("App admin role is required."),
+      404: error("Hands app, App Store Connect app, or the requested build was not found."),
+      502: error("Apple rejected the request."),
+    },
+  });
+
+  routes.push({
     method: "get",
     path: "/api/apps/{appId}/testflight-crashes/{submissionId}/log",
     tags: ["TestFlight"],

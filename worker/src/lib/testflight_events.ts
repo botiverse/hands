@@ -1,3 +1,55 @@
+/** Per-locale cap on What to Test text carried in a notification payload. */
+const WHAT_TO_TEST_MAX = 1000;
+
+/** locale -> What to Test text for a notification card, or null when there is
+ * none. Accepts Apple localization resources, the publish readback's
+ * `{ locale, whats_new }` rows, or the request's locale -> text object. */
+export function whatToTestMap(items: unknown): Record<string, string> | null {
+  const entries: Array<[unknown, unknown]> = Array.isArray(items)
+    ? items.map((item) => item?.attributes
+      ? [item.attributes.locale, item.attributes.whatsNew]
+      : [item?.locale, item?.whats_new])
+    : items && typeof items === "object" ? Object.entries(items) : [];
+  const out: Record<string, string> = {};
+  for (const [locale, text] of entries) {
+    if (typeof locale !== "string" || !locale || typeof text !== "string" || !text.trim()) continue;
+    // Code points, not UTF-16 units: a cut must not split a surrogate pair.
+    out[locale] = Array.from(text).slice(0, WHAT_TO_TEST_MAX).join("");
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Source commit recorded on the Hands build behind an iOS build number (CI
+ * writes it to `provenance_json.source_commit`). Best effort: any miss or error
+ * is null, so a lookup can never cost the notification it decorates. */
+export async function lookupSourceCommit(db: D1Database, appId: string,
+  ref: { handsBuildId?: string | null | undefined; versionCode?: string | number | null | undefined }): Promise<string | null> {
+  try {
+    const select = `SELECT CASE WHEN json_valid(b.provenance_json)
+        THEN json_extract(b.provenance_json,'$.source_commit') END AS source_commit
+      FROM builds b JOIN apps a ON a.id=b.app_id AND a.platform='ios' WHERE b.app_id=?1`;
+    const pick = (row: { source_commit?: unknown } | null) => {
+      const value = typeof row?.source_commit === "string" ? row.source_commit.trim() : "";
+      return value && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value) ? value : null;
+    };
+    if (ref.handsBuildId) {
+      const found = pick(await db.prepare(`${select} AND b.id=?2`).bind(appId, ref.handsBuildId)
+        .first<{ source_commit: unknown }>());
+      if (found) return found;
+    }
+    const code = ref.versionCode == null ? "" : String(ref.versionCode);
+    if (!/^\d{1,15}$/.test(code)) return null;
+    // Several Hands builds can share a build number (e.g. a QA simulator build);
+    // prefer one that recorded a commit, newest first.
+    return pick(await db.prepare(`${select} AND b.version_code=?2
+        AND CASE WHEN json_valid(b.provenance_json)
+          THEN json_type(b.provenance_json,'$.source_commit') END='text'
+      ORDER BY b.created_at DESC LIMIT 1`).bind(appId, Number(code)).first<{ source_commit: unknown }>());
+  } catch {
+    return null;
+  }
+}
+
 /** Notifications from verified Apple operation readbacks, not Apple callbacks. */
 export function testflightOperationEvent(kind: string, result: Record<string, unknown>) {
   if (result.ok !== true || typeof result.asc_app_id !== "string") return null;
@@ -45,6 +97,10 @@ export async function completeTestflightOperation(db: D1Database, appId: string,
     const versionValue = (result.version as string | null | undefined) ?? (identity.version_name as string | null | undefined) ?? null;
     const buildNumberValue = (result.build_number as string | null | undefined)
       ?? (identity.version_code == null ? null : String(identity.version_code));
+    const sourceCommit = await lookupSourceCommit(db, appId, {
+      handsBuildId: (result.hands_build_id as string | undefined) ?? (identity.hands_build_id as string | undefined),
+      versionCode: buildNumberValue,
+    });
     const body = JSON.stringify({ event: event.event, event_id: eventId, delivered_at: now,
       org_id: app.org_id, app_id: appId, payload: {
         ...event, source: "hands_operation_receipt", operation_id: operationId,
@@ -59,6 +115,10 @@ export async function completeTestflightOperation(db: D1Database, appId: string,
         // consumers.
         build: { version: versionValue, version_code: buildNumberValue },
         app_store_connect_url: `https://appstoreconnect.apple.com/apps/${result.asc_app_id}`,
+        // Card decoration, same keys as testflight:external_state_changed. The
+        // readback is what Apple holds; the request input covers an empty readback.
+        what_to_test: whatToTestMap(result.localizations) ?? whatToTestMap(identity.what_to_test),
+        source_commit: sourceCommit,
       } });
     statements.push(db.prepare(`INSERT INTO webhook_deliveries
       (id,webhook_id,event_type,payload_json,status,attempts,max_attempts,next_attempt_at,

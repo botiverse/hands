@@ -1,6 +1,6 @@
 import { isTransientD1LookupError } from "../lib/d1_lookup_recovery";
 import { sealedReporterFailure } from "../lib/reporter_failure_detail";
-import { reporterFailureDiagnostic } from "../lib/reporter_failure";
+import { isReporterDatabaseStage, reporterFailureDiagnostic } from "../lib/reporter_failure";
 import type { MiddlewareHandler, ErrorHandler } from "hono";
 
 // Emit final statuses, including validators/auth short-circuiting before handlers.
@@ -13,6 +13,8 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
   const route = [...c.req.matchedRoutes].reverse()
     .find((r) => !r.path.includes("*"))?.path ?? "unmatched";
   const ray = c.req.header("cf-ray") ?? "";
+  const traceId = c.req.header("x-trace-id") ?? "";
+  const requestId = /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null;
   const isReporterFailure = c.res.status >= 500 && (
     (c.req.method === "GET" && route === "/api/apps/:appId/reporter-feedback")
     || (c.req.method === "PUT" && route === "/api/apps/:appId/reporter-feedback/route-subject")
@@ -27,7 +29,8 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
     route,
     status: c.res.status,
     duration_ms: Math.max(0, Date.now() - started),
-    request_id: /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null,
+    request_id: requestId,
+    trace_id: /^[a-f0-9]{32}$/.test(traceId) ? traceId : null,
   }));
 };
 
@@ -41,7 +44,7 @@ export const reporterErrorHandler: ErrorHandler = (error, c) => {
   const path = c.req.path;
   const reporter = (c.req.method === "GET" && /^\/api\/apps\/[^/]+\/reporter-feedback$/.test(path))
     || (c.req.method === "PUT" && /^\/api\/apps\/[^/]+\/reporter-feedback\/route-subject$/.test(path));
-  if (reporter && isTransientD1LookupError(error)) {
+  if (reporter && isReporterDatabaseStage(c) && isTransientD1LookupError(error)) {
     // Cover later database stages too, without replaying an ambiguous write.
     // Hono preserves c.error for the sealed telemetry after this response.
     c.header("Retry-After", "1");

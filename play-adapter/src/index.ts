@@ -468,5 +468,26 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
         return failure(error, operationId);
       }
     },
+
+    /** Separate RPC so an older adapter cannot silently ignore the required check. */
+    async promoteWithPriorMapping(
+      input: PromotionRpcInput,
+      symbolsBody: ReadableStream<Uint8Array> | null,
+      env: PlayAdapterEnv,
+    ): Promise<AdapterResult<Awaited<ReturnType<GooglePlayClient["promote"]>>>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        if (input.mapping != null) {
+          throw new PlayAdapterError(400, "promotion_request_invalid", "Mapping must be omitted for this RPC");
+        }
+        // This RPC never uploads a bundle; no AAB stream crosses the boundary.
+        const unusedBody = new ReadableStream<Uint8Array>({ start(controller) { controller.close(); } });
+        const promotion = promotionInput(input, unusedBody, symbolsBody, null, env);
+        const resolved = await client(input, env);
+        return { ok: true, value: await resolved.client.promote({ ...promotion, requireExistingBundle: true }) };
+      } catch (error) {
+        return failure(error, operationId);
+      }
+    },
   };
 }

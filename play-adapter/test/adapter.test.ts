@@ -613,6 +613,38 @@ describe("Google Play adapter RPC service", () => {
     expect(fixture.requests.filter((r) => r.method === "PUT")).toHaveLength(1);
   });
 
+  it("promotes without a mapping stream only after finding the exact bundle", async () => {
+    const fixture = googleFixture();
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promoteWithPriorMapping(promotion(), null, environment());
+    expect(result).toMatchObject({ ok: true, value: { bundle_uploaded: false, confirmed_existing_bundle: true } });
+    expect(fixture.requests.some((r) => r.url.includes("uploadType=media"))).toBe(false);
+    expect(fixture.requests.some((r) => r.method === "PUT" && r.url.includes("/tracks/"))).toBe(true);
+    expect(fixture.requests.some((r) => r.url.includes(":commit"))).toBe(true);
+  });
+
+  it.each([
+    ["missing", null, "play_bundle_not_on_play"],
+    ["different", "b".repeat(64), "aab_integrity_mismatch"],
+  ])("does not upload or commit without mapping when the Play bundle is %s", async (_label, playSha, code) => {
+    const fixture = googleFixture();
+    if (playSha) fixture.alreadyOnPlay(42, playSha);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promoteWithPriorMapping(promotion(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { code } });
+    expect(fixture.requests.some((r) => r.url.includes("uploadType=media") || r.url.includes(":commit") || r.method === "PUT")).toBe(false);
+    expect(fixture.requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("rejects a declared mapping on the prior-mapping RPC before calling Play", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promoteWithPriorMapping(promotion({ mapping: mappingDeclaration() }), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { code: "promotion_request_invalid" } });
+    expect(fixture.requests).toHaveLength(0);
+  });
+
   it("refuses when Play holds the same versionCode with DIFFERENT bytes", async () => {
     // A versionCode match alone is not proof the bytes are ours: the console may have
     // received a different build under the same code. Shipping those while the receipt

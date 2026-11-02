@@ -37,6 +37,7 @@ import {
   type AscApiCredentials,
   type BetaFeedbackCrashSubmission,
 } from "../lib/asc_api";
+import { prepareTestflightCrashIngest } from "./apple_webhooks";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -236,6 +237,43 @@ export async function handleListTestflightCrashes(c: AdminContext) {
       filter: { build: filter.buildNumber ?? null, version: filter.version ?? null, limit: filter.limit },
       crashes: submissions.map((s) => publicCrash(s, labels)),
       note: "Only crashes testers chose to share from TestFlight appear here; unshared crashes are only in Xcode Organizer.",
+    });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+}
+
+export async function handleBackfillTestflightCrashes(c: AdminContext) {
+  try {
+    const filter = parseBuildFilter(c);
+    const { bundleId, ascAppId, creds } = await resolveIosAppContext(c);
+    const submissions = await listForFilter(creds, ascAppId, bundleId, filter, (args) =>
+      listBetaFeedbackCrashSubmissions(creds, args),
+    );
+    const labels = await describeBuilds(creds, buildIdsOf(submissions));
+    const now = Date.now();
+    const ticketIds: string[] = [];
+    const failedSubmissionIds: string[] = [];
+    for (const submission of submissions) {
+      const buildId = submission.relationships?.build?.data?.id ?? null;
+      const label = buildId ? labels.get(buildId) : undefined;
+      const ingest = await prepareTestflightCrashIngest(c.env, c.req.param("appId")!, submission.id, {
+        version: label?.version ?? null,
+        version_code: label?.build_number ?? null,
+      }, now);
+      if (ingest) {
+        await c.env.DB.batch(ingest.statements);
+        ticketIds.push(ingest.ticketId);
+      } else {
+        failedSubmissionIds.push(submission.id);
+      }
+    }
+    return c.json({
+      ok: true,
+      requested: submissions.length,
+      ticket_ids: ticketIds,
+      failed_submission_ids: failedSubmissionIds,
+      filter: { build: filter.buildNumber ?? null, version: filter.version ?? null, limit: filter.limit },
     });
   } catch (error) {
     return errorResponse(c, error);

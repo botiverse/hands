@@ -17,28 +17,26 @@ Two options, by scope:
 
 | Method | Scope | Use for |
 |---|---|---|
-| **Raft Agent Login** | Your org-wide role (viewer/member/admin/owner) | Admin operations: creating apps, reviewing/publishing releases, triaging tickets, managing shares. |
+| **Hands CLI login** | Your org-wide role (viewer/member/admin/owner) | Admin operations: creating apps, reviewing/publishing releases, triaging tickets, managing shares. |
 | **Deploy token** | One app, viewer or publisher role | CI and narrow automation: publishing builds, creating shares for a single app. |
 
-### Raft Agent Login
+### Hands CLI login
 
-From a Raft-connected machine:
+Install and authenticate once:
 
 ```bash
-raft integration login --service hands-4cc7a2
-raft integration invoke --service hands-4cc7a2 --list-actions
-raft integration invoke --service hands-4cc7a2 --action list-apps
+npm install -g @botiverse/hands-cli
+hands login
+hands apps list
 ```
 
-Raft stores the Agent Login session inside the integration service and applies
-it when `integration invoke` calls a manifest action. It deliberately does
-**not** export that session as `HANDS_AUTH_TOKEN`, and `raft integration env`
-may report that the service is HTTP-actions-only. This is a security boundary,
-not a missing login.
-
-Do not expect the local `hands` CLI to inherit an integration login. Use
-manifest actions for interactive admin work. Use a dedicated app deploy token
-for CLI/CI automation.
+Inside a managed Raft agent, `hands login` exchanges a one-time grant through
+the manifest's `agent-login` action and stores a refreshable Hands session.
+Humans use the browser flow. The separate Raft integration session is not
+exported as `HANDS_AUTH_TOKEN`; do not scrape cookies or callback handoffs to
+bridge the two. For migration guidance, call the manifest's `migration-help`
+action. Other manifest actions have been removed, except for a temporary
+feedback bridge while support consumers finish their CLI migration.
 
 Your capabilities follow your Hands org role. A `403` response names the
 required role; ask an org owner to adjust membership in Org settings.
@@ -52,29 +50,21 @@ target may not appear in the admin's same-org picker. The target should run
 admin can then grant direct access without sharing a login token:
 
 ```bash
-raft integration invoke --service hands-4cc7a2 \
-  --action add-app-member \
-  --param app_id=<app-uuid> \
-  --data-json '{"account_id":"<hands-account-uuid>","app_role":"viewer"}' \
-  --json
+hands apps add-member <app> <hands-account-uuid> viewer
+hands api GET /api/apps/<app-uuid>/members   # verify the direct grants
 ```
 
-Use `list-app-members` to verify the exact account id, server identity, and
-app role. `update-app-member` changes the direct role and
-`remove-app-member` removes only the direct grant; inherited org/server access
-is unchanged.
+`hands apps update-member` changes the direct role and
+`hands apps remove-member` removes only the direct grant; inherited org/server
+access is unchanged.
 
 ### Deploy tokens
 
-Created in an app's **Settings -> Deploy Tokens** UI, by the CLI when it
-already has an admin bearer token, or by an admin Agent Login action:
+Create one in an app's **Settings -> Deploy Tokens** UI, or through the CLI
+when the current identity is an app admin:
 
 ```bash
-raft integration invoke --service hands-4cc7a2 \
-  --action create-deploy-token \
-  --param app_id=<app-uuid> \
-  --data-json '{"name":"github-ci","app_role":"publisher"}' \
-  --json
+hands deploy-tokens create <app> --name github-ci --role publisher --json
 ```
 
 The raw token is returned exactly once. Pipe it directly into the target CI
@@ -115,48 +105,21 @@ CI creates drafts; an agent reviews and publishes. **Never publish without
 reviewing the changelog, and never activate without explicit, current human
 authorization.**
 
-**Raft agents — manifest actions (no CLI, no tokens).** After a one-time
-`raft integration login --service <hands-service>`, release management is
-plain `raft integration invoke`; the server enforces app RBAC (viewer for
-reads, publisher for writes):
-
-```bash
-# create a DRAFT from an existing verified build (the server enforces draft;
-# activation is impossible on this endpoint — publish-release is the only path)
-raft integration invoke --service <hands-service> --action create-release \
-  --param app_id=<app-uuid> --param build_id=<build-uuid>
-
-# attach reviewed bilingual notes (change-logs/<version>/*.md is the source of truth)
-raft integration invoke --service <hands-service> --action update-release \
-  --param app_id=<app-uuid> --param release_id=<release-uuid> \
-  --param expected_revision=<fresh-detail-revision> \
-  --param release_notes='{"en":"...","zh-CN":"..."}'
-
-# ONLY after explicit human approval of the draft:
-raft integration invoke --service <hands-service> --action publish-release \
-  --param app_id=<app-uuid> --param release_id=<release-uuid> \
-  --param expected_revision=<same-fresh-detail-revision> \
-  --param expected_scopes='[{"scope_type":"full","scope_value":"all"}]'
-```
-
-Also available: `list-releases`, `get-release`, `list-release-shares`
-(viewer), `create-release-share` / `update-release-share` /
-`revoke-release-share` (publisher —
-share pages are how a draft gets to a human for device review; links have no
-expiry unless you set one, and `update-release-share` with `expires_at: null`
-restores that never-expiring state; such links die only on revoke). When
-reporting a release, always cite the build's APK SHA-256 — the binary hash is
-the authority, not a branch head or run id. A 403 means your identity lacks
-the app role: ask an app admin to grant it; never borrow credentials.
-
-**Humans / CI — hands CLI** (browser login or deploy token):
+Use the Hands CLI with either an interactive login or a deploy token:
 
 ```bash
 hands releases show <app> <releaseId>                 # inspect draft + raw changelog
 hands releases update <app> <releaseId> \
   --changelog-file zh=zh.md --changelog-file en=en.md  # reviewed, per-language
 hands releases publish <app> <releaseId>              # explicit go-live
+hands releases shares <app> <releaseId>
 ```
+
+Share pages are how a draft gets to a human for device review; links have no
+expiry unless you set one. When reporting a release, always cite the build's
+APK SHA-256 — the binary hash is the authority, not a branch head or run id. A
+403 means your identity lacks the app role: ask an app admin to grant it;
+never borrow credentials.
 
 Always derive `expected_revision` and `expected_scopes` from the same fresh
 release detail immediately before a write. Every lifecycle mutation increments
@@ -193,171 +156,11 @@ presence.
 
 ### TestFlight upload and distribution
 
-TestFlight is a separate state machine from the Hands draft and from App Store
-production publishing. App-level invitation copy is also separate from each
-build's What to Test text. The integration exposes eight actions:
-
-- `get-testflight-beta-app-description` (viewer): read live app-level
-  `betaAppLocalizations.description` values.
-- `update-testflight-beta-app-description` (publisher): upsert only supplied
-  app-level locales and require exact Apple readback. Run this live metadata
-  mutation only with explicit authorization.
-
-- `upload-testflight-build` (app publisher): stream the existing signed Hands IPA
-  to Apple's Build Upload API.
-- `get-testflight-upload-status` (viewer): poll the returned Apple upload id to
-  `state.state=COMPLETE|FAILED`, retaining Apple's errors/warnings/infos.
-- `list-testflight-groups` (viewer): get stable internal/external beta group
-  ids for the exact app.
-- `expire-testflight-build` (app admin): after explicit human authorization,
-  expire one exact beta build using its ASC build id plus immutable
-  version/build confirmations; a durable redacted operation receipt is written
-  before Apple mutation, PATCH/readback outcomes are terminalized, and exact
-  retries are no-ops linked to any prior PATCH-confirmed operation.
-- `publish-testflight-build` (publisher): assign a processed build to selected
-  groups, upsert localized What to Test text, and submit external Beta App
-  Review when requested.
-- `get-testflight-publish-status` (viewer): refresh processing, expiry, group,
-  localization, review, and auto-notify state.
-
-The `.p8` stays encrypted in Hands. No action returns it, activates a Hands
-release, or creates/submits/releases an App Store production version.
-
-```bash
-# App-level Beta App Description. This does not change What to Test or a build.
-raft integration invoke --service <hands-service> \
-  --action update-testflight-beta-app-description \
-  --param app_id=<app-uuid> \
-  --data-json '{"descriptions":{"en-US":"Private collaboration for teams.","zh-Hans":"面向团队的私密协作应用。"}}' --json
-```
-
-```bash
-# Upload only. Optional bundle_id is an assertion when metadata exists and a
-# fallback only when build metadata is absent; a mismatch fails closed.
-raft integration invoke --service <hands-service> \
-  --action upload-testflight-build \
-  --param app_id=<app-uuid> \
-  --param build_id=<hands-build-uuid> \
-  --param bundle_id=build.raft.app --json
-
-# Poll until response.state.state is COMPLETE or FAILED.
-raft integration invoke --service <hands-service> \
-  --action get-testflight-upload-status \
-  --param app_id=<app-uuid> \
-  --param build_upload_id=<asc-build-upload-id> --json
-
-# Once the exact ASC build is VALID, discover group ids.
-raft integration invoke --service <hands-service> \
-  --action list-testflight-groups \
-  --param app_id=<app-uuid> \
-  --param build_id=<hands-build-uuid> --json
-
-# Internal distribution. group_ids must all be internal.
-raft integration invoke --service <hands-service> \
-  --action publish-testflight-build \
-  --param app_id=<app-uuid> \
-  --param build_id=<hands-build-uuid> \
-  --data-json '{
-    "distribution":"internal",
-    "group_ids":["<asc-beta-group-id>"],
-    "what_to_test":{"en-US":"Verify login and Activity."},
-    "notify_testers":false
-  }' --json
-
-# Live-facing and irreversible for TestFlight availability: run only after an
-# explicit human selects the exact build. All three confirmations are required.
-raft integration invoke --service <hands-service> \
-  --action expire-testflight-build \
-  --param app_id=<app-uuid> \
-  --param build_id=<hands-build-uuid> \
-  --data-json '{
-    "asc_build_id":"<exact-asc-build-id>",
-    "confirm_version":"1.0.0",
-    "confirm_build_number":"1000006"
-  }' --json
-```
-
-External mode requires at least one existing or supplied What to Test
-localization. Set `notify_testers=true` to enable Apple's automatic
-notification after approval; for an already-approved build without automatic
-notification pending, Hands creates the official build beta notification.
-External Beta App Review can take hours,
-so agents should return the submission state and recheck with
-`get-testflight-publish-status` rather than holding a Raft turn open.
-
-If the requested completion boundary includes tester notification, retain the
-`publish-testflight-build` action response as the mutation receipt and require
-`notification=sent` or `already_sent`. Then call the read-only
-`get-testflight-publish-status` action until the exact build reports
-`external_build_state=IN_BETA_TESTING`. `not_requested` and `scheduled` are not
-completion states. For `scheduled`, wait for the exact testing state, replay
-the same idempotent publish action to retain `already_sent`, and read status
-again. Never infer notification from `VALID`, group assignment,
-`BETA_APPROVED`, or `auto_notify_enabled=false`; the last field is scheduling
-policy, not notification history. TestFlight notification does not activate a
-Hands release or publish an App Store production version.
-
-### Exact iOS simulator QA artifacts
-
-Use this lane for a zipped `.app` bundle that Stamp or another agent must
-download and install into Simulator by exact byte identity. It is deliberately
-separate from iOS IPA/TestFlight publishing:
-
-- the artifact kind is `ios-simulator-app` and the build is marked QA-only;
-- `.ipa` and `.apk` filenames are rejected;
-- Hands recomputes the uploaded ZIP's size and SHA-256 before marking it ready;
-- completion is one-shot: verified bytes are copied to an immutable R2 key, so
-  reusing an unexpired upload URL cannot replace the ready artifact;
-- QA-only builds are rejected by the release-creation API and therefore never
-  enter public latest/update/history offers.
-
-The Agent Login flow is create → direct upload → complete → read/presign:
-
-```bash
-# 1. Declare the exact artifact. channel_id may be a UUID or slug and defaults
-# to the app's default/main channel for ledger grouping only.
-raft integration invoke --service <hands-service> \
-  --action create-ios-simulator-artifact \
-  --param app_id=<app-uuid> \
-  --data-json '{
-    "filename":"raft-ios-simulator.app.zip",
-    "size_bytes":37563642,
-    "sha256":"885b328f3a72299bd4368fd876dbcb4a8646b6f15b6e656fc8bec396a62beac8",
-    "source_commit":"470023f98d154e50d7ba07b01a2cd53eb4367fc9",
-    "version_name":"1.0",
-    "build_number":"1",
-    "bundle_id":"build.raft.app",
-    "github_run_id":"29700366778",
-    "github_artifact_id":"8446353537"
-  }' --json > qa-artifact-create.json
-
-# 2. PUT the bytes outside the integration transport. Use the exact method,
-# URL, and Content-Type returned in the response's upload block.
-curl --fail-with-body -X PUT \
-  -H 'Content-Type: application/zip' \
-  --upload-file raft-ios-simulator.app.zip \
-  "$(jq -r .upload.url qa-artifact-create.json)"
-
-# 3. Ask Hands to stream/hash the stored object. It becomes ready only when
-# both exact byte length and SHA-256 match the declaration.
-raft integration invoke --service <hands-service> \
-  --action complete-ios-simulator-artifact \
-  --param app_id=<app-uuid> \
-  --param asset_id="$(jq -r .asset_id qa-artifact-create.json)" --json
-
-# 4. The durable coordinate is (build_id, asset_id); download_api is a stable
-# authenticated reference. Ask for a short-lived anonymous URL for binary use.
-raft integration invoke --service <hands-service> \
-  --action presign-ios-simulator-artifact \
-  --param app_id=<app-uuid> \
-  --param asset_id="$(jq -r .asset_id qa-artifact-create.json)" --json
-```
-
-Stamp should freeze both source commit and Hands asset coordinates, then
-download the returned URL and verify the response's `server_sha256` before `ditto`
-or `simctl install`. Use `list-ios-simulator-artifacts` with
-`source_commit`, `github_run_id`, or `sha256` when recovering a coordinate;
-use `get-ios-simulator-artifact` for the complete provenance record.
+Use `hands testflight --help` for upload, processing status, beta groups, and
+distribution commands. The CLI is dry-run by default for store metadata
+mutations; pass `--commit` only after reviewing the exact plan. TestFlight is a
+separate state machine from Hands releases and App Store production
+publishing, and the `.p8` stays encrypted in Hands.
 
 ### Ticket triage (feedback + crashes)
 
@@ -392,11 +195,8 @@ The share URL is printed once; tokens are stored hashed.
 ### Apps (org member role)
 
 ```bash
-# create (API; CLI covers list/get)
-curl -X POST https://hands.build/api/apps \
-  -H "Authorization: Bearer $HANDS_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"slug":"my-app","name":"My App","platform":"android"}'
+hands apps create --slug my-app --name "My App" --platform android
+hands apps client-key my-app
 ```
 
 New apps are seeded with default channels (`main`, `preview`, `nightly`) and

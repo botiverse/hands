@@ -109,6 +109,7 @@ describe("quiver OpenAPI document", () => {
       "/api/apps/{appId}/app-store/versions/{versionId}/localizations",
       "/api/apps/{appId}/app-store/versions/{versionId}/screenshots",
       "/api/apps/{appId}/app-store/versions/{versionId}/release",
+      "/api/apps/{appId}/app-store/versions/{versionId}/preflight",
       "/api/apps/{appId}/app-store/withdraw",
       "/api/apps/{appId}/testflight-crashes",
       "/api/apps/{appId}/testflight-crashes/{submissionId}/log",
@@ -1731,8 +1732,6 @@ describe("quiver route handlers — SQL smoke", () => {
       requireAppRole("admin") as any,
       handleListAppWebhookDeliveries as any,
     );
-    const { handleAgentManifest } = await import("../src/routes/auth");
-    testApp.get("/.well-known/raft-agent-manifest.json", handleAgentManifest as any);
     const call = (token: string, method: string, path: string, body?: unknown) =>
       testApp.request(
         `https://quiver-worker.test${path}`,
@@ -1761,14 +1760,8 @@ describe("quiver route handlers — SQL smoke", () => {
     expect(badEvent.status).toBe(400);
     expect(((await badEvent.json()) as any).error).toContain("release:nope");
 
-    // Discover the app-admin operation, then execute that exact manifest path.
-    // This account has only org viewer; discovery must not route it to org admin.
-    const manifest = await (await call(adm, "GET", "/.well-known/raft-agent-manifest.json")).json() as any;
-    const createAction = manifest.actions.find((a: any) => a.name === "create-app-webhook");
-    expect(createAction).toBeDefined();
     // Body app_id (null = org-wide, or another app) is ignored.
-    const created = await call(adm, createAction.endpoint.method,
-      createAction.endpoint.path.replace("{app_id}", "wh-app"), {
+    const created = await call(adm, "POST", "/api/apps/wh-app/webhooks", {
       url: "https://bobo.example/hooks/hands", secret: "shh", events: ["release:new"], app_id: null,
     });
     expect(created.status).toBe(201);
@@ -4980,6 +4973,190 @@ describe("quiver releases — draft lifecycle", () => {
     });
   });
 
+  describe("release:rolled_back webhook", () => {
+    function rollbackContext(releaseId: string, body: unknown, waited: Promise<unknown>[]) {
+      return {
+        env,
+        req: {
+          param: (name: string) =>
+            name === "appId" ? "app-release" : name === "releaseId" ? releaseId : "",
+          json: async () => body,
+          query: () => undefined,
+        },
+        get: (key: string) =>
+          key === "admin_actor" ? "tester" : key === "org_id" ? "default" : undefined,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        json: (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
+      } as any;
+    }
+
+    async function rollbackPayloads(eventType: string): Promise<any[]> {
+      const { results } = await env.DB
+        .prepare("SELECT event_type, payload_json FROM webhook_deliveries WHERE event_type = ?")
+        .bind(eventType)
+        .all();
+      return results.map((r: any) => JSON.parse(r.payload_json));
+    }
+
+    const rolledBackPayloads = () => rollbackPayloads("release:rolled_back");
+    const channelEmptiedPayloads = () => rollbackPayloads("release:channel_emptied");
+
+    async function subscribeRollback(events = ["release:rolled_back"]) {
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-rollback", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(events), 1, now, now).run();
+    }
+
+    it("cancel restores the fallback and emits cancelled -> restored", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:rolled_back", "release:channel_emptied"]);
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handleDeleteRelease(rollbackContext("rel-draft", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:rolled_back:rel-active:2");
+      expect(payloads[0]).toMatchObject({
+        event: "release:rolled_back",
+        payload: {
+          app_id: "app-release",
+          release_id: "rel-active",
+          build_id: "build-active",
+          app_slug: "release-app",
+          platform: "android",
+          channel: "main",
+          version_code: 1,
+          previous_version_code: 2,
+          previous_version: "1.0.0",
+          version_transition: "1.0.0 → 1.0.0",
+          version_code_transition: "2 → 1",
+          rollout: 100,
+          reactivated: true,
+        },
+      });
+      expect(await channelEmptiedPayloads()).toHaveLength(0);
+    });
+
+    it("emits channel_emptied when cancel leaves no active release", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:rolled_back", "release:channel_emptied"]);
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handleDeleteRelease(rollbackContext("rel-active", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+      expect(await rolledBackPayloads()).toHaveLength(0);
+      const payloads = await channelEmptiedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:channel_emptied:rel-active:1");
+      expect(payloads[0].payload).toMatchObject({
+        release_id: "rel-active",
+        build_id: "build-active",
+        version_code: 1,
+        channel: "main",
+        rollout: 0,
+      });
+    });
+
+    it("does not call a channel empty while another scoped release remains active", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback(["release:channel_emptied"]);
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind("group-rollback", "app-release", "QA", null, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft", status: "active",
+        scopes: [{ scope_type: "device_group", scope_value: "group-rollback" }],
+      }, "tester", "rel-canary");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handleDeleteRelease(rollbackContext("rel-active", {}, waited))).status).toBe(200);
+      await Promise.all(waited);
+      expect(await channelEmptiedPayloads()).toHaveLength(0);
+    });
+
+    it("does not announce a fallback that the restore statement did not restore", async () => {
+      const { createRelease, handleDeleteRelease } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const db = env.DB as any;
+      const originalBatch = db.batch.bind(db);
+      let cancelBatch = true;
+      db.batch = async (statements: any[]) => {
+        const results = await originalBatch(statements);
+        if (cancelBatch) {
+          cancelBatch = false;
+          results[2].meta.changes = 0;
+        }
+        return results;
+      };
+      const waited: Promise<unknown>[] = [];
+      try {
+        expect((await handleDeleteRelease(rollbackContext("rel-draft", {}, waited))).status).toBe(200);
+        await Promise.all(waited);
+      } finally {
+        db.batch = originalBatch;
+      }
+      expect(await rolledBackPayloads()).toHaveLength(0);
+    });
+
+    it("uses the same direction for an explicit rollback", async () => {
+      const { createRelease, handleRollbackRelease } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      const waited: Promise<unknown>[] = [];
+      const response = await handleRollbackRelease(rollbackContext("rel-active", {}, waited));
+      expect(response.status).toBe(200);
+      await Promise.all(waited);
+
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].event_id).toBe("release:rolled_back:rel-active:2");
+      expect(payloads[0].payload).toMatchObject({
+        release_id: "rel-active",
+        build_id: "build-active",
+        version_code: 1,
+        previous_version_code: 2,
+        version_code_transition: "2 → 1",
+        reactivated: true,
+      });
+    });
+
+    it("does not suppress a committed rollback when a later publish already superseded it", async () => {
+      const { createRelease, emitReleaseRolledBack } = await import("../src/routes/releases");
+      await subscribeRollback();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", { build_id: "build-draft", status: "active" }, "tester", "rel-draft");
+
+      // rel-active is already superseded again. The deferred rollback emit still
+      // describes an activation that really happened and must not disappear.
+      await emitReleaseRolledBack(env as any, "default", "app-release", {
+        release_id: "rel-active", app_id: "app-release", build_id: "build-active",
+        channel_id: "ch-main", revision: 2, displacedVersion: { code: 2, name: "1.0.0" },
+      });
+      const payloads = await rolledBackPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].payload.version_code_transition).toBe("2 → 1");
+    });
+  });
+
   it("publishes a device-group draft without superseding the full fallback release", async () => {
     const { createRelease, handlePublishRelease } = await import("../src/routes/releases");
     const now = Date.now();
@@ -7700,6 +7877,21 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(sums.status).toBe(200);
     expect(await sums.text()).toBe("deadbeef  raft-computer-linux-x64\n");
 
+    const hostedGet = hostedBucket.get;
+    let getAttempts = 0;
+    hostedBucket.get = async (key: string) => {
+      getAttempts += 1;
+      if (getAttempts === 1) throw new Error("get: We encountered an internal error. Please try again. (10001)");
+      return hostedGet(key);
+    };
+    const retriedGet = await handleExternalReleaseDl(
+      dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }, { kind: "sha256sums" }),
+    );
+    expect(retriedGet.status).toBe(200);
+    expect(await retriedGet.text()).toBe("deadbeef  raft-computer-linux-x64\n");
+    expect(getAttempts).toBe(2);
+    hostedBucket.get = hostedGet;
+
     // 4. Fail closed. An unknown or misspelled kind must NOT fall back to the
     //    main binary: returning 200 with the wrong bytes is a "successful
     //    error" that a checksum step would silently trust.
@@ -7783,11 +7975,19 @@ describe("quiver public API v2 — scope resolution", () => {
     });
     const oldGet = hostedBucket.get;
     hostedBucket.get = async () => { throw new Error("direct downloads must not stream through the Worker"); };
-    hostedBucket.head = async (key: string) => objects[key] === undefined ? null : { key };
+    const signedHead = hostedBucket.head;
+    let headAttempts = 0;
+    hostedBucket.head = async (key: string) => {
+      headAttempts += 1;
+      if (headAttempts === 1) throw new Error("head: We encountered an internal error. Please try again. (10001)");
+      return signedHead(key);
+    };
     const direct = await handleExternalReleaseDl(
       dlCtx({ slug: "scope-app", releaseId: "rel-hosted", file: "linux-x64" }),
     );
     expect(direct.status).toBe(302);
+    expect(headAttempts).toBe(2);
+    hostedBucket.head = signedHead;
     expect(direct.headers.get("cache-control")).toBe("no-store");
     expect(await direct.text()).toBe("");
     const directUrl = new URL(direct.headers.get("location")!);

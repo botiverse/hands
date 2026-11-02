@@ -90,6 +90,7 @@ import {
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
 import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
+import { handleCliInstaller, handleCliInstallerMetadata } from "./routes/cli_installer";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -178,6 +179,7 @@ import {
   handleWithdrawAppStoreVersion,
 } from "./routes/app_store_release";
 import { handlePushAppStoreLocalizations, handlePushAppStoreScreenshots } from "./routes/app_store_metadata";
+import { handleGetAppStorePreflight } from "./routes/app_store_preflight";
 import { handleAppStoreReview } from "./routes/appstore_review";
 import {
   handleGetBetaAppDescription,
@@ -187,6 +189,7 @@ import {
   handleCloseTestflightCrash,
   handleCloseTestflightFeedback,
   handleGetTestflightCrashLog,
+  handleBackfillTestflightCrashes,
   handleListTestflightCrashes,
   handleListTestflightFeedback,
 } from "./routes/testflight_crashes";
@@ -296,6 +299,15 @@ import {
   reapWebhookDeliveries,
   handleUpdateWebhook,
 } from "./routes/webhooks";
+import {
+  handleConnectRaftBot,
+  handleCreateRaftNotification,
+  handleDeleteRaftNotification,
+  handleGetRaftNotifications,
+  handleRaftNotificationWebhook,
+  handleTestRaftNotification,
+  handleUpdateRaftNotification,
+} from "./routes/raft_notifications";
 import { handleHealth } from "./routes/health";
 import {
   handleAcceptInvite,
@@ -618,6 +630,9 @@ app.use(
 );
 
 bindApp("post", "/api/apple/webhooks/:configId", handleAppleWebhook);
+// Internal callback for Hands-owned Raft App Bot destinations. The callback is
+// public at the router level but accepts only an HMAC signed generic webhook.
+bindApp("post", "/api/internal/raft-notifications/:subscriptionId", handleRaftNotificationWebhook);
 
 // Public — health check (no auth)
 bindApp("get", "/health", handleHealth);
@@ -771,12 +786,14 @@ bindApp("get", "/public/apps/:slug/channels", handlePublicListChannels);
 bindApp("get", "/public/v2/apps/:slug/latest", handlePublicV2Latest);
 bindApp("get", "/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
 bindApp("get", "/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
+bindApp("get", "/public/v2/apps/:slug/installer/:channel/:target", handleCliInstallerMetadata);
 bindApp("get", "/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
 bindApp("get", "/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 bindApp("get", "/internal/r2/:key", handleInternalR2Download);
 bindApp("get", "/electron/:slug/:channel/:file", handleElectronGenericAsset);
 bindApp("get", "/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
+bindApp("get", "/dl/:slug/:channel/install.sh", handleCliInstaller);
 bindApp("get", "/dl/:slug/:channel/:file", handleExternalLatestDl);
 bindApp("get", "/share/:token/download", handlePublicReleaseShareDownload);
 bindApp("get", "/share/:token", handlePublicReleaseShare);
@@ -966,6 +983,14 @@ bindAdmin("post", "/api/apps/:appId/webhooks", requireAppRole("admin"), handleCr
 bindAdmin("patch", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleUpdateAppWebhook);
 bindAdmin("delete", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleDeleteAppWebhook);
 bindAdmin("get", "/api/apps/:appId/webhooks/:webhookId/deliveries", requireAppRole("admin"), handleListAppWebhookDeliveries);
+
+// Hands-managed Raft App Bot notification destinations.
+bindAdmin("get", "/api/apps/:appId/raft-notifications", requireAppRole("admin"), handleGetRaftNotifications);
+bindAdmin("post", "/api/apps/:appId/raft-notifications/connect", requireAppRole("admin"), handleConnectRaftBot);
+bindAdmin("post", "/api/apps/:appId/raft-notifications", requireAppRole("admin"), handleCreateRaftNotification);
+bindAdmin("patch", "/api/apps/:appId/raft-notifications/:subscriptionId", requireAppRole("admin"), handleUpdateRaftNotification);
+bindAdmin("delete", "/api/apps/:appId/raft-notifications/:subscriptionId", requireAppRole("admin"), handleDeleteRaftNotification);
+bindAdmin("post", "/api/apps/:appId/raft-notifications/:subscriptionId/test", requireAppRole("admin"), handleTestRaftNotification);
 
 // Scheduled reaper (no auth — Worker Cron Trigger schedules `scheduled()` in exports)
 // bindApp("get", "/api/webhook-reaper", handleReapDeliveries);  // removed; use scheduled() instead
@@ -1346,6 +1371,7 @@ bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requi
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/release", requireAppRole("publisher"), handleReleaseAppStoreVersion);
 bindAdmin("post", "/api/apps/:appId/app-store/withdraw", requireAppRole("publisher"), handleWithdrawAppStoreVersion);
 bindAdmin("get", "/api/apps/:appId/app-store/status", requireAppRole("viewer"), handleGetAppStoreReleaseStatus);
+bindAdmin("get", "/api/apps/:appId/app-store/versions/:versionId/preflight", requireAppRole("viewer"), handleGetAppStorePreflight);
 bindAdmin("get", "/api/apps/:appId/testflight-uploads/:buildUploadId", requireAppRole("viewer"), handleTestflightUploadStatus);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/testflight-groups", requireAppRole("viewer"), handleListTestflightGroups);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/testflight-expire", requireAppRole("admin"), handleTestflightExpire);
@@ -1370,6 +1396,7 @@ bindAdmin("delete", "/api/apps/:appId/testflight-feedback/:submissionId",
   requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"),
   handleCloseTestflightFeedback,
 );
+bindAdmin("post", "/api/apps/:appId/testflight-crashes/backfill", requireAppRole("admin"), handleBackfillTestflightCrashes);
 bindAdmin("get", "/api/apps/:appId/testflight-crashes", requireAppRole("viewer"), handleListTestflightCrashes);
 bindAdmin("get", "/api/apps/:appId/testflight-crashes/:submissionId/log",
   requireAppRole("viewer"),

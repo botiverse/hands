@@ -112,7 +112,8 @@ export function registerAppStoreRoutes(): RouteConfigList {
     method: "post",
     path: "/api/apps/{appId}/app-store/versions/{versionId}/notes",
     tags: ["App Store"],
-    summary: "Upsert localized What's New text",
+    summary: "Update localized What's New text of existing localizations",
+    description: "PATCHes whatsNew on each locale's existing appStoreVersionLocalization. A locale with no localization is never created here (one holding only whatsNew lacks supportUrl and Apple refuses review): 409 LOCALIZATION_MISSING, nothing written; create it with the localizations endpoint.",
     security: auth,
     request: { params: AppVersionParams, body: { content: json(NotesInput), required: true } },
     responses: {
@@ -120,6 +121,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
       400: error("notes is not a locale-to-text object."),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
+      409: error("LOCALIZATION_MISSING: a requested locale has no localization; nothing written."),
       502: error("Apple rejected the request."),
     },
   });
@@ -129,7 +131,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
     tags: ["App Store"],
     summary: "Write App Store listing text (dry run or commit)",
     description:
-      "Writes only the supplied appStoreVersionLocalizations fields (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew) of the supplied locales: PATCH changed fields of an existing localization, POST a missing one. Apple's limits are checked before any call (description 4000, keywords 100, promotionalText 170, whatsNew 4000 characters). mode is required: dry_run reads and returns the per-locale plan (create | update | unchanged with changed fields and before/after) and writes nothing. A blocker (version not editable for fields other than promotionalText, or a locale App Store Connect does not offer) returns 409 LOCALIZATION_PLAN_BLOCKED with the plan. Commit ends with a read-back that must equal every requested field (502 READBACK_MISMATCH otherwise).",
+      "Writes only the supplied appStoreVersionLocalizations fields (description, keywords, promotionalText, marketingUrl, supportUrl, whatsNew) of the supplied locales: PATCH changed fields of an existing localization, POST a missing one. Apple's limits are checked before any call (description 4000, keywords 100, promotionalText 170, whatsNew 4000 characters). mode is required: dry_run reads and returns the per-locale plan (create | update | unchanged with changed fields and before/after) and writes nothing. A blocker (version not editable for fields other than promotionalText, a locale App Store Connect does not offer, or missing_required_fields: a locale to create without description, keywords and supportUrl, listed in missing_fields) returns 409 LOCALIZATION_PLAN_BLOCKED with the plan. Commit ends with a read-back that must equal every requested field (502 READBACK_MISMATCH otherwise).",
     security: auth,
     request: { params: AppVersionParams, body: { content: json(LocalizationsInput), required: true } },
     responses: {
@@ -147,16 +149,17 @@ export function registerAppStoreRoutes(): RouteConfigList {
     tags: ["App Store"],
     summary: "Replace App Store screenshot sets (dry run or commit)",
     description:
-      "multipart/form-data: a `request` JSON part plus one file part per declared image (at most 24 MiB of images per push, 15 MiB per image). Each image is checked before any Apple call: sha256 integrity, PNG or JPEG, no transparency, exact pixel size for the display type, 1-10 per set. Per (locale, display_type): the version localization must exist (else 409 SCREENSHOT_PLAN_BLOCKED; create it with the localizations endpoint); the screenshot set is created if missing. Existing screenshots are compared by MD5 (Apple's sourceFileChecksum): identical files in identical order, all COMPLETE, are left alone (unchanged); identical files in another order are only reordered; anything else is replaced (delete existing, reserve, upload operations, commit with MD5, poll assetDeliveryState to COMPLETE, set order), then read back. mode is required; dry_run reads and returns the plan with no writes. Commit stops at the first failed set; any image not COMPLETE (FAILED, timeout) makes the response 502 SCREENSHOTS_FAILED with per-image state.",
+      "multipart/form-data: a `request` JSON part plus one file part per declared image (at most 24 MiB of images per push, 15 MiB per image). Each image is checked before any Apple call: sha256 integrity, PNG or JPEG, no transparency, exact pixel size for the display type, 1-10 per set. Per (locale, display_type): the version localization must exist (else 409 SCREENSHOT_PLAN_BLOCKED; create it with the localizations endpoint); the screenshot set is created if missing. Existing screenshots are compared by MD5 (Apple's sourceFileChecksum): identical files in identical order, all COMPLETE, are left alone (unchanged); identical files in another order are only reordered; anything else is replaced (delete existing, reserve, upload operations, commit with MD5, poll assetDeliveryState to COMPLETE, set order), then read back. mode is required; dry_run reads and returns the plan with no writes. Commit runs each set independently; only a global error (auth 401/403, 404, 429, 5xx, malformed Apple response, a 409 that names a state/version/lock, or anything not clearly set-local) stops the run and reports later sets not_attempted. Per-set status: ok, failed (Apple FAILED, refused request, read-back mismatch), uploaded_pending (every image uploaded and committed, none rejected, at least one still UPLOAD_COMPLETE when the poll budget ran out; order and read-back not done yet), not_attempted. Responses carry failed_sets and pending_sets. Any failed or not_attempted set makes the response 502 SCREENSHOTS_FAILED (takes precedence); otherwise any uploaded_pending set makes it 202 SCREENSHOTS_PENDING with ok: false and next_action: run the dry run again later; every set `unchanged` confirms files and order, `reorder` or `replace` means run commit again. Nothing is retried automatically.",
     security: auth,
     request: { params: AppVersionParams, body: { content: { "multipart/form-data": { schema: ScreenshotsMultipart } }, required: true } },
     responses: {
       200: success("Planned (dry_run), committed, or no_changes, with per-set detail.", GenericObject),
+      202: error("SCREENSHOTS_PENDING (ok: false, outcome uploaded_pending): uploads accepted, Apple still processing; pending_sets and next_action included. Not a success."),
       400: error("Request or image validation failed; no Apple call."),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
       409: error("SCREENSHOT_PLAN_BLOCKED (version not editable or localization missing); nothing written."),
-      502: error("SCREENSHOTS_FAILED with per-set and per-image state, or Apple rejected a read."),
+      502: error("SCREENSHOTS_FAILED with per-set and per-image state, failed_sets and pending_sets, or Apple rejected a read."),
     },
   });
   routes.push({
@@ -164,14 +167,14 @@ export function registerAppStoreRoutes(): RouteConfigList {
     path: "/api/apps/{appId}/app-store/versions/{versionId}/submit",
     tags: ["App Store"],
     summary: "Submit a prepared version for review",
-    description: "Refuses with 409 REVIEW_ALREADY_PENDING while another submission for the platform is waiting or in review.",
+    description: "Refuses with 409 REVIEW_ALREADY_PENDING while another submission for the platform is waiting or in review. A rejected (UNRESOLVED_ISSUES) submission for the platform that holds this version is resubmitted in place (resubmitted: true); one holding another version is 409 UNRESOLVED_SUBMISSION_PENDING with no write.",
     security: auth,
     request: { params: AppVersionParams },
     responses: {
       200: success("Submitted.", GenericObject),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
-      409: error("Another submission is pending."),
+      409: error("REVIEW_ALREADY_PENDING or UNRESOLVED_SUBMISSION_PENDING: another submission is open."),
       502: error("Apple rejected the request."),
     },
   });
@@ -203,7 +206,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
     path: "/api/apps/{appId}/app-store/withdraw",
     tags: ["App Store"],
     summary: "Withdraw a pending review submission",
-    description: "Cancels the review submission holding version_id (or the exact submission_id), returning the version to an editable state.",
+    description: "Cancels the review submission holding version_id (waiting, in review, rejected UNRESOLVED_ISSUES, or an unsubmitted READY_FOR_REVIEW draft) or the exact submission_id, returning the version to an editable state.",
     security: auth,
     request: { params: AppIdParam, body: { content: json(WithdrawInput), required: false } },
     responses: {
@@ -227,6 +230,25 @@ export function registerAppStoreRoutes(): RouteConfigList {
       403: error("App viewer role is required."),
       404: error("Version not found."),
       502: error("Apple rejected the request."),
+    },
+  });
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/app-store/versions/{versionId}/preflight",
+    tags: ["App Store"],
+    summary: "Submission preflight: is this version ready for review? (read-only)",
+    description:
+      "Read-only: every App Store Connect call is a GET. Reads the version (+build), the build (processingState, expired, preReleaseVersion, usesNonExemptEncryption), every appStoreVersionLocalization and its screenshot sets, the app's primaryLocale, appInfo + appInfoLocalizations, the age rating declaration, appStoreReviewDetail, and review submissions. " +
+      "Returns {version_id, version_string, state, ready, findings: [{severity: error|warning|info, check, locale?, display_type?, resource?, message, fix?}], checked: [rule ids], not_checkable: [{check, reason}]}. " +
+      "resource uses Apple's associatedErrors form (e.g. /v1/appStoreVersionLocalizations/<id>), and a missing required field reads as Apple words it (\"You must provide a value for the attribute 'supportUrl'\"). " +
+      "A read that fails becomes a warning finding unreadable:<what> with Apple's status/code/detail rather than failing the whole preflight. ready is true only with no error finding, no unreadable read, and every rule run. App Privacy, pricing/availability, content rights and categories are listed in not_checkable.",
+    security: auth,
+    request: { params: AppVersionParams },
+    responses: {
+      200: success("Preflight report.", GenericObject),
+      403: error("App viewer role is required."),
+      404: error("Version does not belong to this app."),
+      502: error("Apple refused the version read itself."),
     },
   });
   return routes;

@@ -14,7 +14,7 @@ feedback endpoint. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.1'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.2'
 ```
 
 ## Configure & start
@@ -62,6 +62,12 @@ treated as a true online heartbeat.
 `Hands.install(with:)` captures uncaught `NSException`s and fatal signals
 and uploads them as `kind=crash` tickets, grouped by signature in the
 console. Nothing else to wire.
+
+A crash ticket's version, build number and commit are those of the build that
+crashed, recorded when it crashed, even though the report is uploaded by a
+later launch (possibly an updated build). Reports stored by SDK versions
+before 0.2.2 have no recorded build; they upload without version fields
+instead of borrowing the uploading build's.
 
 ## Notes
 

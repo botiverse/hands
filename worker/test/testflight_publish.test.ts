@@ -9,8 +9,10 @@ import {
   parsePublishInput,
   publishProcessedAscBuild,
   runTestflightExpireOperation,
+  testflightErrorResponse,
   TestflightPublishError,
 } from "../src/routes/testflight";
+import { AscApiError } from "../src/lib/asc_api";
 
 async function generateTestCreds(): Promise<AscApiCredentials> {
   const pair = (await crypto.subtle.generateKey(
@@ -916,5 +918,27 @@ describe("publishProcessedAscBuild", () => {
       details: { beta_state: "MISSING_EXPORT_COMPLIANCE" },
     });
     expect(compliance.assigned.size).toBe(0);
+  });
+});
+
+describe("TestFlight ASC error body", () => {
+  const ctx = { json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }) } as any;
+
+  it("carries Apple's code, source and further errors when present", async () => {
+    const error = new AscApiError(409, "STATE_ERROR", "build not in valid state");
+    error.code = "STATE_ERROR.ENTITY_STATE_INVALID";
+    error.source = "/data/relationships/build";
+    error.others = [{ code: "ENTITY_ERROR", title: "t", detail: null, source: null }];
+    const res = testflightErrorResponse(ctx, error);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "STATE_ERROR", code: "ASC_CONFLICT", detail: "build not in valid state", upstream_status: 409,
+      provider_code: "STATE_ERROR.ENTITY_STATE_INVALID", provider_source: "/data/relationships/build", provider_errors: error.others,
+    });
+  });
+
+  it("adds nothing when Apple sent no code, source or further errors", async () => {
+    const res = testflightErrorResponse(ctx, new AscApiError(500, "boom"));
+    expect(await res.json()).toEqual({ error: "boom", code: "ASC_API_ERROR", detail: null, upstream_status: 500 });
   });
 });

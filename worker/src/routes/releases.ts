@@ -1290,6 +1290,128 @@ export async function emitReleasePublished(
   });
 }
 
+/**
+ * Emit the activation caused by a rollback. The restored release is the current
+ * version; the release it displaced is the previous version. This is true both
+ * for an explicit rollback and for cancelling an active release, whose fallback
+ * is restored automatically.
+ */
+export async function emitReleaseRolledBack(
+  env: Env,
+  orgId: string,
+  appId: string,
+  base: {
+    release_id: string;
+    app_id: string;
+    build_id: unknown;
+    channel_id: unknown;
+    product_type?: string;
+    release_type?: string;
+    rollout_cohort_count?: number | null;
+    revision: number;
+    displacedVersion: { code: number | null; name: string | null } | null;
+  },
+): Promise<void> {
+  let extra: Record<string, unknown> = {};
+  try {
+    const row = await env.DB.prepare(
+      `SELECT b.version_name, b.version_code, a.slug AS app_slug, a.platform AS platform,
+              ch.slug AS channel
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels ch ON ch.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, base.release_id)
+      .first<{
+        version_name: string | null; version_code: number | null; app_slug: string;
+        platform: string | null; channel: string | null;
+      }>();
+    // A later mutation may already have superseded the restored release; the
+    // committed rollback is still a real event and must not be suppressed.
+    if (!row) return;
+    extra = {
+      app_slug: row.app_slug,
+      platform: row.platform,
+      version: row.version_name,
+      version_code: row.version_code,
+      channel: row.channel,
+      rollout: base.rollout_cohort_count ?? 100,
+      previous_version_code: base.displacedVersion?.code ?? null,
+      previous_version: base.displacedVersion?.name ?? null,
+      version_transition: base.displacedVersion?.name && row.version_name
+        ? `${base.displacedVersion.name} → ${row.version_name}`
+        : null,
+      version_code_transition:
+        base.displacedVersion?.code != null && row.version_code != null
+          ? `${base.displacedVersion.code} → ${row.version_code}`
+          : null,
+    };
+  } catch (err) {
+    console.warn("[release:rolled_back] enrichment lookup failed; emitting bare payload", err);
+  }
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:rolled_back",
+    eventId: `release:rolled_back:${base.release_id}:${base.revision}`,
+    body: { ...base, reactivated: true, ...extra },
+  });
+}
+
+/** Notify that cancelling a release left its channel with no active release. */
+export async function emitReleaseChannelEmptied(
+  env: Env,
+  orgId: string,
+  appId: string,
+  base: {
+    release_id: string;
+    app_id: string;
+    build_id: unknown;
+    channel_id: unknown;
+    product_type?: string;
+    release_type?: string;
+    revision: number;
+  },
+): Promise<void> {
+  let extra: Record<string, unknown> = {};
+  try {
+    const row = await env.DB.prepare(
+      `SELECT b.version_name, b.version_code, a.slug AS app_slug, a.platform AS platform,
+              ch.slug AS channel
+       FROM releases r
+       JOIN apps a ON a.id = r.app_id
+       JOIN builds b ON b.id = r.build_id
+       LEFT JOIN channels ch ON ch.id = r.channel_id
+       WHERE r.app_id = ?1 AND r.id = ?2`,
+    )
+      .bind(appId, base.release_id)
+      .first<{
+        version_name: string | null; version_code: number | null; app_slug: string;
+        platform: string | null; channel: string | null;
+      }>();
+    if (!row) return;
+    extra = {
+      app_slug: row.app_slug,
+      platform: row.platform,
+      version: row.version_name,
+      version_code: row.version_code,
+      channel: row.channel,
+      rollout: 0,
+    };
+  } catch (err) {
+    console.warn("[release:channel_emptied] enrichment lookup failed; emitting bare payload", err);
+  }
+  await emitWebhookEvent(env, {
+    orgId,
+    appId,
+    event: "release:channel_emptied",
+    eventId: `release:channel_emptied:${base.release_id}:${base.revision}`,
+    body: { ...base, ...extra },
+  });
+}
+
 async function emitReleaseDraftCreated(
   c: AdminContext,
   appId: string,
@@ -2465,6 +2587,24 @@ export async function handleDeleteRelease(c: AdminContext) {
   const now = Date.now();
   const auditId = crypto.randomUUID();
   const existingScopes = await releaseScopesForMutation(c.env.DB, releaseId);
+  const rollbackCandidates = existing.status === "active"
+    ? (await c.env.DB.prepare(
+      `SELECT id, build_id, channel_id, product_type, release_type,
+              rollout_cohort_count, revision
+       FROM releases
+       WHERE app_id = ?1 AND superseded_by_release_id = ?2 AND status = 'superseded'`,
+    )
+      .bind(appId, releaseId)
+      .all<{
+        id: string; build_id: string; channel_id: string | null; product_type: string;
+        release_type: string; rollout_cohort_count: number | null; revision: number;
+      }>()).results ?? []
+    : [];
+  // The restore clears superseded_by_release_id, so capture both sides before
+  // the batch. The emitted arrow must run cancelled -> restored, not the reverse.
+  const cancelledBuild = rollbackCandidates.length > 0
+    ? await getBuildForApp(c.env.DB, appId, existing.build_id)
+    : null;
   const statements: D1PreparedStatement[] = [
     conditionalReleaseAuditStatement(c.env.DB, {
       auditId,
@@ -2526,6 +2666,44 @@ export async function handleDeleteRelease(c: AdminContext) {
         body: { release_id: releaseId, app_id: appId, build_id: existing.build_id },
       }),
     );
+    if (Number(batchResults[2]?.meta?.changes ?? 0) === rollbackCandidates.length) {
+      for (const restored of rollbackCandidates) {
+        c.executionCtx?.waitUntil(emitReleaseRolledBack(c.env, orgId, appId, {
+          release_id: restored.id,
+          app_id: appId,
+          build_id: restored.build_id,
+          channel_id: restored.channel_id,
+          product_type: restored.product_type,
+          release_type: restored.release_type,
+          rollout_cohort_count: restored.rollout_cohort_count,
+          revision: restored.revision + 1,
+          displacedVersion: cancelledBuild
+            ? { code: cancelledBuild.version_code, name: cancelledBuild.version_name }
+            : null,
+        }));
+      }
+    }
+    const hasActiveRelease = await c.env.DB.prepare(
+      `SELECT 1 AS ok FROM releases
+       WHERE app_id = ?1 AND channel_id = ?2 AND release_type = ?3
+         AND product_type IN (?4, ?5) AND status = 'active' LIMIT 1`,
+    )
+      .bind(appId, existing.channel_id, existing.release_type,
+        existing.product_type, siblingProductType(existing.product_type))
+      .first<{ ok: number }>()
+      // A read failure must not turn into a false "channel is empty" alert.
+      .catch(() => ({ ok: 1 }));
+    if (!hasActiveRelease) {
+      c.executionCtx?.waitUntil(emitReleaseChannelEmptied(c.env, orgId, appId, {
+        release_id: releaseId,
+        app_id: appId,
+        build_id: existing.build_id,
+        channel_id: existing.channel_id,
+        product_type: existing.product_type,
+        release_type: existing.release_type,
+        revision: expectedRevision + 1,
+      }));
+    }
   }
   return c.json({
     ok: true,
@@ -2610,6 +2788,20 @@ export async function handleRollbackRelease(c: AdminContext) {
     const now = Date.now();
     const restoresDraft = existing.status === "cancelled" && existing.activated_at === null;
     const nextStatus = restoresDraft ? "draft" : "active";
+    const displaced = !restoresDraft && isFullCoverage(scopes, rollout)
+      ? await c.env.DB.prepare(
+        `SELECT pb.version_code, pb.version_name FROM releases prev
+           JOIN builds pb ON pb.id = prev.build_id
+          WHERE prev.app_id = ?1 AND prev.channel_id = ?2
+            AND prev.release_type = ?4 AND prev.product_type IN (?5, ?6)
+            AND prev.status = 'active' AND prev.id <> ?3
+          ORDER BY prev.revision DESC LIMIT 1`,
+      )
+        .bind(appId, existing.channel_id, releaseId, existing.release_type,
+          existing.product_type, siblingProductType(existing.product_type))
+        .first<{ version_code: number | null; version_name: string | null }>()
+        .catch(() => null)
+      : null;
     const auditId = crypto.randomUUID();
     const statements: D1PreparedStatement[] = [
       conditionalReleaseAuditStatement(c.env.DB, {
@@ -2709,15 +2901,19 @@ export async function handleRollbackRelease(c: AdminContext) {
 
     const orgId = c.get("org_id");
     if (orgId && !restoresDraft) {
-      c.executionCtx?.waitUntil(
-        emitWebhookEvent(c.env, {
-          orgId,
-          appId,
-          event: "release:rolled_back",
-          eventId: `release:rolled_back:${releaseId}:${expectedRevision + 1}`,
-          body: { release_id: releaseId, app_id: appId, reactivated: true, build_id: existing.build_id },
-        }),
-      );
+      c.executionCtx?.waitUntil(emitReleaseRolledBack(c.env, orgId, appId, {
+        release_id: releaseId,
+        app_id: appId,
+        build_id: existing.build_id,
+        channel_id: existing.channel_id,
+        product_type: existing.product_type,
+        release_type: existing.release_type,
+        rollout_cohort_count: rollout,
+        revision: expectedRevision + 1,
+        displacedVersion: displaced
+          ? { code: displaced.version_code, name: displaced.version_name }
+          : null,
+      }));
     }
     const release = await getReleaseForApp(c.env.DB, appId, releaseId);
     return c.json(release ? {
