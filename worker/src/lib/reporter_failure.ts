@@ -26,7 +26,7 @@ export function reporterFailureDiagnostic(context: object, error: unknown) {
   }
   const message = messages.join("\n");
   if (/SQLITE_CONSTRAINT|constraint failed/i.test(message)) code = "sqlite_constraint";
-  else if (/no such (?:table|column)|has no column named|D1_COLUMN_NOTFOUND/i.test(message)) code = "sqlite_schema";
+  else if (/no such (?:table|column|function)|has no column named|syntax error|D1_COLUMN_NOTFOUND/i.test(message)) code = "sqlite_schema";
   else if (/SQLITE_(?:BUSY|LOCKED)|database is (?:locked|busy)/i.test(message)) code = "sqlite_busy";
   else if (isReporterDatabaseStage(context) && isTransientD1LookupError(error)) code = "d1_unavailable";
   else if (/D1_ERROR|SQLITE_ERROR/.test(message)) code = "database_error";

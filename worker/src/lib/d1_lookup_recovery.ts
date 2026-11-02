@@ -1,6 +1,6 @@
 const DEFAULT_LOOKUP_BUDGET_MS = 3500;
 const DEADLINE_ERROR = "D1 lookup deadline exceeded";
-const TERMINAL_D1_ERROR = /SQLITE_CONSTRAINT|constraint failed|no such (?:table|column)|has no column named|D1_TYPE_ERROR|D1_COLUMN_NOTFOUND/i;
+const TERMINAL_D1_ERROR = /SQLITE_CONSTRAINT|constraint failed|no such (?:table|column|function)|has no column named|syntax error|D1_TYPE_ERROR|D1_COLUMN_NOTFOUND/i;
 const TRANSIENT_D1_ERROR = /D1 lookup deadline exceeded|network connection lost|network error|fetch failed|storage caused object to be reset|reset because its code was updated|D1 DB is unavailable|D1_ERROR.*(?:overloaded|reset|timeout|internal error)|temporarily unavailable|database is (?:locked|busy)|\bSQLITE_(?:BUSY|LOCKED)\b|overloaded|connection reset|timed? ?out/i;
 
 // Only use for idempotent lookup batches: never replay rate counters or

@@ -262,6 +262,8 @@ describe("additional transient D1 errors", () => {
     new Error("D1_ERROR: database is locked", { cause: new Error("SQLITE_CONSTRAINT: unique constraint failed") }),
     new Error("D1_COLUMN_NOTFOUND: fetch failed"),
     new Error("D1_ERROR: no such column: backend temporarily unavailable"),
+    new Error('D1_ERROR: near "timeout": syntax error'),
+    new Error("D1_ERROR: no such function: overloaded"),
   ])("keeps a deterministic error terminal even if another message looks transient", async error => {
     vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
