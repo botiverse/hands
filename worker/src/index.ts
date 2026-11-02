@@ -90,6 +90,7 @@ import {
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
 import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
+import { handleCliInstaller, handleCliInstallerMetadata } from "./routes/cli_installer";
 import {
   handleCreateReleaseShare,
   handleListReleaseShares,
@@ -785,12 +786,14 @@ bindApp("get", "/public/apps/:slug/channels", handlePublicListChannels);
 bindApp("get", "/public/v2/apps/:slug/latest", handlePublicV2Latest);
 bindApp("get", "/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck);
 bindApp("get", "/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
+bindApp("get", "/public/v2/apps/:slug/installer/:channel/:target", handleCliInstallerMetadata);
 bindApp("get", "/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
 bindApp("get", "/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 bindApp("get", "/internal/r2/:key", handleInternalR2Download);
 bindApp("get", "/electron/:slug/:channel/:file", handleElectronGenericAsset);
 bindApp("get", "/dl/:slug/releases/:releaseId/:file", handleExternalReleaseDl);
+bindApp("get", "/dl/:slug/:channel/install.sh", handleCliInstaller);
 bindApp("get", "/dl/:slug/:channel/:file", handleExternalLatestDl);
 bindApp("get", "/share/:token/download", handlePublicReleaseShareDownload);
 bindApp("get", "/share/:token", handlePublicReleaseShare);
