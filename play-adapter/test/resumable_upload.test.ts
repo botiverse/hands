@@ -451,6 +451,16 @@ describe("promote with a large mapping", () => {
     expect(fixture.steps().at(-1)).toBe("delete");
   });
 
+  it("preserves the source of a resumable initiation refusal on an existing bundle", async () => {
+    const fixture = google({ onPlay: true, initiationStatus: 413 });
+    const result = await service(fixture).promote(promotion(BIG), new Blob([aab]).stream(), null, RESUMABLE_ENV, stream(big));
+    expect(result).toMatchObject({ ok: true, value: { deobfuscation_files: [{
+      uploaded: false, attempt: "rejected", stage: "upload_mapping", error_code: "play_upload_too_large",
+      provider_cause: "OTHER", cause_source: "message",
+    }] } });
+    expect(JSON.stringify(result)).not.toContain("provider prose");
+  });
+
   it("reports an interrupted upload fail-soft when Play already holds the bundle, and still ships the release", async () => {
     const fixture = google({ onPlay: true, chunk: () => ({ status: 503 }) });
     const result = await service(fixture).promote(promotion(BIG), new Blob([aab]).stream(), null, RESUMABLE_ENV, stream(big));

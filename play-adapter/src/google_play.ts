@@ -641,6 +641,7 @@ export class GooglePlayClient {
           return rejected({
             error_code: error.code,
             ...(error.cause_detail?.provider_cause ? { provider_cause: error.cause_detail.provider_cause } : {}),
+            ...(error.cause_detail?.cause_source ? { cause_source: error.cause_detail.cause_source } : {}),
           });
         }
         throw error;
@@ -660,6 +661,7 @@ export class GooglePlayClient {
           http_status: response.status,
           provider_reason: playRejectionReason(body),
           ...(rejection.cause_detail?.provider_cause ? { provider_cause: rejection.cause_detail.provider_cause } : {}),
+          ...(rejection.cause_detail?.cause_source ? { cause_source: rejection.cause_detail.cause_source } : {}),
         });
       }
       throw rejection;
@@ -725,6 +727,7 @@ export class GooglePlayClient {
         stage: "commit_edit",
         error_code: known?.code ?? "play_api_unavailable",
         ...(known?.cause_detail?.provider_cause ? { provider_cause: known.cause_detail.provider_cause } : {}),
+        ...(known?.cause_detail?.cause_source ? { cause_source: known.cause_detail.cause_source } : {}),
       } : result);
       await this.deleteEdit(request.packageName, editId).catch(() => undefined);
     }

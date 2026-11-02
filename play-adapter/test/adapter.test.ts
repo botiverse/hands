@@ -88,6 +88,8 @@ interface GoogleFixtureOptions {
   mappingAckType?: string;
   /** Reject the proguard upload with this HTTP status. */
   mappingStatus?: number;
+  /** Override the provider error body for a refused mapping upload. */
+  mappingError?: unknown;
   /** Reject the commit of this edit id with 403 EDIT_IN_REVIEW-style prose. */
   failCommitOf?: string;
   /** Message for that rejection (default: in-review prose). */
@@ -175,7 +177,7 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
       if (options.mappingStatus) {
         // Answer without reading the body, as Google may for an early refusal.
         return Response.json(
-          { error: { errors: [{ reason: "insufficientPermissions" }], code: options.mappingStatus, message: "redacted-provider-text" } },
+          options.mappingError ?? { error: { errors: [{ reason: "insufficientPermissions" }], code: options.mappingStatus, message: "redacted-provider-text" } },
           { status: options.mappingStatus },
         );
       }
@@ -512,7 +514,7 @@ describe("Google Play adapter RPC service", () => {
     expect(file).toEqual({
       symbol_type: "proguard", sha256: mappingDigest, size_bytes: mappingBytes.byteLength,
       uploaded: false, edit: "existing_bundle", attempt: "rejected", stage: "upload_mapping",
-      error_code: "play_api_rejected", http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER",
+      error_code: "play_api_rejected", http_status: 403, provider_reason: "insufficientPermissions", provider_cause: "OTHER", cause_source: "message",
     });
     expect(JSON.stringify(result)).not.toContain("redacted-provider-text");
     // Nothing was accepted, so the side edit is deleted, never committed; the release still commits.
@@ -526,6 +528,19 @@ describe("Google Play adapter RPC service", () => {
     await expect(stream.getReader().read()).resolves.toMatchObject({ done: true });
   });
 
+  it("preserves a structured cause for a refused existing-bundle upload", async () => {
+    const fixture = googleFixture({ trackMaximum: 0, mappingStatus: 400,
+      mappingError: { error: { status: "EDIT_IN_REVIEW", message: "private provider prose" } },
+    });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
+    expect(result).toMatchObject({ ok: true, value: { deobfuscation_files: [{
+      uploaded: false, attempt: "rejected", stage: "upload_mapping", provider_cause: "EDIT_IN_REVIEW", cause_source: "structured",
+    }] } });
+    expect(JSON.stringify(result)).not.toContain("private provider prose");
+  });
+
   it("reports a refused side-edit commit as rejected at commit_edit and still ships the release", async () => {
     const fixture = googleFixture({ trackMaximum: 0, failCommitOf: "edit-1" });
     fixture.alreadyOnPlay(42, digest);
@@ -533,7 +548,7 @@ describe("Google Play adapter RPC service", () => {
     const result = await service.promote(promotion({ mapping: mappingDeclaration() }), body(), null, environment(), mappingBody());
     expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-2", deobfuscation_files: [{
       symbol_type: "proguard", uploaded: false, attempt: "rejected", stage: "commit_edit",
-      error_code: "play_api_rejected", provider_cause: "EDIT_IN_REVIEW",
+      error_code: "play_api_rejected", provider_cause: "EDIT_IN_REVIEW", cause_source: "message",
     }] } });
     expect(stepsOf(fixture)).toContain("commit@edit-2");
   });

@@ -204,8 +204,10 @@ export interface DeobfuscationFileResult {
   http_status?: number;
   /** Google's documented reason identifiers (allowlisted), e.g. insufficientPermissions. */
   provider_reason?: string;
-  /** Classified cause of Google's message (e.g. EDIT_IN_REVIEW, OTHER). */
+  /** Classified cause derived from Google identifiers or message text. */
   provider_cause?: string;
+  /** Distinguishes structured identifiers from an inference based on prose. */
+  cause_source?: "structured" | "message";
 }
 
 export type AdapterResult<T> =
