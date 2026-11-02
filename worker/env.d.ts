@@ -152,6 +152,7 @@ interface GooglePlayAdapterService {
       http_status?: number;
       provider_reason?: string;
       provider_cause?: string;
+      cause_source?: "structured" | "message";
     }>;
     /** false when Play already held this exact bundle and only the track was edited. */
     bundle_uploaded?: boolean;
