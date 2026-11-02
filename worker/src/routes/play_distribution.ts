@@ -297,19 +297,35 @@ function receiptReleaseNotes(result: PlayReleaseNotesResult, acknowledged: unkno
   };
 }
 
-/** Optional sealed native debug symbols zip stored alongside the AAB/APK bundle. */
-async function getReleaseSymbols(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsRow | null> {
-  return db.prepare(
+type ReleaseSymbolsSelection =
+  | { status: "missing" }
+  | { status: "unsealed" | "ambiguous" }
+  | { status: "found"; asset: ReleaseSymbolsRow };
+
+/** Find both bundle-declared and subsequently attached Android native archives. */
+async function getReleaseSymbols(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsSelection> {
+  const result = await db.prepare(
     `SELECT ba.id AS asset_id, arb.state AS bundle_state,
             ba.r2_key, ba.file_hash, ba.size_bytes, ba.metadata_json
      FROM releases r
      JOIN builds b ON b.id = r.build_id AND b.app_id = r.app_id
      JOIN android_release_artifact_bundles arb ON arb.build_id = b.id AND arb.app_id = r.app_id
      JOIN build_assets ba ON ba.build_id = b.id
-     WHERE r.app_id = ?1 AND r.id = ?2
-       AND ba.artifact_kind = 'debug-symbols' AND ba.platform = 'android' AND ba.filetype = 'symbols'
-     LIMIT 1`,
-  ).bind(appId, releaseId).first<ReleaseSymbolsRow>();
+     WHERE r.app_id = ?1 AND r.id = ?2 AND ba.platform = 'android'
+       AND ((ba.artifact_kind = 'debug-symbols' AND ba.filetype = 'symbols')
+         OR (ba.artifact_kind = 'native-symbols' AND ba.filetype = 'symbols.zip'))
+     ORDER BY ba.created_at, ba.id`,
+  ).bind(appId, releaseId).all<ReleaseSymbolsRow>();
+  const assets = result.results;
+  if (assets.length === 0) return { status: "missing" };
+  const asset = assets[0]!;
+  // A build can contain multiple slots. Never silently pick different archives;
+  // identical copies are safe only when each is sealed to the same bytes.
+  if (assets.some((other) => other.file_hash !== asset.file_hash || other.size_bytes !== asset.size_bytes)) {
+    return { status: "ambiguous" };
+  }
+  if (assets.some((candidate) => !sealed(candidate))) return { status: "unsealed" };
+  return { status: "found", asset };
 }
 
 async function getReleaseArtifact(db: D1Database, appId: string, releaseId: string): Promise<ReleaseArtifactRow | null> {
@@ -766,10 +782,14 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   }
   // Declared native debug symbols must be sealed to their exact bytes too; a
   // declared-but-unsealed zip fails closed instead of being silently skipped.
-  const symbolsAsset = await getReleaseSymbols(c.env.DB, appId, releaseId);
-  if (symbolsAsset && !sealed(symbolsAsset)) {
-    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "native debug symbols are not sealed to their declared exact bytes" });
+  const symbols = await getReleaseSymbols(c.env.DB, appId, releaseId);
+  if (symbols.status === "ambiguous") {
+    return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "symbols_ambiguous", message: "release's build has multiple different native debug symbol archives" });
   }
+  if (symbols.status === "unsealed") {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: "symbols_not_sealed", message: "native debug symbols are not sealed to their declared exact bytes" });
+  }
+  const symbolsAsset = symbols.status === "found" ? symbols.asset : null;
   // Same rule for an attached R8/ProGuard mapping: present-but-unsealed fails closed.
   const mappingAsset = await getReleaseMapping(c.env.DB, appId, releaseId);
   if (mappingAsset && !sealed(mappingAsset)) {
@@ -1452,9 +1472,18 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
   if (artifact.bundle_state !== "ready" || metadata.upload_state !== "ready" || metadata.verified_sha256 !== artifact.file_hash || metadata.verified_size_bytes !== artifact.size_bytes) {
     return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB is not sealed to its declared exact bytes" });
   }
+  // A mapping-only backfill must not be blocked by unrelated native archives.
+  const symbols = (input.kinds ?? DEOBFUSCATION_KINDS).includes("nativeCode")
+    ? await getReleaseSymbols(c.env.DB, appId, releaseId) : { status: "missing" as const };
+  if (symbols.status === "ambiguous") {
+    return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "symbols_ambiguous", message: "release's build has multiple different native debug symbol archives" });
+  }
+  if (symbols.status === "unsealed") {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", failure_code: "symbols_not_sealed", message: "native debug symbols are not sealed to their declared exact bytes" });
+  }
   const assets: Record<PlayDeobfuscationKind, ReleaseSymbolsRow | null> = {
     proguard: await getReleaseMapping(c.env.DB, appId, releaseId),
-    nativeCode: await getReleaseSymbols(c.env.DB, appId, releaseId),
+    nativeCode: symbols.status === "found" ? symbols.asset : null,
   };
   const selected: SelectedDeobfuscationFile[] = [];
   for (const type of input.kinds ?? DEOBFUSCATION_KINDS) {

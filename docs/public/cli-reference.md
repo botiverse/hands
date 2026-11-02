@@ -276,7 +276,11 @@ hands releases play-upload-symbols raft-android <release> --kinds proguard \
 - Needs the app **publisher** role as a signed-in human or agent; deploy tokens
   are refused. Uses the same per-package Play edit lock as promote.
 - `--kinds` defaults to every sealed deobfuscation file on the build; a build
-  with none (or without a requested kind) fails with `no_symbols`.
+  with none (or without a requested kind) fails with `no_symbols`. Native archives
+  may be declared with the Android release bundle or added later with
+  `builds attach-symbols`. If a build contains different native archives, the
+  upload fails with `symbols_ambiguous` instead of choosing one. An explicit
+  `--kinds proguard` upload is unaffected by that ambiguity.
 - Works for any versionCode Play already holds with the release's AAB; otherwise
   it fails with `version_not_on_play`.
 - Any failure deletes the Play edit; nothing is half-committed. Re-running is
