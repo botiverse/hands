@@ -26,6 +26,7 @@ type GooglePlayAdapterResult<T> =
         stage?: string;
         provider_cause?: string;
         cause_source?: "structured" | "message";
+        provider_identifiers?: { http_code?: number };
         /** sha256 + length of Google's unmatched message, never the text. */
         message_sha256?: string;
         message_length?: number;
