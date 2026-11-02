@@ -58,6 +58,38 @@ describe("store product route", () => {
     expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
     expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 0 });
   });
+  it("reports only allowlisted Google failure categories and a bounded provider status", async () => {
+    const h = await harness("admin", async () => ({ ok: false, error: {
+      status: 403, code: "play_api_rejected", message: "sensitive provider message",
+      cause: { provider_identifiers: { http_code: 403, reason: "private-reason" } },
+    } }));
+    const res = await h.push(req("dry_run"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ code: "play_api_rejected", message: "Store request failed; inspect provider state before retrying", provider_http_status: 403 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 0 });
+  });
+  it("does not expose unknown adapter codes, provider details, or unbounded statuses", async () => {
+    const h = await harness("admin", async () => ({ ok: false, error: {
+      status: 403, code: "sensitive_code", message: "sensitive provider message",
+      cause: { provider_identifiers: { http_code: 403 } },
+    } }));
+    const res = await h.push(req("dry_run"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ code: "google_subscription_failed", message: "Store request failed; inspect provider state before retrying" });
+    const malformed = await harness("admin", async () => ({ ok: false, error: {
+      status: 403, code: "play_api_rejected", message: "sensitive provider message",
+      cause: { provider_identifiers: { http_code: 999 } },
+    } }));
+    expect(await (await malformed.push(req("dry_run"))).json()).toEqual({ code: "play_api_rejected", message: "Store request failed; inspect provider state before retrying" });
+  });
+  it("keeps an uncertain commit locked even when an adapter failure has a safe category", async () => {
+    const h = await harness("admin", async () => ({ ok: false, error: { status: 403, code: "play_api_rejected", message: "sensitive provider message" } }));
+    const res = await h.push(req("commit"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: "STORE_PRODUCT_RECOVERY_REQUIRED", recovery_required: true });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 1 });
+  });
   it("records a commit without persisting supplied listing text or credentials", async () => {
     const h = await harness(); const res = await h.push(req("commit")); expect(res.status).toBe(200);
     expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
