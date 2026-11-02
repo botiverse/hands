@@ -201,6 +201,8 @@ hands builds publish-android raft-android \
 
 Public update checks only use the installable artifact. Mapping files, native symbols, and metadata stay available through authenticated admin APIs.
 
+To add symbols to an existing build, use `hands builds attach-symbols <app> <build-id> <file> --kind <kind>`. Kinds are `proguard-mapping`, `native-symbols`, and `dsym`; the command also infers the kind from the filename. A native-symbol archive uses the build's Android, HarmonyOS, or iOS product type to select its platform and requires an explicit `--platform` if the product type is unknown. Attachments are add-only and do not replace an existing asset in the same slot.
+
 ## Google Play: upload now, send for review later
 
 Google Play reviews one set of changes at a time. While another release of the

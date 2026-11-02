@@ -11,6 +11,9 @@ vi.mock("../lib/api.js", async (importOriginal) => {
     apiRequest: async (path: string, opts: { method?: string; body?: any } = {}) => {
       const calls = (globalThis as unknown as { __CALLS: Array<{ method: string; path: string; body?: any }> }).__CALLS;
       calls.push({ method: (opts.method ?? "GET").toUpperCase(), path: String(path), body: opts.body });
+      if (String(path) === `/api/apps/${APP_ID}/builds/${BUILD_ID}`) {
+        return { product_type: (globalThis as unknown as { __PRODUCT_TYPE: string }).__PRODUCT_TYPE } as never;
+      }
       if (String(path).endsWith("/assets/uploads")) {
         return { asset_id: "asset-1", state: "pending_upload", upload: { url: "https://r2.example.invalid/put", headers: {} } } as never;
       }
@@ -22,11 +25,12 @@ vi.mock("../lib/api.js", async (importOriginal) => {
   };
 });
 
-async function run(argv: string[]) {
+async function run(argv: string[], productType = "android-apk") {
   // The command streams the file straight to the presigned URL, so stub that PUT.
   vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
   const calls: Array<{ method: string; path: string; body?: any }> = [];
   (globalThis as unknown as { __CALLS: typeof calls }).__CALLS = calls;
+  (globalThis as unknown as { __PRODUCT_TYPE: string }).__PRODUCT_TYPE = productType;
   const { registerBuildCommands } = await import("./builds.js");
   const program = new Command();
   program.exitOverride();
@@ -67,5 +71,61 @@ describe("builds attach-symbols", () => {
 
     await expect(run(["builds", "attach-symbols", APP_ID, BUILD_ID, apk, "--kind", "installable"]))
       .rejects.toThrow(/Only debug symbols/);
+  });
+
+  it.each([["android-apk", "android"], ["ohos-app", "ohos"], ["ios-ipa", "ios"]])(
+    "uses the build type for native symbols on %s", async (productType, platform) => {
+      const { mkdtempSync, writeFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const file = join(mkdtempSync(join(tmpdir(), "sym-native-")), "mapping.zip");
+      writeFileSync(file, "zip");
+      const calls = await run(["builds", "attach-symbols", APP_ID, BUILD_ID, file, "--kind", "native-symbols"], productType);
+      expect(calls.find(c => c.path.endsWith("/assets/uploads"))?.body).toMatchObject({ artifact_kind: "native-symbols", platform, filetype: "symbols.zip" });
+    },
+  );
+
+  it.each([["proguard-mapping", "android"], ["dsym", "ios"]])(
+    "uses the explicit %s kind instead of the filename to choose platform", async (kind, platform) => {
+      const { mkdtempSync, writeFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const file = join(mkdtempSync(join(tmpdir(), "sym-explicit-")), "mapping.zip");
+      writeFileSync(file, "zip");
+      const calls = await run(["builds", "attach-symbols", APP_ID, BUILD_ID, file, "--kind", kind]);
+      expect(calls.find(c => c.path.endsWith("/assets/uploads"))?.body).toMatchObject({ artifact_kind: kind, platform });
+    },
+  );
+
+  it("accepts an explicit native-symbol platform for a custom build", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = join(mkdtempSync(join(tmpdir(), "sym-custom-")), "symbols.zip");
+    writeFileSync(file, "zip");
+    const calls = await run(["builds", "attach-symbols", APP_ID, BUILD_ID, file, "--platform", "linux-x64"], "desktop-installer");
+    expect(calls.find(c => c.path.endsWith("/assets/uploads"))?.body).toMatchObject({ artifact_kind: "native-symbols", platform: "linux-x64" });
+  });
+
+  it("does not allow a platform override for a mapping", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = join(mkdtempSync(join(tmpdir(), "sym-mapping-")), "mapping.txt");
+    writeFileSync(file, "mapping");
+    await expect(run(["builds", "attach-symbols", APP_ID, BUILD_ID, file, "--platform", "ios"])).rejects.toThrow(/only valid for native-symbols/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown native-symbol platform before declaring or uploading", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const file = join(mkdtempSync(join(tmpdir(), "sym-native-")), "symbols.zip");
+    writeFileSync(file, "zip");
+    await expect(run(["builds", "attach-symbols", APP_ID, BUILD_ID, file], "desktop-installer")).rejects.toThrow(/Cannot determine/);
+    const calls = (globalThis as unknown as { __CALLS: Array<{ method: string; path: string }> }).__CALLS;
+    expect(calls.some(c => c.method === "POST")).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
