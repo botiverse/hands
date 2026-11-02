@@ -75,6 +75,11 @@ const MAX_MESSAGE_LENGTH = 4_000;
 const MAX_FIELD_LENGTH = 500;
 const MAX_FEEDBACK_PREVIEW_LENGTH = 180;
 const FEEDBACK_THREAD_EVENTS = new Set(["feedback:new", "feedback:comment_created", "feedback:status_changed"]);
+const FEEDBACK_EVENT_EMOJI = new Map<string, string>([
+  ["feedback:new", "📮"],
+  ["feedback:comment_created", "💬"],
+  ["feedback:status_changed", "🔄"],
+]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLI_APP_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/i;
 
@@ -545,7 +550,8 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   const payload = notificationPayload(body);
   const app = parseJsonRecord(payload.app);
   const build = parseJsonRecord(payload.build);
-  const lines = [`**Hands · ${event}**`];
+  const emoji = FEEDBACK_EVENT_EMOJI.get(event);
+  const lines = [`${emoji ? `${emoji} ` : ""}**Hands · ${event}**`];
   const appId = safeValue(knownApp?.id) ?? safeValue(body.app_id) ?? safeValue(app.id);
   const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
   const appName = safePreview(knownApp?.name, 160) ?? safePreview(app.name, 160) ?? safePreview(appSlug, 160);
@@ -585,7 +591,7 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
     ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
   if (FEEDBACK_THREAD_EVENTS.has(event) && ticketId && cliApp) {
-    footer = `View more: \`hands feedback show ${cliApp} ${ticketId}\``;
+    footer = `📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``;
   }
   const content = lines.join("\n");
   if (!footer) return content.slice(0, MAX_MESSAGE_LENGTH);

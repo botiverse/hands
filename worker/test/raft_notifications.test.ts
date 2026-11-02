@@ -164,6 +164,19 @@ describe("Hands-managed Raft notifications", () => {
     );
   });
 
+  it("adds clear icons to feedback events and the details command", () => {
+    for (const [event, emoji] of [
+      ["feedback:new", "📮"],
+      ["feedback:comment_created", "💬"],
+      ["feedback:status_changed", "🔄"],
+    ] as const) {
+      const message = formatRaftNotificationMessage(feedbackBody(event, { app_slug: "sample-app" }));
+      expect(message.startsWith(`${emoji} **Hands · ${event}**`)).toBe(true);
+      expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
+    }
+    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("**Hands · app_store:version_state_changed**")).toBe(true);
+  });
+
   it("renders a bounded feedback preview, app identity, and a usable CLI command", () => {
     const message = formatRaftNotificationMessage(feedbackBody("feedback:new", {
       app_slug: "sample-app", kind: "feedback", message: `${"Hello ".repeat(40)}@admin https://example.test/signed?secret=abc`,
