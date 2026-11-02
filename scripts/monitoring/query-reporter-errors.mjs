@@ -14,6 +14,20 @@ function requestReference(event) {
   const id = event?.$metadata?.requestId;
   return typeof id === 'string' && /^[a-f0-9-]{16,64}$/i.test(id) ? { request_id: id } : {};
 }
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Fixed labels only: never return app, build, asset, path, query or body. */
+export function summarizeAssetResponse(event, buildId) {
+  const m = event?.$metadata ?? {};
+  if (!uuid.test(buildId ?? '') || !Number.isInteger(m.statusCode) || m.statusCode < 100 || m.statusCode > 599 || typeof m.url !== 'string') return null;
+  let url; try { url = new URL(m.url); } catch { return null; }
+  if (url.hostname !== 'hands.build' && url.hostname !== 'app.hands.build') return null;
+  const p = url.pathname.split('/');
+  if (p[1] !== 'api' || p[2] !== 'apps' || !uuid.test(p[3] ?? '') || p[4] !== 'builds' || p[5]?.toLowerCase() !== buildId.toLowerCase() || p[6] !== 'assets') return null;
+  const route = p.length === 8 && p[7] === 'uploads' ? 'asset_declare'
+    : p.length === 10 && uuid.test(p[7] ?? '') && p[8] === 'upload' && p[9] === 'complete' ? 'asset_complete' : null;
+  if (!route) return null;
+  return { ...requestReference(event), route, status: m.statusCode, ...(Number.isSafeInteger(event.timestamp) ? { timestamp: event.timestamp } : {}) };
+}
 export function summarizeResponse(event) {
   const m = event?.$metadata ?? {};
   if (m.statusCode !== 500 || typeof m.url !== 'string') return null;
@@ -68,6 +82,8 @@ export function queryBody(from, to, worker) {
 export async function main(env = process.env, fetcher = fetch) {
   const { CLOUDFLARE_API_TOKEN: token, CLOUDFLARE_ACCOUNT_ID: account, HANDS_WORKER_NAME: worker } = env;
   if (!token || !/^[a-f0-9]{32}$/.test(account ?? '')) throw new Error('Cloudflare query credentials are not configured');
+  const buildId = env.QUERY_ASSET_BUILD_ID ?? '';
+  if (buildId && !uuid.test(buildId)) throw new Error('Invalid build UUID');
   const body = queryBody(Number(env.QUERY_FROM_MS), Number(env.QUERY_TO_MS), worker ?? '');
   const response = await fetcher(`https://api.cloudflare.com/client/v4/accounts/${account}/workers/observability/telemetry/query`, {
     method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
@@ -84,7 +100,7 @@ export async function main(env = process.env, fetcher = fetch) {
   if (matchedErrors.length > 10) throw new Error('Too many exceptions for sealed diagnostic');
   const publicKey = reference ? readFileSync(new URL('./reporter-query-public.pem', import.meta.url)) : null;
   const sealed_exceptions = matchedErrors.map(event => sealException(event, publicKey));
-  console.log(JSON.stringify({ from: body.timeframe.from, to: body.timeframe.to, returned_events: events.length, possibly_truncated: events.length >= body.limit, error_events: diagnostics.length, diagnostics, sealed_exceptions, failed_requests: events.map(summarizeResponse).filter(Boolean) }));
+  console.log(JSON.stringify({ from: body.timeframe.from, to: body.timeframe.to, returned_events: events.length, possibly_truncated: events.length >= body.limit, error_events: diagnostics.length, diagnostics, sealed_exceptions, failed_requests: events.map(summarizeResponse).filter(Boolean), asset_requests: buildId ? events.map(event => summarizeAssetResponse(event, buildId)).filter(Boolean) : [] }));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(error => {
