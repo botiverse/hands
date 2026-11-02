@@ -264,8 +264,8 @@ which must already be on Google Play. It never changes a track, rollout, bundle
 or release notes.
 
 ```bash
-# Dry run (the default): opens a Play edit, checks the versionCode is on Play,
-# deletes the edit and prints what would be uploaded. Nothing is written.
+# Dry run (the default): opens a temporary Play edit, checks the versionCode,
+# deletes the edit and prints what would be uploaded. It does not upload files.
 hands releases play-upload-symbols raft-android <release> --note "backfill mapping"
 
 # Upload and commit (only the mapping in this example)
@@ -275,14 +275,24 @@ hands releases play-upload-symbols raft-android <release> --kinds proguard \
 
 - Needs the app **publisher** role as a signed-in human or agent; deploy tokens
   are refused. Uses the same per-package Play edit lock as promote.
-- `--kinds` defaults to every sealed deobfuscation file on the build; a build
-  with none (or without a requested kind) fails with `no_symbols`. Native archives
-  may be declared with the Android release bundle or added later with
-  `builds attach-symbols`. If a build contains different native archives, the
-  upload fails with `symbols_ambiguous` instead of choosing one. An explicit
-  `--kinds proguard` upload is unaffected by that ambiguity.
-- Works for any versionCode Play already holds with the release's AAB; otherwise
-  it fails with `version_not_on_play`.
+- `--kinds` defaults to the mapping and any native archive declared with the
+  Android release bundle. A generic native archive added with `builds
+  attach-symbols` is selected only when `--kinds nativeCode` is explicit; such an
+  archive may cover only part of the app. Promotion also excludes generic native
+  attachments and records `attached_native_requires_explicit_selection` when no
+  bundle-declared archive is present.
+- Uploading a native archive **replaces** that version's existing Play native
+  symbols. Before explicitly selecting one, check that it covers every native
+  library and ABI you intend to symbolicate; otherwise you may lose coverage.
+  Hands cannot read the existing Play symbol file back to compare it.
+- If explicit native selection finds different native archives on the build, it
+  fails with `symbols_ambiguous` instead of choosing one. `--kinds proguard` is
+  unaffected. A build with no selected files fails with `no_symbols`, or with
+  `native_symbols_selection_required` when only a generic native attachment exists.
+- Play must already hold this versionCode with the release's AAB, otherwise the
+  upload fails with `version_not_on_play`. Play can still reject the file even
+  when the AAB is present; inspect the returned error and do not assume a retry
+  will succeed.
 - Any failure deletes the Play edit; nothing is half-committed. Re-running is
   safe: an upload replaces the file of the same type for that versionCode.
 - `--commit` writes a receipt (`play-promotion` / `upload-symbols`); the dry run
