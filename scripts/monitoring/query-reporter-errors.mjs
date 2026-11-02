@@ -18,15 +18,27 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Fixed labels only: never return app, build, asset, path, query or body. */
 export function summarizeAssetResponse(event, buildId) {
   const m = event?.$metadata ?? {};
-  if (!uuid.test(buildId ?? '') || !Number.isInteger(m.statusCode) || m.statusCode < 100 || m.statusCode > 599 || typeof m.url !== 'string') return null;
-  let url; try { url = new URL(m.url); } catch { return null; }
+  const requestUrl = typeof m.url === 'string' ? m.url : event?.$workers?.event?.request?.url;
+  if (!uuid.test(buildId ?? '') || typeof requestUrl !== 'string') return null;
+  let url; try { url = new URL(requestUrl); } catch { return null; }
   if (url.hostname !== 'hands.build' && url.hostname !== 'app.hands.build') return null;
   const p = url.pathname.split('/');
   if (p[1] !== 'api' || p[2] !== 'apps' || !uuid.test(p[3] ?? '') || p[4] !== 'builds' || p[5]?.toLowerCase() !== buildId.toLowerCase() || p[6] !== 'assets') return null;
   const route = p.length === 8 && p[7] === 'uploads' ? 'asset_declare'
     : p.length === 10 && uuid.test(p[7] ?? '') && p[8] === 'upload' && p[9] === 'complete' ? 'asset_complete' : null;
   if (!route) return null;
-  return { ...requestReference(event), route, status: m.statusCode, ...(Number.isSafeInteger(event.timestamp) ? { timestamp: event.timestamp } : {}) };
+  const message = event?.source?.message;
+  let responseLog = null;
+  if (typeof message === 'string' && message.startsWith('hands_http_response ') && message.length <= 8192) {
+    try { responseLog = JSON.parse(message.slice('hands_http_response '.length)); } catch { /* ignore malformed logs */ }
+  }
+  const expected = route === 'asset_declare' ? '/api/apps/:appId/builds/:buildId/assets/uploads'
+    : '/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete';
+  const statusFromLog = responseLog?.method === 'POST' && responseLog?.route === expected ? responseLog.status : undefined;
+  const status = [m.statusCode, event?.$workers?.event?.response?.status, statusFromLog]
+    .find(value => Number.isInteger(value) && value >= 100 && value <= 599);
+  if (status === undefined) return null;
+  return { ...requestReference(event), route, status, ...(Number.isSafeInteger(event.timestamp) ? { timestamp: event.timestamp } : {}) };
 }
 export function summarizeResponse(event) {
   const m = event?.$metadata ?? {};
