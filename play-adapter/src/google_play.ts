@@ -320,9 +320,12 @@ export class GooglePlayClient {
       throw playRejection(response.status, body, playRequestStage(url, init.method));
     }
     if (!body || typeof body !== "object") {
+      const responseShape = { status: response.status, body_empty: responseText.trim().length === 0, json_parsed: jsonParsed };
       console.warn("hands_play_response_shape", JSON.stringify({ stage: playRequestStage(url, init.method),
-        status: response.status, jsonObject: false, bodyEmpty: responseText.trim().length === 0, jsonParsed }));
-      throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON");
+        status: response.status, jsonObject: false, bodyEmpty: responseShape.body_empty, jsonParsed }));
+      throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON", {
+        stage: playRequestStage(url, init.method), response_shape: responseShape,
+      });
     }
     return body;
   }
@@ -354,6 +357,9 @@ export class GooglePlayClient {
     for (let page = 0; page < 20; page++) {
       const query = new URLSearchParams({ pageSize: "1000", ...(token ? { pageToken: token } : {}) });
       const result = await this.requestJson<{ subscriptions?: unknown; nextPageToken?: unknown }>(`${base}?${query}`);
+      // A missing field in an object is an empty catalogue; an array root is
+      // not the documented response and must not be mistaken for zero products.
+      if (Array.isArray(result)) throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned an invalid subscription response");
       const items = result.subscriptions ?? [];
       if (!Array.isArray(items) || items.length > 1000 || items.some(x => !x || typeof x !== "object" || Array.isArray(x))) {
         throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned an invalid subscription list");

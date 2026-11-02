@@ -13,8 +13,9 @@ const MAX_REQUEST = 8 * 1024 * 1024;
 const MAX_SCREENSHOT = 5 * 1024 * 1024;
 const hash = (input: string | Uint8Array) => bytesToHex(sha256(typeof input === "string" ? new TextEncoder().encode(input) : input));
 class RequestError extends Error { constructor(readonly status: 400 | 413, readonly code: string, message: string) { super(message); } }
+type GoogleProductDiagnostic = { provider_http_status?: number; provider_body_empty?: boolean; provider_json_parsed?: boolean };
 class GoogleProductError extends Error {
-  constructor(readonly code: string, readonly providerHttpStatus?: number) { super("Store request failed; inspect provider state before retrying"); }
+  constructor(readonly code: string, readonly diagnostic: GoogleProductDiagnostic = {}) { super("Store request failed; inspect provider state before retrying"); }
 }
 // Only adapter-defined categories cross the boundary; unknown codes and all
 // provider messages, URLs, and metadata remain private.
@@ -131,8 +132,16 @@ export async function handleApplyStoreProduct(c: AdminContext) {
           // This is a provider-reported field, not the transport status. Bound its
           // type and range and never copy the rest of the provider response.
           const http = reply.error.cause?.provider_identifiers?.http_code;
-          const providerHttpStatus = code === "play_api_rejected" && Number.isInteger(http) && http! >= 400 && http! <= 599 ? http : undefined;
-          throw new GoogleProductError(code, providerHttpStatus);
+          const diagnostic: GoogleProductDiagnostic = {};
+          if (code === "play_api_rejected" && typeof http === "number" && Number.isInteger(http) && http >= 400 && http <= 599) diagnostic.provider_http_status = http;
+          const shape = reply.error.cause?.response_shape;
+          if (code === "play_api_malformed" && shape && Number.isInteger(shape.status) && shape.status >= 200 && shape.status <= 299
+            && typeof shape.body_empty === "boolean" && typeof shape.json_parsed === "boolean") {
+            diagnostic.provider_http_status = shape.status;
+            diagnostic.provider_body_empty = shape.body_empty;
+            diagnostic.provider_json_parsed = shape.json_parsed;
+          }
+          throw new GoogleProductError(code, diagnostic);
         }
         if (reply.value.product_id !== productId || reply.value.mode !== mode || !["planned", "committed", "no_changes", "failed", "pending"].includes(reply.value.outcome)) throw new AscApiError(502, "google_response_malformed");
         return reply.value;
@@ -153,7 +162,7 @@ export async function handleApplyStoreProduct(c: AdminContext) {
   } catch (error) {
     if (provider === "apple" && !mutationStarted) releaseLock = true;
     if (locked && !releaseLock) return c.json({ code: "STORE_PRODUCT_RECOVERY_REQUIRED", operation_id: operationId, recovery_required: true, message: "A store write may have completed; inspect provider state and recover the lock before retrying" }, 502);
-    if (error instanceof GoogleProductError) return c.json({ code: error.code, message: error.message, ...(error.providerHttpStatus !== undefined ? { provider_http_status: error.providerHttpStatus } : {}) }, 502);
+    if (error instanceof GoogleProductError) return c.json({ code: error.code, message: error.message, ...error.diagnostic }, 502);
     if (error instanceof RequestError) return c.json({ code: error.code, message: error.message }, error.status);
     if (error instanceof ProductInputError) return c.json({ code: "subscription_request_invalid", message: error.message }, 400);
     if (error instanceof AppStoreReleaseError) return c.json({ code: error.code, message: error.message }, error.status as 400);

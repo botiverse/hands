@@ -83,6 +83,19 @@ describe("store product route", () => {
     } }));
     expect(await (await malformed.push(req("dry_run"))).json()).toEqual({ code: "play_api_rejected", message: "Store request failed; inspect provider state before retrying" });
   });
+  it("exposes only validated shape facts for a malformed Google success response", async () => {
+    const h = await harness("admin", async () => ({ ok: false, error: {
+      status: 502, code: "play_api_malformed", message: "sensitive provider text",
+      cause: { response_shape: { status: 200, body_empty: true, json_parsed: false, body: "private-value" } },
+    } }));
+    const res = await h.push(req("dry_run"));
+    expect(await res.json()).toEqual({ code: "play_api_malformed", message: "Store request failed; inspect provider state before retrying", provider_http_status: 200, provider_body_empty: true, provider_json_parsed: false });
+    const invalid = await harness("admin", async () => ({ ok: false, error: {
+      status: 502, code: "play_api_malformed", message: "sensitive provider text",
+      cause: { response_shape: { status: 200, body_empty: "private-value", json_parsed: false } },
+    } }));
+    expect(await (await invalid.push(req("dry_run"))).json()).toEqual({ code: "play_api_malformed", message: "Store request failed; inspect provider state before retrying" });
+  });
   it("keeps an uncertain commit locked even when an adapter failure has a safe category", async () => {
     const h = await harness("admin", async () => ({ ok: false, error: { status: 403, code: "play_api_rejected", message: "sensitive provider message" } }));
     const res = await h.push(req("commit"));

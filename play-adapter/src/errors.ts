@@ -10,6 +10,8 @@
  */
 export type PlayErrorCause = {
   stage?: string;
+  /** Shape only; never retain or return the response body. */
+  response_shape?: { status: number; body_empty: boolean; json_parsed: boolean };
   provider_cause?: string;
   /** Where provider_cause came from: Google's structured identifiers, or the message text. */
   cause_source?: "structured" | "message";
