@@ -213,3 +213,65 @@ describe("D1 internal errors and response budget", () => {
     expect(listCalls).toBe(2);
   });
 });
+
+describe("additional transient D1 errors", () => {
+  it.each([
+    "D1_ERROR: database is locked: SQLITE_BUSY",
+    "D1_ERROR: database is busy",
+    "D1_ERROR: backend temporarily unavailable",
+    "D1_ERROR: connection reset by peer",
+    "Network error",
+    "fetch failed",
+    "D1_ERROR: database overloaded",
+    "D1_ERROR: request timed out",
+  ])("maps %s at the binding stage to 503 without replaying the write", async message => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, undefined, { stage: "route_bind", error: new Error(message) });
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(await response.json()).toMatchObject({ code: "REPORTER_BACKEND_UNAVAILABLE" });
+    expect(calls.business).toBe(1);
+    expect(calls.readback).toBe(0);
+  });
+
+  it("retries a transient token lookup once but never replays a route write", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(1, new Error("D1_ERROR", { cause: new Error("database is busy") }));
+    const response = await worker.fetch(request("PUT"), env, ctx as any);
+    expect(response.status).toBe(201);
+    expect(calls.lookup).toBe(2);
+    expect(calls.business).toBe(1);
+  });
+
+  it("does not replay the rate increment when D1 reports busy", async () => {
+    const log = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(0, undefined, false, new Error("D1_ERROR: database is busy"));
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(503);
+    expect(calls.rate).toBe(1);
+    expect(calls.business).toBe(0);
+    const detail = log.mock.calls.find(call => call[0] === "hands_reporter_failure_detail");
+    expect(JSON.parse(detail![1] as string)).toMatchObject({ failure_stage: "rate_limit", failure_code: "sqlite_busy" });
+  });
+
+  it.each([
+    new Error("D1_ERROR: database is locked", { cause: new Error("SQLITE_CONSTRAINT: unique constraint failed") }),
+    new Error("D1_COLUMN_NOTFOUND: fetch failed"),
+    new Error("D1_ERROR: no such column: backend temporarily unavailable"),
+    new Error('D1_ERROR: near "timeout": syntax error'),
+    new Error("D1_ERROR: no such function: overloaded"),
+  ])("keeps a deterministic error terminal even if another message looks transient", async error => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { env, calls } = fixture(10, error);
+    const response = await worker.fetch(request("GET"), env, ctx as any);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(calls.lookup).toBe(1);
+    expect(calls.business).toBe(0);
+  });
+});

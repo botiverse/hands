@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { httpResponseTelemetry } from "../src/middleware/http_response_telemetry";
+import { httpResponseTelemetry, reporterErrorHandler } from "../src/middleware/http_response_telemetry";
+import { setReporterFailureStage } from "../src/lib/reporter_failure";
 import { registerReleaseRoutes } from "../src/openapi/releases";
 
 afterEach(() => vi.restoreAllMocks());
@@ -73,5 +74,23 @@ describe("server grants validator and final HTTP telemetry", () => {
     expect(records[2].route).toBe("unmatched");
     expect(JSON.stringify(records)).not.toContain("secret");
     expect(JSON.stringify(records)).not.toContain("private-id");
+  });
+});
+
+
+describe("reporter failure classification boundaries", () => {
+  it.each([
+    { stage: "audit_hash", message: "fetch failed" },
+    { stage: "session_verify", message: "Network connection lost" },
+  ] as const)("keeps a non-D1 $stage failure as 500 even when its text looks transient", async ({ stage, message }) => {
+    const app = new OpenAPIHono();
+    app.onError(reporterErrorHandler);
+    app.get("/api/apps/:appId/reporter-feedback", c => {
+      setReporterFailureStage(c, stage);
+      throw new Error(message);
+    });
+    const response = await app.request("/api/apps/app-id/reporter-feedback");
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Retry-After")).toBeNull();
   });
 });
