@@ -261,6 +261,25 @@ describe("Hands-managed Raft notifications", () => {
     expect(message).toContain(`View more: \`hands feedback show sample-app ${TICKET_ID}\``);
   });
 
+  it("keeps the snapshot warning, review link, and time when release fields are long", () => {
+    const long = "x".repeat(500);
+    const message = formatRaftNotificationMessage({
+      event: "app_store:version_state_changed", delivered_at: 1793556592575,
+      payload: {
+        status: long, previous_status: long, state: "REJECTED", previous_state: long,
+        version_string: long, version_name: long, build_number: long, version_code: long,
+        track: long, channel: long, distribution: long, platform: long,
+        observation_display: "First observation, not a new change",
+        app_store_connect_url: "https://appstoreconnect.apple.com/apps/123",
+      },
+    });
+    expect(message.length).toBeLessThanOrEqual(4000);
+    expect(message).toContain("observation: First observation, not a new change");
+    expect(message).toContain("Review: https://appstoreconnect.apple.com/apps/123");
+    expect(message).toContain("Apple's review message is available in App Store Connect.");
+    expect(message).toContain("occurred: 2026-11-01T18:09:52.575Z");
+  });
+
   it("shows a delivered-at millisecond timestamp as readable UTC and preserves provider timestamps", () => {
     const feedback = formatRaftNotificationMessage({ ...feedbackBody("feedback:new"), delivered_at: 1793556592575 });
     expect(feedback).toContain("occurred: 2026-11-01T18:09:52.575Z");

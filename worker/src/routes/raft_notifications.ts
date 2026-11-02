@@ -553,6 +553,12 @@ function safePreview(value: unknown, limit: number): string | null {
   return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
 }
 
+function truncateMessage(value: string, limit: number): string {
+  const clipped = value.slice(0, limit);
+  // Avoid ending a truncated message with half of a Unicode character.
+  return /[\uD800-\uDBFF]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
+}
+
 interface NotificationApp {
   id: string;
   slug: string | null;
@@ -566,6 +572,7 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   const build = parseJsonRecord(payload.build);
   const emoji = NOTIFICATION_EMOJI.get(event);
   const lines = [`${emoji ? `${emoji} ` : ""}**Hands · ${event}**`];
+  const footer: string[] = [];
   const appId = safeValue(knownApp?.id) ?? safeValue(body.app_id) ?? safeValue(app.id);
   const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
   const appName = safePreview(knownApp?.name, 160) ?? safePreview(app.name, 160) ?? safePreview(appSlug, 160);
@@ -588,7 +595,6 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   // snapshot distinction: an observation is not necessarily a new change.
   for (const [label, value] of [
     ["description", payload.state_label],
-    ["observation", payload.observation_display],
     ["version transition", payload.version_transition],
     ["version code transition", payload.version_code_transition],
     ["groups", payload.groups_display],
@@ -596,6 +602,8 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
     const text = safePreview(value, MAX_FIELD_LENGTH);
     if (text) lines.push(`${label}: ${text}`);
   }
+  const observation = safePreview(payload.observation_display, MAX_FIELD_LENGTH);
+  if (observation) footer.push(`observation: ${observation}`);
   const rollout = event.startsWith("release:") ? payload.rollout
     : event.startsWith("google_play:") ? payload.rollout_percent : null;
   if (typeof rollout === "number" && Number.isFinite(rollout) && rollout >= 0 && rollout <= 100) {
@@ -611,9 +619,9 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
     if (commit && /^[0-9a-f]{7,64}$/i.test(commit)) lines.push(`source commit: ${commit}`);
   }
   const link = safeValue(payload.app_store_connect_url);
-  if (link && /^https:\/\/appstoreconnect\.apple\.com\//.test(link)) lines.push(`Review: ${link}`);
+  if (link && /^https:\/\/appstoreconnect\.apple\.com\//.test(link)) footer.push(`Review: ${link}`);
   if (event === "app_store:version_state_changed" && payload.state === "REJECTED") {
-    lines.push("Apple's review message is available in App Store Connect.");
+    footer.push("Apple's review message is available in App Store Connect.");
   }
   // Hands-generated delivery timestamps are milliseconds. Preserve a
   // provider's own occurrence timestamp as-is, since its units may differ.
@@ -622,8 +630,7 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
     ? new Date(body.delivered_at).toISOString()
     : safeValue(body.delivered_at);
   const occurred = safePreview(safeValue(payload.occurred_at) ?? deliveredAt, MAX_FIELD_LENGTH);
-  if (occurred) lines.push(`occurred: ${occurred}`);
-  let footer: string | null = null;
+  if (occurred) footer.push(`occurred: ${occurred}`);
   const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
   // The CLI treats any 36-character, five-part value as an app id. Avoid
   // generating an ambiguous slug that the CLI would resolve as a different id.
@@ -631,11 +638,12 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
     ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
   if (FEEDBACK_THREAD_EVENTS.has(event) && ticketId && cliApp) {
-    footer = `📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``;
+    footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
   }
   const content = lines.join("\n");
-  if (!footer) return content.slice(0, MAX_MESSAGE_LENGTH);
-  return `${content.slice(0, MAX_MESSAGE_LENGTH - footer.length - 1)}\n${footer}`;
+  if (footer.length === 0) return truncateMessage(content, MAX_MESSAGE_LENGTH);
+  const tail = footer.join("\n");
+  return `${truncateMessage(content, MAX_MESSAGE_LENGTH - tail.length - 1)}\n${tail}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {
