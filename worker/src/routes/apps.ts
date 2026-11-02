@@ -7,6 +7,7 @@
 
 import type { Context } from "hono";
 import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
+import { FEEDBACK_BUILD_ORIGIN_FLAG } from "../lib/feedback_build_origin";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { currentAccount, currentDeployToken, getOrgMemberRole, isOrgAtLeast } from "../lib/permissions";
 
@@ -750,6 +751,23 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
     .bind(appId)
     .first<{ id: string }>();
   if (!existing) return c.json({ error: "not found" }, 404);
+
+  if (key === FEEDBACK_BUILD_ORIGIN_FLAG && body.default_enabled !== undefined && typeof body.default_enabled !== "boolean") {
+    return c.json({ error: "default_enabled must be a boolean" }, 400);
+  }
+  if (key === FEEDBACK_BUILD_ORIGIN_FLAG && body.default_enabled === true) {
+    const policy = await c.env.DB.prepare(
+      `SELECT a.platform, EXISTS (
+         SELECT 1 FROM channels ch WHERE ch.app_id = a.id
+           AND length(COALESCE(ch.bundle_id, '')) BETWEEN 1 AND 255
+           AND ch.bundle_id NOT GLOB '*[^A-Za-z0-9.-]*'
+           AND ch.bundle_id GLOB '*[A-Za-z0-9]*'
+       ) AS has_bundle FROM apps a WHERE a.id = ?1`,
+    ).bind(appId).first<{ platform: string; has_bundle: number }>();
+    if (policy?.platform !== "ios" || policy.has_bundle !== 1) {
+      return c.json({ error: "Configure an iOS channel bundle ID before enabling feedback build separation" }, 400);
+    }
+  }
 
   const isStringArray = (v: unknown): v is string[] =>
     Array.isArray(v) && v.every((x) => typeof x === "string");

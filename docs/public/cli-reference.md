@@ -906,6 +906,7 @@ role for read, publisher for changes):
 
 ```bash
 hands feedback list raft-android --status open --kind crash
+hands feedback list raft-ios --build-scope external
 hands feedback show raft-android <ticket-id>
 hands feedback update raft-android <ticket-id> --status in_progress --assignee me
 hands feedback comment raft-android <ticket-id> "已复现，修复中"
@@ -913,6 +914,9 @@ hands feedback update raft-android <ticket-id> --status resolved
 ```
 
 `--assignee none` unassigns. All subcommands accept `--json` for scripting.
+For iOS apps that enable external report separation, `--build-scope` accepts
+`standard`, `external`, or `all`; the default includes configured and unknown
+origins. Bundle IDs are client-reported and do not verify identity.
 
 ## App Webhooks
 

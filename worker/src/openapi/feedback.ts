@@ -16,6 +16,8 @@ import {
 
 const AppTicketParams = AppIdParam.merge(TicketIdParam);
 const AttachmentParams = AppTicketParams.merge(AttachmentIdParam);
+const BuildScope = z.enum(["standard", "external", "all"]).optional()
+  .describe("For apps with bundle-origin filtering enabled: standard includes configured and unknown origins, external selects mismatches, all includes both.");
 
 const FeedbackUpdateInput = z
   .object({
@@ -218,6 +220,7 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
           .openapi({ description: "One or more comma-separated ticket kinds.", example: "feedback,bug" }).optional(),
         limit: z.coerce.number().int().optional(),
         cursor: z.string().optional(),
+        build_scope: BuildScope,
       }),
     },
     responses: {
@@ -230,7 +233,7 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
     path: "/api/apps/{appId}/feedback/material-delta",
     tags: ["Feedback"],
     summary: "List materially changed feedback ticket snapshots",
-    description: "Returns current snapshots after an opaque per-app cursor. Process a whole page before persisting next_cursor.",
+    description: "Returns current snapshots after an opaque per-app cursor. Process a whole page before persisting next_cursor. With bundle-origin filtering enabled, each ticket has build_origin (configured, external, or unknown); all origins stay in the feed so cursor semantics are unchanged.",
     security: auth,
     request: {
       params: AppIdParam,
@@ -258,7 +261,7 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
     tags: ["Feedback"],
     summary: "Read feedback ticket statistics",
     security: auth,
-    request: { params: AppIdParam },
+    request: { params: AppIdParam, query: z.object({ build_scope: BuildScope }) },
     responses: {
       200: success("Feedback stats.", GenericObject),
       403: error("Current principal cannot view feedback stats."),
@@ -274,6 +277,7 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
       params: AppIdParam,
       query: z.object({
         kind: z.enum(["crash", "error"]).optional(),
+        build_scope: BuildScope,
         crash_type: z.enum(["anr", "native", "exception"]).optional()
           .describe("Filter by crash flavour; each group also returns its crash_type."),
       }),

@@ -65,6 +65,9 @@ The first argument is the **app slug** (or id), e.g. `raft-android`.
 hands feedback list raft-android --status open --kind crash
 hands feedback list raft-android --kind bug
 
+# For an iOS app with external report separation enabled:
+hands feedback list raft-ios --build-scope external
+
 # Show one ticket: description, device context, attachments, comments.
 # Use the full UUID from the submitted ticket response/reference.
 hands feedback show raft-android 389d855b-0000-0000-0000-000000000000
@@ -83,6 +86,24 @@ hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root c
 
 Status flow: `open → in_progress → resolved → closed`. Assignee is
 independent of status.
+
+When an app enables external iOS report separation, the default list retains
+configured and unknown origins. `--build-scope external` shows mismatches;
+`--build-scope all` shows both. The reported bundle ID comes from the client
+and is a triage hint, not proof of identity.
+
+An app publisher can enable this in iOS app settings after configuring at least
+one channel bundle ID. New reports with a mismatching ID do not create ordinary
+feedback or crash notification cards; dedicated reporter notifications still
+work. Reports and existing queued deliveries are not deleted.
+
+The authenticated `/api/apps/:appId/feedback/material-delta` feed keeps all
+reports and its existing cursor semantics. Its `build_origin` field is
+`configured`, `external`, or `unknown` when enabled and `null` when disabled.
+Consumers can skip external reports, then advance their cursor only after
+processing the whole page. Channel changes immediately affect classification
+but do not create new delta entries for old reports; scan the list or rescan
+from an earlier cursor idempotently when those reports must be reconsidered.
 
 ## Quick lookup by feedback id
 

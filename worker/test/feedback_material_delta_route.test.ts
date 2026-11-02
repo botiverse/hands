@@ -8,10 +8,14 @@ import { authMiddleware } from "../src/middleware/auth";
 import { requireAppRole } from "../src/lib/permissions";
 import { generateDeployToken, hashDeployToken } from "../src/lib/deploy_tokens";
 import { handleAgentManifest } from "../src/routes/auth";
-import { handlePurgeApp } from "../src/routes/apps";
+import { handlePurgeApp, handleUpdateFeatureFlag } from "../src/routes/apps";
 import {
   handleAddFeedbackComment,
   handleListFeedbackMaterialDelta,
+  handleListFeedback,
+  handleListCrashGroups,
+  handleFeedbackStats,
+  handleGetFeedback,
   handlePublicFeedbackSubmit,
   handlePublicMinidumpSubmit,
   handleUpdateFeedback,
@@ -716,6 +720,198 @@ describe("feedback material delta production routes", () => {
          (SELECT COUNT(*) FROM app_reporter_integrations WHERE app_id='app-a') AS integrations,
          (SELECT COUNT(*) FROM feedback_material_sequence_state WHERE app_id='app-a') AS state`,
     ).get(ticketId)).toEqual({ apps: 0, tickets: 0, comments: 0, integrations: 0, state: 0 });
+  });
+
+  it("separates configured and external bundle IDs without losing unknown or cursor entries", async () => {
+    const { sqlite, env } = environment();
+    sqlite.prepare("UPDATE apps SET platform = 'ios' WHERE id = 'app-a'").run();
+    sqlite.prepare(`INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at)
+      VALUES ('main', 'app-a', 'main', 'Main', 'build.raft.app', 1),
+             ('preview', 'app-a', 'preview', 'Preview', 'raft-ios.preview', 1)`).run();
+    sqlite.prepare(`INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+      VALUES ('origin-flag', 'app-a', 'feedback_build_origin_filter', 1, 1)`).run();
+    const insert = sqlite.prepare(`INSERT INTO feedback_tickets
+      (id, app_id, kind, status, message, metadata_json, signature, created_at, updated_at)
+      VALUES (?, 'app-a', 'crash', 'open', ?, ?, 'same-group', ?, ?)`);
+    const now = Date.now();
+    const samples = [
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", JSON.stringify({ bundle_id: "BUILD.RAFT.APP" }), "configured"],
+      ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", JSON.stringify({ bundle_id: "raft-ios.preview" }), "configured"],
+      ["cccccccc-cccc-4ccc-8ccc-cccccccccccc", JSON.stringify({ bundle_id: "dev.vgent.raft.app" }), "external"],
+      ["dddddddd-dddd-4ddd-8ddd-dddddddddddd", JSON.stringify({ source: "testflight" }), "unknown"],
+      ["eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "{", "unknown"],
+      ["ffffffff-ffff-4fff-8fff-ffffffffffff", JSON.stringify({ bundle_id: { id: "bad" } }), "unknown"],
+      ["11111111-1111-4111-8111-111111111111", JSON.stringify({ bundle_id: "bad/value" }), "unknown"],
+      ["22222222-2222-4222-8222-222222222222", JSON.stringify({ bundle_id: " build.raft.app " }), "unknown"],
+      ["33333333-3333-4333-8333-333333333333", JSON.stringify({ bundle_id: "..." }), "unknown"],
+    ] as const;
+    for (const [index, [id, metadata]] of samples.entries()) insert.run(id, "crash", metadata, now + index, now + index);
+
+    const read = async (scope?: string) => (await (await handleListFeedback(jsonContext(
+      env, { appId: "app-a" }, {}, scope ? { build_scope: scope } : {},
+    ))).json() as any).tickets;
+    const normal = await read();
+    expect(normal.map((t: any) => t.id)).not.toContain(samples[2][0]);
+    expect(normal).toHaveLength(8);
+    expect(normal.find((t: any) => t.id === samples[0][0]).build_origin).toBe("configured");
+    expect(normal.find((t: any) => t.id === samples[3][0]).build_origin).toBe("unknown");
+    expect((await read("external")).map((t: any) => t.id)).toEqual([samples[2][0]]);
+    expect(await read("all")).toHaveLength(9);
+    expect((await handleListFeedback(jsonContext(env, { appId: "app-a" }, {}, { build_scope: "bad" }))).status).toBe(400);
+    const detail = await (await handleGetFeedback(jsonContext(env, { appId: "app-a", ticketId: samples[2][0] }))).json() as any;
+    expect(detail.ticket.build_origin).toBe("external");
+
+    const normalGroups = await (await handleListCrashGroups(jsonContext(env, { appId: "app-a" }))).json() as any;
+    const externalGroups = await (await handleListCrashGroups(jsonContext(env, { appId: "app-a" }, {}, { build_scope: "external" }))).json() as any;
+    expect(normalGroups.groups[0].count).toBe(8);
+    expect(externalGroups.groups[0].count).toBe(1);
+    const normalStats = await (await handleFeedbackStats(jsonContext(env, { appId: "app-a" }))).json() as any;
+    const externalStats = await (await handleFeedbackStats(jsonContext(env, { appId: "app-a" }, {}, { build_scope: "external" }))).json() as any;
+    expect(normalStats.daily.reduce((n: number, row: any) => n + row.n, 0)).toBe(8);
+    expect(externalStats.daily.reduce((n: number, row: any) => n + row.n, 0)).toBe(1);
+
+    const seen: Array<{ id: string; build_origin: string }> = [];
+    let next: string | undefined;
+    let checkpoint = "";
+    do {
+      const page = await (await handleListFeedbackMaterialDelta(jsonContext(env, { appId: "app-a" }, {},
+        { limit: "2", ...(next ? { cursor: next } : {}) }))).json() as any;
+      seen.push(...page.tickets.map((t: any) => ({ id: t.id, build_origin: t.build_origin })));
+      checkpoint = page.next_cursor;
+      next = page.has_more ? page.next_cursor : undefined;
+    } while (next);
+    expect(seen).toEqual(samples.map(([id, , build_origin]) => ({ id, build_origin })));
+    // Config changes affect the list dynamically without changing or deleting tickets.
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('fork', 'app-a', 'fork', 'Fork', 'dev.vgent.raft.app', 2)").run();
+    expect(await read("external")).toHaveLength(0);
+    expect(await read()).toHaveLength(9);
+    const afterConfigChange = await (await handleListFeedbackMaterialDelta(jsonContext(env, { appId: "app-a" }, {}, { cursor: checkpoint }))).json() as any;
+    expect(afterConfigChange.tickets).toEqual([]);
+    sqlite.prepare("UPDATE feature_flags SET default_enabled = 0 WHERE id = 'origin-flag'").run();
+    expect((await read()).every((t: any) => t.build_origin === null)).toBe(true);
+  });
+
+  it("keeps external submissions but emits ordinary webhook cards only for configured or unknown origins", async () => {
+    const { sqlite, env, executionCtx, pending } = environment();
+    sqlite.prepare("UPDATE apps SET platform = 'ios' WHERE id = 'app-a'").run();
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('main', 'app-a', 'main', 'Main', 'build.raft.app', 1)").run();
+    sqlite.prepare("INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at) VALUES ('origin-flag', 'app-a', 'feedback_build_origin_filter', 1, 1)").run();
+    sqlite.prepare(`INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+      VALUES ('hook', 'org', 'app-a', 'https://example.test/hook', 'key', '["feedback:new"]', 1, 'account', 1, 1)`).run();
+    const send = async (bundleId?: string) => {
+      const form = new FormData();
+      form.set("message", "feedback");
+      form.set("metadata", JSON.stringify(bundleId === undefined ? {} : { bundle_id: bundleId }));
+      return handlePublicFeedbackSubmit({
+        env, executionCtx,
+        req: { url: "https://hands.test/public/v2/apps/app-a/feedback", raw: { cf: { clientIp: "192.0.2.1" } },
+          param: (name: string) => name === "slug" ? "app-a" : undefined,
+          header: (name: string) => name === "X-Hands-Client-Key" ? "client-key" : undefined,
+          query: () => undefined, formData: async () => form },
+        header: () => undefined, json: (data: unknown, status = 200) => Response.json(data, { status }),
+      } as any);
+    };
+    for (const id of ["dev.vgent.raft.app", "build.raft.app", undefined]) expect((await send(id)).status).toBe(201);
+    await Promise.allSettled(pending);
+    expect((sqlite.prepare("SELECT count(*) AS n FROM feedback_tickets WHERE app_id='app-a'").get() as any).n).toBe(3);
+    expect((sqlite.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE event_type='feedback:new'").get() as any).n).toBe(2);
+  });
+
+  it("requires an iOS app and a usable configured bundle before enabling separation", async () => {
+    const { sqlite, env } = environment();
+    const context = () => jsonContext(env, { appId: "app-a", key: "feedback_build_origin_filter" }, { default_enabled: true });
+    expect((await handleUpdateFeatureFlag(jsonContext(env, { appId: "app-a", key: "feedback_build_origin_filter" }, { default_enabled: 1 }))).status).toBe(400);
+    expect((await handleUpdateFeatureFlag(context())).status).toBe(400);
+    sqlite.prepare("UPDATE apps SET platform='ios' WHERE id='app-a'").run();
+    expect((await handleUpdateFeatureFlag(context())).status).toBe(400);
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('main', 'app-a', 'main', 'Main', 'bad/value', 1)").run();
+    expect((await handleUpdateFeatureFlag(context())).status).toBe(400);
+    sqlite.prepare("UPDATE channels SET bundle_id='...' WHERE id='main'").run();
+    expect((await handleUpdateFeatureFlag(context())).status).toBe(400);
+    sqlite.prepare("UPDATE channels SET bundle_id='build.raft.app' WHERE id='main'").run();
+    expect((await handleUpdateFeatureFlag(context())).status).toBe(200);
+    expect(sqlite.prepare("SELECT default_enabled FROM feature_flags WHERE app_id='app-a' AND key='feedback_build_origin_filter'").get())
+      .toEqual({ default_enabled: 1 });
+  });
+
+  it("keeps minidumps but suppresses ordinary notifications for an external bundle", async () => {
+    const { sqlite, env, executionCtx, pending } = environment();
+    sqlite.prepare("UPDATE apps SET platform='ios' WHERE id='app-a'").run();
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('main', 'app-a', 'main', 'Main', 'build.raft.app', 1)").run();
+    sqlite.prepare("INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at) VALUES ('origin-flag', 'app-a', 'feedback_build_origin_filter', 1, 1)").run();
+    sqlite.prepare(`INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+      VALUES ('hook', 'org', 'app-a', 'https://example.test/hook', 'key', '["feedback:new"]', 1, 'account', 1, 1)`).run();
+    for (const bundleId of ["dev.vgent.raft.app", "build.raft.app"]) {
+      const form = new FormData();
+      form.set("bundle_id", bundleId);
+      form.set("upload_file_minidump", new File(["dump"], "dump.dmp"));
+      const response = await handlePublicMinidumpSubmit({
+        env, executionCtx,
+        req: { raw: { cf: { clientIp: "192.0.2.1" } },
+          param: (name: string) => name === "slug" ? "app-a" : undefined,
+          header: (name: string) => name === "X-Hands-Client-Key" ? "client-key" : undefined,
+          query: () => undefined, formData: async () => form },
+        json: (data: unknown, status = 200) => Response.json(data, { status }),
+      } as any);
+      expect(response.status).toBe(201);
+    }
+    await Promise.allSettled(pending);
+    expect(sqlite.prepare("SELECT count(*) AS n FROM feedback_tickets WHERE app_id='app-a'").get()).toEqual({ n: 2 });
+    expect(sqlite.prepare("SELECT count(*) AS n FROM feedback_attachments").get()).toEqual({ n: 2 });
+    expect(sqlite.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE event_type='feedback:new'").get()).toEqual({ n: 1 });
+  });
+
+  it("retains dedicated reporter delivery and idempotency while suppressing external ordinary cards", async () => {
+    const { sqlite, env, executionCtx, pending } = environment();
+    sqlite.prepare("UPDATE apps SET platform='ios' WHERE id='app-a'").run();
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('main', 'app-a', 'main', 'Main', 'build.raft.app', 1)").run();
+    sqlite.prepare("INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at) VALUES ('origin-flag', 'app-a', 'feedback_build_origin_filter', 1, 1)").run();
+    const integrationId = "11111111-1111-4111-8111-111111111111";
+    const reporterId = "r".repeat(32);
+    const credential = generateDeployToken();
+    sqlite.prepare("INSERT INTO app_reporter_integrations (id, app_id, name, created_at, updated_at) VALUES (?, 'app-a', 'inbox', 1, 1)").run(integrationId);
+    sqlite.prepare(`INSERT INTO app_deploy_tokens
+      (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at, reporter_integration_id)
+      VALUES ('reporter-token', 'app-a', 'reporter', ?, ?, NULL, '["feedback:write"]', 'test', 1, ?)`)
+      .run(credential.token_prefix, await hashDeployToken(credential.token), integrationId);
+    sqlite.prepare(`INSERT INTO app_reporter_routes (app_id, reporter_integration_id, reporter_id, route_subject, subject_version, created_at)
+      VALUES ('app-a', ?, ?, ?, 'v1', 1)`).run(integrationId, reporterId, `rfr_v1_${"A".repeat(64)}`);
+    sqlite.prepare(`INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+      VALUES ('ordinary', 'org', 'app-a', 'https://example.test/ordinary', 'key', '[]', 1, 'account', 1, 1),
+             ('dedicated', 'org', 'app-a', 'https://example.test/dedicated', 'key', '[]', 1, 'account', 1, 1)`).run();
+    sqlite.prepare("INSERT INTO app_reporter_webhook_subscriptions (app_id, reporter_integration_id, webhook_id, created_at) VALUES ('app-a', ?, 'dedicated', 1)").run(integrationId);
+    env.WEBHOOK_QUEUE = { sendBatch: async () => undefined } as unknown as Queue;
+
+    const form = new FormData();
+    form.set("message", "external feedback");
+    form.set("metadata", JSON.stringify({ bundle_id: "dev.vgent.raft.app" }));
+    form.set("submission_id", "22222222-2222-4222-8222-222222222222");
+    const submit = () => handlePublicFeedbackSubmit({
+      env, executionCtx,
+      req: { url: "https://hands.test/public/v2/apps/app-a/feedback", raw: { cf: { clientIp: "192.0.2.1" } },
+        param: (name: string) => name === "slug" ? "app-a" : undefined,
+        header: (name: string) => ({ "x-hands-client-key": "client-key", "x-hands-reporter-id": reporterId,
+          authorization: `Bearer ${credential.token}` } as Record<string, string>)[name.toLowerCase()],
+        query: () => undefined, formData: async () => form },
+      header: () => undefined, json: (data: unknown, status = 200) => Response.json(data, { status }),
+    } as any);
+    const first = await submit();
+    expect(first.status).toBe(201);
+    const ticketId = (await first.json() as { id: string }).id;
+    expect((await submit()).status).toBe(200);
+    expect((await handleAddFeedbackComment(jsonContext(env, { appId: "app-a", ticketId }, { body: "reply" }))).status).toBe(201);
+    expect((await handleUpdateFeedback(jsonContext(env, { appId: "app-a", ticketId }, { status: "resolved" }))).status).toBe(200);
+    await Promise.allSettled(pending);
+    expect(sqlite.prepare("SELECT event_type, webhook_id FROM webhook_deliveries ORDER BY event_type").all()).toEqual([
+      { event_type: "feedback:comment_created", webhook_id: "dedicated" },
+      { event_type: "feedback:new", webhook_id: "dedicated" },
+      { event_type: "feedback:status_changed", webhook_id: "dedicated" },
+    ]);
+    expect(sqlite.prepare("SELECT count(*) AS n FROM feedback_tickets WHERE submission_id='22222222-2222-4222-8222-222222222222'").get()).toEqual({ n: 1 });
+    // New channel configuration reclassifies subsequent events as ordinary.
+    sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('fork', 'app-a', 'fork', 'Fork', 'dev.vgent.raft.app', 1)").run();
+    expect((await handleAddFeedbackComment(jsonContext(env, { appId: "app-a", ticketId }, { body: "second reply" }))).status).toBe(201);
+    expect(sqlite.prepare("SELECT count(*) AS n FROM webhook_deliveries WHERE event_type='feedback:comment_created' AND webhook_id='ordinary'").get()).toEqual({ n: 1 });
   });
 
   it("publishes the admin route in OpenAPI without adding another manifest action", async () => {
