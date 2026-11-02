@@ -102,6 +102,16 @@ describe("Hands CLI installer endpoints", () => {
     expect(main.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("accepts uppercase app and channel names", async () => {
+    hosted();
+    sqlite.exec("UPDATE apps SET slug = 'My-CLI'; UPDATE channels SET slug = 'Beta';");
+    const script = await app.request("/dl/My-CLI/Beta/install.sh", {}, env);
+    expect(script.status).toBe(200);
+    const info = await app.request("/public/v2/apps/My-CLI/installer/Beta/linux-x64", {}, env);
+    expect(info.status).toBe(200);
+    expect(await info.text()).toBe(`release-1 ${hash("binary")} 6\n`);
+  });
+
   it("resolves a real latest channel rather than shadowing it with the alias", async () => {
     hosted();
     sqlite.exec(`INSERT INTO channels VALUES ('latest-id', 'app', 'latest');

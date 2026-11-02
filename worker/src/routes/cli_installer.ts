@@ -4,7 +4,7 @@ import { businessOrigin } from "../lib/origin";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { usesHostedAssets } from "../lib/release_resolver";
 
-const safeName = /^[a-z0-9][a-z0-9._-]{0,79}$/u;
+const safeName = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const safeRelease = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u;
 const targets = new Set(["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]);
 const noStore = { "cache-control": "no-store", "x-content-type-options": "nosniff" };

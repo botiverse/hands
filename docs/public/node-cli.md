@@ -282,6 +282,10 @@ HANDS_INSTALL_DIR="$HOME/bin" HANDS_INSTALL_NAME=my-command sh install.sh
 ```
 
 Replace `main` in the URL with another channel such as `preview` or `nightly`.
+For this installer URL, app and channel names must start with an ASCII letter
+or digit, contain only ASCII letters, digits, `.`, `_`, or `-`, and be at most
+128 characters. `releases` is reserved as a channel path.
+
 Only active, non-hidden, fully rolled-out releases with a `full:all` scope are
 eligible; a missing target or incompatible release fails without installing.
 The target must be an executable binary for that platform and architecture
