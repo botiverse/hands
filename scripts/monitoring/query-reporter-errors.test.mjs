@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeEvent, summarizeResponse, queryBody, main, sealException } from './query-reporter-errors.mjs';
+import { summarizeEvent, summarizeResponse, summarizeAssetResponse, queryBody, main, sealException } from './query-reporter-errors.mjs';
 test('extracts actionable classes and fixed sites without raw error or user data', () => {
   const event = { timestamp: 123, $metadata: { level: 'error', error: "D1_ERROR: no such table: app_reporter_routes private-token", url: 'https://private-body' }, source: { stack: 'at handleBindReporterRouteSubject private-user' } };
   assert.deepEqual(summarizeEvent(event), { timestamp: 123, category: 'sqlite_schema', sites: ['handleBindReporterRouteSubject'], schema_objects: ['app_reporter_routes'] });
@@ -31,6 +31,37 @@ test('correlates only target failures with fixed origin/route labels', () => {
   assert.deepEqual(row, { request_id: 'a'.repeat(32), timestamp: 123, status: 500, route: 'reporter_list', origin: 'production' });
   assert.ok(!JSON.stringify(row).includes('private'));
   assert.equal(summarizeResponse({ $metadata: { statusCode: 200, url: 'https://hands.build/api/apps/x/reporter-feedback' } }), null);
+});
+
+test('reports only fixed upload routes for one exact build without exposing paths or query data', () => {
+  const app = 'a'.repeat(8)+'-'+('a'.repeat(4)+'-').repeat(3)+'a'.repeat(12);
+  const build = 'b'.repeat(8)+'-'+('b'.repeat(4)+'-').repeat(3)+'b'.repeat(12);
+  const asset = 'c'.repeat(8)+'-'+('c'.repeat(4)+'-').repeat(3)+'c'.repeat(12);
+  const event = (path, status=500) => ({ timestamp: 123, $metadata: { statusCode: status, requestId: 'd'.repeat(32), url: `https://hands.build/api/apps/${app}/builds/${build}/assets/${path}?token=private` } });
+  const expected = { request_id: 'd'.repeat(32), timestamp: 123, status: 500 };
+  assert.deepEqual(summarizeAssetResponse(event('uploads'),build), { ...expected, route: 'asset_declare' });
+  assert.deepEqual(summarizeAssetResponse(event(`${asset}/upload/complete`,200),build), { ...expected, status: 200, route: 'asset_complete' });
+  assert.equal(summarizeAssetResponse(event('uploads'),asset), null);
+  assert.equal(summarizeAssetResponse(event(`${asset}/upload`),build), null);
+  assert.equal(summarizeAssetResponse(event('uploads'), 'bad-build'), null);
+  assert.equal(summarizeAssetResponse(event('uploads', 700),build), null);
+  assert.equal(summarizeAssetResponse(event('uploads', '500'),build), null);
+  assert.equal(summarizeAssetResponse({ $metadata: { statusCode: 500, url: `https://other.example/api/apps/${app}/builds/${build}/assets/uploads` } },build), null);
+  assert.ok(!JSON.stringify(summarizeAssetResponse(event('uploads'),build)).includes('private'));
+});
+
+test('the query returns upload outcomes only when a valid build UUID is supplied', async () => {
+  const build = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const env = { CLOUDFLARE_API_TOKEN: 'private-token', CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), HANDS_WORKER_NAME: 'hands-worker', QUERY_FROM_MS: '0', QUERY_TO_MS: '5', QUERY_ASSET_BUILD_ID: build };
+  const event = { timestamp: 123, $metadata: { requestId: 'a'.repeat(32), statusCode: 500, url: `https://hands.build/api/apps/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/builds/${build}/assets/uploads?token=private` } };
+  const original = console.log; const output = []; console.log = value => output.push(JSON.parse(value));
+  try {
+    const fetcher = async () => Response.json({ success: true, result: { events: { events: [event] } } });
+    await main(env, fetcher);
+    assert.deepEqual(output[0].asset_requests, [{ request_id: 'a'.repeat(32), timestamp: 123, status: 500, route: 'asset_declare' }]);
+    assert.ok(!JSON.stringify(output).includes('private'));
+    await assert.rejects(main({ ...env, QUERY_ASSET_BUILD_ID: 'bad' }, fetcher), /Invalid build UUID/);
+  } finally { console.log = original; }
 });
 
 test('request headers and payload cannot impersonate an exception cause', () => {
