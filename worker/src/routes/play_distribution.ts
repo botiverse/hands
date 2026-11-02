@@ -401,6 +401,28 @@ function acceptanceMatches(row: ReleaseArtifactRow, receipt: Awaited<ReturnType<
     && receipt.version_code === row.version_code);
 }
 
+/** A historical upload acknowledgement for this exact release and exact files. */
+async function priorMappingReceipt(
+  db: D1Database, appId: string, artifact: ReleaseArtifactRow, mapping: ReleaseSymbolsRow,
+): Promise<{ id: string } | null> {
+  return db.prepare(
+    `SELECT id FROM release_receipts
+     WHERE app_id = ?1 AND release_id = ?2 AND artifact_id = ?3
+       AND kind = 'play-promotion' AND verdict = 'success' AND action = 'promote'
+       AND artifact_sha256 = ?4 AND artifact_size = ?5 AND package_name = ?6
+       AND source_commit = ?7 AND version_code = ?8
+       AND json_extract(payload_json, '$.result.status') = 'success'
+       AND json_extract(payload_json, '$.mapping.present') = 1
+       AND json_extract(payload_json, '$.mapping.uploaded') = 1
+       AND json_extract(payload_json, '$.mapping.provider_ack') = 'deobfuscationFile.symbolType=proguard'
+       AND json_extract(payload_json, '$.mapping.sha256') = ?9
+       AND json_extract(payload_json, '$.mapping.size_bytes') = ?10
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).bind(appId, artifact.release_id, artifact.asset_id, artifact.file_hash, artifact.size_bytes,
+    artifact.package_name, artifact.source_commit, artifact.version_code, mapping.file_hash, mapping.size_bytes)
+    .first<{ id: string }>();
+}
+
 async function insertReceipt(
   db: D1Database,
   args: {
@@ -784,6 +806,10 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB package does not match this app's Google Play binding" });
   }
 
+  // This evidence is historical, not a current Play mapping readback. The separate
+  // adapter RPC also requires the exact AAB to exist on the current binding.
+  const priorMapping = mappingAsset ? await priorMappingReceipt(c.env.DB, appId, artifact, mappingAsset) : null;
+
   const actor = currentActor(c);
   const operationId = crypto.randomUUID();
   const notSentForReview = input.changes_not_sent_for_review === true;
@@ -850,7 +876,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       }
     }
     let mappingObject: R2ObjectBody | null = null;
-    if (mappingAsset) {
+    if (mappingAsset && !priorMapping) {
       try {
         mappingObject = await c.env.APK_BUCKET.get(mappingAsset.r2_key);
       } catch {
@@ -862,10 +888,26 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored R8/ProGuard mapping size changed", receipt_id: receiptId });
       }
     }
-    const [hashBranch, uploadBranch] = object.body.tee();
+    // This RPC does not consume the AAB, so verify the local bytes before the
+    // adapter can commit any Play edit. The regular upload path hashes in parallel.
+    let verifiedAab: { sha256: string; size: number } | null = null;
+    if (priorMapping) {
+      try {
+        verifiedAab = await hashStream(object.body);
+      } catch {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { stream_read: "failed" }, promoteReceipt);
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "stored AAB stream could not be verified", receipt_id: receiptId });
+      }
+      if (verifiedAab.sha256 !== artifact.file_hash || verifiedAab.size !== artifact.size_bytes) {
+        const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { actual: verifiedAab }, promoteReceipt);
+        return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed AAB did not match the accepted artifact", receipt_id: receiptId });
+      }
+    }
+    const [hashBranch, uploadBranch]: [ReadableStream<Uint8Array> | null, ReadableStream<Uint8Array> | null] =
+      priorMapping ? [null, null] : object.body.tee();
     const [symbolsHashBranch, symbolsUploadBranch] = symbolsObject ? symbolsObject.body.tee() : [null, null];
     const [mappingHashBranch, mappingUploadBranch] = mappingObject ? mappingObject.body.tee() : [null, null];
-    const uploadResponsePromise = Promise.resolve().then(() => c.env.PLAY_RELEASE_SERVICE!.promote({
+    const promoteInput = {
       credential: binding.credential,
       packageName: binding.package_name,
       tracks: binding.tracks,
@@ -876,13 +918,21 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       rolloutPercent: input.rollout_percent ?? 100,
       operationId,
       symbols: symbolsAsset ? { expectedSha256: symbolsAsset.file_hash, expectedSize: symbolsAsset.size_bytes } : null,
-      mapping: mappingAsset ? { expectedSha256: mappingAsset.file_hash, expectedSize: mappingAsset.size_bytes } : null,
+      mapping: mappingAsset && !priorMapping ? { expectedSha256: mappingAsset.file_hash, expectedSize: mappingAsset.size_bytes } : null,
       releaseNotes: releaseNotes.present && releaseNotes.notes.length > 0 ? releaseNotes.notes : null,
       // Sent only when requested, so the default RPC input is unchanged.
       ...(notSentForReview ? { changesNotSentForReview: true } : {}),
-    }, uploadBranch, symbolsUploadBranch, mappingUploadBranch));
+    };
+    const uploadResponsePromise = Promise.resolve().then(() => {
+      const adapter = c.env.PLAY_RELEASE_SERVICE!;
+      if (priorMapping) {
+        if (!adapter.promoteWithPriorMapping) throw new Error("adapter does not support verified prior mapping");
+        return adapter.promoteWithPriorMapping(promoteInput, symbolsUploadBranch);
+      }
+      return adapter.promote(promoteInput, uploadBranch!, symbolsUploadBranch, mappingUploadBranch);
+    });
     const [localResult, symbolsLocalResult, mappingLocalResult, uploadResult] = await Promise.allSettled([
-      hashStream(hashBranch),
+      verifiedAab ? Promise.resolve(verifiedAab) : hashStream(hashBranch!),
       symbolsHashBranch ? hashStream(symbolsHashBranch) : null,
       mappingHashBranch ? hashStream(mappingHashBranch) : null,
       uploadResponsePromise,
@@ -916,7 +966,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "streamed native debug symbols did not match the accepted artifact", receipt_id: receiptId });
       }
     }
-    if (mappingAsset) {
+    if (mappingAsset && !priorMapping) {
       const mappingLocal = mappingLocalResult.status === "fulfilled" ? mappingLocalResult.value : null;
       if (!mappingLocal || mappingLocal.sha256 !== mappingAsset.file_hash || mappingLocal.size !== mappingAsset.size_bytes) {
         const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "immutable_binding", { mapping_actual: mappingLocal }, promoteReceipt);
@@ -949,6 +999,9 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       if (errorCode === "play_edit_state_unknown") {
         return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
       }
+      if (errorCode === "play_bundle_not_on_play" || errorCode === "aab_integrity_mismatch") {
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+      }
       // Upload-protocol failures of a deobfuscation file (resumable session, 413, an
       // interrupted or incomplete transfer) keep their specific code for the caller.
       if (PLAY_UPLOAD_FAILURE_CODES.has(errorCode)) {
@@ -957,6 +1010,10 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
     }
     const readback: PlayReadback = uploadResponse.value;
+    if (priorMapping && (uploadResponse.value.confirmed_existing_bundle !== true || uploadResponse.value.bundle_uploaded !== false)) {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { existing_bundle: "not_confirmed" }, promoteReceipt);
+      return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play adapter did not confirm the existing exact bundle", receipt_id: receiptId });
+    }
     if (!playReadbackMatches(artifact, input.track, readback)) {
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback }, promoteReceipt);
       return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play readback did not match package/version/track/SHA-256", receipt_id: receiptId });
@@ -989,13 +1046,17 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         // provider acknowledgement is the upload response, checked by the adapter
         // against the requested symbolType. Recorded from what the adapter
         // reported: uploaded, rejected (with the provider's identifiers), or not
-        // acknowledged. The files are attempted even when the bundle was already
-        // on Play, so "bundle already on Play" is never a reason recorded here.
+        // acknowledged. A skipped mapping cites its historical upload receipt;
+        // the current Play bundle check does not establish the mapping's state.
         symbols: symbolsAsset
           ? receiptDeobfuscationFile(symbolsAsset, "nativeCode", reportedFiles)
           : { present: false, uploaded: false, skipped_reason: "no_symbols_asset" },
         mapping: mappingAsset
-          ? receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles)
+          ? priorMapping
+            ? { present: true, sha256: mappingAsset.file_hash, size_bytes: mappingAsset.size_bytes,
+                uploaded: false, attempt: "skipped_prior_receipt", prior_receipt_id: priorMapping.id,
+                provider_ack: null, post_commit_get: false }
+            : receiptDeobfuscationFile(mappingAsset, "proguard", reportedFiles)
           : { present: false, uploaded: false, skipped_reason: "no_mapping_asset" },
         release_notes: receiptReleaseNotes(releaseNotes, reported.release_notes_languages),
         review,

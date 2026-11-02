@@ -63,4 +63,11 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
   ) {
     return this.service.promote(input, body, symbolsBody ?? null, this.env, mappingBody ?? null);
   }
+
+  promoteWithPriorMapping(
+    input: PromotionRpcInput,
+    symbolsBody: ReadableStream<Uint8Array> | null,
+  ) {
+    return this.service.promoteWithPriorMapping(input, symbolsBody ?? null, this.env);
+  }
 }
