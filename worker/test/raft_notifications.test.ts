@@ -200,6 +200,14 @@ describe("Hands-managed Raft notifications", () => {
     expect(message).toContain(`View more: \`hands feedback show sample-app ${TICKET_ID}\``);
   });
 
+  it("shows a delivered-at millisecond timestamp as readable UTC and preserves provider timestamps", () => {
+    const feedback = formatRaftNotificationMessage({ ...feedbackBody("feedback:new"), delivered_at: 1793556592575 });
+    expect(feedback).toContain("occurred: 2026-11-01T18:09:52.575Z");
+    const provider = formatRaftNotificationMessage({ ...body("REJECTED"), payload: { ...body("REJECTED").payload, occurred_at: "2026-11-01T17:00:00Z" } });
+    expect(provider).toContain("occurred: 2026-11-01T17:00:00Z");
+    expect(provider.match(/occurred:/g)).toHaveLength(1);
+  });
+
   it("uses only shell-safe app and ticket identifiers in the CLI command", () => {
     const message = formatRaftNotificationMessage(feedbackBody("feedback:new", { app_slug: "app;echo-bad", kind: "feedback", message: "hi" }));
     expect(message).toContain(`hands feedback show abad63e9-e760-42e9-92df-f418735f32ea ${TICKET_ID}`);

@@ -106,7 +106,6 @@ const SAFE_PAYLOAD_FIELDS: Array<[string, string]> = [
   ["build id", "build_id"],
   ["package", "package_name"],
   ["source", "source"],
-  ["occurred", "occurred_at"],
 ];
 
 function apiOrigin(env: Env): string {
@@ -570,8 +569,14 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>, kno
   if (event === "app_store:version_state_changed" && payload.state === "REJECTED") {
     lines.push("Apple's review message is available in App Store Connect.");
   }
-  const occurred = safeValue(payload.occurred_at) ?? safeValue(body.delivered_at);
-  if (occurred && !seen.has("occurred")) lines.push(`occurred: ${occurred}`);
+  // Hands-generated delivery timestamps are milliseconds. Preserve a
+  // provider's own occurrence timestamp as-is, since its units may differ.
+  const deliveredAt = typeof body.delivered_at === "number"
+    && Number.isFinite(body.delivered_at) && Math.abs(body.delivered_at) <= 8.64e15
+    ? new Date(body.delivered_at).toISOString()
+    : safeValue(body.delivered_at);
+  const occurred = safePreview(safeValue(payload.occurred_at) ?? deliveredAt, MAX_FIELD_LENGTH);
+  if (occurred) lines.push(`occurred: ${occurred}`);
   let footer: string | null = null;
   const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
   // The CLI treats any 36-character, five-part value as an app id. Avoid
