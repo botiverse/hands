@@ -38,11 +38,21 @@ Create one Hands app per product distribution target. For example, an Android ap
 
 App administrators can open **Settings → Raft notifications** to have Hands
 post selected webhook events as the app's Raft App Bot. A server owner or admin
-must first grant the bot to the Hands app in Raft, and a human must add that bot
-to each target channel. Then click **Connect App Bot**, enter a channel target
-such as `#proj-mobile-release`, and select the events that belong there. A
+must first grant the bot to the Hands app in Raft. Click **Connect App Bot**,
+then add the bot to each target channel in Raft. Enter a channel target such as
+`#proj-mobile-release`, select the events that belong there, and use **Test**. A
 single app can have multiple channel destinations with different event sets;
 each destination can be enabled, disabled, tested, or removed.
+
+For new feedback and bug reports, a notification includes a short excerpt of
+the user's message. Choose channels whose members may read that feedback; the
+excerpt can contain information the user submitted. HTTP(S) URLs are omitted
+and Raft mentions in the excerpt are not activated. Crash text, attachments, and comment
+bodies are not included. A feedback notification includes a `hands feedback
+show <app> <ticket>` command; viewing the full ticket still requires Hands
+access. The `feedback:comment_created` and `feedback:status_changed` events are
+emitted for reporter-owned tickets. Updates for the same ticket and destination
+are posted in its existing Raft thread.
 
 Hands stores one encrypted bot credential per Raft server installation and
 never displays it in the console. Connecting another Hands app on that same

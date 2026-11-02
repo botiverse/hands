@@ -56,6 +56,8 @@ interface InternalSubscriptionRow extends NotificationSubscriptionRow {
   webhook_secret: string;
   webhook_enabled: number;
   webhook_archived_at: number | null;
+  app_slug: string | null;
+  app_name: string | null;
 }
 
 class RaftBotApiError extends Error {
@@ -71,6 +73,10 @@ class RaftBotApiError extends Error {
 const CHANNEL_TARGET_RE = /^#[^\s:#]{1,120}$/;
 const MAX_MESSAGE_LENGTH = 4_000;
 const MAX_FIELD_LENGTH = 500;
+const MAX_FEEDBACK_PREVIEW_LENGTH = 180;
+const FEEDBACK_THREAD_EVENTS = new Set(["feedback:new", "feedback:comment_created", "feedback:status_changed"]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CLI_APP_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/i;
 
 function safeProviderCode(value: unknown, fallback: string): string {
   return typeof value === "string" && /^[a-z0-9_]{1,80}$/.test(value)
@@ -79,7 +85,9 @@ function safeProviderCode(value: unknown, fallback: string): string {
 }
 
 const SAFE_PAYLOAD_FIELDS: Array<[string, string]> = [
+  ["kind", "kind"],
   ["status", "status"],
+  ["previous status", "previous_status"],
   ["state", "state"],
   ["previous state", "previous_state"],
   ["version", "version_string"],
@@ -515,18 +523,44 @@ function notificationPayload(body: Record<string, unknown>): Record<string, unkn
   return parseJsonRecord(body.payload);
 }
 
-export function formatRaftNotificationMessage(body: Record<string, unknown>): string {
+// User-supplied text is not a source of Raft mentions, links, or Markdown.
+// Break both Raft sigils before escaping Markdown, and omit URLs (which can be
+// signed or contain credentials). This is a preview, not a secret scrubber.
+function safePreview(value: unknown, limit: number): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/https?:\/\/[^\s]+/gi, "[link]").replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim();
+  if (!cleaned) return null;
+  const chars = Array.from(cleaned);
+  const shortened = chars.length > limit ? `${chars.slice(0, limit).join("")}…` : cleaned;
+  return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
+}
+
+interface NotificationApp {
+  id: string;
+  slug: string | null;
+  name: string | null;
+}
+
+export function formatRaftNotificationMessage(body: Record<string, unknown>, knownApp?: NotificationApp): string {
   const event = safeValue(body.event) ?? "hands:event";
   const payload = notificationPayload(body);
   const app = parseJsonRecord(payload.app);
   const build = parseJsonRecord(payload.build);
   const lines = [`**Hands · ${event}**`];
-  const appName = safeValue(app.name) ?? safeValue(app.slug) ?? safeValue(body.app_id);
-  if (appName) lines.push(`App: ${appName}`);
+  const appId = safeValue(knownApp?.id) ?? safeValue(body.app_id) ?? safeValue(app.id);
+  const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
+  const appName = safePreview(knownApp?.name, 160) ?? safePreview(app.name, 160) ?? safePreview(appSlug, 160);
+  const appIdDisplay = safePreview(appId, 160);
+  if (appName && appIdDisplay) lines.push(`App: ${appName} (${appIdDisplay})`);
+  else if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
+  if (event === "feedback:new" && (payload.kind === "feedback" || payload.kind === "bug")) {
+    const preview = safePreview(payload.message, MAX_FEEDBACK_PREVIEW_LENGTH);
+    if (preview) lines.push(`Feedback: ${preview}`);
+  }
   const seen = new Set<string>();
   for (const [label, key] of SAFE_PAYLOAD_FIELDS) {
     if (seen.has(label)) continue;
-    const value = safeValue(payload[key]) ?? safeValue(build[key]);
+    const value = safePreview(safeValue(payload[key]) ?? safeValue(build[key]), MAX_FIELD_LENGTH);
     if (!value) continue;
     seen.add(label);
     lines.push(`${label}: ${value}`);
@@ -538,7 +572,19 @@ export function formatRaftNotificationMessage(body: Record<string, unknown>): st
   }
   const occurred = safeValue(payload.occurred_at) ?? safeValue(body.delivered_at);
   if (occurred && !seen.has("occurred")) lines.push(`occurred: ${occurred}`);
-  return lines.join("\n").slice(0, MAX_MESSAGE_LENGTH);
+  let footer: string | null = null;
+  const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
+  // The CLI treats any 36-character, five-part value as an app id. Avoid
+  // generating an ambiguous slug that the CLI would resolve as a different id.
+  const slugLooksLikeId = appSlug?.length === 36 && appSlug.split("-").length === 5;
+  const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
+    ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
+  if (FEEDBACK_THREAD_EVENTS.has(event) && ticketId && cliApp) {
+    footer = `View more: \`hands feedback show ${cliApp} ${ticketId}\``;
+  }
+  const content = lines.join("\n");
+  if (!footer) return content.slice(0, MAX_MESSAGE_LENGTH);
+  return `${content.slice(0, MAX_MESSAGE_LENGTH - footer.length - 1)}\n${footer}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -548,6 +594,12 @@ async function sha256Hex(value: string): Promise<string> {
 
 export async function notificationObjectKey(body: Record<string, unknown>): Promise<string> {
   const payload = notificationPayload(body);
+  const event = typeof body.event === "string" ? body.event : "event";
+  // Reuse the original feedback:new key so existing new-ticket parents remain
+  // the parent of subsequent comment and status events after this upgrade.
+  if (FEEDBACK_THREAD_EVENTS.has(event) && typeof payload.ticket_id === "string" && payload.ticket_id.length > 0) {
+    return `feedback:new:${payload.ticket_id.slice(0, 160)}`;
+  }
   const resource = parseJsonRecord(payload.resource);
   const candidates = [
     payload.ticket_id,
@@ -563,6 +615,36 @@ export async function notificationObjectKey(body: Record<string, unknown>): Prom
   const first = candidates.find((value) => typeof value === "string" || typeof value === "number");
   if (first !== undefined) return `${String(body.event ?? "event")}:${String(first).slice(0, 160)}`;
   return `${String(body.event ?? "event")}:${(await sha256Hex(JSON.stringify(payload))).slice(0, 32)}`;
+}
+
+async function preserveLegacyFeedbackThread(
+  db: D1Database,
+  subscriptionId: string,
+  body: Record<string, unknown>,
+  objectKey: string,
+): Promise<"ready" | "pending" | "absent"> {
+  const payload = notificationPayload(body);
+  if (typeof body.event !== "string" || !FEEDBACK_THREAD_EVENTS.has(body.event)
+    || typeof payload.ticket_id !== "string" || !payload.ticket_id) return "absent";
+  const ticket = payload.ticket_id.slice(0, 160);
+  const legacy = await db.prepare(
+    `SELECT parent_message_id, updated_at FROM raft_notification_threads
+     WHERE subscription_id = ?1 AND object_key IN (?2, ?3)
+     ORDER BY CASE WHEN parent_message_id = 'pending' THEN 1 ELSE 0 END, created_at ASC
+     LIMIT 1`,
+  ).bind(subscriptionId, `feedback:comment_created:${ticket}`, `feedback:status_changed:${ticket}`)
+    .first<{ parent_message_id: string; updated_at: number }>();
+  if (!legacy) return "absent";
+  if (legacy.parent_message_id === "pending") {
+    return legacy.updated_at >= Date.now() - 5 * 60_000 ? "pending" : "absent";
+  }
+  const now = Date.now();
+  await db.prepare(
+    `INSERT OR IGNORE INTO raft_notification_threads
+       (subscription_id, object_key, parent_message_id, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?4)`,
+  ).bind(subscriptionId, objectKey, legacy.parent_message_id, now).run();
+  return "ready";
 }
 
 async function signatureMatches(secret: string, body: string, header: string | undefined): Promise<boolean> {
@@ -609,9 +691,10 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
             s.bot_installation_id,
             s.webhook_id, s.created_by, s.created_at, s.updated_at, s.archived_at,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
-            w.archived_at AS webhook_archived_at
+            w.archived_at AS webhook_archived_at, a.slug AS app_slug, a.name AS app_name
      FROM raft_notification_subscriptions s
      JOIN webhooks w ON w.id = s.webhook_id
+     LEFT JOIN apps a ON a.id = s.app_id
      WHERE s.id = ?1
      LIMIT 1`,
   ).bind(subscriptionId).first<InternalSubscriptionRow>();
@@ -640,6 +723,16 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
      WHERE subscription_id = ?1 AND object_key = ?2 LIMIT 1`,
   ).bind(subscriptionId, objectKey).first<{ parent_message_id: string; updated_at: number }>();
   let ownsParentClaim = false;
+  if (!thread) {
+    const legacy = await preserveLegacyFeedbackThread(c.env.DB, subscriptionId, eventBody, objectKey);
+    if (legacy === "pending") return c.json({ error: "notification thread is being created" }, 503);
+    if (legacy === "ready") {
+      thread = await c.env.DB.prepare(
+        `SELECT parent_message_id, updated_at FROM raft_notification_threads
+         WHERE subscription_id = ?1 AND object_key = ?2 LIMIT 1`,
+      ).bind(subscriptionId, objectKey).first<{ parent_message_id: string; updated_at: number }>();
+    }
+  }
   if (!thread) {
     const claim = await c.env.DB.prepare(
       `INSERT OR IGNORE INTO raft_notification_threads
@@ -680,7 +773,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   // so the same event cannot be sent again with a substituted delivery id.
   const idempotencyKey = `hands-raft:${subscriptionId}:${await sha256Hex(body)}`.slice(0, 240);
   try {
-    const sent = await sendBotMessage(c.env, bot, target, formatRaftNotificationMessage(eventBody), idempotencyKey);
+    const sent = await sendBotMessage(c.env, bot, target, formatRaftNotificationMessage(eventBody, {
+      id: row.app_id, slug: row.app_slug, name: row.app_name,
+    }), idempotencyKey);
     const now = Date.now();
     if (ownsParentClaim) {
       await c.env.DB.prepare(
