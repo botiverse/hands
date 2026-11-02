@@ -1052,32 +1052,30 @@ describe("Play promotion route", () => {
     });
   });
 
-  it("promotes an attached Android native-symbols archive and records Play's acknowledgement", async () => {
+  it("does not send an attached native archive during promotion and records why", async () => {
     const harness = await readyRelease();
-    const symbols = attachNativeSymbols(harness);
+    attachNativeSymbols(harness);
     let calls = 0;
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
       promote: async (input, stream, symbolsStream) => {
         calls++;
-        expect(input.symbols).toEqual({ expectedSha256: sha(symbols), expectedSize: symbols.byteLength });
-        expect(sha(new Uint8Array(await new Response(symbolsStream).arrayBuffer()))).toBe(sha(symbols));
+        expect(input.symbols).toBeNull();
+        expect(symbolsStream).toBeNull();
         await new Response(stream).arrayBuffer();
         return { ok: true, value: {
           edit_id: "edit-1", package_name: input.packageName, version_code: input.versionCode,
           track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
-          deobfuscation_files: [{ symbol_type: "nativeCode", sha256: sha(symbols), size_bytes: symbols.byteLength, uploaded: true }],
         } };
       },
     });
     expect((await promoteInternal(harness)).status).toBe(200);
     expect(calls).toBe(1);
-    expect(successPayload(harness).symbols).toMatchObject({
-      present: true, sha256: sha(symbols), size_bytes: symbols.byteLength, uploaded: true,
-      provider_ack: "deobfuscationFile.symbolType=nativeCode",
+    expect(successPayload(harness).symbols).toEqual({
+      present: true, uploaded: false, skipped_reason: "attached_native_requires_explicit_selection",
     });
   });
 
-  it("sends an attached archive on a subsequent promotion with a prior mapping receipt", async () => {
+  it("does not send an attached archive on a later promotion with a prior mapping receipt", async () => {
     const harness = await readyRelease();
     const mapping = attachSealedMapping(harness);
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
@@ -1092,19 +1090,18 @@ describe("Play promotion route", () => {
       },
     });
     expect((await promoteInternal(harness)).status).toBe(200);
-    const symbols = attachNativeSymbols(harness);
+    attachNativeSymbols(harness);
     let calls = 0;
     harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
       promoteWithPriorMapping: async (input, stream) => {
         calls++;
         expect(input.mapping).toBeNull();
-        expect(input.symbols).toEqual({ expectedSha256: sha(symbols), expectedSize: symbols.byteLength });
-        expect(sha(new Uint8Array(await new Response(stream).arrayBuffer()))).toBe(sha(symbols));
+        expect(input.symbols).toBeNull();
+        expect(stream).toBeNull();
         return { ok: true, value: {
           edit_id: "edit-2", package_name: input.packageName, version_code: input.versionCode,
           track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
           bundle_uploaded: false, confirmed_existing_bundle: true,
-          deobfuscation_files: [{ symbol_type: "nativeCode", sha256: sha(symbols), size_bytes: symbols.byteLength, uploaded: true }],
         } };
       },
     });
@@ -1117,26 +1114,31 @@ describe("Play promotion route", () => {
     const receiptId = (await response.json() as { receipt_id: string }).receipt_id;
     const row = harness.sqlite.prepare("SELECT payload_json FROM release_receipts WHERE id=?").get(receiptId) as { payload_json: string };
     expect(JSON.parse(row.payload_json)).toMatchObject({
-      symbols: { present: true, sha256: sha(symbols), uploaded: true },
+      symbols: { present: true, uploaded: false, skipped_reason: "attached_native_requires_explicit_selection" },
       mapping: { attempt: "skipped_prior_receipt" },
     });
   });
 
-  it("fails before Play when attached native symbols are unsealed or conflict with the bundle archive", async () => {
-    const unsealed = await readyRelease();
-    attachNativeSymbols(unsealed, { sealed: false });
-    unsealed.env.PLAY_RELEASE_SERVICE = playAdapterStub({ readTrackMaximum: async () => { throw new Error("must not call Play"); } });
-    const unsealedResponse = await promoteInternal(unsealed);
-    expect(unsealedResponse.status).toBe(400);
-    expect(await unsealedResponse.json()).toMatchObject({ error: { gate: "immutable_binding", failure_code: "symbols_not_sealed" } });
-
-    const ambiguous = await readyRelease("human", "publisher", 42, true);
-    attachNativeSymbols(ambiguous);
-    ambiguous.env.PLAY_RELEASE_SERVICE = playAdapterStub({ readTrackMaximum: async () => { throw new Error("must not call Play"); } });
-    const ambiguousResponse = await promoteInternal(ambiguous);
-    expect(ambiguousResponse.status).toBe(400);
-    expect(await ambiguousResponse.json()).toMatchObject({ error: { gate: "deobfuscation_files", failure_code: "symbols_ambiguous" } });
-    expect(ambiguous.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  it("ignores a different unsealed attachment and promotes the separately declared bundle archive", async () => {
+    const harness = await readyRelease("human", "publisher", 42, true);
+    attachNativeSymbols(harness, { sealed: false });
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream, symbolsStream) => {
+        calls++;
+        expect(input.symbols).toEqual({ expectedSha256: sha(harness.symbols), expectedSize: harness.symbols.byteLength });
+        expect(sha(new Uint8Array(await new Response(symbolsStream).arrayBuffer()))).toBe(sha(harness.symbols));
+        await new Response(stream).arrayBuffer();
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: input.packageName, version_code: input.versionCode,
+          track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
+          deobfuscation_files: [{ symbol_type: "nativeCode", sha256: sha(harness.symbols), size_bytes: harness.symbols.byteLength, uploaded: true }],
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    expect(calls).toBe(1);
+    expect(successPayload(harness).symbols).toMatchObject({ sha256: sha(harness.symbols), uploaded: true });
   });
 
   it("sends the R8 mapping as symbolType proguard and the changelog as Play releaseNotes, and records both", async () => {
@@ -2578,6 +2580,33 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").all()).toEqual(before);
   });
 
+  it("default backfill excludes a generic native attachment even when a mapping exists", async () => {
+    const h = await readyRelease();
+    attachNativeSymbols(h);
+    const mapping = attachSealedMapping(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.mapping).toBe(sha(mapping));
+    expect(calls[0]!.symbols).toBeNull();
+    expect(calls[0]!.input.symbols).toBeNull();
+    expect(receipts(h)[0]!.payload.files).toMatchObject([{ type: "proguard", sha256: sha(mapping) }]);
+  });
+
+  it("requires explicit nativeCode selection when only a generic attachment exists", async () => {
+    const h = await readyRelease();
+    attachNativeSymbols(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
+    const response = await uploadSymbols(h, { mode: "commit" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { failure_code: "native_symbols_selection_required" } });
+    expect(calls).toHaveLength(0);
+    expect(revision(h)).toBe(1);
+  });
+
   it("backfills an attached Android native archive and leaves the track and mapping unchanged", async () => {
     const h = await readyRelease();
     const symbols = attachNativeSymbols(h);
@@ -2604,11 +2633,9 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     const mapping = attachSealedMapping(h);
     const calls: Parameters<typeof recordingAdapter>[0] = [];
     h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
-    for (const kinds of [undefined, ["nativeCode"]]) {
-      const response = await uploadSymbols(h, { mode: "commit", ...(kinds ? { kinds } : {}) });
-      expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({ error: { gate: "deobfuscation_files", failure_code: "symbols_ambiguous" } });
-    }
+    const response = await uploadSymbols(h, { mode: "commit", kinds: ["nativeCode"] });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { gate: "deobfuscation_files", failure_code: "symbols_ambiguous" } });
     expect(calls).toHaveLength(0);
     expect(revision(h)).toBe(1);
     const mappingOnly = await uploadSymbols(h, { mode: "commit", kinds: ["proguard"] });

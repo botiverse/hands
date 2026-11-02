@@ -298,14 +298,16 @@ function receiptReleaseNotes(result: PlayReleaseNotesResult, acknowledged: unkno
 }
 
 type ReleaseSymbolsSelection =
-  | { status: "missing" }
+  | { status: "missing"; attachedPresent: boolean }
   | { status: "unsealed" | "ambiguous" }
   | { status: "found"; asset: ReleaseSymbolsRow };
 
-/** Find both bundle-declared and subsequently attached Android native archives. */
-async function getReleaseSymbols(db: D1Database, appId: string, releaseId: string): Promise<ReleaseSymbolsSelection> {
+/** Attached native symbols can cover only one library; use them for Play only on explicit selection. */
+async function getReleaseSymbols(
+  db: D1Database, appId: string, releaseId: string, includeAttached: boolean,
+): Promise<ReleaseSymbolsSelection> {
   const result = await db.prepare(
-    `SELECT ba.id AS asset_id, arb.state AS bundle_state,
+    `SELECT ba.id AS asset_id, ba.artifact_kind, arb.state AS bundle_state,
             ba.r2_key, ba.file_hash, ba.size_bytes, ba.metadata_json
      FROM releases r
      JOIN builds b ON b.id = r.build_id AND b.app_id = r.app_id
@@ -315,9 +317,10 @@ async function getReleaseSymbols(db: D1Database, appId: string, releaseId: strin
        AND ((ba.artifact_kind = 'debug-symbols' AND ba.filetype = 'symbols')
          OR (ba.artifact_kind = 'native-symbols' AND ba.filetype = 'symbols.zip'))
      ORDER BY ba.created_at, ba.id`,
-  ).bind(appId, releaseId).all<ReleaseSymbolsRow>();
-  const assets = result.results;
-  if (assets.length === 0) return { status: "missing" };
+  ).bind(appId, releaseId).all<ReleaseSymbolsRow & { artifact_kind: string }>();
+  const attachedPresent = result.results.some((asset) => asset.artifact_kind === "native-symbols");
+  const assets = includeAttached ? result.results : result.results.filter((asset) => asset.artifact_kind === "debug-symbols");
+  if (assets.length === 0) return { status: "missing", attachedPresent };
   const asset = assets[0]!;
   // A build can contain multiple slots. Never silently pick different archives;
   // identical copies are safe only when each is sealed to the same bytes.
@@ -782,7 +785,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   }
   // Declared native debug symbols must be sealed to their exact bytes too; a
   // declared-but-unsealed zip fails closed instead of being silently skipped.
-  const symbols = await getReleaseSymbols(c.env.DB, appId, releaseId);
+  const symbols = await getReleaseSymbols(c.env.DB, appId, releaseId, false);
   if (symbols.status === "ambiguous") {
     return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "symbols_ambiguous", message: "release's build has multiple different native debug symbol archives" });
   }
@@ -1070,7 +1073,9 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         // the current Play bundle check does not establish the mapping's state.
         symbols: symbolsAsset
           ? receiptDeobfuscationFile(symbolsAsset, "nativeCode", reportedFiles)
-          : { present: false, uploaded: false, skipped_reason: "no_symbols_asset" },
+          : symbols.status === "missing" && symbols.attachedPresent
+            ? { present: true, uploaded: false, skipped_reason: "attached_native_requires_explicit_selection" }
+            : { present: false, uploaded: false, skipped_reason: "no_symbols_asset" },
         mapping: mappingAsset
           ? priorMapping
             ? { present: true, sha256: mappingAsset.file_hash, size_bytes: mappingAsset.size_bytes,
@@ -1472,9 +1477,11 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
   if (artifact.bundle_state !== "ready" || metadata.upload_state !== "ready" || metadata.verified_sha256 !== artifact.file_hash || metadata.verified_size_bytes !== artifact.size_bytes) {
     return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB is not sealed to its declared exact bytes" });
   }
-  // A mapping-only backfill must not be blocked by unrelated native archives.
+  // A generic attachment may cover only one library; include it only when the
+  // caller explicitly chooses nativeCode. Mapping-only uploads ignore it entirely.
   const symbols = (input.kinds ?? DEOBFUSCATION_KINDS).includes("nativeCode")
-    ? await getReleaseSymbols(c.env.DB, appId, releaseId) : { status: "missing" as const };
+    ? await getReleaseSymbols(c.env.DB, appId, releaseId, input.kinds?.includes("nativeCode") === true)
+    : { status: "missing" as const, attachedPresent: false };
   if (symbols.status === "ambiguous") {
     return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "symbols_ambiguous", message: "release's build has multiple different native debug symbol archives" });
   }
@@ -1505,6 +1512,9 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
     selected.push({ type, asset });
   }
   if (selected.length === 0) {
+    if (!input.kinds && symbols.status === "missing" && symbols.attachedPresent) {
+      return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "native_symbols_selection_required", message: "attached native symbols require explicit nativeCode selection; uploading replaces the version's existing Play native symbols" });
+    }
     return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "no_symbols", message: "release's build has no sealed R8/ProGuard mapping or native debug symbols" });
   }
   const hold = await c.env.DB.prepare(
