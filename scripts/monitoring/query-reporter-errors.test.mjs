@@ -50,6 +50,22 @@ test('reports only fixed upload routes for one exact build without exposing path
   assert.ok(!JSON.stringify(summarizeAssetResponse(event('uploads'),build)).includes('private'));
 });
 
+test('correlates invocation and response-log shapes only with the exact request URL', () => {
+  const app = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  const build = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const asset = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+  const url = `https://hands.build/api/apps/${app}/builds/${build}/assets/${asset}/upload/complete?token=private`;
+  const log = { method: 'POST', route: '/api/apps/:appId/builds/:buildId/assets/:assetId/upload/complete', status: 500, private: 'private-value' };
+  const event = { timestamp: 123, $workers: { event: { request: { url }, response: { status: 503 } } }, source: { message: `hands_http_response ${JSON.stringify(log)}` } };
+  assert.deepEqual(summarizeAssetResponse(event, build), { route: 'asset_complete', status: 503, timestamp: 123 });
+  delete event.$workers.event.response;
+  assert.deepEqual(summarizeAssetResponse(event, build), { route: 'asset_complete', status: 500, timestamp: 123 });
+  assert.equal(summarizeAssetResponse(event, asset), null);
+  event.source.message = `hands_http_response ${JSON.stringify({ ...log, route: '/api/apps/:appId/other' })}`;
+  assert.equal(summarizeAssetResponse(event, build), null);
+  assert.ok(!JSON.stringify(summarizeAssetResponse({ ...event, source: { message: `hands_http_response ${JSON.stringify(log)}` } }, build)).includes('private'));
+});
+
 test('the query returns upload outcomes only when a valid build UUID is supplied', async () => {
   const build = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
   const env = { CLOUDFLARE_API_TOKEN: 'private-token', CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), HANDS_WORKER_NAME: 'hands-worker', QUERY_FROM_MS: '0', QUERY_TO_MS: '5', QUERY_ASSET_BUILD_ID: build };
