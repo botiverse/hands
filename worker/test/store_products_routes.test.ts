@@ -130,6 +130,20 @@ describe("store product route", () => {
     const res = await h.push(req("commit")); expect(res.status).toBe(400);
     expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
   });
+  it("releases the lock for the pre-write unverified-catalogue rejection", async () => {
+    const h = await harness("admin", async () => ({ ok: false, error: { status: 409, code: "play_catalog_unverified", message: "private provider text" } }));
+    const res = await h.push(req("commit"));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ code: "play_catalog_unverified", message: "Google Play returned no catalogue; confirm its state before writing" });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
+  });
+  it("retains the lock when an unverified catalogue follows a write", async () => {
+    const h = await harness("admin", async input => ({ ok: true, value: { product_id: input.product.productId, mode: input.mode, outcome: "failed", changes: [], completed: ["create"], error: { code: "play_catalog_unverified", message: "readback failed" } } }));
+    const res = await h.push(req("commit"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ outcome: "failed", completed: ["create"], recovery_required: true });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 1 });
+  });
 });
 
 

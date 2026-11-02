@@ -51,6 +51,21 @@ describe("store-products CLI", () => {
     expect(calls.slice(1).every(c => c.body.mode === "dry_run")).toBe(true);
     expect(JSON.parse(output.join("\n"))).toMatchObject({ stopped: true }); expect(process.exitCode).toBe(1);
   });
+  it("shows every unverified preview but sends no commit requests", async () => {
+    const { calls, output } = await run(google, ["--commit", "--json"], c => c.path === "/api/apps" ? { apps: [{ id: "app1", slug: "android", platform: "android" }] }
+      : { product_id: c.body.product.productId, mode: c.body.mode, outcome: "pending", changes: [{ resource: "catalog", action: "deferred", after: "assumed_empty_unverified" }] });
+    expect(calls.slice(1).map(c => c.body.mode)).toEqual(["dry_run", "dry_run"]);
+    expect(JSON.parse(output.join("\n"))).toMatchObject({ stopped: true, pending: true, preview: [{ outcome: "pending" }, { outcome: "pending" }] });
+    expect(process.exitCode).toBe(1);
+  });
+  it("marks an unverified dry-run pending without suggesting commit", async () => {
+    const { output } = await run(google, [], c => c.path === "/api/apps" ? { apps: [{ id: "app1", slug: "android", platform: "android" }] }
+      : { product_id: c.body.product.productId, mode: c.body.mode, outcome: "pending", changes: [{ resource: "catalog", action: "deferred", after: "assumed_empty_unverified" }] });
+    expect(output.join("\n")).toContain("assumed_empty_unverified");
+    expect(output.join("\n")).toContain("Preview is incomplete");
+    expect(output.join("\n")).not.toContain("Pass --commit");
+    expect(process.exitCode).toBe(1);
+  });
   it("stops after a partial failure and reports completed steps", async () => {
     const { QuiverApiError } = await import("../lib/api.js");
     const { calls, output } = await run(google, ["--commit", "--json"], c => {

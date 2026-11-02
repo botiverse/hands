@@ -356,7 +356,18 @@ export class GooglePlayClient {
     let token: string | undefined;
     for (let page = 0; page < 20; page++) {
       const query = new URLSearchParams({ pageSize: "1000", ...(token ? { pageToken: token } : {}) });
-      const result = await this.requestJson<{ subscriptions?: unknown; nextPageToken?: unknown }>(`${base}?${query}`);
+      let result: { subscriptions?: unknown; nextPageToken?: unknown };
+      try {
+        result = await this.requestJson<{ subscriptions?: unknown; nextPageToken?: unknown }>(`${base}?${query}`);
+      } catch (error) {
+        const shape = error instanceof PlayAdapterError && error.code === "play_api_malformed" ? error.cause_detail?.response_shape : undefined;
+        // Only the first page can support an assumed-empty preview. A later
+        // missing page would discard known products and is always an error.
+        if (page === 0 && shape?.status === 204 && shape.body_empty && !shape.json_parsed) {
+          throw new PlayAdapterError(409, "play_catalog_unverified", "Google Play returned no subscription catalogue");
+        }
+        throw error;
+      }
       // A missing field in an object is an empty catalogue; an array root is
       // not the documented response and must not be mistaken for zero products.
       if (Array.isArray(result)) throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned an invalid subscription response");
