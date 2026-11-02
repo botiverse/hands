@@ -96,9 +96,10 @@ export function registerStoreProductsCommands(program: Command) {
       if (matches.length !== 1) throw new Error(`app not found or ambiguous: ${app}`);
       const selected = matches[0]!; const requests = await buildProductRequests(raw, selected.platform, dirname(path));
       const preview = await applyRequests(selected.id, requests, "dry_run");
-      const applied = opts.commit && !preview.stopped ? await applyRequests(selected.id, requests, "commit") : null;
-      const pending = applied?.results.some(r => r.outcome === "pending") ?? false;
-      const stopped = preview.stopped || (applied?.stopped ?? false);
+      const previewPending = preview.results.some(r => r.outcome === "pending");
+      const applied = opts.commit && !preview.stopped && !previewPending ? await applyRequests(selected.id, requests, "commit") : null;
+      const pending = previewPending || (applied?.results.some(r => r.outcome === "pending") ?? false);
+      const stopped = preview.stopped || (!!opts.commit && previewPending) || (applied?.stopped ?? false);
       const output = { app: selected.slug, mode: opts.commit ? "commit" : "dry_run", preview: preview.results, ...(applied ? { results: applied.results } : {}), stopped, pending };
       if (jsonRequested(program, opts.json)) console.log(JSON.stringify(output, null, 2));
       else {
@@ -114,8 +115,9 @@ export function registerStoreProductsCommands(program: Command) {
             if (row.operation_id) console.log(`    operation: ${row.operation_id}`);
           }
         }
-        if (!opts.commit) console.log("Preview only. Pass --commit to apply after reviewing the changes.");
-        if (pending) console.log("At least one screenshot is processing or a base plan is awaiting prices; check the results and re-run.");
+        if (!opts.commit && !previewPending) console.log("Preview only. Pass --commit to apply after reviewing the changes.");
+        if (previewPending) console.log("Preview is incomplete; check pending results before applying changes.");
+        else if (pending) console.log("At least one screenshot is processing or a base plan is awaiting prices; check the results and re-run.");
         if (stopped) console.log("Stopped; inspect completed steps and provider state before retrying.");
       }
       if (stopped || pending) process.exitCode = 1;

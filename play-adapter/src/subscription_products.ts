@@ -206,7 +206,18 @@ export function planProduct(packageName: string, desired: ProductInput, current:
 }
 
 export async function reconcileProduct(client: ProductClient, packageName: string, desired: ProductInput, mode: "dry_run" | "commit", regionsVersion: string): Promise<ProductResult> {
-  const all = await client.listSubscriptionProducts(packageName);
+  let all: ObjectValue[];
+  try {
+    all = await client.listSubscriptionProducts(packageName);
+  } catch (error) {
+    if (mode !== "dry_run" || !(error instanceof PlayAdapterError) || error.code !== "play_catalog_unverified") throw error;
+    const plan = planProduct(packageName, desired, null);
+    return {
+      product_id: desired.productId, mode, outcome: "pending", completed: [],
+      changes: [{ resource: "catalog", action: "deferred", before: null, after: "assumed_empty_unverified" }, ...plan.changes],
+      error: { code: "play_catalog_unverified", message: "Google Play returned no catalogue; this preview assumes it is empty and is unverified" },
+    };
+  }
   const matches = all.filter(x => x.productId === desired.productId);
   if (matches.length > 1) throw new PlayAdapterError(502, "play_subscription_malformed", "Google Play returned a duplicate subscription");
   const current = matches[0] ?? null;

@@ -12,7 +12,7 @@ import { AppStoreReleaseError, ascAppIdFor, loadCredentials, type AdminContext }
 const MAX_REQUEST = 8 * 1024 * 1024;
 const MAX_SCREENSHOT = 5 * 1024 * 1024;
 const hash = (input: string | Uint8Array) => bytesToHex(sha256(typeof input === "string" ? new TextEncoder().encode(input) : input));
-class RequestError extends Error { constructor(readonly status: 400 | 413, readonly code: string, message: string) { super(message); } }
+class RequestError extends Error { constructor(readonly status: 400 | 409 | 413, readonly code: string, message: string) { super(message); } }
 type GoogleProductDiagnostic = { provider_http_status?: number; provider_body_empty?: boolean; provider_json_parsed?: boolean };
 class GoogleProductError extends Error {
   constructor(readonly code: string, readonly diagnostic: GoogleProductDiagnostic = {}) { super("Store request failed; inspect provider state before retrying"); }
@@ -127,6 +127,12 @@ export async function handleApplyStoreProduct(c: AdminContext) {
           if (reply.error.code === "subscription_request_invalid" && reply.error.status === 400) {
             releaseLock = true; // adapter validates this before making any provider call
             throw new RequestError(400, "subscription_request_invalid", reply.error.message);
+          }
+          if (reply.error.code === "play_catalog_unverified" && reply.error.status === 409) {
+            // The adapter emits this rejection only from its initial list,
+            // before any provider write. Post-write failures use outcome=failed.
+            releaseLock = true;
+            throw new RequestError(409, "play_catalog_unverified", "Google Play returned no catalogue; confirm its state before writing");
           }
           const code = GOOGLE_PRODUCT_ERRORS.has(reply.error.code) ? reply.error.code : "google_subscription_failed";
           // This is a provider-reported field, not the transport status. Bound its
