@@ -3,12 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
+import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
+import { notificationObjectKey } from "../src/lib/raft_notification_identity";
 import {
-  formatRaftNotificationMessage,
   handleConnectRaftBot,
   handleGetRaftNotifications,
   handleRaftNotificationWebhook,
-  notificationObjectKey,
 } from "../src/routes/raft_notifications";
 import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex } from "../src/routes/webhooks";
 
@@ -198,6 +198,18 @@ describe("Hands-managed Raft notifications", () => {
     expect(release).toContain("version transition: 1.0 → 1.1");
     expect(release).toContain("version code transition: 1 → 2");
     expect(release).toContain("rollout: 100%");
+  });
+
+  it("uses common safe fields for events without a custom presentation", () => {
+    const message = formatRaftNotificationMessage({
+      event: "release:draft_created",
+      payload: { version: "1.2.3", rollout: 25, state: "draft", message: "private text" },
+    });
+    expect(message.startsWith("**Hands · release:draft_created**")).toBe(true);
+    expect(message).toContain("version: 1.2.3");
+    expect(message).toContain("rollout: 25%");
+    expect(message).not.toContain("private text");
+    expect(formatRaftNotificationMessage({ event: "release", payload: { rollout: 25 } })).not.toContain("rollout:");
   });
 
   it("shows bounded, safe TestFlight notes and group context only for TestFlight", () => {
