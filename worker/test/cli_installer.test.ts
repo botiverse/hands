@@ -17,7 +17,10 @@ function d1(sqlite: Database.Database) {
     const statement = sqlite.prepare(sql.replace(/\?(\d+)/g, (_match, index) => { indexes.push(Number(index)); return "?"; }));
     const bind = (...values: unknown[]) => {
       const bound = indexes.length ? indexes.map((index) => values[index - 1]) : values;
-      return { first: async <T>() => (statement.get(...bound) as T | undefined) ?? null };
+      return {
+        first: async <T>() => (statement.get(...bound) as T | undefined) ?? null,
+        all: async <T>() => ({ results: statement.all(...bound) as T[] }),
+      };
     };
     return { bind, first: () => bind().first() };
   } };
@@ -36,16 +39,17 @@ describe("Hands CLI installer endpoints", () => {
       CREATE TABLE channels (id TEXT PRIMARY KEY, app_id TEXT, slug TEXT);
       CREATE TABLE releases (id TEXT PRIMARY KEY, app_id TEXT, channel_id TEXT, build_id TEXT,
         product_type TEXT, status TEXT, hidden INTEGER, rollout_cohort_count INTEGER,
-        availability_at INTEGER, activated_at INTEGER, created_at INTEGER);
+        availability_at INTEGER, activated_at INTEGER, created_at INTEGER, changelog TEXT);
       CREATE TABLE release_scopes (release_id TEXT, scope_type TEXT, scope_value TEXT);
-      CREATE TABLE builds (id TEXT PRIMARY KEY, status TEXT, artifact_mode TEXT);
+      CREATE TABLE builds (id TEXT PRIMARY KEY, status TEXT, artifact_mode TEXT,
+        product_type TEXT NOT NULL DEFAULT 'cli-binary', release_type TEXT NOT NULL DEFAULT 'stable');
       CREATE TABLE build_assets (build_id TEXT, platform TEXT, arch TEXT, variant TEXT,
         filetype TEXT, artifact_kind TEXT, file_hash TEXT, size_bytes INTEGER, created_at INTEGER);
       CREATE TABLE external_build_targets (build_id TEXT, target TEXT, raw_sha256 TEXT, raw_size_bytes INTEGER);
       INSERT INTO apps VALUES ('app', 'my-cli');
       INSERT INTO channels VALUES ('main-id', 'app', 'main');
-      INSERT INTO builds VALUES ('build-1', 'succeeded', 'hands_r2');
-      INSERT INTO releases VALUES ('release-1', 'app', 'main-id', 'build-1', 'cli-binary', 'active', 0, NULL, NULL, 1, 1);
+      INSERT INTO builds (id, status, artifact_mode) VALUES ('build-1', 'succeeded', 'hands_r2');
+      INSERT INTO releases (id, app_id, channel_id, build_id, product_type, status, hidden, rollout_cohort_count, availability_at, activated_at, created_at) VALUES ('release-1', 'app', 'main-id', 'build-1', 'cli-binary', 'active', 0, NULL, NULL, 1, 1);
       INSERT INTO release_scopes VALUES ('release-1', 'full', 'all');
     `);
     env = { DB: d1(sqlite), BUSINESS_ORIGIN: "https://hands.example" };
@@ -115,8 +119,8 @@ describe("Hands CLI installer endpoints", () => {
   it("resolves a real latest channel rather than shadowing it with the alias", async () => {
     hosted();
     sqlite.exec(`INSERT INTO channels VALUES ('latest-id', 'app', 'latest');
-      INSERT INTO builds VALUES ('build-2', 'succeeded', 'external');
-      INSERT INTO releases VALUES ('release-2', 'app', 'latest-id', 'build-2', 'cli-binary', 'active', 0, NULL, NULL, 2, 2);
+      INSERT INTO builds (id, status, artifact_mode) VALUES ('build-2', 'succeeded', 'external');
+      INSERT INTO releases (id, app_id, channel_id, build_id, product_type, status, hidden, rollout_cohort_count, availability_at, activated_at, created_at) VALUES ('release-2', 'app', 'latest-id', 'build-2', 'cli-binary', 'active', 0, NULL, NULL, 2, 2);
       INSERT INTO release_scopes VALUES ('release-2', 'full', 'all');`);
     sqlite.prepare("INSERT INTO external_build_targets VALUES ('build-2', 'linux-x64', ?, 8)").run(hash("external"));
     expect(await (await metadata("latest")).text()).toBe(`release-2 ${hash("external")} 8\n`);
@@ -137,6 +141,8 @@ describe("Hands CLI installer endpoints", () => {
     ["superseded", "UPDATE releases SET status = 'superseded'"],
     ["wrong product", "UPDATE releases SET product_type = 'desktop-installer'"],
     ["failed build", "UPDATE builds SET status = 'failed'"],
+    ["QA build", "UPDATE builds SET release_type = 'qa'"],
+    ["simulator QA build", "UPDATE builds SET product_type = 'ios-simulator-qa'"],
     ["scoped release", "UPDATE release_scopes SET scope_type = 'platform', scope_value = 'linux'"],
   ])("does not select a %s", async (_label, sql) => {
     hosted();
@@ -146,8 +152,8 @@ describe("Hands CLI installer endpoints", () => {
 
   it("does not silently fall back to an older release if the latest lacks the target", async () => {
     hosted();
-    sqlite.exec(`INSERT INTO builds VALUES ('build-2', 'succeeded', 'hands_r2');
-      INSERT INTO releases VALUES ('release-2', 'app', 'main-id', 'build-2', 'cli-binary', 'active', 0, NULL, NULL, 2, 2);
+    sqlite.exec(`INSERT INTO builds (id, status, artifact_mode) VALUES ('build-2', 'succeeded', 'hands_r2');
+      INSERT INTO releases (id, app_id, channel_id, build_id, product_type, status, hidden, rollout_cohort_count, availability_at, activated_at, created_at) VALUES ('release-2', 'app', 'main-id', 'build-2', 'cli-binary', 'active', 0, NULL, NULL, 2, 2);
       INSERT INTO release_scopes VALUES ('release-2', 'full', 'all');`);
     expect((await metadata()).status).toBe(404);
   });
@@ -220,6 +226,12 @@ esac
     const result = run({ TEST_OS: "Darwin", TEST_ARCH: "arm64", PATH: bin });
     expect(result.status).toBe(0);
     expect(readFileSync(join(destination, "my-cli"), "utf8")).toBe("binary");
+  });
+  it("creates a missing install directory using the caller's umask", () => {
+    const fresh = join(root, "new", "bin");
+    const result = run({ HANDS_INSTALL_DIR: fresh });
+    expect(result.status).toBe(0);
+    expect(statSync(fresh).mode & 0o777).toBe(0o777 & ~process.umask());
   });
   it("preserves an existing executable on checksum mismatch", () => {
     writeFileSync(join(destination, "my-cli"), "old");

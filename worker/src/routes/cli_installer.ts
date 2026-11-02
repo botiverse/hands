@@ -2,7 +2,7 @@
 import type { Context } from "hono";
 import { businessOrigin } from "../lib/origin";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
-import { usesHostedAssets } from "../lib/release_resolver";
+import { loadActiveReleaseCandidates, usesHostedAssets } from "../lib/release_resolver";
 
 const safeName = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const safeRelease = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u;
@@ -25,7 +25,6 @@ export function renderCliInstaller(origin: string, slug: string, channel: string
   return `#!/bin/sh
 # Hands CLI installer. Only public, fully rolled-out CLI releases are eligible.
 set -eu
-umask 077
 fail() { printf '%s\\n' "hands installer: $*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail 'curl is required'
 case "$(uname -s)" in
@@ -68,6 +67,7 @@ case "$install_name" in ''|.|..|*[!a-zA-Z0-9._-]*) fail 'invalid HANDS_INSTALL_N
 mkdir -p "$install_dir" || fail 'could not create the install directory'
 destination="$install_dir/$install_name"
 [ ! -d "$destination" ] || fail 'destination is a directory'
+umask 077
 tmp=$(mktemp "$install_dir/.hands-install.XXXXXXXX") || fail 'could not create a temporary file'
 trap 'rm -f "$tmp"' EXIT
 trap 'exit 1' HUP INT TERM
@@ -105,12 +105,7 @@ export async function handleCliInstaller(c: Context<{ Bindings: Env }>): Promise
   });
 }
 
-type ReleaseRow = {
-  id: string;
-  build_id: string;
-  artifact_mode: string | null;
-  has_hosted_assets: number;
-};
+type PlacementRow = { artifact_mode: string | null; has_hosted_assets: number };
 type AssetRow = { file_hash: string; size_bytes: number; filetype: string; artifact_kind: string };
 
 /** Resolve a target once, then make the bootstrap fetch this immutable release. */
@@ -125,24 +120,22 @@ export async function handleCliInstallerMetadata(c: Context<{ Bindings: Env }>):
     .bind(slug).first<{ id: string }>();
   if (!app) return c.text("no compatible public release", 404, noStore);
   const channel = await resolvePublicChannelSlug(c.env.DB, app.id, requestedChannel);
-  const release = await c.env.DB.prepare(
-    `SELECT r.id, r.build_id, b.artifact_mode,
-            EXISTS (SELECT 1 FROM build_assets ba WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_hosted_assets
-       FROM releases r
-       JOIN channels ch ON ch.id = r.channel_id AND ch.app_id = r.app_id
-       JOIN builds b ON b.id = r.build_id AND b.status = 'succeeded'
-      WHERE r.app_id = ?1 AND ch.slug = ?2 AND r.product_type = 'cli-binary'
-        AND r.status = 'active' AND r.hidden = 0
-        AND (r.rollout_cohort_count IS NULL OR r.rollout_cohort_count >= 100)
-        AND (r.availability_at IS NULL OR r.availability_at <= ?3)
-        AND EXISTS (SELECT 1 FROM release_scopes s
-                    WHERE s.release_id = r.id AND s.scope_type = 'full' AND s.scope_value = 'all')
-      ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC LIMIT 1`,
-  ).bind(app.id, channel, Date.now()).first<ReleaseRow>();
+  const channelRow = await c.env.DB.prepare("SELECT id FROM channels WHERE app_id = ?1 AND slug = ?2")
+    .bind(app.id, channel).first<{ id: string }>();
+  if (!channelRow) return c.text("no compatible public release", 404, noStore);
+  const [release] = await loadActiveReleaseCandidates(c.env.DB, {
+    appId: app.id, channelId: channelRow.id, productType: "cli-binary", fullPublicAt: Date.now(), mostRecentOnly: true,
+  });
   if (!release || !safeRelease.test(release.id)) return c.text("no compatible public release", 404, noStore);
+  const placement = await c.env.DB.prepare(
+    `SELECT b.artifact_mode,
+            EXISTS (SELECT 1 FROM build_assets ba WHERE ba.build_id = b.id AND ba.artifact_kind = 'installable') AS has_hosted_assets
+       FROM builds b WHERE b.id = ?1 AND b.status = 'succeeded'`,
+  ).bind(release.build_id).first<PlacementRow>();
+  if (!placement) return c.text("no compatible public release", 404, noStore);
 
   let identity: { hash: string; size: number } | null = null;
-  if (usesHostedAssets(release.artifact_mode, release.has_hosted_assets === 1)) {
+  if (usesHostedAssets(placement.artifact_mode, placement.has_hosted_assets === 1)) {
     // Match the release download handler's exact primary-row ordering. Reject
     // another kind of asset instead of hashing a different row than it serves.
     const asset = await c.env.DB.prepare(
