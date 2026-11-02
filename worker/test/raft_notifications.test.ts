@@ -174,7 +174,55 @@ describe("Hands-managed Raft notifications", () => {
       expect(message.startsWith(`${emoji} **Hands · ${event}**`)).toBe(true);
       expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     }
-    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("**Hands · app_store:version_state_changed**")).toBe(true);
+    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **Hands · app_store:version_state_changed**")).toBe(true);
+  });
+
+  it("keeps release context and identifies a first Play observation", () => {
+    const message = formatRaftNotificationMessage({
+      event: "google_play:release_state_changed", app_id: "abad63e9-e760-42e9-92df-f418735f32ea",
+      payload: {
+        package_name: "build.example.app", track: "alpha", version_code: 11800003,
+        state: "PUBLISHED", state_label: "Track available", observation_display: "First observation, not a new change",
+        rollout_percent: 20,
+      },
+    });
+    expect(message.startsWith("▶️ **Hands · google_play:release_state_changed**")).toBe(true);
+    expect(message).toContain("observation: First observation, not a new change");
+    expect(message).toContain("description: Track available");
+    expect(message).toContain("track: alpha");
+    expect(message).toContain("rollout: 20%");
+    const release = formatRaftNotificationMessage({
+      event: "release:published", payload: { rollout: 100, version_transition: "1.0 → 1.1", version_code_transition: "1 → 2" },
+    });
+    expect(release).toContain("🚀 **Hands · release:published**");
+    expect(release).toContain("version transition: 1.0 → 1.1");
+    expect(release).toContain("version code transition: 1 → 2");
+    expect(release).toContain("rollout: 100%");
+  });
+
+  it("shows bounded, safe TestFlight notes and group context only for TestFlight", () => {
+    const payload = {
+      groups_display: "Test group: internal",
+      what_to_test: { "zh-Hans": `Check @admin #release https://example.test/private ${"x".repeat(600)}` },
+      source_commit: "a1b2c3d4",
+    };
+    const message = formatRaftNotificationMessage({ event: "testflight:internal_distribution_ready", payload });
+    expect(message.startsWith("✈️ **Hands · testflight:internal_distribution_ready**")).toBe(true);
+    expect(message).toContain("groups: Test group: internal");
+    expect(message).toContain("Test notes (zh-Hans): Check @\u200badmin #\u200brelease \\[link\\]");
+    expect(message).toContain("source commit: a1b2c3d4");
+    expect(message).toContain("…");
+    expect(message).not.toContain("https://example.test");
+    expect(formatRaftNotificationMessage({ event: "release:published", payload })).not.toContain("Test notes");
+  });
+
+  it("separates Play state threads by package, track and version", async () => {
+    const state = (track: string, version: number, value: string) => ({
+      event: "google_play:release_state_changed", payload: { package_name: "build.example.app", track, version_code: version, state: value },
+    });
+    expect(await notificationObjectKey(state("alpha", 1, "IN_REVIEW"))).toBe(await notificationObjectKey(state("alpha", 1, "PUBLISHED")));
+    expect(await notificationObjectKey(state("alpha", 1, "PUBLISHED"))).not.toBe(await notificationObjectKey(state("production", 1, "PUBLISHED")));
+    expect(await notificationObjectKey(state("alpha", 1, "PUBLISHED"))).not.toBe(await notificationObjectKey(state("alpha", 2, "PUBLISHED")));
   });
 
   it("renders a bounded feedback preview, app identity, and a usable CLI command", () => {

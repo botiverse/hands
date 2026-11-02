@@ -1334,7 +1334,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
           <a className="underline" href="/docs/admin-user-guide/#raft-notifications">Raft notification setup guide</a>
         </p>
         <p className="text-xs text-foreground-muted mt-1">
-          Feedback notifications can include a short excerpt of user-submitted text. Choose a channel whose members may see it.
+          Feedback notifications can include an excerpt of user-submitted text. TestFlight notifications can include test group names and an excerpt of testing notes. Choose a channel whose members may see them.
         </p>
       </div>
       <div className="rounded-md bg-fill-muted p-3 flex flex-wrap items-center justify-between gap-2">
