@@ -236,6 +236,18 @@ order the page and create `next_cursor`. `has_more` comes from the extra row;
 that row is not returned or acknowledged. An empty page preserves the input
 checkpoint rather than advancing to the allocator's current high-water.
 
+For iOS apps that opt in to external report separation, each snapshot also has
+`build_origin`: `configured` if its client-reported bundle ID matches any
+currently configured channel, `external` if it does not, and `unknown` if the
+ID or comparison set cannot be used. With the feature disabled, it is `null`.
+This value is an untrusted triage hint, not an identity or authorization check.
+The feed still returns every snapshot; consumers may skip `external` while
+advancing their existing cursor only after processing the entire page. The
+classification is evaluated when the feed is read. Changing channel bundles
+does not create a material event for old tickets, so consumers who need to
+revisit older classifications must scan the list or perform an idempotent
+rescan from an earlier cursor.
+
 The only accepted cursor payload is exactly
 `["material-v1", app_id, material_sequence]`, encoded behind the existing
 cursor helper. The app id must equal the path parameter and the sequence must be

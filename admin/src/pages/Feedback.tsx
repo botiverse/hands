@@ -13,6 +13,7 @@ import {
   downloadFeedbackAttachment,
   getAuthMe,
   getFeedback,
+  getFeedbackBuildFilter,
   getFeedbackAttachmentBlob,
   listFeedback,
   getDeviceDetail,
@@ -22,6 +23,7 @@ import {
 import { feedbackMessage } from "../lib/feedbackMessages";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
+import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
 import { MarkdownText } from "../components/MarkdownText";
 import {
   AlertDialog,
@@ -101,9 +103,14 @@ export function AppFeedback({ appId }: { appId: string }) {
   const deviceFilter = searchParams.get("device_id") ?? "";
   const versionFilter = searchParams.get("version_code") ?? "";
   const signatureFilter = searchParams.get("signature") ?? "";
+  const buildScope = feedbackBuildScope(searchParams.get("build_scope"));
+  const originPolicy = useQuery({
+    queryKey: ["feedback-build-filter", appId],
+    queryFn: () => getFeedbackBuildFilter(appId),
+  });
 
   const tickets = useQuery({
-    queryKey: ["feedback", appId, statusFilter, kindFilter, deviceFilter, versionFilter, signatureFilter],
+    queryKey: ["feedback", appId, statusFilter, kindFilter, deviceFilter, versionFilter, signatureFilter, buildScope],
     queryFn: () =>
       listFeedback(appId, {
         status: statusFilter || undefined,
@@ -113,6 +120,7 @@ export function AppFeedback({ appId }: { appId: string }) {
         deviceId: deviceFilter || undefined,
         versionCode: versionFilter ? Number(versionFilter) : undefined,
         signature: signatureFilter || undefined,
+        buildScope,
       }),
   });
 
@@ -163,7 +171,7 @@ export function AppFeedback({ appId }: { appId: string }) {
           </div>
         </div>
       )}
-      {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} />}
+      {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} buildScope={buildScope} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Feedback</h2>
@@ -212,6 +220,13 @@ export function AppFeedback({ appId }: { appId: string }) {
       </div>
 
 
+      {originPolicy.data?.default_enabled === 1 && (
+        <FeedbackBuildScopeSelector value={buildScope} onChange={(value) => {
+          const next = new URLSearchParams(searchParams);
+          if (value === "standard") next.delete("build_scope"); else next.set("build_scope", value);
+          setSearchParams(next, { replace: true });
+        }} />
+      )}
       <div className="overflow-x-auto">
         {tickets.isLoading && (
           <div className="space-y-2">
@@ -260,6 +275,8 @@ export function AppFeedback({ appId }: { appId: string }) {
                         ANR
                       </Badge>
                     )}
+                    {t.build_origin === "external" && <Badge variant="warning" className="mr-2">External</Badge>}
+                    {t.build_origin === "unknown" && <Badge variant="muted" className="mr-2">Origin unknown</Badge>}
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>
                   </td>
                   <td className="py-2 pr-3">

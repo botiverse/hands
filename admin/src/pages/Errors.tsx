@@ -3,17 +3,21 @@
  * (kind=error) grouped by signature. Clicking a group jumps to the Feedback
  * list pre-filtered to error tickets.
  */
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { listCrashGroups } from "../lib/api";
+import { getFeedbackBuildFilter, listCrashGroups } from "../lib/api";
 import { EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
 import { AlertTriangle } from "lucide-react";
+import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
 
 export function AppErrors({ appId }: { appId: string }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const buildScope = feedbackBuildScope(searchParams.get("build_scope"));
+  const originPolicy = useQuery({ queryKey: ["feedback-build-filter", appId], queryFn: () => getFeedbackBuildFilter(appId) });
   const groups = useQuery({
-    queryKey: ["error-groups", appId],
-    queryFn: () => listCrashGroups(appId, "error"),
+    queryKey: ["error-groups", appId, buildScope],
+    queryFn: () => listCrashGroups(appId, "error", undefined, buildScope),
   });
   const rows = groups.data?.groups ?? [];
 
@@ -30,6 +34,13 @@ export function AppErrors({ appId }: { appId: string }) {
         </div>
       </div>
 
+      {originPolicy.data?.default_enabled === 1 && (
+        <FeedbackBuildScopeSelector value={buildScope} onChange={(value) => {
+          const next = new URLSearchParams(searchParams);
+          if (value === "standard") next.delete("build_scope"); else next.set("build_scope", value);
+          setSearchParams(next, { replace: true });
+        }} />
+      )}
       <div className="overflow-x-auto">
         {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
         {groups.error && (
@@ -67,7 +78,7 @@ export function AppErrors({ appId }: { appId: string }) {
                   className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
                   onClick={() =>
                     navigate(
-                      `/apps/${appId}/feedback?kind=error&signature=${encodeURIComponent(g.signature)}`,
+                      `/apps/${appId}/feedback?kind=error&signature=${encodeURIComponent(g.signature)}&build_scope=${buildScope}`,
                     )
                   }
                 >

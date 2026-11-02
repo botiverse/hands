@@ -18,6 +18,12 @@ import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
 import type { AppPermission } from "../lib/app_permissions";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../lib/feedback_events";
 import { computeReporterAuditHash } from "../lib/reporter_audit";
+import {
+  FEEDBACK_BUILD_ORIGIN_FIELD_SQL,
+  feedbackBuildScope,
+  feedbackBuildScopeClause,
+  feedbackSubmissionBuildOrigin,
+} from "../lib/feedback_build_origin";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -93,7 +99,18 @@ type FeedbackApp = {
   slug: string;
   client_key: string | null;
   platform: string | null;
+  feedback_origin_filter_enabled: number;
 };
+
+// Read the opt-in alongside the app, so other apps' submissions do not gain a
+// second database round trip just for a feature they have not enabled.
+const FEEDBACK_APP_SQL = `SELECT id, org_id, slug, client_key, platform,
+  CASE WHEN platform = 'ios' THEN EXISTS (
+    SELECT 1 FROM feature_flags f
+    WHERE f.app_id = apps.id AND f.key = 'feedback_build_origin_filter'
+      AND f.default_enabled = 1
+  ) ELSE 0 END AS feedback_origin_filter_enabled
+  FROM apps WHERE slug = ?1 AND archived = 0`;
 
 async function authorizeFeedbackUpload(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
@@ -348,7 +365,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await c.env.DB.prepare(
-    "SELECT id, org_id, slug, client_key, platform FROM apps WHERE slug = ?1 AND archived = 0",
+    FEEDBACK_APP_SQL,
   )
     .bind(slug)
     .first<FeedbackApp>();
@@ -618,6 +635,13 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
   }
 
+  // An opted-in app can separate client-reported bundle mismatches for triage.
+  // The report is retained; the hint is not an authentication decision.
+  const buildOrigin = app.platform === "ios" && app.feedback_origin_filter_enabled === 1
+    ? await feedbackSubmissionBuildOrigin(c.env.DB, app.id, metadata)
+    : null;
+  const externalBuild = buildOrigin === "external";
+
   // Crash and error tickets get a grouping signature from their exception
   // class + top app frame (populated by the SDK). Other kinds have no signature.
   const signature =
@@ -753,7 +777,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
             dedicatedSubmissionPayload,
             now,
           ),
-          c.env.DB.prepare(
+          ...(!externalBuild ? [c.env.DB.prepare(
             `INSERT INTO webhook_deliveries
              (id, webhook_id, event_type, feedback_submission_event_id,
               payload_json, signing_secret, signature_key_version, reporter_delivery, status,
@@ -780,7 +804,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
                )
              ON CONFLICT(webhook_id, feedback_submission_event_id)
                WHERE feedback_submission_event_id IS NOT NULL DO NOTHING`,
-          ).bind(submissionEventId, genericSubmissionPayload, now, app.org_id, app.id),
+          ).bind(submissionEventId, genericSubmissionPayload, now, app.org_id, app.id)] : []),
           c.env.DB.prepare(
             `INSERT INTO webhook_deliveries
              (id, webhook_id, event_type, feedback_submission_event_id,
@@ -873,13 +897,14 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash alerting: fire webhooks when a signature is first seen or when it
   // spikes (10/50/100 tickets within an hour — fires once per tier as the
   // count crosses it, so no extra state table is needed).
-  if ((kind === "crash" || kind === "error") && signature && app.org_id) {
+  if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id) {
     const orgId = app.org_id;
     const eventPrefix = kind === "crash" ? "crash" : "error";
     const alert = async () => {
       const prior = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets
-         WHERE app_id = ?1 AND signature = ?2 AND id != ?3`,
+        `SELECT COUNT(*) AS n FROM feedback_tickets t
+         WHERE app_id = ?1 AND signature = ?2 AND id != ?3
+           AND ${feedbackBuildScopeClause("standard")}`,
       )
         .bind(app.id, signature, ticketId)
         .first<{ n: number }>();
@@ -906,8 +931,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         return;
       }
       const recent = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets
-         WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3`,
+        `SELECT COUNT(*) AS n FROM feedback_tickets t
+         WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3
+           AND ${feedbackBuildScopeClause("standard")}`,
       )
         .bind(app.id, signature, now - 60 * 60 * 1000)
         .first<{ n: number }>();
@@ -936,7 +962,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
-  if (app.org_id && !reporterIntegrationId) {
+  if (app.org_id && !reporterIntegrationId && !externalBuild) {
     await emitWebhookEvent(c.env, {
       orgId: app.org_id,
       appId: app.id,
@@ -1150,10 +1176,10 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await c.env.DB.prepare(
-    "SELECT id, org_id, slug, client_key FROM apps WHERE slug = ?1 AND archived = 0",
+    FEEDBACK_APP_SQL,
   )
     .bind(slug)
-    .first<{ id: string; org_id: string | null; slug: string; client_key: string | null }>();
+    .first<FeedbackApp>();
   if (!app) return c.json({ error: `app '${slug}' not found` }, 404);
 
   const presented =
@@ -1210,6 +1236,9 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
     process_type: processType,
     crash_platform: pick("platform", "os") ?? productKind,
   };
+  const buildOrigin = app.platform === "ios" && app.feedback_origin_filter_enabled === 1
+    ? await feedbackSubmissionBuildOrigin(c.env.DB, app.id, metadata)
+    : null;
 
   const clientIp =
     (c.req.raw?.cf as { clientIp?: string } | undefined)?.clientIp ??
@@ -1276,7 +1305,7 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
     run().catch(() => {});
   }
 
-  if (app.org_id) {
+  if (app.org_id && buildOrigin !== "external") {
     await emitWebhookEvent(c.env, {
       orgId: app.org_id,
       appId: app.id,
@@ -2144,11 +2173,11 @@ export async function dispatchSymbolication(
  * `anr` (Android ApplicationExitInfo REASON_ANR, `crash_type=anr`),
  * `native` (signal records, `crash_reason=native_signal`), else `exception`.
  */
-const CRASH_TYPE_SQL = `CASE
+const CRASH_TYPE_SQL = `CASE WHEN json_valid(metadata_json) THEN CASE
     WHEN json_extract(metadata_json, '$.crash_type') = 'anr' THEN 'anr'
     WHEN json_extract(metadata_json, '$.crash_reason') = 'native_signal' THEN 'native'
     ELSE 'exception'
-  END`;
+  END ELSE 'exception' END`;
 export const CRASH_TYPES = ["anr", "native", "exception"] as const;
 export type CrashType = (typeof CRASH_TYPES)[number];
 
@@ -2171,6 +2200,8 @@ export async function handleListCrashGroups(c: AdminContext) {
     : kindFilter === "error" ? "AND kind = 'error'"
     : "AND kind IN ('crash', 'error')";
   const crashType = crashTypeParam(c.req.query("crash_type"));
+  const scope = feedbackBuildScope(c.req.query("build_scope"));
+  if (!scope) return c.json({ error: "invalid build_scope" }, 400);
   const binds: unknown[] = [appId];
   let typeClause = "";
   if (crashType) {
@@ -2187,8 +2218,9 @@ export async function handleListCrashGroups(c: AdminContext) {
        MAX(created_at) AS last_seen,
        GROUP_CONCAT(DISTINCT version_name) AS versions,
        SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
-     FROM feedback_tickets
+     FROM feedback_tickets t
      WHERE app_id = ?1 ${kindClause} ${typeClause}
+       AND ${feedbackBuildScopeClause(scope)}
      GROUP BY COALESCE(signature, '(unsignatured)')
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,
@@ -2201,13 +2233,16 @@ export async function handleListCrashGroups(c: AdminContext) {
 /** Daily ticket counts (30 days, by kind) + crash counts by version. */
 export async function handleFeedbackStats(c: AdminContext) {
   const appId = c.req.param("appId");
+  const scope = feedbackBuildScope(c.req.query("build_scope"));
+  if (!scope) return c.json({ error: "invalid build_scope" }, 400);
   const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const [daily, byVersion] = await Promise.all([
     c.env.DB.prepare(
       `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
               kind, COUNT(*) AS n
-       FROM feedback_tickets
+       FROM feedback_tickets t
        WHERE app_id = ?1 AND created_at >= ?2
+         AND ${feedbackBuildScopeClause(scope)}
        GROUP BY day, kind
        ORDER BY day ASC`,
     )
@@ -2216,8 +2251,9 @@ export async function handleFeedbackStats(c: AdminContext) {
     c.env.DB.prepare(
       `SELECT COALESCE(version_name, 'unknown') AS version_name,
               version_code, COUNT(*) AS n
-       FROM feedback_tickets
+       FROM feedback_tickets t
        WHERE app_id = ?1 AND kind IN ('crash', 'error')
+         AND ${feedbackBuildScopeClause(scope)}
        GROUP BY COALESCE(version_name, 'unknown'), version_code
        ORDER BY COALESCE(version_code, 0) DESC
        LIMIT 12`,
@@ -2232,8 +2268,10 @@ export async function handleListFeedback(c: AdminContext) {
   const appId = c.req.param("appId");
   const status = c.req.query("status");
   const kind = c.req.query("kind");
+  const scope = feedbackBuildScope(c.req.query("build_scope"));
+  if (!scope) return c.json({ error: "invalid build_scope" }, 400);
   const binds: unknown[] = [appId];
-  let where = "app_id = ?1";
+  let where = `app_id = ?1 AND ${feedbackBuildScopeClause(scope)}`;
   if (status && (TICKET_STATUSES as readonly string[]).includes(status)) {
     binds.push(status);
     where += ` AND status = ?${binds.length}`;
@@ -2277,6 +2315,7 @@ export async function handleListFeedback(c: AdminContext) {
             t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
+            ${FEEDBACK_BUILD_ORIGIN_FIELD_SQL} AS build_origin,
             CASE WHEN t.kind IN ('crash', 'error') THEN ${CRASH_TYPE_SQL} END AS crash_type,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
@@ -2306,6 +2345,7 @@ export async function handleListFeedbackMaterialDelta(c: AdminContext) {
             t.assignee, t.message, t.contact, t.version_name,
             t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at, t.material_sequence,
+            ${FEEDBACK_BUILD_ORIGIN_FIELD_SQL} AS build_origin,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
      FROM feedback_tickets t
@@ -2385,7 +2425,8 @@ export async function handleGetFeedback(c: AdminContext) {
   if ("error" in resolved) return ticketResolveError(c, resolved);
   const ticketId = resolved.id;
   const ticket = await c.env.DB.prepare(
-    "SELECT * FROM feedback_tickets WHERE app_id = ?1 AND id = ?2",
+    `SELECT t.*, ${FEEDBACK_BUILD_ORIGIN_FIELD_SQL} AS build_origin
+     FROM feedback_tickets t WHERE app_id = ?1 AND id = ?2`,
   )
     .bind(appId, ticketId)
     .first();
@@ -2888,9 +2929,11 @@ export function feedbackReporterEventStatements(
               w.secret, w.signature_key_version, 0, 'pending', 0, 3,
               ?4, ?4, ?4
        FROM feedback_events fe
+       JOIN feedback_tickets t ON t.id = fe.ticket_id AND t.app_id = fe.app_id
        JOIN webhooks w ON w.org_id = ?5
        JOIN apps a ON a.id = fe.app_id AND a.archived = 0
        WHERE fe.id = ?1
+         AND ${feedbackBuildScopeClause("standard")}
          AND w.enabled = 1 AND w.archived_at IS NULL
          AND (w.app_id IS NULL OR w.app_id = ?6)
          AND CASE WHEN json_valid(w.events_json) THEN (

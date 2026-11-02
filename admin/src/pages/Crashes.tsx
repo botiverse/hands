@@ -5,10 +5,11 @@
  */
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getFeedbackStats, listCrashGroups, type CrashType } from "../lib/api";
+import { getFeedbackStats, getFeedbackBuildFilter, listCrashGroups, type CrashType } from "../lib/api";
 import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
 import { Bug } from "lucide-react";
 import { CrashByVersion } from "../components/FeedbackTrends";
+import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
 
 export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
   exception: "Exception",
@@ -37,6 +38,11 @@ export function AppCrashes({ appId }: { appId: string }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const crashType = parseCrashType(searchParams.get("crash_type"));
+  const buildScope = feedbackBuildScope(searchParams.get("build_scope"));
+  const originPolicy = useQuery({
+    queryKey: ["feedback-build-filter", appId],
+    queryFn: () => getFeedbackBuildFilter(appId),
+  });
   const setCrashType = (value: CrashType | "") => {
     const next = new URLSearchParams(searchParams);
     if (value) next.set("crash_type", value);
@@ -44,12 +50,12 @@ export function AppCrashes({ appId }: { appId: string }) {
     setSearchParams(next, { replace: true });
   };
   const groups = useQuery({
-    queryKey: ["crash-groups", appId, crashType],
-    queryFn: () => listCrashGroups(appId, undefined, crashType || undefined),
+    queryKey: ["crash-groups", appId, crashType, buildScope],
+    queryFn: () => listCrashGroups(appId, undefined, crashType || undefined, buildScope),
   });
   const stats = useQuery({
-    queryKey: ["feedback-stats", appId],
-    queryFn: () => getFeedbackStats(appId),
+    queryKey: ["feedback-stats", appId, buildScope],
+    queryFn: () => getFeedbackStats(appId, buildScope),
   });
   const rows = groups.data?.groups ?? [];
 
@@ -78,6 +84,13 @@ export function AppCrashes({ appId }: { appId: string }) {
         </SegmentedControl>
       </div>
 
+      {originPolicy.data?.default_enabled === 1 && (
+        <FeedbackBuildScopeSelector value={buildScope} onChange={(value) => {
+          const next = new URLSearchParams(searchParams);
+          if (value === "standard") next.delete("build_scope"); else next.set("build_scope", value);
+          setSearchParams(next, { replace: true });
+        }} />
+      )}
       {(stats.data?.crashes_by_version.length ?? 0) > 0 && (
         <div className="max-w-md">
           <CrashByVersion rows={stats.data!.crashes_by_version} />
@@ -124,7 +137,7 @@ export function AppCrashes({ appId }: { appId: string }) {
                   className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
                   onClick={() =>
                     navigate(
-                      `/apps/${appId}/feedback?kind=crash&signature=${encodeURIComponent(g.signature)}`,
+                      `/apps/${appId}/feedback?kind=crash&signature=${encodeURIComponent(g.signature)}&build_scope=${buildScope}`,
                     )
                   }
                 >

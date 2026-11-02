@@ -53,6 +53,8 @@ import {
   updateAppDeltaUpdates,
   updateAppReleaseApproval,
   getAppClientKey,
+  getFeedbackBuildFilter,
+  setFeedbackBuildFilter,
   rotateAppClientKey,
   purgeApp,
   listOrgs,
@@ -1042,6 +1044,38 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
   );
 }
 
+function FeedbackBuildFilterToggle({ appId }: { appId: string }) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const setting = useQuery({ queryKey: ["feedback-build-filter", appId], queryFn: () => getFeedbackBuildFilter(appId) });
+  const enabled = setting.data?.default_enabled === 1;
+  const update = useMutation({
+    mutationFn: (next: boolean) => setFeedbackBuildFilter(appId, next),
+    onSuccess: (_, next) => {
+      toast.show({ kind: "success", title: next ? "External report separation enabled" : "External report separation disabled" });
+      qc.invalidateQueries({ queryKey: ["feedback-build-filter", appId] });
+      qc.invalidateQueries({ queryKey: ["feedback", appId] });
+      qc.invalidateQueries({ queryKey: ["feedback-stats", appId] });
+      qc.invalidateQueries({ queryKey: ["crash-groups", appId] });
+      qc.invalidateQueries({ queryKey: ["error-groups", appId] });
+    },
+    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+  });
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1">
+        <div className="text-sm font-medium">Separate external iOS reports</div>
+        <div className="text-xs text-foreground-muted">
+          Compare reported bundle IDs with this app's configured channels. Mismatches appear in the external view and do not create normal notification cards; unknown IDs stay in the main view. Bundle IDs are supplied by clients and do not verify identity.
+        </div>
+        {setting.error && <div className="text-xs text-danger">Could not load this setting.</div>}
+      </div>
+      <Switch aria-label="Separate external iOS reports" checked={enabled}
+        disabled={!setting.data || update.isPending} onCheckedChange={(next) => update.mutate(next)} />
+    </div>
+  );
+}
+
 export function AppSettings({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -1126,6 +1160,8 @@ export function AppSettings({ appId }: { appId: string }) {
         {["ios", "android", "ohos"].includes(app.platform) && (
           <ReleaseApprovalToggle appId={appId} app={app} />
         )}
+
+        {app.platform === "ios" && <FeedbackBuildFilterToggle appId={appId} />}
 
         {/* Client key (feedback/crash reporting auth) */}
         <ClientKeyPanel appId={appId} />

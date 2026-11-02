@@ -14,7 +14,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
-import { getFeedbackStats } from "../lib/api";
+import { getFeedbackStats, type FeedbackBuildScope } from "../lib/api";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
 const KIND_COLOR: Record<(typeof KINDS)[number], string> = {
@@ -27,10 +27,10 @@ const SURFACE = "var(--layer-canvas)"; // chart surface — 2px segment spacers 
 const GRIDLINE = "var(--line-hairline)";
 const HOVER_BAND = "var(--fill-muted)";
 
-export function FeedbackTrends({ appId }: { appId: string }) {
+export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScope?: FeedbackBuildScope }) {
   const stats = useQuery({
-    queryKey: ["feedback-stats", appId],
-    queryFn: () => getFeedbackStats(appId),
+    queryKey: ["feedback-stats", appId, buildScope],
+    queryFn: () => getFeedbackStats(appId, buildScope),
   });
   const [showTable, setShowTable] = useState(false);
 

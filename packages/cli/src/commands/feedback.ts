@@ -20,6 +20,7 @@ interface TicketRow {
   created_at: number;
   attachment_count: number;
   comment_count: number;
+  build_origin?: "configured" | "external" | "unknown" | null;
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
@@ -43,12 +44,14 @@ export function registerFeedbackCommands(program: Command): void {
     .description("List tickets, newest first.")
     .option("--status <status>", "Filter: open | in_progress | resolved | closed.")
     .option("--kind <kind>", "Filter: feedback | bug | crash.")
+    .option("--build-scope <scope>", "Filter by origin: standard | external | all.")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; buildScope?: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const params = new URLSearchParams();
       if (opts.status) params.set("status", opts.status);
       if (opts.kind) params.set("kind", opts.kind);
+      if (opts.buildScope) params.set("build_scope", opts.buildScope);
       const qs = params.toString();
       const res = await apiRequest<{ tickets: TicketRow[] }>(
         `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
@@ -66,7 +69,8 @@ export function registerFeedbackCommands(program: Command): void {
         console.log(
           `${t.id}  ${t.status.padEnd(11)} ${t.kind.padEnd(8)} ` +
             `${(t.assignee ?? "-").padEnd(16)} v${t.version_name ?? "?"} ` +
-            `[${t.attachment_count}📎 ${t.comment_count}💬]  ${preview}`,
+            `[${t.attachment_count}📎 ${t.comment_count}💬] ` +
+            `${t.build_origin === "external" || t.build_origin === "unknown" ? `[${t.build_origin}] ` : ""} ${preview}`,
         );
       }
     });
@@ -88,6 +92,7 @@ export function registerFeedbackCommands(program: Command): void {
       }
       const t = res.ticket as Record<string, unknown>;
       console.log(`Ticket ${String(t["id"])} (${t["kind"]}, ${t["status"]})`);
+      if (t["build_origin"]) console.log(`  origin:   ${t["build_origin"]}`);
       console.log(`  assignee: ${t["assignee"] ?? "-"}`);
       console.log(`  version:  ${t["version_name"] ?? "?"} (${t["version_code"] ?? "?"}) · ${t["channel"] ?? "?"}`);
       console.log(`  device:   ${t["device_model"] ?? "?"} · Android ${t["os_version"] ?? "?"} · ${t["arch"] ?? "?"} · ${t["locale"] ?? "?"}`);

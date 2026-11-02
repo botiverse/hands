@@ -1829,6 +1829,17 @@ export const rebindReleaseShare = (
 
 // ---- Feedback tickets (task #66) ----
 
+export type FeedbackBuildOrigin = "configured" | "external" | "unknown" | null;
+export type FeedbackBuildScope = "standard" | "external" | "all";
+
+export const getFeedbackBuildFilter = (appId: string) =>
+  request<{ default_enabled: number }>(`/api/apps/${appId}/feature-flags/feedback_build_origin_filter`, { admin: true });
+
+export const setFeedbackBuildFilter = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/feature-flags/feedback_build_origin_filter`, {
+    method: "PUT", admin: true, body: JSON.stringify({ default_enabled: enabled }),
+  });
+
 export interface FeedbackTicket {
   id: string;
   kind: "feedback" | "bug" | "crash" | "error";
@@ -1854,6 +1865,8 @@ export interface FeedbackTicket {
   updated_at: number;
   attachment_count: number;
   comment_count: number;
+  /** Client-reported bundle classification, or null when separation is disabled. */
+  build_origin?: FeedbackBuildOrigin;
   /** Crash flavour for crash/error tickets (derived server-side); null otherwise. */
   crash_type?: CrashType | null;
 }
@@ -1894,6 +1907,7 @@ export const listFeedback = (
     versionCode?: number | undefined;
     signature?: string | undefined;
     crashType?: CrashType | undefined;
+    buildScope?: FeedbackBuildScope | undefined;
   },
 ) => {
   const params = new URLSearchParams();
@@ -1903,6 +1917,7 @@ export const listFeedback = (
   if (filters?.versionCode != null) params.set("version_code", String(filters.versionCode));
   if (filters?.signature) params.set("signature", filters.signature);
   if (filters?.crashType) params.set("crash_type", filters.crashType);
+  if (filters?.buildScope) params.set("build_scope", filters.buildScope);
   const qs = params.toString();
   return request<{ tickets: FeedbackTicket[] }>(
     `/api/apps/${appId}/feedback${qs ? `?${qs}` : ""}`,
@@ -2238,13 +2253,16 @@ export interface FeedbackStats {
   crashes_by_version: Array<{ version_name: string; version_code: number | null; n: number }>;
 }
 
-export const getFeedbackStats = (appId: string) =>
-  request<FeedbackStats>(`/api/apps/${appId}/feedback/stats`, { admin: true });
+export const getFeedbackStats = (appId: string, buildScope?: FeedbackBuildScope) => {
+  const query = buildScope ? `?build_scope=${buildScope}` : "";
+  return request<FeedbackStats>(`/api/apps/${appId}/feedback/stats${query}`, { admin: true });
+};
 
-export const listCrashGroups = (appId: string, kind?: string, crashType?: CrashType) => {
+export const listCrashGroups = (appId: string, kind?: string, crashType?: CrashType, buildScope?: FeedbackBuildScope) => {
   const params = new URLSearchParams();
   if (kind) params.set("kind", kind);
   if (crashType) params.set("crash_type", crashType);
+  if (buildScope) params.set("build_scope", buildScope);
   const qs = params.toString();
   return request<{ groups: CrashGroup[] }>(
     `/api/apps/${appId}/feedback/crash-groups${qs ? `?${qs}` : ""}`,
