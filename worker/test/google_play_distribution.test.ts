@@ -721,6 +721,25 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
   };
 }
 
+function seedPriorMappingReceipt(
+  harness: Awaited<ReturnType<typeof readyRelease>>,
+  mapping: Uint8Array,
+  changes: { row?: Record<string, unknown>; mapping?: Record<string, unknown>; result?: string } = {},
+) {
+  const acceptance = harness.sqlite.prepare("SELECT * FROM release_receipts WHERE kind='acceptance'").get() as Record<string, unknown>;
+  const row = { ...acceptance, id: "prior-receipt", kind: "play-promotion", verdict: "success", action: "promote", ...changes.row };
+  const payload = { result: { status: changes.result ?? "success" }, mapping: {
+    present: true, uploaded: true, sha256: sha(mapping), size_bytes: mapping.byteLength,
+    provider_ack: "deobfuscationFile.symbolType=proguard", ...changes.mapping,
+  } };
+  harness.sqlite.prepare(`INSERT INTO release_receipts
+    (id, app_id, release_id, kind, verdict, artifact_id, artifact_sha256, artifact_size,
+     package_name, source_commit, version_code, action, track, play_edit_id, payload_json, created_by, created_at)
+    VALUES (@id, @app_id, @release_id, @kind, @verdict, @artifact_id, @artifact_sha256, @artifact_size,
+     @package_name, @source_commit, @version_code, @action, @track, @play_edit_id, @payload_json, @created_by, @created_at)`)
+    .run({ ...row, track: "internal", play_edit_id: "prior-edit", payload_json: JSON.stringify(payload) });
+}
+
 function googlePlayBindingHarness(role: "admin" | "publisher", withKeyring = true) {
   const sqlite = fullDatabase();
   const now = Date.now();
@@ -1059,6 +1078,130 @@ describe("Play promotion route", () => {
       present: true, sent: ["zh-CN", "en-US", "ja-JP"], skipped: [], requested: ["zh-CN", "en-US", "ja-JP"], chars: { "en-US": 23 },
     });
     expect(payload.release_notes.reason).toBeUndefined();
+  });
+
+  it("uses an exact prior mapping acknowledgement and records it as historical on the next promotion", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream, _symbolsStream, mappingStream) => {
+        await new Response(stream).arrayBuffer();
+        expect(sha(new Uint8Array(await new Response(mappingStream).arrayBuffer()))).toBe(sha(mapping));
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: input.packageName, version_code: input.versionCode,
+          track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
+          deobfuscation_files: [{ symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: true }],
+        } };
+      },
+    });
+    const first = await promoteInternal(harness);
+    expect(first.status).toBe(200);
+    const firstReceipt = (await first.json() as { receipt_id: string }).receipt_id;
+    const reads: string[] = [];
+    const get = harness.bucket.get.bind(harness.bucket);
+    harness.bucket.get = async (key) => { reads.push(key); return get(key); };
+    let seenMapping: unknown = "unset";
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promoteWithPriorMapping: async (input, symbolsStream) => {
+        seenMapping = input.mapping;
+        expect(symbolsStream).toBeNull();
+        return { ok: true, value: {
+          edit_id: "edit-2", package_name: input.packageName, version_code: input.versionCode,
+          track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
+          bundle_uploaded: false, confirmed_existing_bundle: true,
+        } };
+      },
+    });
+    const second = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "closed", expected_revision: 2, approval: { note: "promote" } }),
+    });
+    expect(second.status).toBe(200);
+    expect(seenMapping).toBeNull();
+    expect(reads.some((key) => key.endsWith("mapping.txt"))).toBe(false);
+    expect(reads.length).toBe(1); // the AAB is still independently hashed
+    const secondId = (await second.json() as { receipt_id: string }).receipt_id;
+    const row = harness.sqlite.prepare("SELECT payload_json FROM release_receipts WHERE id=?").get(secondId) as { payload_json: string };
+    expect(JSON.parse(row.payload_json).mapping).toEqual({
+      present: true, sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: false,
+      attempt: "skipped_prior_receipt", prior_receipt_id: firstReceipt, provider_ack: null, post_commit_get: false,
+    });
+  });
+
+  it.each([
+    ["mapping hash", { mapping: { sha256: "a".repeat(64) } }],
+    ["mapping size", { mapping: { size_bytes: 1 } }],
+    ["unacknowledged", { mapping: { uploaded: false, provider_ack: null } }],
+    ["wrong acknowledgement", { mapping: { provider_ack: "deobfuscationFile.symbolType=nativeCode" } }],
+    ["AAB hash", { row: { artifact_sha256: "a".repeat(64) } }],
+    ["AAB size", { row: { artifact_size: 1 } }],
+    ["package", { row: { package_name: "other.example" } }],
+    ["source commit", { row: { source_commit: "d".repeat(40) } }],
+    ["version", { row: { version_code: 43 } }],
+    ["action", { row: { action: "send-for-review" } }],
+    ["failed receipt", { row: { verdict: "failed-closed" }, result: "failed-closed" }],
+  ])("uploads normally when the prior receipt has a different %s", async (_label, changes) => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    seedPriorMappingReceipt(harness, mapping, changes);
+    let uploaded: string | null = null;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (input, stream, _symbolsStream, mappingStream) => {
+        await new Response(stream).arrayBuffer();
+        uploaded = sha(new Uint8Array(await new Response(mappingStream).arrayBuffer()));
+        return { ok: true, value: {
+          edit_id: "edit-1", package_name: input.packageName, version_code: input.versionCode,
+          track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100,
+          deobfuscation_files: [{ symbol_type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, uploaded: true }],
+        } };
+      },
+    });
+    expect((await promoteInternal(harness)).status).toBe(200);
+    expect(uploaded).toBe(sha(mapping));
+  });
+
+  it("fails instead of falling back to a mapping-less upload on an older adapter", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    seedPriorMappingReceipt(harness, mapping);
+    let normalCalls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({ promote: async () => { normalCalls++; throw new Error("unexpected"); } });
+    const response = await promoteInternal(harness);
+    expect(response.status).toBe(502);
+    expect(normalCalls).toBe(0);
+    expect(harness.sqlite.prepare("SELECT count(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+    expect(harness.sqlite.prepare("SELECT count(*) AS n FROM release_receipts WHERE verdict='failed-closed'").get()).toEqual({ n: 1 });
+  });
+
+  it("verifies the local AAB before calling the prior-mapping RPC", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    seedPriorMappingReceipt(harness, mapping);
+    const aab = harness.sqlite.prepare("SELECT r2_key FROM build_assets WHERE id=?").get(harness.aabAsset.asset_id) as { r2_key: string };
+    harness.bucket.objects.set(aab.r2_key, new Uint8Array(harness.aab.byteLength).fill(17));
+    let calls = 0;
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promoteWithPriorMapping: async () => { calls++; throw new Error("must not call Play"); },
+    });
+    const response = await promoteInternal(harness);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "gate_failed", gate: "immutable_binding" } });
+    expect(calls).toBe(0);
+  });
+
+  it("does not record success if the adapter fails to confirm the existing bundle", async () => {
+    const harness = await readyRelease();
+    const mapping = attachSealedMapping(harness);
+    seedPriorMappingReceipt(harness, mapping);
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promoteWithPriorMapping: async (input) => ({ ok: true, value: {
+        edit_id: "edit-1", package_name: input.packageName, version_code: input.versionCode,
+        track: input.handsTrack, sha256: input.expectedSha256, rollout_percent: 100, bundle_uploaded: false,
+      } }),
+    });
+    const response = await promoteInternal(harness);
+    expect(response.status).toBe(502);
+    expect(harness.sqlite.prepare("SELECT count(*) AS n FROM release_receipts WHERE verdict='failed-closed'").get()).toEqual({ n: 1 });
   });
 
   it("records a mapping Play refused on an existing bundle as attempt=rejected, keeping only identifier fields", async () => {

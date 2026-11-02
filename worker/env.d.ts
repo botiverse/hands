@@ -146,10 +146,17 @@ interface GooglePlayAdapterService {
     }>;
     /** false when Play already held this exact bundle and only the track was edited. */
     bundle_uploaded?: boolean;
+    /** Returned only by promoteWithPriorMapping after an exact Play bundle check. */
+    confirmed_existing_bundle?: boolean;
     release_notes_languages?: string[];
     /** true only when the adapter committed with changesNotSentForReview; older adapters omit it. */
     changes_not_sent_for_review?: boolean;
   }>>;
+  /** Separate RPC rejects missing/mismatched bundles rather than uploading without mapping. */
+  promoteWithPriorMapping?(
+    input: Parameters<GooglePlayAdapterService["promote"]>[0],
+    symbolsBody: ReadableStream<Uint8Array> | null,
+  ): ReturnType<GooglePlayAdapterService["promote"]>;
   /** Commit an empty edit without changesNotSentForReview (ERROR_IF_IN_REVIEW) after checking bundle + track. */
   sendForReview(input: GooglePlayBindingInput & {
     handsTrack: keyof GooglePlayTracks;

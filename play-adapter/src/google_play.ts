@@ -972,6 +972,10 @@ export class GooglePlayClient {
       // the whole operation. Check every track first and skip the upload when this
       // versionCode is already present anywhere.
       bundleUploaded = !(await this.bundleAlreadyOnPlay(request.packageName, editId, request));
+      if (request.requireExistingBundle && bundleUploaded) {
+        throw new PlayAdapterError(409, "play_bundle_not_on_play",
+          "Google Play does not hold the accepted bundle; refusing to omit its mapping");
+      }
     } catch (error) {
       await this.cleanupOrThrow(request.packageName, editId, error);
     }
@@ -1014,6 +1018,7 @@ export class GooglePlayClient {
       // false when Google already held this exact versionCode+sha256 and only the
       // track was edited, so a caller can tell a real upload from a re-promote.
       bundle_uploaded: bundleUploaded,
+      ...(request.requireExistingBundle ? { confirmed_existing_bundle: true as const } : {}),
       track: request.handsTrack,
       sha256: request.expectedSha256,
       rollout_percent: request.rolloutPercent,

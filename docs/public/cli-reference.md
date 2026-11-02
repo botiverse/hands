@@ -243,6 +243,13 @@ with `changes_not_sent_for_review: true`, and
 `POST /api/apps/:appId/releases/:releaseId/distributions/play/send-for-review`
 with `{track, expected_revision, approval: {note}}` (see OpenAPI).
 
+On a later promotion of the same release, Hands can omit a mapping upload when
+an earlier successful receipt confirms the exact file and Play still holds the
+same AAB. The new receipt cites the earlier receipt as historical evidence; Play
+does not offer a mapping readback, so this does not verify its current contents.
+Without that evidence, Hands continues to attempt the upload. To explicitly
+replace the mapping, use `play-upload-symbols` below.
+
 ## Google Play: backfill mapping / native symbols for a live version
 
 `hands releases play-promote` only accepts a versionCode above the track
