@@ -164,7 +164,7 @@ unverified rather than calling the build published or sent.
 ## One-time setup (app admin)
 
 Store the App Store Connect API credential in Hands: console → App →
-Settings → TestFlight (`PUT /api/apps/{app_id}/asc-credentials`). Generate the
+Integrations → TestFlight (`PUT /api/apps/{app_id}/asc-credentials`). Generate the
 key in App Store Connect → Users and Access → Integrations (App Manager role);
 you need the Key ID, Issuer ID, and the `.p8` file. The credential is
 encrypted at rest and can be verified without exposing it

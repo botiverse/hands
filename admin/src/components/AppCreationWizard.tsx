@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -192,7 +193,7 @@ export function AppCreationWizard({
       const patch = {
         kind: "error",
         title: t("Failed to create app", "创建应用失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       } as const;
       if (createToastId.current !== null) toast.update(createToastId.current, patch);
       else toast.show(patch);
@@ -265,6 +266,7 @@ export function AppCreationWizard({
               <div>
                 <Label>{t("Platform *", "平台 *")}</Label>
                 <Select
+                  items={{ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") }}
                   value={platform}
                   onValueChange={(value) => setPlatform(value as AppPlatform)}
                 >
@@ -276,7 +278,7 @@ export function AppCreationWizard({
                     <SelectList>
                     {APP_PLATFORMS.map((value) => (
                       <SelectItem key={value} value={value}>
-                        {value}
+                        {({ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") })[value]}
                       </SelectItem>
                     ))}
                   </SelectList>

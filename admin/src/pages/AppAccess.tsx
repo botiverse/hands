@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * AppAccess — per-app member management.
  *
@@ -35,6 +36,8 @@ import {
   type App,
 } from "../lib/api";
 import { appAccessMessage } from "../lib/appAccessMessages";
+import { PERMISSION_ZH } from "../lib/permissionMessages";
+import { useLocale, useText } from "../lib/locale";
 import {
   collidingPrincipalLabels,
   needsServerBadge,
@@ -75,7 +78,12 @@ import {
   Textarea,
 } from "raft-ui";
 
+const ROLE_ZH: Record<string, string> = { owner: "所有者", admin: "管理员", publisher: "发布者", viewer: "查看者", member: "成员" };
+const roleText = (role: string, t: (english: string, chinese: string) => string) => t(role, ROLE_ZH[role] ?? role);
+
 export function AppAccess({ appId }: { appId: string }) {
+  const t = useText();
+  const { locale } = useLocale();
   const [showAddServer, setShowAddServer] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showAddDeployToken, setShowAddDeployToken] = useState(false);
@@ -113,16 +121,16 @@ export function AppAccess({ appId }: { appId: string }) {
   return (
     <section aria-labelledby="app-access-heading" className="space-y-4">
       <header className="space-y-2">
-        <h2 id="app-access-heading" className="text-lg font-semibold">{appAccessMessage("title")}</h2>
-        <p className="text-sm text-foreground">{appAccessMessage("description")}</p>
+        <h2 id="app-access-heading" className="text-lg font-semibold">{appAccessMessage("title", locale)}</h2>
+        <p className="text-sm text-foreground">{appAccessMessage("description", locale)}</p>
         <div className="text-xs text-foreground-muted">
-          Your current access: <span className="font-mono">{currentAccess ?? "—"}</span>{" "}
-          {isOwningOrg && <span>(inherited from owning org)</span>}
+          {t("Your current access:", "您的当前权限：")} <span className="font-mono">{currentAccess ? roleText(currentAccess, t) : "—"}</span>{" "}
+          {isOwningOrg && <span>{t("(inherited from owning org)", "（继承自所属组织）")}</span>}
           {!isOwningOrg && currentServerGrantRole && (
-            <span>(server visibility)</span>
+            <span>{t("(server visibility)", "（服务器可见权限）")}</span>
           )}
-          {!isOwningOrg && currentAppRole && <span>(direct app member)</span>}{" "}
-          {canManage ? "(can manage access)" : "(read-only)"}
+          {!isOwningOrg && currentAppRole && <span>{t("(direct app member)", "（应用直接成员）")}</span>}{" "}
+          {canManage ? t("(can manage access)", "（可管理权限）") : t("(read-only)", "（只读）")}
         </div>
       </header>
       <AppServerGrantList
@@ -192,6 +200,7 @@ function AppServerGrantList({
   currentServerId: string | null;
   currentServerSlug: string | null;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const grants = useQuery({
@@ -203,14 +212,14 @@ function AppServerGrantList({
   const remove = useMutation({
     mutationFn: (grantKey: string) => removeAppServerGrant(appId, grantKey),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Server grant removed" });
+      toast.show({ kind: "success", title: t("Server grant removed", "服务器授权已移除") });
       qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Remove failed",
-        description: (e as Error).message,
+        title: t("Remove failed", "移除失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -225,34 +234,34 @@ function AppServerGrantList({
         </div>
       )}
       {grants.error && (
-        <p className="text-danger">Failed: {(grants.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(grants.error)}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Server access</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Server access", "服务器访问权限")}</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {visibleRowCount} server{visibleRowCount === 1 ? "" : "s"}
+            {t(`${visibleRowCount} server${visibleRowCount === 1 ? "" : "s"}`, `${visibleRowCount} 个服务器`)}
           </span>
           {canManage && (
             <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-              + Add
+              {t("+ Add", "+ 添加")}
             </Button>
           )}
         </div>
       </div>
       {grants.data && visibleRowCount === 0 && (
         <EmptyState>
-          <EmptyStateTitle>No server-level access rows visible.</EmptyStateTitle>
+          <EmptyStateTitle>{t("No server-level access rows visible.", "没有可见的服务器级授权记录。")}</EmptyStateTitle>
         </EmptyState>
       )}
       {grants.data && visibleRowCount > 0 && (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">Server</th>
-              <th className="font-normal py-1 pr-2">Access</th>
-              <th className="font-normal py-1 pr-2">Source</th>
-              {canManage && <th className="font-normal py-1">Actions</th>}
+              <th className="font-normal py-1 pr-2">{t("Server", "服务器")}</th>
+              <th className="font-normal py-1 pr-2">{t("Access", "权限")}</th>
+              <th className="font-normal py-1 pr-2">{t("Source", "来源")}</th>
+              {canManage && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -260,18 +269,18 @@ function AppServerGrantList({
               <tr className="border-b border-line-hairline bg-layer-canvas-muted/60">
                 <td className="py-2 pr-2">
                   <div className="font-medium">
-                    {currentServerSlug || app?.org_id || "Current server"}
-                    <span className="ml-1 text-xs text-foreground-muted">(current)</span>
+                    {currentServerSlug || app?.org_id || t("Current server", "当前服务器")}
+                    <span className="ml-1 text-xs text-foreground-muted">{t("(current)", "（当前）")}</span>
                   </div>
                 </td>
                 <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">Owner server</span>
+                  <span className="text-xs font-medium">{t("Owner server", "所属服务器")}</span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  Owning org
+                  {t("Owning org", "所属组织")}
                 </td>
                 {canManage && (
-                  <td className="py-2 text-xs text-foreground-hint">Inherited</td>
+                  <td className="py-2 text-xs text-foreground-hint">{t("Inherited", "继承")}</td>
                 )}
               </tr>
             )}
@@ -285,21 +294,21 @@ function AppServerGrantList({
                     {grant.server_slug || grant.server_id}
                     {(grant.server_id === currentServerId ||
                       (!!grant.server_slug && grant.server_slug === currentServerSlug)) && (
-                      <span className="ml-1 text-xs text-foreground-muted">(current)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">{t("(current)", "（当前）")}</span>
                     )}
                   </div>
                 </td>
                 <td className="py-2 pr-2">
                   <span className="text-xs font-medium">
                     {grant.access_model === "owner_server"
-                      ? "Owner server"
-                      : `Legacy ${grant.app_role}`}
+                      ? t("Owner server", "所属服务器")
+                      : t(`Legacy ${grant.app_role}`, `旧版权限：${roleText(grant.app_role, t)}`)}
                   </span>
                 </td>
                 <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {grant.access_model === "owner_server"
-                    ? "Additional owner"
-                    : "Existing role preserved; remove and re-add to adopt owner-server access"}
+                    ? t("Additional owner", "附加所属服务器")
+                    : t("Existing role preserved; remove and re-add to adopt owner-server access", "保留现有角色；移除并重新添加后可使用所属服务器权限")}
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
@@ -310,7 +319,7 @@ function AppServerGrantList({
                       onClick={() => {
                         if (
                           confirm(
-                            `Remove server grant for ${grant.server_slug || grant.server_id}?`,
+                            t(`Remove server grant for ${grant.server_slug || grant.server_id}?`, `移除服务器 ${grant.server_slug || grant.server_id} 的授权？`),
                           )
                         ) {
                           remove.mutate(grant.id);
@@ -318,7 +327,7 @@ function AppServerGrantList({
                       }}
                       disabled={remove.isPending}
                     >
-                      Remove
+                      {t("Remove", "移除")}
                     </Button>
                   </td>
                 )}
@@ -329,7 +338,7 @@ function AppServerGrantList({
       )}
       {grants.data && isOwningOrg && rows.length === 0 && (
         <p className="text-xs text-foreground-muted mt-2">
-          No additional owner servers yet. The current server owns this app.
+          {t("No additional owner servers yet. The current server owns this app.", "暂无附加所属服务器。当前服务器拥有此应用。")}
         </p>
       )}
     </section>
@@ -345,6 +354,7 @@ function AddAppServerGrantDialog({
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [serverId, setServerId] = useState("");
@@ -357,7 +367,7 @@ function AddAppServerGrantDialog({
         server_slug: serverSlug.trim() || null,
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Server grant added" });
+      toast.show({ kind: "success", title: t("Server grant added", "服务器授权已添加") });
       qc.invalidateQueries({ queryKey: ["app-server-grants", appId] });
       setServerId("");
       setServerSlug("");
@@ -366,8 +376,8 @@ function AddAppServerGrantDialog({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Add failed",
-        description: (e as Error).message,
+        title: t("Add failed", "添加失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -384,7 +394,7 @@ function AddAppServerGrantDialog({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Close"
+              aria-label={t("Close", "关闭")}
               className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
@@ -392,7 +402,7 @@ function AddAppServerGrantDialog({
           ×
         </DialogClose>
         <DialogHeader>
-          <DialogTitle>Add Raft server</DialogTitle>
+          <DialogTitle>{t("Add Raft server", "添加 Raft 服务器")}</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <form
@@ -401,7 +411,7 @@ function AddAppServerGrantDialog({
             onSubmit={(e) => {
               e.preventDefault();
               if (!confirm(
-                `Make ${serverSlug.trim() || serverId.trim()} an owner server for this app? Its members receive the same role-based access as the creating server.`,
+                t(`Make ${serverSlug.trim() || serverId.trim()} an owner server for this app? Its members receive the same role-based access as the creating server.`, `将 ${serverSlug.trim() || serverId.trim()} 设为此应用的所属服务器？其成员将获得与创建服务器相同的基于角色的权限。`),
               )) {
                 return;
               }
@@ -409,32 +419,30 @@ function AddAppServerGrantDialog({
             }}
           >
             <div>
-              <Label>Server slug</Label>
+              <Label>{t("Server slug", "服务器标识")}</Label>
               <Input
                 value={serverSlug}
                 onChange={(e) => setServerSlug(e.target.value)}
-                placeholder="server slug"
+                placeholder={t("server slug", "服务器标识")}
                 autoFocus
               />
             </div>
             <div>
-              <Label>Server ID</Label>
+              <Label>{t("Server ID", "服务器 ID")}</Label>
               <Input
                 value={serverId}
                 onChange={(e) => setServerId(e.target.value)}
-                placeholder="optional"
+                placeholder={t("optional", "可选")}
               />
             </div>
             <p className="text-xs text-foreground-muted">
-              An additional owner server uses the same role mapping as the server that created the app:
-              server owners/admins can publish releases and manage access; members keep the same
-              bounded member actions as on the creating server; viewers have read-only access.
+              {t("An additional owner server uses the same role mapping as the server that created the app: server owners/admins can publish releases and manage access; members keep the same bounded member actions as on the creating server; viewers have read-only access.", "附加的所属服务器使用与创建应用的服务器相同的角色映射：服务器所有者和管理员可发布版本并管理权限；成员拥有与创建服务器相同的有限操作权限；查看者拥有只读权限。")}
             </p>
           </form>
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" type="button" onClick={onClose}>
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
           <Button
             type="submit"
@@ -442,7 +450,7 @@ function AddAppServerGrantDialog({
             variant="primary"
             disabled={(!serverId.trim() && !serverSlug.trim()) || add.isPending}
           >
-            {add.isPending ? "Adding…" : "Add"}
+            {add.isPending ? t("Adding…", "添加中…") : t("Add", "添加")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -461,6 +469,7 @@ function AppMemberList({
   currentAccountId: string | null;
   onAdd: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [principalFilter, setPrincipalFilter] = useState<"all" | "human" | "agent">("all");
@@ -483,28 +492,28 @@ function AppMemberList({
     mutationFn: ({ accountId, role }: { accountId: string; role: AppMember["app_role"] }) =>
       updateAppMember(appId, accountId, role),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "App member role updated" });
+      toast.show({ kind: "success", title: t("App member role updated", "应用成员角色已更新") });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: t("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
 
   const remove = useMutation({
     mutationFn: (accountId: string) => removeAppMember(appId, accountId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "App member removed" });
+      toast.show({ kind: "success", title: t("App member removed", "应用成员已移除") });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Remove failed",
-        description: (e as Error).message,
+        title: t("Remove failed", "移除失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -517,13 +526,13 @@ function AppMemberList({
         </div>
       )}
       {members.error && (
-        <p className="text-danger">Failed: {(members.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(members.error)}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Direct app members</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Direct app members", "应用直接成员")}</h3>
         <div className="flex items-center gap-2">
           <Select
-            items={{ all: "All types", human: "Humans only", agent: "Agents only" }}
+            items={{ all: t("All types", "全部类型"), human: t("Humans only", "仅用户"), agent: t("Agents only", "仅智能体") }}
             value={principalFilter}
             onValueChange={(v) =>
               setPrincipalFilter(v as "all" | "human" | "agent")
@@ -538,25 +547,25 @@ function AppMemberList({
                   </SelectTrigger>
                 }
               />
-              <TooltipContent>Filter by principal type</TooltipContent>
+              <TooltipContent>{t("Filter by principal type", "按身份类型筛选")}</TooltipContent>
             </Tooltip>
             <SelectContent>
               <SelectList>
-              <SelectItem value="all">All types</SelectItem>
-              <SelectItem value="human">Humans only</SelectItem>
-              <SelectItem value="agent">Agents only</SelectItem>
+              <SelectItem value="all">{t("All types", "全部类型")}</SelectItem>
+              <SelectItem value="human">{t("Humans only", "仅用户")}</SelectItem>
+              <SelectItem value="agent">{t("Agents only", "仅智能体")}</SelectItem>
             </SelectList>
             </SelectContent>
           </Select>
           <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
+            {t(`${filteredMembers.length} member${filteredMembers.length === 1 ? "" : "s"}`, `${filteredMembers.length} 位成员`)}
             {principalFilter !== "all" && (
-              <span className="ml-1">({principalFilter})</span>
+              <span className="ml-1">({t(principalFilter, principalFilter === "human" ? "用户" : "智能体")})</span>
             )}
           </span>
           {canManage && (
             <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-              + Add
+              {t("+ Add", "+ 添加")}
             </Button>
           )}
         </div>
@@ -565,8 +574,8 @@ function AppMemberList({
         <EmptyState>
           <EmptyStateTitle>
             {principalFilter === "all"
-              ? "No direct app members yet. Org members may still have inherited access."
-              : `No ${principalFilter} app members.`}
+              ? t("No direct app members yet. Org members may still have inherited access.", "暂无应用直接成员。组织成员仍可能拥有继承的权限。")
+              : t(`No ${principalFilter} app members.`, `暂无${principalFilter === "human" ? "用户" : "智能体"}应用成员。`)}
           </EmptyStateTitle>
         </EmptyState>
       )}
@@ -574,12 +583,12 @@ function AppMemberList({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">Principal</th>
-              <th className="font-normal py-1 pr-2">Type</th>
-              <th className="font-normal py-1 pr-2">App role</th>
-              <th className="font-normal py-1 pr-2">Joined</th>
-              <th className="font-normal py-1 pr-2">Last login</th>
-              {canManage && <th className="font-normal py-1">Actions</th>}
+              <th className="font-normal py-1 pr-2">{t("Principal", "身份")}</th>
+              <th className="font-normal py-1 pr-2">{t("Type", "类型")}</th>
+              <th className="font-normal py-1 pr-2">{t("App role", "应用角色")}</th>
+              <th className="font-normal py-1 pr-2">{t("Joined", "加入日期")}</th>
+              <th className="font-normal py-1 pr-2">{t("Last login", "上次登录")}</th>
+              {canManage && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -597,7 +606,7 @@ function AppMemberList({
                       </Badge>
                     )}
                     {m.account_id === currentAccountId && (
-                      <span className="ml-1 text-xs text-foreground-muted">(you)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">{t("(you)", "（您）")}</span>
                     )}
                   </div>
                   <div className="text-xs text-foreground-muted">
@@ -612,15 +621,15 @@ function AppMemberList({
                 </td>
                 <td className="py-2 pr-2">
                   {m.principal_type === "agent" ? (
-                    <Badge variant="accent">agent</Badge>
+                    <Badge variant="accent">{t("agent", "智能体")}</Badge>
                   ) : (
-                    <span className="text-xs">human</span>
+                    <span className="text-xs">{t("human", "用户")}</span>
                   )}
                 </td>
                 <td className="py-2 pr-2">
                   {canManage && m.account_id !== currentAccountId ? (
                     <Select
-                      items={{ admin: "admin", publisher: "publisher", viewer: "viewer" }}
+                      items={{ admin: roleText("admin", t), publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
                       value={m.app_role}
                       onValueChange={(v) =>
                         update.mutate({
@@ -638,14 +647,14 @@ function AppMemberList({
                         <SelectList>
                         {(["admin", "publisher", "viewer"] as const).map((r) => (
                           <SelectItem key={r} value={r}>
-                            {r}
+                            {roleText(r, t)}
                           </SelectItem>
                         ))}
                       </SelectList>
                       </SelectContent>
                     </Select>
                   ) : (
-                    <span className="text-xs font-medium">{m.app_role}</span>
+                    <span className="text-xs font-medium">{roleText(m.app_role, t)}</span>
                   )}
                 </td>
                 <td className="py-2 pr-2 text-xs text-foreground-muted">
@@ -666,7 +675,7 @@ function AppMemberList({
                         onClick={() => {
                           if (
                             confirm(
-                              `Remove ${m.display_name} from this app?`,
+                              t(`Remove ${m.display_name} from this app?`, `将 ${m.display_name} 从此应用移除？`),
                             )
                           ) {
                             remove.mutate(m.account_id);
@@ -674,7 +683,7 @@ function AppMemberList({
                         }}
                         disabled={remove.isPending}
                       >
-                        Remove
+                        {t("Remove", "移除")}
                       </Button>
                     )}
                   </td>
@@ -695,6 +704,7 @@ function AppDeployTokenList({
   appId: string;
   onAdd: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const tokens = useQuery({
@@ -708,14 +718,14 @@ function AppDeployTokenList({
   const revoke = useMutation({
     mutationFn: (tokenId: string) => revokeAppDeployToken(appId, tokenId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Deploy token revoked" });
+      toast.show({ kind: "success", title: t("Deploy token revoked", "部署令牌已撤销") });
       qc.invalidateQueries({ queryKey: ["app-deploy-tokens", appId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Revoke failed",
-        description: (e as Error).message,
+        title: t("Revoke failed", "撤销失败"),
+        description: errorMessage(e),
       }),
   });
   const rows = tokens.data?.deploy_tokens ?? [];
@@ -729,34 +739,34 @@ function AppDeployTokenList({
         </div>
       )}
       {tokens.error && (
-        <p className="text-danger">Failed: {(tokens.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(tokens.error)}</p>
       )}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Deploy tokens</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Deploy tokens", "部署令牌")}</h3>
         <div className="flex items-center gap-2">
           <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {rows.length} token{rows.length === 1 ? "" : "s"}
+            {t(`${rows.length} token${rows.length === 1 ? "" : "s"}`, `${rows.length} 个令牌`)}
           </span>
           <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-            + Add
+            {t("+ Add", "+ 添加")}
           </Button>
         </div>
       </div>
       {tokens.data && rows.length === 0 && (
         <EmptyState>
-          <EmptyStateTitle>No deploy tokens yet.</EmptyStateTitle>
+          <EmptyStateTitle>{t("No deploy tokens yet.", "暂无部署令牌。")}</EmptyStateTitle>
         </EmptyState>
       )}
       {tokens.data && rows.length > 0 && (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">Name</th>
-              <th className="font-normal py-1 pr-2">Prefix</th>
-              <th className="font-normal py-1 pr-2">Grant</th>
-              <th className="font-normal py-1 pr-2">Expires</th>
-              <th className="font-normal py-1 pr-2">Last used</th>
-              <th className="font-normal py-1">Actions</th>
+              <th className="font-normal py-1 pr-2">{t("Name", "名称")}</th>
+              <th className="font-normal py-1 pr-2">{t("Prefix", "前缀")}</th>
+              <th className="font-normal py-1 pr-2">{t("Grant", "授权")}</th>
+              <th className="font-normal py-1 pr-2">{t("Expires", "过期时间")}</th>
+              <th className="font-normal py-1 pr-2">{t("Last used", "上次使用")}</th>
+              <th className="font-normal py-1">{t("Actions", "操作")}</th>
             </tr>
           </thead>
           <tbody>
@@ -771,7 +781,7 @@ function AppDeployTokenList({
                 <td className="py-2 pr-2">
                   <div className="font-medium">{token.name}</div>
                   <div className="text-xs text-foreground-muted">
-                    by {token.created_by_actor}
+                    {t(`by ${token.created_by_actor}`, `由 ${token.created_by_actor} 创建`)}
                   </div>
                 </td>
                 <td className="py-2 pr-2">
@@ -783,11 +793,11 @@ function AppDeployTokenList({
                   <div className="max-w-sm space-y-1">
                     <div className="flex flex-wrap gap-1 text-xs">
                       <span className="rounded bg-foreground-strong px-1.5 py-0.5 font-medium text-foreground-inverse">
-                        {display.roleLabel}
+                        {t(display.roleLabel, token.app_role ? `角色 · ${roleText(token.app_role, t)}` : "仅自定义权限")}
                       </span>
                       {!display.valid && (
                         <span className="rounded bg-danger-soft px-1.5 py-0.5 font-medium text-danger">
-                          Invalid grant
+                          {t("Invalid grant", "授权无效")}
                         </span>
                       )}
                     </div>
@@ -800,7 +810,7 @@ function AppDeployTokenList({
                             ? "rounded border border-warning bg-warning-soft px-1.5 py-0.5 text-warning-strong"
                             : "rounded border border-line-muted bg-layer-canvas-muted px-1.5 py-0.5 text-foreground"}
                         >
-                          {label}{extra ? " · Extra" : ""}
+                          {t(label, PERMISSION_ZH[permission]?.label ?? label)}{extra ? t(" · Extra", " · 额外权限") : ""}
                         </span>
                       ))}
                       {display.permissions.length > shownPermissions.length && (
@@ -814,7 +824,7 @@ function AppDeployTokenList({
                 <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {token.expires_at
                     ? new Date(token.expires_at).toISOString().slice(0, 10)
-                    : "Never"}
+                    : t("Never", "永不过期")}
                 </td>
                 <td className="py-2 pr-2 text-xs text-foreground-muted">
                   {token.last_used_at
@@ -827,13 +837,13 @@ function AppDeployTokenList({
                     size="sm"
                     className="text-danger"
                     onClick={() => {
-                      if (confirm(`Revoke deploy token ${token.name}?`)) {
+                      if (confirm(t(`Revoke deploy token ${token.name}?`, `撤销部署令牌 ${token.name}？`))) {
                         revoke.mutate(token.id);
                       }
                     }}
                     disabled={revoke.isPending}
                   >
-                    Revoke
+                    {t("Revoke", "撤销")}
                   </Button>
                 </td>
                 </tr>
@@ -843,8 +853,7 @@ function AppDeployTokenList({
         </table>
       )}
       <p className="text-xs text-foreground-muted mt-2">
-        Tokens are app-scoped bearer credentials for CI. The raw token is only
-        shown once after creation.
+        {t("Tokens are app-scoped bearer credentials for CI. The raw token is only shown once after creation.", "令牌是供 CI 使用、作用范围限于此应用的持有者凭据。原始令牌创建后只显示一次。")}
       </p>
     </section>
   );
@@ -859,6 +868,7 @@ function AddAppDeployTokenDialog({
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const permissionModel = useQuery({
@@ -888,15 +898,15 @@ function AddAppDeployTokenDialog({
         expires_at: expiresAt(),
       }),
     onSuccess: (data) => {
-      toast.show({ kind: "success", title: "Deploy token created" });
+      toast.show({ kind: "success", title: t("Deploy token created", "部署令牌已创建") });
       qc.invalidateQueries({ queryKey: ["app-deploy-tokens", appId] });
       setCreatedToken(data.token);
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Create failed",
-        description: (e as Error).message,
+        title: t("Create failed", "创建失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -921,7 +931,7 @@ function AddAppDeployTokenDialog({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Close"
+              aria-label={t("Close", "关闭")}
               className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
@@ -929,13 +939,13 @@ function AddAppDeployTokenDialog({
           ×
         </DialogClose>
         <DialogHeader>
-          <DialogTitle>Add deploy token</DialogTitle>
+          <DialogTitle>{t("Add deploy token", "添加部署令牌")}</DialogTitle>
         </DialogHeader>
         {createdToken ? (
           <>
             <DialogBody className="space-y-3">
               <p className="text-sm text-foreground">
-                Copy this token now. It will not be shown again.
+                {t("Copy this token now. It will not be shown again.", "请立即复制此令牌，之后不会再次显示。")}
               </p>
               <Textarea
                 className="font-mono text-xs min-h-[96px]"
@@ -950,13 +960,13 @@ function AddAppDeployTokenDialog({
                 variant="outline"
                 onClick={() => {
                   navigator.clipboard?.writeText(createdToken).catch(() => {});
-                  toast.show({ kind: "success", title: "Token copied" });
+                  toast.show({ kind: "success", title: t("Token copied", "令牌已复制") });
                 }}
               >
-                Copy
+                {t("Copy", "复制")}
               </Button>
               <Button type="button" variant="primary" onClick={closeAfterCreate}>
-                Done
+                {t("Done", "完成")}
               </Button>
             </DialogFooter>
           </>
@@ -972,7 +982,7 @@ function AddAppDeployTokenDialog({
                 }}
               >
                 <div>
-                  <Label>Name</Label>
+                  <Label>{t("Name", "名称")}</Label>
                   <Input
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -982,9 +992,9 @@ function AddAppDeployTokenDialog({
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <Label>Role bundle</Label>
+                    <Label>{t("Role bundle", "角色权限集")}</Label>
                     <Select
-                      items={{ publisher: "publisher", viewer: "viewer", none: "No role" }}
+                      items={{ publisher: roleText("publisher", t), viewer: roleText("viewer", t), none: t("No role", "无角色") }}
                       value={role}
                       onValueChange={(v) => {
                         const nextRole = v as typeof role;
@@ -1005,17 +1015,17 @@ function AddAppDeployTokenDialog({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectList>
-                        <SelectItem value="publisher">publisher</SelectItem>
-                        <SelectItem value="viewer">viewer</SelectItem>
-                        <SelectItem value="none">No role (custom only)</SelectItem>
+                        <SelectItem value="publisher">{roleText("publisher", t)}</SelectItem>
+                        <SelectItem value="viewer">{roleText("viewer", t)}</SelectItem>
+                        <SelectItem value="none">{t("No role (custom only)", "无角色（仅自定义权限）")}</SelectItem>
                       </SelectList>
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
-                    <Label>Expires</Label>
+                    <Label>{t("Expires", "过期时间")}</Label>
                     <Select
-                      items={{ "30d": "30 days", "90d": "90 days", "365d": "1 year", never: "Never" }}
+                      items={{ "30d": t("30 days", "30 天"), "90d": t("90 days", "90 天"), "365d": t("1 year", "1 年"), never: t("Never", "永不过期") }}
                       value={expiry}
                       onValueChange={(v) =>
                         setExpiry(v as "30d" | "90d" | "365d" | "never")
@@ -1027,23 +1037,23 @@ function AddAppDeployTokenDialog({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectList>
-                        <SelectItem value="30d">30 days</SelectItem>
-                        <SelectItem value="90d">90 days</SelectItem>
-                        <SelectItem value="365d">1 year</SelectItem>
-                        <SelectItem value="never">Never</SelectItem>
+                        <SelectItem value="30d">{t("30 days", "30 天")}</SelectItem>
+                        <SelectItem value="90d">{t("90 days", "90 天")}</SelectItem>
+                        <SelectItem value="365d">{t("1 year", "1 年")}</SelectItem>
+                        <SelectItem value="never">{t("Never", "永不过期")}</SelectItem>
                       </SelectList>
                       </SelectContent>
                     </Select>
                   </div>
                 </div>
                 <div className="space-y-2 rounded-md border border-line-muted p-3">
-                  <div className="text-xs font-medium text-foreground-strong">Additional permissions</div>
+                  <div className="text-xs font-medium text-foreground-strong">{t("Additional permissions", "额外权限")}</div>
                   {permissionModel.isPending && (
-                    <p className="text-xs text-foreground-muted">Loading permission registry…</p>
+                    <p className="text-xs text-foreground-muted">{t("Loading permission registry…", "正在加载权限列表…")}</p>
                   )}
                   {permissionModel.isError && (
                     <p className="text-xs text-danger">
-                      Permission registry could not be loaded. Try again before creating a token.
+                      {t("Permission registry could not be loaded. Try again before creating a token.", "无法加载权限列表，请重试后再创建令牌。")}
                     </p>
                   )}
                   {(permissionModel.data?.permissions ?? []).map((permission) => (
@@ -1058,16 +1068,16 @@ function AddAppDeployTokenDialog({
                             : current.filter((value) => value !== permission.permission));
                         }}
                       />
-                      <span>{permission.description}</span>
+                      <span>{t(permission.description, PERMISSION_ZH[permission.permission]?.description ?? permission.description)}</span>
                       <code className="text-xs text-foreground-hint">{permission.permission}</code>
                       {grantPreview.bundled.includes(permission.permission) && (
-                        <span className="text-xs text-foreground-hint">Included by role</span>
+                        <span className="text-xs text-foreground-hint">{t("Included by role", "角色已包含")}</span>
                       )}
                     </label>
                   ))}
                 </div>
                 <div className="space-y-2 rounded-md bg-layer-canvas-muted p-3">
-                  <div className="text-xs font-medium text-foreground-strong">Effective permissions</div>
+                  <div className="text-xs font-medium text-foreground-strong">{t("Effective permissions", "实际生效的权限")}</div>
                   <div className="flex flex-wrap gap-1 text-xs">
                     {grantPreview.effective.map((permission) => {
                       const definition = permissionModel.data?.permissions.find(
@@ -1082,21 +1092,20 @@ function AddAppDeployTokenDialog({
                             ? "rounded border border-warning bg-warning-soft px-1.5 py-0.5 text-warning-strong"
                             : "rounded border border-line-muted bg-layer-panel px-1.5 py-0.5 text-foreground"}
                         >
-                          {definition?.label ?? permission}{extra ? " · Extra" : ""}
+                          {t(definition?.label ?? permission, PERMISSION_ZH[permission]?.label ?? definition?.label ?? permission)}{extra ? t(" · Extra", " · 额外权限") : ""}
                         </span>
                       );
                     })}
                   </div>
                 </div>
                 <p className="text-xs text-foreground-muted">
-                  The role expands to its permission bundle. Additional permissions
-                  are unioned into the token's effective permissions.
+                  {t("The role expands to its permission bundle. Additional permissions are unioned into the token's effective permissions.", "角色会展开为其权限集；额外权限与角色权限合并，构成令牌的实际权限。")}
                 </p>
               </form>
             </DialogBody>
             <DialogFooter>
               <Button variant="outline" type="button" onClick={onClose}>
-                Cancel
+                {t("Cancel", "取消")}
               </Button>
               <Button
                 type="submit"
@@ -1110,7 +1119,7 @@ function AddAppDeployTokenDialog({
                   || create.isPending
                 }
               >
-                {create.isPending ? "Creating…" : "Create"}
+                {create.isPending ? t("Creating…", "创建中…") : t("Create", "创建")}
               </Button>
             </DialogFooter>
           </>
@@ -1129,6 +1138,7 @@ function AddAppMemberDialog({
   onClose: () => void;
   onAdded: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
@@ -1158,7 +1168,7 @@ function AddAppMemberDialog({
         app_role: role,
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "App member added" });
+      toast.show({ kind: "success", title: t("App member added", "应用成员已添加") });
       qc.invalidateQueries({ queryKey: ["app-members", appId] });
       setSelectedAccount("");
       setAccountId("");
@@ -1167,8 +1177,8 @@ function AddAppMemberDialog({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Add failed",
-        description: (e as Error).message,
+        title: t("Add failed", "添加失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1207,7 +1217,7 @@ function AddAppMemberDialog({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Close"
+              aria-label={t("Close", "关闭")}
               className="absolute top-3 right-3 text-foreground-hint hover:text-foreground-strong"
             />
           }
@@ -1215,7 +1225,7 @@ function AddAppMemberDialog({
           ×
         </DialogClose>
         <DialogHeader>
-          <DialogTitle>Add direct app member</DialogTitle>
+          <DialogTitle>{t("Add direct app member", "添加应用直接成员")}</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <form
@@ -1228,10 +1238,10 @@ function AddAppMemberDialog({
           >
             {candidates.length > 0 ? (
               <div>
-                <Label>Choose someone from this organization</Label>
+                <Label>{t("Choose someone from this organization", "选择此组织中的成员")}</Label>
                 <Select
                   items={{
-                    "": "— select —",
+                    "": t("— select —", "— 请选择 —"),
                     ...Object.fromEntries(
                       candidates.map((m) => [m.account_id, candidateLabel(m)]),
                     ),
@@ -1248,7 +1258,7 @@ function AddAppMemberDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectList>
-                    <SelectItem value="">— select —</SelectItem>
+                    <SelectItem value="">{t("— select —", "— 请选择 —")}</SelectItem>
                     {candidates.map((m) => (
                       <SelectItem key={m.account_id} value={m.account_id}>
                         {candidateLabel(m)}
@@ -1260,34 +1270,31 @@ function AddAppMemberDialog({
               </div>
             ) : (
               <p className="text-xs text-foreground-muted">
-                Everyone in this organization already has access or is already listed as a
-                direct app member.
+                {t("Everyone in this organization already has access or is already listed as a direct app member.", "此组织中的成员都已拥有权限或已列为应用直接成员。")}
               </p>
             )}
             <div className="border-t border-line-muted pt-3">
-              <Label>Add one account from another Raft server</Label>
+              <Label>{t("Add one account from another Raft server", "添加其他 Raft 服务器的账号")}</Label>
               <Input
                 value={accountId}
                 onChange={(e) => {
                   setAccountId(e.target.value);
                   if (e.target.value.trim()) setSelectedAccount("");
                 }}
-                placeholder="Paste their Hands account ID"
+                placeholder={t("Paste their Hands account ID", "粘贴其 Hands 账号 ID")}
                 autoFocus={candidates.length === 0}
                 spellCheck={false}
                 className="font-mono"
               />
               <p className="mt-1 text-xs text-foreground-muted">
-                Ask that person or Agent to open Hands once, or run the Hands Raft integration
-                <span className="font-mono"> whoami</span> action, then send you the returned
-                account ID. Cross-server accounts are not listed here because servers are an
-                identity-isolation boundary.
+                {t("Ask that person or Agent to open Hands once, or run the Hands Raft integration", "请对方或智能体打开一次 Hands，或运行 Hands Raft 集成的")}
+                <span className="font-mono"> whoami</span> {t("action, then send you the returned account ID. Cross-server accounts are not listed here because servers are an identity-isolation boundary.", "操作，然后将返回的账号 ID 发给您。服务器是身份隔离边界，因此这里不会列出跨服务器账号。")}
               </p>
             </div>
             <div>
-              <Label>Role</Label>
+              <Label>{t("Role", "角色")}</Label>
               <Select
-                items={{ admin: "admin", publisher: "publisher", viewer: "viewer" }}
+                items={{ admin: roleText("admin", t), publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
                 value={role}
                 onValueChange={(v) => setRole(v as AppMember["app_role"])}
               >
@@ -1297,22 +1304,21 @@ function AddAppMemberDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectList>
-                  <SelectItem value="admin">admin</SelectItem>
-                  <SelectItem value="publisher">publisher</SelectItem>
-                  <SelectItem value="viewer">viewer</SelectItem>
+                  <SelectItem value="admin">{roleText("admin", t)}</SelectItem>
+                  <SelectItem value="publisher">{roleText("publisher", t)}</SelectItem>
+                  <SelectItem value="viewer">{roleText("viewer", t)}</SelectItem>
                 </SelectList>
                 </SelectContent>
               </Select>
             </div>
             <p className="text-xs text-foreground-muted">
-              Direct app members receive access only to this app. Owners and org admins already
-              inherit app administration.
+              {t("Direct app members receive access only to this app. Owners and org admins already inherit app administration.", "应用直接成员只能访问此应用。所有者和组织管理员已继承应用管理权限。")}
             </p>
           </form>
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" type="button" onClick={onClose}>
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
           <Button
             type="submit"
@@ -1320,7 +1326,7 @@ function AddAppMemberDialog({
             variant="primary"
             disabled={!targetAccountId || add.isPending}
           >
-            {add.isPending ? "Adding…" : "Add"}
+            {add.isPending ? t("Adding…", "添加中…") : t("Add", "添加")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1329,6 +1335,7 @@ function AddAppMemberDialog({
 }
 
 function InviteToAppForm({ appId }: { appId: string }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
@@ -1349,8 +1356,8 @@ function InviteToAppForm({ appId }: { appId: string }) {
     onSuccess: (data) => {
       toast.show({
         kind: "success",
-        title: `Invite link created for ${email}`,
-        description: `Copied URL: ${data.invite_url.slice(0, 60)}…`,
+        title: t(`Invite link created for ${email}`, `已为 ${email} 创建邀请链接`),
+        description: t(`Copied URL: ${data.invite_url.slice(0, 60)}…`, `已复制链接：${data.invite_url.slice(0, 60)}…`),
       });
       navigator.clipboard?.writeText(data.invite_url).catch(() => {});
       qc.invalidateQueries({ queryKey: ["org-invites", orgId!] });
@@ -1362,8 +1369,8 @@ function InviteToAppForm({ appId }: { appId: string }) {
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Invite failed",
-        description: (e as Error).message,
+        title: t("Invite failed", "邀请失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1372,14 +1379,14 @@ function InviteToAppForm({ appId }: { appId: string }) {
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Create app invite link</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Create app invite link", "创建应用邀请链接")}</h3>
         {!showForm && (
           <Button
             variant="outline"
             className="text-xs"
             onClick={() => setShowForm(true)}
           >
-            + Link
+            {t("+ Link", "+ 创建链接")}
           </Button>
         )}
       </div>
@@ -1402,7 +1409,7 @@ function InviteToAppForm({ appId }: { appId: string }) {
               autoFocus
             />
             <Select
-              items={{ publisher: "publisher", viewer: "viewer" }}
+              items={{ publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
               value={role}
               onValueChange={(v) =>
                 setRole(v as "publisher" | "viewer")
@@ -1414,8 +1421,8 @@ function InviteToAppForm({ appId }: { appId: string }) {
               </SelectTrigger>
               <SelectContent>
                 <SelectList>
-                <SelectItem value="publisher">publisher</SelectItem>
-                <SelectItem value="viewer">viewer</SelectItem>
+                <SelectItem value="publisher">{roleText("publisher", t)}</SelectItem>
+                <SelectItem value="viewer">{roleText("viewer", t)}</SelectItem>
               </SelectList>
               </SelectContent>
             </Select>
@@ -1424,12 +1431,10 @@ function InviteToAppForm({ appId }: { appId: string }) {
             className="text-xs min-h-[40px]"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Optional message"
+            placeholder={t("Optional message", "附言（可选）")}
           />
           <p className="text-xs text-foreground-muted">
-            The invitee needs an account with this email; accepting the
-            invite makes them an org viewer (auto) and grants app access
-            with the role you pick. The URL is copied to clipboard after creation.
+            {t("The invitee needs an account with this email; accepting the invite makes them an org viewer (auto) and grants app access with the role you pick. The URL is copied to clipboard after creation.", "受邀者需要使用此邮箱的账号；接受邀请后会自动成为组织查看者，并获得您选择的应用角色。链接创建后会复制到剪贴板。")}
           </p>
           <div className="flex gap-2">
             <Button
@@ -1438,7 +1443,7 @@ function InviteToAppForm({ appId }: { appId: string }) {
               className="text-xs"
               disabled={invite.isPending || !email.trim()}
             >
-              {invite.isPending ? "Creating…" : "Create invite link"}
+              {invite.isPending ? t("Creating…", "创建中…") : t("Create invite link", "创建邀请链接")}
             </Button>
             <Button
               type="button"
@@ -1446,15 +1451,13 @@ function InviteToAppForm({ appId }: { appId: string }) {
               className="text-xs"
               onClick={() => setShowForm(false)}
             >
-              Cancel
+              {t("Cancel", "取消")}
             </Button>
           </div>
         </form>
       ) : (
         <p className="text-xs text-foreground-muted">
-          Create an invite link to grant app access, then share the copied URL
-          manually. The invitee is added to the org as a viewer automatically
-          when they accept; the picked role controls what they can do on this app.
+          {t("Create an invite link to grant app access, then share the copied URL manually. The invitee is added to the org as a viewer automatically when they accept; the picked role controls what they can do on this app.", "创建邀请链接以授予应用访问权限，然后手动分享复制的链接。受邀者接受后会自动成为组织查看者；所选角色决定其在此应用中的操作权限。")}
         </p>
       )}
     </section>

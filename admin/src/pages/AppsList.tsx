@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -65,7 +66,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
         </div>
       )}
       {error && (
-        <p className="text-danger">{t("Failed:", "操作失败：")} {(error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "操作失败：")} {errorMessage(error)}</p>
       )}
 
       {visible.length === 0 && !isLoading && (

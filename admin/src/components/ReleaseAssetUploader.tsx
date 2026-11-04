@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * ReleaseAssetUploader — shared file-drop + upload + register UI for one
  * release's binary assets.
@@ -39,7 +40,7 @@ import {
 import { useToast } from "./Toast";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
 import { BuildAssetIdentitySummary } from "./BuildAssetIdentitySummary";
-import { useText } from "../lib/locale";
+import { useLocale, useText } from "../lib/locale";
 import {
   KNOWN_FILETYPES,
   KNOWN_PLATFORMS,
@@ -81,6 +82,7 @@ type Props = PanelProps | DialogProps;
 
 export function ReleaseAssetUploader(props: Props) {
   const t = useText();
+  const { locale } = useLocale();
   const { appId, buildId, productTypeHint, onUploaded } = props;
   const deferUpload = props.variant === "dialog" && props.deferUpload === true;
   const onFilesChanged =
@@ -118,7 +120,7 @@ export function ReleaseAssetUploader(props: Props) {
       toast.show({
         kind: "error",
         title: t("Delete failed", "删除失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -191,7 +193,7 @@ export function ReleaseAssetUploader(props: Props) {
     <div>
       {props.variant === "panel" && existing.length > 0 && (
         <div className="mb-3 text-xs text-foreground-muted">
-          {t(`${existing.length} asset${existing.length === 1 ? "" : "s"} · ${formatBuildAssetSize(totalBytes)} total`, `${existing.length} 个文件 · 共 ${formatBuildAssetSize(totalBytes)}`)}
+          {t(`${existing.length} asset${existing.length === 1 ? "" : "s"} · ${formatBuildAssetSize(totalBytes, locale)} total`, `${existing.length} 个文件 · 共 ${formatBuildAssetSize(totalBytes, locale)}`)}
         </div>
       )}
 
@@ -210,7 +212,7 @@ export function ReleaseAssetUploader(props: Props) {
             </thead>
             <tbody>
               {existing.map((a: BuildAsset) => {
-                const filename = buildAssetFilename(a);
+                const filename = buildAssetFilename(a, locale);
                 return (
                   <tr key={a.id} className="border-b border-line-hairline align-top">
                     <td className="min-w-[16rem] py-2 pr-3">
@@ -230,7 +232,7 @@ export function ReleaseAssetUploader(props: Props) {
                     <td className="py-2 pr-3 font-mono">{a.platform}</td>
                     <td className="py-2 pr-3 font-mono">{a.arch ?? "—"}</td>
                     <td className="py-2 pr-3 font-mono whitespace-nowrap">
-                      {formatBuildAssetSize(a.size_bytes)}
+                      {formatBuildAssetSize(a.size_bytes, locale)}
                     </td>
                     <td className="py-2 pr-2 text-right">
                       <Button
@@ -302,7 +304,7 @@ export function ReleaseAssetUploader(props: Props) {
       <ConfirmActionDialog
         open={removeTarget !== null}
         title={t("Remove asset registration?", "移除文件登记？")}
-        objectLabel={removeTarget ? buildAssetFilename(removeTarget) : ""}
+        objectLabel={removeTarget ? buildAssetFilename(removeTarget, locale) : ""}
         objectSummary={
           removeTarget ? (
             <BuildAssetIdentitySummary asset={removeTarget} />
@@ -321,7 +323,7 @@ export function ReleaseAssetUploader(props: Props) {
               objectHint: `${removeTarget.artifact_kind} · ${removeTarget.platform}${
                 removeTarget.arch ? `/${removeTarget.arch}` : ""
               } · ${removeTarget.filetype} · ${formatBuildAssetSize(
-                removeTarget.size_bytes,
+                removeTarget.size_bytes, locale,
               )}`,
             }
           : {})}
@@ -385,7 +387,7 @@ export function PendingFileRow({
         )}
         {pending.status === "error" && (
           <span className="text-danger text-[10px] truncate max-w-[20ch]">
-            {pending.error}
+            {pending.error && errorMessage(pending.error)}
           </span>
         )}
         <Button

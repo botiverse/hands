@@ -1,3 +1,4 @@
+import { errorMessage } from "../../lib/errorMessage";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Smartphone } from "lucide-react";
@@ -40,7 +41,7 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
       toast.show({ kind: "success", title: t("AppGallery Connect credential saved", "AppGallery Connect 凭据已保存") });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: errorMessage(e) }),
   });
   const remove = useMutation({
     mutationFn: () => deleteAgcCredentials(appId),
@@ -49,7 +50,7 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
       toast.show({ kind: "success", title: t("AppGallery Connect credential removed", "AppGallery Connect 凭据已移除") });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: errorMessage(e) }),
   });
   const test = useMutation({
     mutationFn: () => verifyAgcCredentials(appId),
@@ -64,7 +65,7 @@ export function AppGalleryConnector({ appId }: { appId: string }) {
           : { kind: "error", title: t("Verification failed", "验证失败"), description: r.error ?? t("Unknown AGC error", "未知 AGC 错误") },
       ),
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Test failed", "测试失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Test failed", "测试失败"), description: errorMessage(e) }),
   });
 
   const form = (

@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import {
   Button,
   Checkbox,
@@ -82,8 +83,10 @@ import {
 import { useToast } from "../components/Toast";
 import { Operations } from "./Operations";
 import { deviceGroupUpdatePayload } from "../lib/deviceGroupForm";
+import { useLocale, useText } from "../lib/locale";
 
 export function AppDetail({ appId }: { appId: string }) {
+  const t = useText();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((a) => a.id === appId);
   const channels = useQuery({
@@ -96,19 +99,19 @@ export function AppDetail({ appId }: { appId: string }) {
     <div>
       {apps.error && (
         <AppErrorBanner
-          title="Cannot load apps"
+          title={t("Cannot load apps", "无法加载应用列表")}
           error={apps.error}
         />
       )}
       {appMissing && (
         <AppErrorBanner
-          title="App is not available"
-          description="This app is not visible to the current account, or it no longer exists."
+          title={t("App is not available", "应用不可用")}
+          description={t("This app is not visible to the current account, or it no longer exists.", "当前账号无法查看此应用，或应用已不存在。")}
         />
       )}
       {channels.error && (
         <AppErrorBanner
-          title="Cannot load app details"
+          title={t("Cannot load app details", "无法加载应用详情")}
           error={channels.error}
         />
       )}
@@ -116,13 +119,13 @@ export function AppDetail({ appId }: { appId: string }) {
       <section>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 className="text-lg font-semibold">App overview</h2>
+            <h2 className="text-lg font-semibold">{t("App overview", "应用概览")}</h2>
             <p className="text-xs text-foreground-muted">
-              Releases are managed from the{" "}
+              {t("Releases are managed from the", "在")}{" "}
               <a href={`/apps/${appId}/releases`} className="underline">
-                Releases
+                {t("Releases", "版本")}
               </a>{" "}
-              tab.
+              {t("tab.", "页面管理发布。")}
             </p>
           </div>
           {channels.data?.channels.length ? (
@@ -131,7 +134,7 @@ export function AppDetail({ appId }: { appId: string }) {
               className="text-sm"
               render={<a href={`/apps/${appId}/releases`} />}
             >
-              Publish release →
+              {t("Publish release →", "发布版本 →")}
             </Button>
           ) : (
             <Button
@@ -139,7 +142,7 @@ export function AppDetail({ appId }: { appId: string }) {
               className="text-sm"
               render={<a href={`/apps/${appId}/channels`} />}
             >
-              Create channel first
+              {t("Create channel first", "请先创建渠道")}
             </Button>
           )}
         </div>
@@ -170,13 +173,14 @@ function AppErrorBanner({
     <div className="mb-4 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger-strong">
       <div className="font-medium">{title}</div>
       <div className="text-xs mt-1">
-        {description ?? (error instanceof Error ? error.message : String(error))}
+        {description ?? errorMessage(error)}
       </div>
     </div>
   );
 }
 
 export function AppChannels({ appId }: { appId: string }) {
+  const t = useText();
   const qc = useQueryClient();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((a) => a.id === appId);
@@ -192,12 +196,12 @@ export function AppChannels({ appId }: { appId: string }) {
 
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Channels</h2>
+          <h2 className="text-lg font-semibold">{t("Channels", "渠道")}</h2>
           <Button
             variant="outline"
             onClick={() => setShowCreateChannel(true)}
           >
-            + New channel
+            {t("+ New channel", "+ 新建渠道")}
           </Button>
         </div>
         {channels.isLoading && (
@@ -209,7 +213,7 @@ export function AppChannels({ appId }: { appId: string }) {
         <div className="space-y-4">
           {channels.data?.channels.length === 0 && (
             <EmptyState>
-              <EmptyStateTitle>No channels yet.</EmptyStateTitle>
+              <EmptyStateTitle>{t("No channels yet.", "暂无渠道。")}</EmptyStateTitle>
             </EmptyState>
           )}
           {channels.data?.channels.map((c) => (
@@ -249,27 +253,27 @@ export function AppChannels({ appId }: { appId: string }) {
 }
 
 function AppNamePanel({ appId, app }: { appId: string; app: App }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const [name, setName] = useState(app.name);
   const rename = useMutation({
     mutationFn: () => updateApp(appId, { name: name.trim() }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "App renamed" });
+      toast.show({ kind: "success", title: t("App renamed", "应用已重命名") });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Rename failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Rename failed", "重命名失败"), description: errorMessage(e) }),
   });
   const dirty = name.trim().length > 0 && name.trim() !== app.name;
   return (
     <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium">App name</div>
+        <div className="text-sm font-medium">{t("App name", "应用名称")}</div>
         <div className="text-xs text-foreground-muted">
-          Display name shown in the console and on share pages. The slug (
-          <span className="font-mono">{app.slug}</span>) is permanent — SDKs
-          and CI reference it.
+          {t("Display name shown in the console and on share pages. The slug (", "控制台和分享页面显示的名称。应用标识（")}
+          <span className="font-mono">{app.slug}</span>{t(") is permanent — SDKs and CI reference it.", "）固定不变，SDK 和 CI 会使用它。")}
         </div>
       </div>
       <Input
@@ -286,39 +290,39 @@ function AppNamePanel({ appId, app }: { appId: string; app: App }) {
         disabled={!dirty || rename.isPending}
         onClick={() => rename.mutate()}
       >
-        Save
+        {t("Save", "保存")}
       </Button>
     </div>
   );
 }
 
 function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const [description, setDescription] = useState(app.description ?? "");
   const save = useMutation({
     mutationFn: () => updateApp(appId, { description: description.trim() || null }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Description saved" });
+      toast.show({ kind: "success", title: t("Description saved", "描述已保存") });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Save failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: errorMessage(e) }),
   });
   const dirty = description.trim() !== (app.description ?? "");
   return (
     <div className="flex flex-col gap-2 md:flex-row md:items-start md:gap-3">
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium">Description</div>
+        <div className="text-sm font-medium">{t("Description", "描述")}</div>
         <div className="text-xs text-foreground-muted">
-          Internal note about what this app is — shown in the console app
-          list, not on public pages.
+          {t("Internal note about what this app is — shown in the console app list, not on public pages.", "关于此应用的内部备注，显示在控制台应用列表中，不显示在公开页面。")}
         </div>
       </div>
       <Textarea
         className="w-full resize-y md:w-72 h-16"
         value={description}
-        placeholder="What is this app?"
+        placeholder={t("What is this app?", "这个应用有什么用途？")}
         onChange={(e) => setDescription(e.target.value)}
       />
       <Button
@@ -327,13 +331,14 @@ function AppDescriptionPanel({ appId, app }: { appId: string; app: App }) {
         disabled={!dirty || save.isPending}
         onClick={() => save.mutate()}
       >
-        Save
+        {t("Save", "保存")}
       </Button>
     </div>
   );
 }
 
 function ClientKeyPanel({ appId }: { appId: string }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const [revealed, setRevealed] = useState(false);
@@ -344,27 +349,26 @@ function ClientKeyPanel({ appId }: { appId: string }) {
   const rotate = useMutation({
     mutationFn: () => rotateAppClientKey(appId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Client key rotated — update client configs" });
+      toast.show({ kind: "success", title: t("Client key rotated — update client configs", "客户端密钥已轮换，请更新客户端配置") });
       qc.invalidateQueries({ queryKey: ["client-key", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Rotate failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Rotate failed", "轮换失败"), description: errorMessage(e) }),
   });
   const key = keyQuery.data?.client_key ?? null;
   return (
     <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium">Client key</div>
+        <div className="text-sm font-medium">{t("Client key", "客户端密钥")}</div>
         <div className="text-xs text-foreground-muted">
-          Required on feedback/crash submissions (X-Hands-Client-Key; legacy
-          X-Quiver-Client-Key still accepted). Embedded in client builds; rotate if leaked.
+          {t("Required on feedback/crash submissions (X-Hands-Client-Key; legacy X-Quiver-Client-Key still accepted). Embedded in client builds; rotate if leaked.", "提交反馈和崩溃报告时需要此密钥（X-Hands-Client-Key；仍支持旧版 X-Quiver-Client-Key）。密钥嵌入客户端构建，泄露时请轮换。")}
         </div>
         {key && revealed && (
           <div className="mt-1 font-mono text-xs break-all">{key}</div>
         )}
         {!key && !keyQuery.isLoading && (
           <div className="mt-1 text-xs text-warning-strong">
-            No key set — submissions are currently unauthenticated. Rotate to generate one.
+            {t("No key set — submissions are currently unauthenticated. Rotate to generate one.", "尚未设置密钥，目前提交无需身份验证。请轮换以生成密钥。")}
           </div>
         )}
       </div>
@@ -375,16 +379,16 @@ function ClientKeyPanel({ appId }: { appId: string }) {
               variant="outline"
               onClick={() => setRevealed((v) => !v)}
             >
-              {revealed ? "Hide" : "Reveal"}
+              {revealed ? t("Hide", "隐藏") : t("Reveal", "显示")}
             </Button>
             <Button
               variant="outline"
               onClick={() => {
                 navigator.clipboard?.writeText(key);
-                toast.show({ kind: "success", title: "Client key copied" });
+                toast.show({ kind: "success", title: t("Client key copied", "客户端密钥已复制") });
               }}
             >
-              Copy
+              {t("Copy", "复制")}
             </Button>
           </>
         )}
@@ -392,12 +396,12 @@ function ClientKeyPanel({ appId }: { appId: string }) {
           variant="outline"
           disabled={rotate.isPending}
           onClick={() => {
-            if (window.confirm("Rotate the client key? Older client builds stop reporting until they carry the new key.")) {
+            if (window.confirm(t("Rotate the client key? Older client builds stop reporting until they carry the new key.", "轮换客户端密钥？旧客户端构建在更新到新密钥之前将无法上报。"))) {
               rotate.mutate();
             }
           }}
         >
-          {rotate.isPending ? "…" : key ? "Rotate" : "Generate"}
+          {rotate.isPending ? "…" : key ? t("Rotate", "轮换") : t("Generate", "生成")}
         </Button>
       </div>
     </div>
@@ -405,6 +409,7 @@ function ClientKeyPanel({ appId }: { appId: string }) {
 }
 
 function DeviceGroupsPanel({ appId }: { appId: string }) {
+  const t = useText();
   const queryClient = useQueryClient();
   const toast = useToast();
   const groups = useQuery({
@@ -422,28 +427,28 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
       setName("");
       setDescription("");
       void queryClient.invalidateQueries({ queryKey: ["device-groups", appId] });
-      toast.show({ kind: "success", title: "Device group created" });
+      toast.show({ kind: "success", title: t("Device group created", "设备组已创建") });
     },
-    onError: (error) => toast.show({ kind: "error", title: "Create failed", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Create failed", "创建失败"), description: errorMessage(error) }),
   });
 
   return (
     <div className="border-t border-line-hairline pt-3 space-y-3">
       <div>
-        <div className="text-sm font-medium">Device groups</div>
+        <div className="text-sm font-medium">{t("Device groups", "设备组")}</div>
         <p className="text-xs text-foreground-muted">
-          Exact rollout groups use the stable installation device id sent by the Hands update SDK.
+          {t("Exact rollout groups use the stable installation device id sent by the Hands update SDK.", "精确发布组使用 Hands 更新 SDK 发送的稳定安装设备标识。")}
         </p>
       </div>
       <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
-        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Artin test devices" />
-        <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Operator note (optional)" />
+        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("Test devices", "测试设备")} />
+        <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("Operator note (optional)", "操作备注（可选）")} />
         <Button variant="outline" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
-          Create group
+          {t("Create group", "创建设备组")}
         </Button>
       </div>
-      {groups.isLoading && <p className="text-xs text-foreground-muted">Loading device groups…</p>}
-      {groups.error && <p className="text-xs text-danger">{(groups.error as Error).message}</p>}
+      {groups.isLoading && <p className="text-xs text-foreground-muted">{t("Loading device groups…", "正在加载设备组…")}</p>}
+      {groups.error && <p className="text-xs text-danger">{errorMessage(groups.error)}</p>}
       {(groups.data?.groups ?? []).map((group) => (
         <DeviceGroupCard key={group.id} appId={appId} group={group} />
       ))}
@@ -452,6 +457,7 @@ function DeviceGroupsPanel({ appId }: { appId: string }) {
 }
 
 function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }) {
+  const t = useText();
   const queryClient = useQueryClient();
   const toast = useToast();
   const [deviceId, setDeviceId] = useState("");
@@ -471,9 +477,9 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
     onSuccess: () => {
       setEditing(false);
       void refresh();
-      toast.show({ kind: "success", title: "Device group updated" });
+      toast.show({ kind: "success", title: t("Device group updated", "设备组已更新") });
     },
-    onError: (error) => toast.show({ kind: "error", title: "Update failed", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Update failed", "更新失败"), description: errorMessage(error) }),
   });
   const add = useMutation({
     mutationFn: () => addDeviceGroupMember(appId, group.id, {
@@ -484,22 +490,22 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
       setDeviceId("");
       setLabel("");
       void refresh();
-      toast.show({ kind: "success", title: "Device added" });
+      toast.show({ kind: "success", title: t("Device added", "设备已添加") });
     },
-    onError: (error) => toast.show({ kind: "error", title: "Add failed", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Add failed", "添加失败"), description: errorMessage(error) }),
   });
   const remove = useMutation({
     mutationFn: (memberDeviceId: string) => removeDeviceGroupMember(appId, group.id, memberDeviceId),
     onSuccess: () => void refresh(),
-    onError: (error) => toast.show({ kind: "error", title: "Remove failed", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: errorMessage(error) }),
   });
   const destroy = useMutation({
     mutationFn: () => deleteDeviceGroup(appId, group.id),
     onSuccess: () => {
       void refresh();
-      toast.show({ kind: "success", title: "Device group deleted" });
+      toast.show({ kind: "success", title: t("Device group deleted", "设备组已删除") });
     },
-    onError: (error) => toast.show({ kind: "error", title: "Delete failed", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Delete failed", "删除失败"), description: errorMessage(error) }),
   });
 
   return (
@@ -508,11 +514,11 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
         <div>
           {editing ? (
             <div className="space-y-2">
-              <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Group name" />
+              <Input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder={t("Group name", "组名称")} />
               <Input
                 value={groupDescription}
                 onChange={(event) => setGroupDescription(event.target.value)}
-                placeholder="Operator note"
+                placeholder={t("Operator note", "操作备注")}
               />
             </div>
           ) : (
@@ -527,43 +533,43 @@ function DeviceGroupCard({ appId, group }: { appId: string; group: DeviceGroup }
           {editing ? (
             <>
               <Button variant="outline" disabled={!groupName.trim() || update.isPending} onClick={() => update.mutate()}>
-                Save
+                {t("Save", "保存")}
               </Button>
               <Button variant="outline" disabled={update.isPending} onClick={() => setEditing(false)}>
-                Cancel
+                {t("Cancel", "取消")}
               </Button>
             </>
           ) : (
-            <Button variant="outline" onClick={() => setEditing(true)}>Edit</Button>
+            <Button variant="outline" onClick={() => setEditing(true)}>{t("Edit", "编辑")}</Button>
           )}
           <Button
             variant="outline"
             disabled={destroy.isPending || editing}
-            onClick={() => { if (window.confirm(`Delete device group '${group.name}'?`)) destroy.mutate(); }}
+            onClick={() => { if (window.confirm(t(`Delete device group '${group.name}'?`, `删除设备组“${group.name}”？`))) destroy.mutate(); }}
           >
-            Delete
+            {t("Delete", "删除")}
           </Button>
         </div>
       </div>
       <div className="space-y-1">
-        {group.members.length === 0 && <p className="text-xs text-foreground-muted">No devices yet.</p>}
+        {group.members.length === 0 && <p className="text-xs text-foreground-muted">{t("No devices yet.", "暂无设备。")}</p>}
         {group.members.map((member) => (
           <div key={member.device_id} className="flex items-center justify-between gap-2 text-xs">
             <span className="min-w-0 truncate">
-              <span className="font-medium">{member.label || "Device"}</span>{" "}
+              <span className="font-medium">{member.label || t("Device", "设备")}</span>{" "}
               <span className="font-mono text-foreground-muted">{member.device_id}</span>
             </span>
             <Button variant="outline" onClick={() => remove.mutate(member.device_id)} disabled={remove.isPending}>
-              Remove
+              {t("Remove", "移除")}
             </Button>
           </div>
         ))}
       </div>
       <div className="grid grid-cols-[1fr_160px_auto] gap-2">
-        <Input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder="Installation device id" />
-        <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Label" />
+        <Input value={deviceId} onChange={(event) => setDeviceId(event.target.value)} placeholder={t("Installation device id", "安装设备 ID")} />
+        <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t("Label", "标签")} />
         <Button variant="outline" disabled={!deviceId.trim() || add.isPending} onClick={() => add.mutate()}>
-          Add
+          {t("Add", "添加")}
         </Button>
       </div>
     </div>
@@ -627,6 +633,8 @@ function betaReviewStateBadge(state: string | null): {
 }
 
 export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
+  const t = useText();
+  const badgeZh: Record<string, string> = { "Ready for sale": "已上架", "In review": "审核中", "Waiting for review": "等待审核", "Pending developer release": "等待开发者发布", "Pending Apple release": "等待 Apple 发布", "Preparing": "准备中", "Rejected": "已拒绝", "Metadata rejected": "元数据被拒绝", "Developer rejected": "开发者已撤回", "Unknown": "未知", "Approved": "已批准", "No beta review": "暂无测试审核" };
   // Non-iOS apps never render this panel — the parent guards on
   // app.platform === "ios" (mirrors the worker's applicable:false response).
   const review = useQuery({
@@ -645,14 +653,13 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">App Store review status</div>
+            <div className="text-sm font-medium">{t("App Store review status", "App Store 审核状态")}</div>
             {currentBadge && (
-              <Badge variant={currentBadge.variant}>{currentBadge.label}</Badge>
+              <Badge variant={currentBadge.variant}>{t(currentBadge.label, badgeZh[currentBadge.label] ?? currentBadge.label)}</Badge>
             )}
           </div>
           <div className="text-xs text-foreground-muted">
-            Live review state of this app's recent App Store versions and
-            TestFlight builds, from App Store Connect. Read-only.
+            {t("Live review state of this app's recent App Store versions and TestFlight builds, from App Store Connect. Read-only.", "从 App Store Connect 查看此应用近期 App Store 版本和 TestFlight 构建的实时审核状态。仅供查看。")}
           </div>
         </div>
       </div>
@@ -665,43 +672,39 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
           </div>
         ) : data?.configured === false ? (
           <EmptyState>
-            <EmptyStateTitle>App Store Connect not configured</EmptyStateTitle>
+            <EmptyStateTitle>{t("App Store Connect not configured", "尚未配置 App Store Connect")}</EmptyStateTitle>
             <EmptyStateDescription>
-              Add ASC credentials in the TestFlight settings above to see review
-              status.
+              {t("Add App Store Connect credentials under Integrations → TestFlight to see review status.", "请在“集成 → TestFlight”中添加 App Store Connect 凭据，以查看审核状态。")}
             </EmptyStateDescription>
           </EmptyState>
         ) : data?.bundle_id === null ? (
           <EmptyState>
-            <EmptyStateTitle>No App Store bundle ID configured</EmptyStateTitle>
+            <EmptyStateTitle>{t("No App Store bundle ID configured", "尚未配置 App Store Bundle ID")}</EmptyStateTitle>
             <EmptyStateDescription>
-              Set the production App Store bundle ID on the{" "}
+              {t("Set the production App Store bundle ID on the", "请在")}{" "}
               <a
                 href={`/apps/${appId}/channels`}
                 className="underline font-medium"
               >
-                main channel
+                {t("main channel", "main 渠道")}
               </a>{" "}
-              (Channels tab). Only the main channel's bundle ID is used —
-              preview/nightly channels are ignored, so their beta bundle IDs won't
-              be picked up here.
+              {t("(Channels tab). Only the main channel's bundle ID is used — preview/nightly channels are ignored, so their beta bundle IDs won't be picked up here.", "（渠道页面）设置正式版 App Store Bundle ID。这里只使用 main 渠道的 Bundle ID，不会使用 preview 或 nightly 的测试版 Bundle ID。")}
             </EmptyStateDescription>
           </EmptyState>
         ) : data?.error ? (
           <div className="rounded-md bg-warning-soft px-3 py-2 text-xs text-warning-strong">
-            Could not load review status from App Store Connect: {data.error}
+            {t("Could not load review status from App Store Connect:", "无法从 App Store Connect 加载审核状态：")} {data.error}
             {data.bundle_id && (
               <div className="mt-1">
-                Bundle ID{" "}
-                <span className="font-mono">{data.bundle_id}</span> is set on the
-                main channel. If it doesn't match your App Store app, update it in{" "}
+                {t("Bundle ID", "Bundle ID")} {" "}
+                <span className="font-mono">{data.bundle_id}</span>{t(" is set on the main channel. If it doesn't match your App Store app, update it in", "设置在 main 渠道上。如果与 App Store 应用不一致，请在")}{" "}
                 <a
                   href={`/apps/${appId}/channels`}
                   className="underline font-medium"
                 >
-                  Channels
+                  {t("Channels", "渠道")}
                 </a>
-                .
+                {t(".", "中更新。")}
               </div>
             )}
           </div>
@@ -709,11 +712,11 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
           <div className="space-y-4">
             <div>
               <div className="text-xs font-medium text-foreground-muted mb-1">
-                Recent App Store versions
+                {t("Recent App Store versions", "近期 App Store 版本")}
               </div>
               {versions.length === 0 ? (
                 <div className="text-xs text-foreground-hint">
-                  No App Store versions yet.
+                  {t("No App Store versions yet.", "暂无 App Store 版本。")}
                 </div>
               ) : (
                 <ul className="space-y-1">
@@ -727,12 +730,12 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         <span className="font-mono">
                           {v.versionString ?? "—"}
                         </span>
-                        <Badge variant={b.variant}>{b.label}</Badge>
+                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? b.label)}</Badge>
                         {(v.appStoreState === "REJECTED" ||
                           v.appStoreState === "METADATA_REJECTED" ||
                           v.appStoreState === "DEVELOPER_REJECTED") && (
                           <span className="text-xs text-foreground-hint">
-                            (see App Store Connect for the rejection details)
+                            {t("(see App Store Connect for the rejection details)", "（拒绝详情请查看 App Store Connect）")}
                           </span>
                         )}
                       </li>
@@ -744,11 +747,11 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
 
             <div>
               <div className="text-xs font-medium text-foreground-muted mb-1">
-                Recent TestFlight builds — beta review
+                {t("Recent TestFlight builds — beta review", "近期 TestFlight 构建 — 测试审核")}
               </div>
               {builds.length === 0 ? (
                 <div className="text-xs text-foreground-hint">
-                  No builds on App Store Connect yet.
+                  {t("No builds on App Store Connect yet.", "App Store Connect 暂无构建。")}
                 </div>
               ) : (
                 <ul className="space-y-1">
@@ -760,7 +763,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         className="flex items-center gap-2 text-sm"
                       >
                         <span className="font-mono">{bld.version ?? "—"}</span>
-                        <Badge variant={b.variant}>{b.label}</Badge>
+                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? b.label)}</Badge>
                         {bld.processingState &&
                           bld.processingState !== "VALID" && (
                             <span className="text-xs text-foreground-hint">
@@ -781,6 +784,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
 }
 
 function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const enabled = Boolean(app.public_history);
@@ -801,21 +805,21 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
   const channelsMutation = useMutation({
     mutationFn: (slugs: string[]) => updateAppHistoryChannels(appId, slugs.length ? slugs : null),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Visible channels updated" });
+      toast.show({ kind: "success", title: t("Visible channels updated", "可见渠道已更新") });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
-    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+    onError: (e) => toast.show({ kind: "error", title: t("Update failed", "更新失败"), description: errorMessage(e) }),
   });
   const downloadsToggle = useMutation({
     mutationFn: () => updateAppHistoryDownloads(appId, !showDownloads),
     onSuccess: () => {
       toast.show({
         kind: "success",
-        title: !showDownloads ? "Downloads shown on public pages" : "Downloads hidden on public pages",
+        title: !showDownloads ? t("Downloads shown on public pages", "公开页面已显示下载按钮") : t("Downloads hidden on public pages", "公开页面已隐藏下载按钮"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
-    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+    onError: (e) => toast.show({ kind: "error", title: t("Update failed", "更新失败"), description: errorMessage(e) }),
   });
   const toggleChannel = (slug: string) => {
     const next = selectedChannels.includes(slug)
@@ -828,26 +832,26 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
     onSuccess: () => {
       toast.show({
         kind: "success",
-        title: !enabled ? "Public version history enabled" : "Public version history disabled",
+        title: !enabled ? t("Public version history enabled", "已开启公开版本历史") : t("Public version history disabled", "已关闭公开版本历史"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: t("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-3">
         <div className="flex-1">
-          <div className="text-sm font-medium">Public version history</div>
+          <div className="text-sm font-medium">{t("Public version history", "公开版本历史")}</div>
           <div className="text-xs text-foreground-muted">
             {enabled ? (
               <>
-                Anyone can browse and download published versions at{" "}
+                {t("Anyone can browse and download published versions at", "任何人都可以在此浏览和下载已发布版本：")}{" "}
                 <a
                   className="underline"
                   href={`/apps/${app.slug}/history`}
@@ -856,7 +860,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
                 >
                   /apps/{app.slug}/history
                 </a>
-                {" · latest landing: "}
+                {t(" · latest landing: ", " · 最新版本页面：")}
                 <a
                   className="underline"
                   href={`/apps/${app.slug}/latest`}
@@ -865,10 +869,10 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
                 >
                   /apps/{app.slug}/latest
                 </a>
-                .
+                {t(".", "。")}
               </>
             ) : (
-              "Expose a public page listing published versions with changelogs and downloads."
+              t("Expose a public page listing published versions with changelogs and downloads.", "公开展示已发布版本、更新说明和下载链接的页面。")
             )}
           </div>
         </div>
@@ -882,7 +886,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
         <div className="pl-1 space-y-2 text-sm">
           <div className="flex items-center gap-3">
             <div className="flex-1 text-xs text-foreground-muted">
-              Channels shown on the public history pages (none selected = all).
+              {t("Channels shown on the public history pages (none selected = all).", "公开历史页面显示的渠道（不选择则显示全部）。")}
             </div>
             <div className="flex flex-wrap gap-2">
               {(channelsQuery.data?.channels ?? []).map((ch) => (
@@ -900,7 +904,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
           </div>
           <div className="flex items-center gap-3">
             <div className="flex-1 text-xs text-foreground-muted">
-              Show per-version download buttons on the public history, notes and landing pages.
+              {t("Show per-version download buttons on the public history, notes and landing pages.", "在公开历史、更新说明和版本页面显示各版本的下载按钮。")}
             </div>
             <Switch
               checked={showDownloads}
@@ -915,6 +919,7 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
 }
 
 function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const enabled = Boolean(app.delta_updates_enabled);
@@ -923,25 +928,25 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
     onSuccess: () => {
       toast.show({
         kind: "success",
-        title: !enabled ? "Delta updates enabled" : "Delta updates disabled",
+        title: !enabled ? t("Delta updates enabled", "已开启增量更新") : t("Delta updates disabled", "已关闭增量更新"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: t("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
   return (
     <div className="flex items-center gap-3">
       <div className="flex-1">
-        <div className="text-sm font-medium">Delta updates</div>
+        <div className="text-sm font-medium">{t("Delta updates", "增量更新")}</div>
         <div className="text-xs text-foreground-muted">
           {enabled
-            ? "On publish, small differential patches are generated from recent versions so users download less to update."
-            : "Auto-generate differential update patches when a release is published, shrinking update downloads for users on recent versions."}
+            ? t("On publish, small differential patches are generated from recent versions so users download less to update.", "发布时根据近期版本生成较小的差分补丁，减少用户更新时的下载量。")
+            : t("Auto-generate differential update patches when a release is published, shrinking update downloads for users on recent versions.", "发布时自动生成差分更新补丁，减少使用近期版本的用户需要下载的数据。")}
         </div>
       </div>
       <Switch
@@ -954,6 +959,7 @@ function DeltaUpdatesToggle({ appId, app }: { appId: string; app: App }) {
 }
 
 function ReleaseApprovalToggle({ appId, app }: { appId: string; app: App }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const enabled = Boolean(app.release_requires_human_approval);
@@ -962,25 +968,25 @@ function ReleaseApprovalToggle({ appId, app }: { appId: string; app: App }) {
     onSuccess: () => {
       toast.show({
         kind: "success",
-        title: !enabled ? "Human approval required" : "Human approval not required",
+        title: !enabled ? t("Human approval required", "需要人工审批") : t("Human approval not required", "不需要人工审批"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: t("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
   return (
     <div className="flex items-center gap-3">
       <div className="flex-1">
-        <div className="text-sm font-medium">Require human approval for agent releases</div>
+        <div className="text-sm font-medium">{t("Require human approval for agent releases", "智能体发布需要人工审批")}</div>
         <div className="text-xs text-foreground-muted">
           {enabled
-            ? "On. Releases that an agent (deploy token) tries to publish are held for an app admin or org admin to approve or reject before they go live. Releases you publish from this console are unaffected."
-            : "When on, agent-initiated releases are held for a human (app admin / org admin) to approve before publishing. Your own console publishes are never gated."}
+            ? t("On. Releases that an agent (deploy token) tries to publish are held for an app admin or org admin to approve or reject before they go live. Releases you publish from this console are unaffected.", "已开启。智能体通过部署令牌发起的发布须经应用管理员或组织管理员批准后才会生效，也可能被拒绝。您在此控制台发起的发布不受影响。")
+            : t("When on, agent-initiated releases are held for a human (app admin / org admin) to approve before publishing. Your own console publishes are never gated.", "开启后，智能体发起的发布须由应用管理员或组织管理员批准。您在此控制台发起的发布不受此限制。")}
         </div>
       </div>
       <Switch
@@ -993,19 +999,20 @@ function ReleaseApprovalToggle({ appId, app }: { appId: string; app: App }) {
 }
 
 function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
+  const t = useText();
   const toast = useToast();
   const [bust, setBust] = useState(0);
   const upload = useMutation({
     mutationFn: (file: File) => uploadAppIcon(appId, file),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "App icon updated" });
+      toast.show({ kind: "success", title: t("App icon updated", "应用图标已更新") });
       setBust(Date.now());
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Icon upload failed",
-        description: (e as Error).message,
+        title: t("Icon upload failed", "图标上传失败"),
+        description: errorMessage(e),
       }),
   });
   return (
@@ -1024,13 +1031,13 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
         }}
       />
       <div className="min-w-0">
-        <div className="text-sm font-medium">App icon</div>
+        <div className="text-sm font-medium">{t("App icon", "应用图标")}</div>
         <div className="text-xs text-foreground-muted">
-          Shown on share/download pages. PNG/WebP/JPEG, max 1MB.
+          {t("Shown on share/download pages. PNG/WebP/JPEG, max 1MB.", "显示在分享和下载页面。支持 PNG、WebP、JPEG，最大 1 MB。")}
         </div>
       </div>
       <Button variant="outline" size="xs" className="ml-auto" render={<label className="cursor-pointer" />}>
-        {upload.isPending ? "Uploading…" : "Upload"}
+        {upload.isPending ? t("Uploading…", "上传中…") : t("Upload", "上传")}
         <input
           type="file"
           accept="image/png,image/webp,image/jpeg"
@@ -1047,6 +1054,7 @@ function AppIconUploader({ appId, slug }: { appId: string; slug: string }) {
 }
 
 function FeedbackBuildFilterToggle({ appId }: { appId: string }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const setting = useQuery({ queryKey: ["feedback-build-filter", appId], queryFn: () => getFeedbackBuildFilter(appId) });
@@ -1054,31 +1062,32 @@ function FeedbackBuildFilterToggle({ appId }: { appId: string }) {
   const update = useMutation({
     mutationFn: (next: boolean) => setFeedbackBuildFilter(appId, next),
     onSuccess: (_, next) => {
-      toast.show({ kind: "success", title: next ? "External report separation enabled" : "External report separation disabled" });
+      toast.show({ kind: "success", title: next ? t("External report separation enabled", "已开启外部报告分流") : t("External report separation disabled", "已关闭外部报告分流") });
       qc.invalidateQueries({ queryKey: ["feedback-build-filter", appId] });
       qc.invalidateQueries({ queryKey: ["feedback", appId] });
       qc.invalidateQueries({ queryKey: ["feedback-stats", appId] });
       qc.invalidateQueries({ queryKey: ["crash-groups", appId] });
       qc.invalidateQueries({ queryKey: ["error-groups", appId] });
     },
-    onError: (e) => toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+    onError: (e) => toast.show({ kind: "error", title: t("Update failed", "更新失败"), description: errorMessage(e) }),
   });
   return (
     <div className="flex items-center gap-3">
       <div className="flex-1">
-        <div className="text-sm font-medium">Separate external iOS reports</div>
+        <div className="text-sm font-medium">{t("Separate external iOS reports", "分流外部 iOS 报告")}</div>
         <div className="text-xs text-foreground-muted">
-          Compare reported bundle IDs with this app's configured channels. Mismatches appear in the external view and do not create normal notification cards; unknown IDs stay in the main view. Bundle IDs are supplied by clients and do not verify identity.
+          {t("Compare reported bundle IDs with this app's configured channels. Mismatches appear in the external view and do not create normal notification cards; unknown IDs stay in the main view. Bundle IDs are supplied by clients and do not verify identity.", "将报告的 Bundle ID 与此应用配置的渠道进行比较。不匹配的报告显示在外部视图中，不会创建普通通知卡片；未知 ID 仍保留在主视图。Bundle ID 由客户端提供，不能用于验证身份。")}
         </div>
-        {setting.error && <div className="text-xs text-danger">Could not load this setting.</div>}
+        {setting.error && <div className="text-xs text-danger">{t("Could not load this setting.", "无法加载此设置。")}</div>}
       </div>
-      <Switch aria-label="Separate external iOS reports" checked={enabled}
+      <Switch aria-label={t("Separate external iOS reports", "分流外部 iOS 报告")} checked={enabled}
         disabled={!setting.data || update.isPending} onCheckedChange={(next) => update.mutate(next)} />
     </div>
   );
 }
 
 export function AppSettings({ appId }: { appId: string }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
@@ -1102,14 +1111,14 @@ export function AppSettings({ appId }: { appId: string }) {
     onSuccess: (res) => {
       toast.show({
         kind: "success",
-        title: `App purged (${res.r2_objects_deleted} stored files removed)`,
+        title: t(`App purged (${res.r2_objects_deleted} stored files removed)`, `应用已永久删除（移除了 ${res.r2_objects_deleted} 个存储文件）`),
       });
       setConfirmPurge(false);
       qc.invalidateQueries({ queryKey: ["apps"] });
       window.location.assign("/apps");
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Purge failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Purge failed", "永久删除失败"), description: errorMessage(e) }),
   });
 
   const archive = useMutation({
@@ -1118,7 +1127,7 @@ export function AppSettings({ appId }: { appId: string }) {
     onSuccess: (_, archived) => {
       toast.show({
         kind: "success",
-        title: archived ? "App archived" : "App restored",
+        title: archived ? t("App archived", "应用已归档") : t("App restored", "应用已恢复"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
       qc.invalidateQueries({ queryKey: ["builds", appId] });
@@ -1128,8 +1137,8 @@ export function AppSettings({ appId }: { appId: string }) {
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Archive failed",
-        description: (e as Error).message,
+        title: t("Archive failed", "归档失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1139,7 +1148,7 @@ export function AppSettings({ appId }: { appId: string }) {
     <div>
 
     <div className="space-y-3 text-sm">
-        <h2 className="text-sm font-medium text-foreground-strong">Settings</h2>
+        <h2 className="text-sm font-medium text-foreground-strong">{t("Settings", "设置")}</h2>
 
         <AppTransferPanel appId={appId} app={app} orgs={orgs.data?.orgs ?? []} />
 
@@ -1182,28 +1191,27 @@ export function AppSettings({ appId }: { appId: string }) {
         {/* Danger zone: archive / restore */}
         <div className="border-t border-line-hairline pt-3">
           <h3 className="text-sm font-medium text-foreground-strong mb-2">
-            Danger zone
+            {t("Danger zone", "危险操作")}
           </h3>
           {!isOrgAdmin && (
             <p className="text-xs text-warning-strong mb-2">
-              ⚠ Org owner / admin required to archive apps.
+              {t("⚠ Org owner / admin required to archive apps.", "⚠ 归档应用需要组织所有者或管理员权限。")}
             </p>
           )}
 
           <div className="flex items-center justify-between gap-2 rounded-md bg-fill-muted p-3">
             <div>
               <div className="font-medium">
-                {app.archived ? "App is archived" : "App is active"}
+                {app.archived ? t("App is archived", "应用已归档") : t("App is active", "应用处于启用状态")}
               </div>
               <div className="text-xs text-foreground-muted">
                 {app.archived
-                  ? "Archived apps reject new uploads but remain restorable. " +
-                    "Restore the app to resume normal operation."
-                  : "Active apps accept uploads + releases normally."}
+                  ? t("Archived apps reject new uploads but remain restorable. Restore the app to resume normal operation.", "归档的应用拒绝新上传，但仍可恢复。恢复应用后可继续正常使用。")
+                  : t("Active apps accept uploads + releases normally.", "启用的应用可正常上传和发布。")}
               </div>
               {app.archived_at && (
                 <div className="text-xs text-foreground-hint mt-1">
-                  archived_at: {new Date(app.archived_at).toISOString()}
+                  {t("Archived at:", "归档时间：")} {new Date(app.archived_at).toISOString()}
                 </div>
               )}
             </div>
@@ -1214,7 +1222,7 @@ export function AppSettings({ appId }: { appId: string }) {
                   onClick={() => setConfirmArchive(true)}
                   disabled={archive.isPending}
                 >
-                  {app.archived ? "Restore app" : "Archive app"}
+                  {app.archived ? t("Restore app", "恢复应用") : t("Archive app", "归档应用")}
                 </Button>
                 {Boolean(app.archived) && (
                   <Button
@@ -1222,7 +1230,7 @@ export function AppSettings({ appId }: { appId: string }) {
                     disabled={purge.isPending}
                     onClick={() => setConfirmPurge(true)}
                   >
-                    Purge permanently
+                    {t("Purge permanently", "永久删除")}
                   </Button>
                 )}
               </div>
@@ -1231,17 +1239,16 @@ export function AppSettings({ appId }: { appId: string }) {
 
           <ConfirmActionDialog
             open={confirmPurge}
-            title="Purge this app permanently?"
+            title={t("Purge this app permanently?", "永久删除此应用？")}
             objectLabel={app.name ?? app.slug ?? app.id}
             objectHint={`slug: ${app.slug}`}
             body={
               <>
-                Deletes the app and <strong>everything it owns</strong> — builds,
-                releases, share links, feedback tickets, and uploaded files.{" "}
-                <strong>This cannot be undone.</strong>
+                {t("Deletes the app and", "将删除应用及其")} <strong>{t("everything it owns", "所有内容")}</strong>{t(" — builds, releases, share links, feedback tickets, and uploaded files.", "，包括构建、版本、分享链接、反馈工单和上传文件。")}{" "}
+                <strong>{t("This cannot be undone.", "此操作无法撤销。")}</strong>
               </>
             }
-            confirmLabel="Purge permanently"
+            confirmLabel={t("Purge permanently", "永久删除")}
             confirmKind="danger"
             requiredText={app.slug}
             typedValue={purgeTyped}
@@ -1257,7 +1264,7 @@ export function AppSettings({ appId }: { appId: string }) {
 
           <ConfirmActionDialog
             open={confirmArchive}
-            title={app.archived ? "Restore this app?" : "Archive this app?"}
+            title={app.archived ? t("Restore this app?", "恢复此应用？") : t("Archive this app?", "归档此应用？")}
             objectLabel={app.name ?? app.slug ?? app.id}
             objectHint={`slug: ${app.slug}`}
             objectSummary={
@@ -1266,35 +1273,32 @@ export function AppSettings({ appId }: { appId: string }) {
                 <div>{app.id.slice(0, 8)}…</div>
                 <div className="text-foreground-muted">slug</div>
                 <div>{app.slug}</div>
-                <div className="text-foreground-muted">status</div>
-                <div>{app.archived ? "archived" : "active"}</div>
+                <div className="text-foreground-muted">{t("status", "状态")}</div>
+                <div>{app.archived ? t("archived", "已归档") : t("active", "启用")}</div>
               </div>
             }
             body={
               app.archived ? (
                 <>
-                  Restoring returns the app to <strong>active</strong> status.{" "}
-                  New uploads and releases will be accepted again.
+                  {t("Restoring returns the app to", "恢复后应用将回到")} <strong>{t("active", "启用")}</strong>{t(" status. New uploads and releases will be accepted again.", "状态，重新接受上传和发布。")}
                   <br />
                   <span className="text-xs text-foreground-muted">
-                    Existing builds, releases, and assets are kept as-is.
+                    {t("Existing builds, releases, and assets are kept as-is.", "现有构建、版本和文件保持不变。")}
                   </span>
                 </>
               ) : (
                 <>
-                  Archiving marks the app as <strong>archived</strong>.
-                  The app remains viewable in lists and admin pages, but{" "}
-                  <strong>new uploads are rejected</strong>.
+                  {t("Archiving marks the app as", "归档会将应用标记为")} <strong>{t("archived", "已归档")}</strong>{t(". The app remains viewable in lists and admin pages, but", "。应用仍可在列表和管理页面查看，但")}{" "}
+                  <strong>{t("new uploads are rejected", "新上传将被拒绝")}</strong>{t(".", "。")}
                   <br />
                   <span className="text-xs text-foreground-muted">
-                    This is reversible: existing builds, releases, and assets
-                    are kept as-is. Archiving does not free up storage.
+                    {t("This is reversible: existing builds, releases, and assets are kept as-is. Archiving does not free up storage.", "此操作可以撤销：现有构建、版本和文件保持不变。归档不会释放存储空间。")}
                   </span>
                 </>
               )
             }
-            confirmLabel={app.archived ? "Restore app" : "Archive app"}
-            cancelLabel={app.archived ? "Keep archived" : "Keep app"}
+            confirmLabel={app.archived ? t("Restore app", "恢复应用") : t("Archive app", "归档应用")}
+            cancelLabel={app.archived ? t("Keep archived", "保持归档") : t("Keep app", "保留应用")}
             confirmKind={app.archived ? "primary" : "danger"}
             pending={archive.isPending}
             onCancel={() => setConfirmArchive(false)}
@@ -1304,8 +1308,7 @@ export function AppSettings({ appId }: { appId: string }) {
             }}
           />
           <p className="text-xs text-foreground-muted mt-2">
-            Future: signing credential binding, custom domains, app
-            ownership transfer.
+            {t("Future: signing credential binding, custom domains, app ownership transfer.", "后续计划：绑定签名凭据、自定义域名和转移应用所有权。")}
           </p>
         </div>
       </div>
@@ -1314,6 +1317,7 @@ export function AppSettings({ appId }: { appId: string }) {
 }
 
 function RaftNotificationsPanel({ appId }: { appId: string }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const config = useQuery({
@@ -1330,40 +1334,40 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
   const refresh = () => qc.invalidateQueries({ queryKey: ["raft-notifications", appId] });
   const connect = useMutation({
     mutationFn: () => connectRaftBot(appId),
-    onSuccess: () => { toast.show({ kind: "success", title: "Hands App Bot connected" }); refresh(); },
-    onError: (error) => toast.show({ kind: "error", title: "Could not connect App Bot", description: (error as Error).message }),
+    onSuccess: () => { toast.show({ kind: "success", title: t("Hands App Bot connected", "Hands App Bot 已连接") }); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: t("Could not connect App Bot", "无法连接 App Bot"), description: errorMessage(error) }),
   });
   const create = useMutation({
     mutationFn: () => createRaftNotification(appId, { channel_target: channelTarget.trim(), events }),
-    onSuccess: () => { toast.show({ kind: "success", title: "Raft notification destination added" }); setChannelTarget(""); refresh(); },
-    onError: (error) => toast.show({ kind: "error", title: "Could not add destination", description: (error as Error).message }),
+    onSuccess: () => { toast.show({ kind: "success", title: t("Raft notification destination added", "已添加 Raft 通知目标") }); setChannelTarget(""); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: t("Could not add destination", "无法添加通知目标"), description: errorMessage(error) }),
   });
   const update = useMutation({
     mutationFn: (input: { id: string; enabled: boolean }) => updateRaftNotification(appId, input.id, { enabled: input.enabled }),
     onSuccess: refresh,
-    onError: (error) => toast.show({ kind: "error", title: "Could not update destination", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Could not update destination", "无法更新通知目标"), description: errorMessage(error) }),
   });
   const updateCards = useMutation({
     mutationFn: (input: { id: string; card_updates: boolean }) => updateRaftNotification(appId, input.id, { card_updates: input.card_updates }),
     onSuccess: (_result, input) => {
-      if (!input.card_updates) toast.show({ kind: "success", title: "Text selected", description: "In-flight card requests may still finish; later notifications will use text." });
+      if (!input.card_updates) toast.show({ kind: "success", title: t("Text selected", "已选择文字"), description: t("In-flight card requests may still finish; later notifications will use text.", "进行中的卡片请求仍可能完成；后续通知将使用文字。") });
       refresh();
     },
-    onError: (error) => toast.show({ kind: "error", title: "Could not update card settings", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Could not update card settings", "无法更新卡片设置"), description: errorMessage(error) }),
   });
   const remove = useMutation({
     mutationFn: (id: string) => deleteRaftNotification(appId, id),
-    onSuccess: () => { toast.show({ kind: "success", title: "Raft notification destination removed" }); refresh(); },
-    onError: (error) => toast.show({ kind: "error", title: "Could not remove destination", description: (error as Error).message }),
+    onSuccess: () => { toast.show({ kind: "success", title: t("Raft notification destination removed", "已移除 Raft 通知目标") }); refresh(); },
+    onError: (error) => toast.show({ kind: "error", title: t("Could not remove destination", "无法移除通知目标"), description: errorMessage(error) }),
   });
   const test = useMutation({
     mutationFn: (id: string) => testRaftNotification(appId, id),
-    onSuccess: () => toast.show({ kind: "success", title: "Test message sent" }),
-    onError: (error) => toast.show({ kind: "error", title: "Test message failed", description: (error as Error).message }),
+    onSuccess: () => toast.show({ kind: "success", title: t("Test message sent", "测试消息已发送") }),
+    onError: (error) => toast.show({ kind: "error", title: t("Test message failed", "测试消息发送失败"), description: errorMessage(error) }),
   });
 
-  if (config.isLoading) return <div className="border-t border-line-hairline pt-3 text-xs text-foreground-muted">Loading Raft notifications…</div>;
-  if (config.error) return <div className="border-t border-line-hairline pt-3 text-xs text-danger-strong">Could not load Raft notification settings: {(config.error as Error).message}</div>;
+  if (config.isLoading) return <div className="border-t border-line-hairline pt-3 text-xs text-foreground-muted">{t("Loading Raft notifications…", "正在加载 Raft 通知…")}</div>;
+  if (config.error) return <div className="border-t border-line-hairline pt-3 text-xs text-danger-strong">{t("Could not load Raft notification settings:", "无法加载 Raft 通知设置：")} {errorMessage(config.error)}</div>;
   const bot = config.data?.bot;
   const subscriptions = config.data?.subscriptions ?? [];
   const toggleEvent = (event: WebhookEventType) => setEvents((current) => current.includes(event) ? current.filter((item) => item !== event) : [...current, event]);
@@ -1371,41 +1375,41 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
   return (
     <div className="border-t border-line-hairline pt-3 space-y-3">
       <div>
-        <h3 className="text-sm font-medium text-foreground-strong">Raft notifications</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Raft notifications", "Raft 通知")}</h3>
         <p className="text-xs text-foreground-muted mt-1">
-          Choose the Raft channel and Hands events that this app should post. The bot key stays encrypted in Hands and is never shown here.
+          {t("Choose the Raft channel and Hands events that this app should post. The bot key stays encrypted in Hands and is never shown here.", "选择此应用发送通知的 Raft 频道和 Hands 事件。Bot 密钥在 Hands 中加密保存，不会在此显示。")}
         </p>
         <p className="text-xs text-foreground-muted mt-1">
-          A Raft server owner/admin must grant the Hands App Bot. Connect it, add it to the target channel, choose events, and use Test to confirm delivery.{" "}
-          <a className="underline" href="/docs/admin-user-guide/#raft-notifications">Raft notification setup guide</a>
+          {t("A Raft server owner/admin must grant the Hands App Bot. Connect it, add it to the target channel, choose events, and use Test to confirm delivery.", "Raft 服务器所有者或管理员必须授权 Hands App Bot。连接后将其加入目标频道，选择事件，再使用测试功能确认投递。")}{" "}
+          <a className="underline" href={t("/docs/admin-user-guide/#raft-notifications", "/docs/zh/admin-user-guide/#raft-notifications")}>{t("Raft notification setup guide", "Raft 通知设置指南")}</a>
         </p>
         <p className="text-xs text-foreground-muted mt-1">
-          Feedback notifications can include an excerpt of user-submitted text. TestFlight notifications can include test group names and an excerpt of testing notes. Choose a channel whose members may see them.
+          {t("Feedback notifications can include an excerpt of user-submitted text. TestFlight notifications can include test group names and an excerpt of testing notes. Choose a channel whose members may see them.", "反馈通知可能包含用户提交文字的摘要。TestFlight 通知可能包含测试组名称和测试说明摘要。请选择成员可以查看这些内容的频道。")}
         </p>
         <p className="text-xs text-foreground-muted mt-1">
-          Release status cards update the same message when App Store, external TestFlight or Google Play status changes. Cards start with new objects; existing text threads stay as text. Updates do not send a new notification.
+          {t("Release status cards update the same message when App Store, external TestFlight or Google Play status changes. Cards start with new objects; existing text threads stay as text. Updates do not send a new notification.", "App Store、外部 TestFlight 或 Google Play 状态变化时，版本状态卡片会更新同一条消息。卡片只用于新对象，现有文字线程继续使用文字；更新不会发送新通知。")}
         </p>
       </div>
       <div className="rounded-md bg-fill-muted p-3 flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs">
-          <div className="font-medium">App Bot: {bot?.connected ? "connected" : "not connected"}</div>
+          <div className="font-medium">App Bot: {bot?.connected ? t("connected", "已连接") : t("not connected", "未连接")}</div>
           <div className="text-foreground-muted mt-1">
-            {bot?.connected ? (bot.handle ? `Handle ${bot.handle}` : "The bot is ready to send.") : "A Raft server owner/admin must grant the bot before connecting."}
+            {bot?.connected ? (bot.handle ? t(`Handle ${bot.handle}`, `账号 ${bot.handle}`) : t("The bot is ready to send.", "Bot 已准备好发送。")) : t("A Raft server owner/admin must grant the bot before connecting.", "连接前须由 Raft 服务器所有者或管理员授权 Bot。")}
           </div>
         </div>
-        {!bot?.connected && <Button variant="outline" size="xs" onClick={() => connect.mutate()} disabled={connect.isPending}>{connect.isPending ? "Connecting…" : "Connect App Bot"}</Button>}
+        {!bot?.connected && <Button variant="outline" size="xs" onClick={() => connect.mutate()} disabled={connect.isPending}>{connect.isPending ? t("Connecting…", "连接中…") : t("Connect App Bot", "连接 App Bot")}</Button>}
       </div>
       {bot?.connected && (
         <div className="space-y-2">
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-64 flex-1">
-              <Label htmlFor={`raft-channel-${appId}`}>Target channel</Label>
+              <Label htmlFor={`raft-channel-${appId}`}>{t("Target channel", "目标频道")}</Label>
               <Input id={`raft-channel-${appId}`} value={channelTarget} onChange={(event) => setChannelTarget(event.target.value)} placeholder="#proj-mobile-release" />
             </div>
-            <Button variant="outline" size="xs" onClick={() => create.mutate()} disabled={!channelTarget.trim() || events.length === 0 || create.isPending}>{create.isPending ? "Adding…" : "Add destination"}</Button>
+            <Button variant="outline" size="xs" onClick={() => create.mutate()} disabled={!channelTarget.trim() || events.length === 0 || create.isPending}>{create.isPending ? t("Adding…", "添加中…") : t("Add destination", "添加目标")}</Button>
           </div>
           <div>
-            <div className="text-xs font-medium mb-1">Events</div>
+            <div className="text-xs font-medium mb-1">{t("Events", "事件")}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
               {WEBHOOK_EVENT_TYPES.map((event) => (
                 <label key={event} className="flex items-center gap-2 text-xs text-foreground-muted">
@@ -1417,9 +1421,9 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
           </div>
           {subscriptions.length > 0 && (
             <div className="space-y-2">
-              <div className="text-xs font-medium">Configured destinations</div>
+              <div className="text-xs font-medium">{t("Configured destinations", "已配置的目标")}</div>
               {subscriptions.map((subscription) => (
-                <RaftNotificationRow key={subscription.id} appId={appId} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onToggleCards={(card_updates) => updateCards.mutate({ id: subscription.id, card_updates })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || updateCards.isPending || test.isPending || remove.isPending} />
+                <RaftNotificationRow key={subscription.id} appId={appId} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onToggleCards={(card_updates) => updateCards.mutate({ id: subscription.id, card_updates })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(t(`Remove ${subscription.channel_target}?`, `移除 ${subscription.channel_target}？`))) remove.mutate(subscription.id); }} busy={update.isPending || updateCards.isPending || test.isPending || remove.isPending} />
               ))}
             </div>
           )}
@@ -1446,6 +1450,8 @@ function RaftNotificationRow({
   onDelete: () => void;
   busy: boolean;
 }) {
+  const t = useText();
+  const { locale } = useLocale();
   const qc = useQueryClient();
   const toast = useToast();
   const failures = useQuery({
@@ -1455,27 +1461,27 @@ function RaftNotificationRow({
   const retry = useMutation({
     mutationFn: (id: string) => retryRaftNotificationFailure(appId, subscription.id, id),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Retry scheduled", description: "Hands will retry when the delivery service next runs." });
+      toast.show({ kind: "success", title: t("Retry scheduled", "已安排重试"), description: t("Hands will retry when the delivery service next runs.", "投递服务下次运行时，Hands 将重试。") });
       void qc.invalidateQueries({ queryKey: ["raft-notification-failures", appId, subscription.id] });
     },
-    onError: (error) => toast.show({ kind: "error", title: "Could not retry notification", description: (error as Error).message }),
+    onError: (error) => toast.show({ kind: "error", title: t("Could not retry notification", "无法重试通知"), description: errorMessage(error) }),
   });
   return (
     <div className="rounded-md border border-line-hairline p-2 flex flex-wrap items-center gap-2">
       <div className="min-w-48 flex-1">
         <div className="font-mono text-xs">{subscription.channel_target}</div>
-        <div className="text-[11px] text-foreground-muted mt-1">{subscription.events.length} event{subscription.events.length === 1 ? "" : "s"}</div>
+        <div className="text-[11px] text-foreground-muted mt-1">{t(`${subscription.events.length} event${subscription.events.length === 1 ? "" : "s"}`, `${subscription.events.length} 个事件`)}</div>
       </div>
-      <Badge variant={subscription.enabled ? "success" : "muted"}>{subscription.enabled ? "enabled" : "disabled"}</Badge>
-      <Button variant="ghost" size="xs" onClick={() => onToggleCards(!subscription.card_updates)} disabled={busy}>{subscription.card_updates ? "Use text" : "Use status cards"}</Button>
-      <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? "Disable" : "Enable"}</Button>
-      <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>Test</Button>
-      <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>Remove</Button>
-      {failures.isError && <div className="w-full text-xs text-foreground-muted">Could not load failed notifications.</div>}
+      <Badge variant={subscription.enabled ? "success" : "muted"}>{subscription.enabled ? t("enabled", "已启用") : t("disabled", "已停用")}</Badge>
+      <Button variant="ghost" size="xs" onClick={() => onToggleCards(!subscription.card_updates)} disabled={busy}>{subscription.card_updates ? t("Use text", "使用文字") : t("Use status cards", "使用状态卡片")}</Button>
+      <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? t("Disable", "停用") : t("Enable", "启用")}</Button>
+      <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>{t("Test", "测试")}</Button>
+      <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>{t("Remove", "移除")}</Button>
+      {failures.isError && <div className="w-full text-xs text-foreground-muted">{t("Could not load failed notifications.", "无法加载失败的通知。")}</div>}
       {failures.data?.failures.map((failure) => (
         <div key={failure.id} className="w-full flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
-          <span>Failed: {failure.event_type} · {new Date(failure.created_at).toLocaleString()}</span>
-          <Button variant="ghost" size="xs" onClick={() => retry.mutate(failure.id)} disabled={busy || retry.isPending || !subscription.enabled}>Retry</Button>
+          <span>{t("Failed:", "失败：")} {failure.event_type} · {new Date(failure.created_at).toLocaleString(locale)}</span>
+          <Button variant="ghost" size="xs" onClick={() => retry.mutate(failure.id)} disabled={busy || retry.isPending || !subscription.enabled}>{t("Retry", "重试")}</Button>
         </div>
       ))}
     </div>
@@ -1483,18 +1489,19 @@ function RaftNotificationRow({
 }
 
 function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs: Array<{ id: string; name: string; slug: string; archived: number }> }) {
+  const t = useText();
   const toast = useToast(); const qc = useQueryClient();
   const [target, setTarget] = useState(""); const [confirm, setConfirm] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const transfer = useMutation({
     mutationFn: () => transferApp(appId, { target_org_id: target, expected_source_org_id: app.org_id ?? "", idempotency_key: idempotencyKey }),
-    onSuccess: () => { toast.show({ kind: "success", title: "App transferred" }); setConfirm(""); setIdempotencyKey(crypto.randomUUID()); void qc.invalidateQueries({ queryKey: ["apps"] }); },
-    onError: (e) => toast.show({ kind: "error", title: "Transfer failed", description: (e as Error).message }),
+    onSuccess: () => { toast.show({ kind: "success", title: t("App transferred", "应用已转移") }); setConfirm(""); setIdempotencyKey(crypto.randomUUID()); void qc.invalidateQueries({ queryKey: ["apps"] }); },
+    onError: (e) => toast.show({ kind: "error", title: t("Transfer failed", "转移失败"), description: errorMessage(e) }),
   });
   const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);
-  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">Transfer app</h3><p className="text-xs text-foreground-muted mb-2">Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.</p><div className="flex flex-wrap items-center gap-2"><Select value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label="Select target organization" disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent>
-    <SelectList><SelectItem value="none">Select target organization…</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectList>
-  </SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={`Type ${app.slug} to confirm`} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? "Transferring…" : "Transfer"}</Button></div></div>;
+  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">{t("Transfer app", "转移应用")}</h3><p className="text-xs text-foreground-muted mb-2">{t("Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.", "保留应用 ID 及所有版本、构建、渠道和历史记录。两个组织的所有者都必须授权。")}</p><div className="flex flex-wrap items-center gap-2"><Select items={{ none: t("Select target organization…", "选择目标组织…"), ...Object.fromEntries(eligible.map((o) => [o.id, `${o.name} (${o.slug})`])) }} value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label={t("Select target organization", "选择目标组织")} disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent>
+    <SelectList><SelectItem value="none">{t("Select target organization…", "选择目标组织…")}</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectList>
+  </SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={t(`Type ${app.slug} to confirm`, `输入 ${app.slug} 以确认`)} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? t("Transferring…", "转移中…") : t("Transfer", "转移")}</Button></div></div>;
 }
 
 function DefaultChannelPicker({
@@ -1512,6 +1519,7 @@ function DefaultChannelPicker({
     | undefined;
   isOrgAdmin: boolean;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const channels = useQuery({
@@ -1531,8 +1539,8 @@ function DefaultChannelPicker({
       toast.show({
         kind: "success",
         title: selected
-          ? "Default release channel updated"
-          : "Default channel cleared (will fall back to first channel)",
+          ? t("Default release channel updated", "默认发布渠道已更新")
+          : t("Default channel cleared (will fall back to first channel)", "已清除默认渠道（将回退到第一个渠道）"),
       });
       qc.invalidateQueries({ queryKey: ["apps"] });
       qc.invalidateQueries({ queryKey: ["app-detail", appId] });
@@ -1540,8 +1548,8 @@ function DefaultChannelPicker({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Save failed",
-        description: (e as Error).message,
+        title: t("Save failed", "保存失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1550,16 +1558,15 @@ function DefaultChannelPicker({
   return (
     <div className="border-t border-line-hairline pt-3">
       <h3 className="text-sm font-medium text-foreground-strong mb-2">
-        Default release channel
+        {t("Default release channel", "默认发布渠道")}
       </h3>
       <p className="text-xs text-foreground-muted mb-2">
-        Pre-fills the channel dropdown in the New Release dialog. Falls
-        back to the first channel (by created_at) if unset.
+        {t("Pre-fills the channel dropdown in the New Release dialog. Falls back to the first channel (by created_at) if unset.", "预填新建版本对话框中的渠道。未设置时使用按创建时间排列的第一个渠道。")}
       </p>
       <div className="flex flex-col gap-2 md:flex-row md:items-center">
         <Select
           items={{
-            "": "— none (use first channel) —",
+            "": t("— none (use first channel) —", "— 未设置（使用第一个渠道）—"),
             ...Object.fromEntries(
               (channels.data?.channels ?? []).map((c: Channel) => [
                 c.id,
@@ -1577,7 +1584,7 @@ function DefaultChannelPicker({
           </SelectTrigger>
           <SelectContent>
             <SelectList>
-            <SelectItem value="">— none (use first channel) —</SelectItem>
+            <SelectItem value="">{t("— none (use first channel) —", "— 未设置（使用第一个渠道）—")}</SelectItem>
             {channels.data?.channels.map((c: Channel) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.slug} ({c.name})
@@ -1593,13 +1600,13 @@ function DefaultChannelPicker({
             onClick={() => save.mutate()}
             disabled={!dirty || save.isPending}
           >
-            {save.isPending ? "Saving…" : "Save"}
+            {save.isPending ? t("Saving…", "保存中…") : t("Save", "保存")}
           </Button>
         )}
       </div>
       {!isOrgAdmin && (
         <p className="text-xs text-warning-strong mt-2">
-          ⚠ Org owner / admin required to change settings.
+          {t("⚠ Org owner / admin required to change settings.", "⚠ 修改设置需要组织所有者或管理员权限。")}
         </p>
       )}
     </div>
@@ -1615,6 +1622,7 @@ function CreateChannelDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const t = useText();
   const [slug, setSlug] = useState("main");
   const [name, setName] = useState("Main");
   const [bundleId, setBundleId] = useState("");
@@ -1628,14 +1636,14 @@ function CreateChannelDialog({
         bundle_id: bundleId.trim() || undefined,
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: `Channel '${slug}' created` });
+      toast.show({ kind: "success", title: t(`Channel '${slug}' created`, `渠道“${slug}”已创建`) });
       onCreated();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Failed to create channel",
-        description: (e as Error).message,
+        title: t("Failed to create channel", "创建渠道失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1643,7 +1651,7 @@ function CreateChannelDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New channel</DialogTitle>
+          <DialogTitle>{t("New channel", "新建渠道")}</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <form
@@ -1655,7 +1663,7 @@ function CreateChannelDialog({
             className="space-y-3"
           >
             <div>
-              <Label>Slug</Label>
+              <Label>{t("Slug", "标识")}</Label>
               <Input
                 value={slug}
                 onChange={(e) => setSlug(e.target.value)}
@@ -1663,7 +1671,7 @@ function CreateChannelDialog({
               />
             </div>
             <div>
-              <Label>Name</Label>
+              <Label>{t("Name", "名称")}</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -1671,7 +1679,7 @@ function CreateChannelDialog({
               />
             </div>
             <div>
-              <Label>Bundle ID override (optional)</Label>
+              <Label>{t("Bundle ID override (optional)", "覆盖 Bundle ID（可选）")}</Label>
               <Input
                 className="font-mono text-xs"
                 value={bundleId}
@@ -1683,7 +1691,7 @@ function CreateChannelDialog({
         </DialogBody>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
           <Button
             type="submit"
@@ -1691,7 +1699,7 @@ function CreateChannelDialog({
             variant="primary"
             disabled={create.isPending}
           >
-            {create.isPending ? "Creating..." : "Create"}
+            {create.isPending ? t("Creating...", "创建中…") : t("Create", "创建")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1708,6 +1716,7 @@ function ChannelRow({
   onEdit: () => void;
   busy: boolean;
 }) {
+  const t = useText();
   return (
     <section className="border-t border-line-hairline pt-3 flex items-center gap-3">
       <div className="flex-1 min-w-0">
@@ -1723,17 +1732,17 @@ function ChannelRow({
                   </Badge>
                 }
               />
-              <TooltipContent>Bundle ID override</TooltipContent>
+              <TooltipContent>{t("Bundle ID override", "覆盖的 Bundle ID")}</TooltipContent>
             </Tooltip>
           )}
           {c.password && (
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <Badge variant="warning">🔒 gated</Badge>
+                  <Badge variant="warning">{t("🔒 gated", "🔒 受保护")}</Badge>
                 }
               />
-              <TooltipContent>Downloads require password</TooltipContent>
+              <TooltipContent>{t("Downloads require password", "下载需要密码")}</TooltipContent>
             </Tooltip>
           )}
           {c.git_url && (
@@ -1760,7 +1769,7 @@ function ChannelRow({
         onClick={onEdit}
         disabled={busy}
       >
-        Edit
+        {t("Edit", "编辑")}
       </Button>
     </section>
   );
@@ -1786,6 +1795,7 @@ function EditChannelDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [name, setName] = useState(channel.name);
@@ -1804,28 +1814,28 @@ function EditChannelDialog({
         git_url: gitUrl.trim() || null,
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: `Channel '${channel.slug}' saved` });
+      toast.show({ kind: "success", title: t(`Channel '${channel.slug}' saved`, `渠道“${channel.slug}”已保存`) });
       onSaved();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Save failed",
-        description: (e as Error).message,
+        title: t("Save failed", "保存失败"),
+        description: errorMessage(e),
       }),
   });
 
   const remove = useMutation({
     mutationFn: () => deleteChannel(appId, channel.id),
     onSuccess: () => {
-      toast.show({ kind: "success", title: `Channel '${channel.slug}' deleted` });
+      toast.show({ kind: "success", title: t(`Channel '${channel.slug}' deleted`, `渠道“${channel.slug}”已删除`) });
       onSaved();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Delete failed",
-        description: (e as Error).message,
+        title: t("Delete failed", "删除失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1839,7 +1849,7 @@ function EditChannelDialog({
             matching the original hand-rolled stacking. */}
         <DialogContent className="max-w-md z-10" overlay={{ className: "z-10" }}>
           <DialogHeader>
-            <DialogTitle>Edit channel '{channel.slug}'</DialogTitle>
+            <DialogTitle>{t(`Edit channel '${channel.slug}'`, `编辑渠道“${channel.slug}”`)}</DialogTitle>
           </DialogHeader>
           <DialogBody>
             <form
@@ -1851,7 +1861,7 @@ function EditChannelDialog({
               className="space-y-3"
             >
               <div>
-                <Label>Slug (immutable)</Label>
+                <Label>{t("Slug (immutable)", "标识（不可更改）")}</Label>
                 <Input
                   className="font-mono text-xs bg-layer-inset"
                   value={channel.slug}
@@ -1859,7 +1869,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <Label>Name</Label>
+                <Label>{t("Name", "名称")}</Label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -1867,7 +1877,7 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <Label>Bundle ID override</Label>
+                <Label>{t("Bundle ID override", "覆盖 Bundle ID")}</Label>
                 <Input
                   className="font-mono text-xs"
                   value={bundleId}
@@ -1876,16 +1886,16 @@ function EditChannelDialog({
                 />
               </div>
               <div>
-                <Label>Download password</Label>
+                <Label>{t("Download password", "下载密码")}</Label>
                 <Input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="leave blank for no gate"
+                  placeholder={t("leave blank for no gate", "留空则无需密码")}
                 />
               </div>
               <div>
-                <Label>Git URL</Label>
+                <Label>{t("Git URL", "Git 地址")}</Label>
                 <Input
                   className="font-mono text-xs"
                   value={gitUrl}
@@ -1902,7 +1912,7 @@ function EditChannelDialog({
               onClick={() => setConfirmDelete(true)}
               disabled={save.isPending || remove.isPending}
             >
-              Delete channel
+              {t("Delete channel", "删除渠道")}
             </Button>
             <div className="flex gap-2">
               <Button
@@ -1910,7 +1920,7 @@ function EditChannelDialog({
                 variant="outline"
                 onClick={onClose}
               >
-                Cancel
+                {t("Cancel", "取消")}
               </Button>
               <Button
                 type="submit"
@@ -1918,7 +1928,7 @@ function EditChannelDialog({
                 variant="primary"
                 disabled={save.isPending}
               >
-                {save.isPending ? "Saving…" : "Save"}
+                {save.isPending ? t("Saving…", "保存中…") : t("Save", "保存")}
               </Button>
             </div>
           </DialogFooter>
@@ -1928,14 +1938,14 @@ function EditChannelDialog({
       {/* Channel delete confirmation (typed-confirm + default-channel warning) */}
       <ConfirmActionDialog
         open={confirmDelete}
-        title="Delete channel?"
+        title={t("Delete channel?", "删除渠道？")}
         objectLabel={channel.slug}
         objectHint={`id: ${channel.id.slice(0, 8)}…`}
         objectSummary={
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono">
             <div className="text-foreground-muted">slug</div>
             <div>{channel.slug}</div>
-            <div className="text-foreground-muted">name</div>
+            <div className="text-foreground-muted">{t("name", "名称")}</div>
             <div>{channel.name}</div>
             <div className="text-foreground-muted">bundle_id</div>
             <div>{channel.bundle_id ?? "—"}</div>
@@ -1943,17 +1953,14 @@ function EditChannelDialog({
         }
         body={
           <>
-            Deleting this channel removes it from this app.{" "}
+            {t("Deleting this channel removes it from this app.", "删除渠道会将其从此应用移除。")} {" "}
             <strong>
-              All releases pointing at this channel must be cancelled or moved
-              first
+              {t("All releases pointing at this channel must be cancelled or moved first", "必须先取消或转移所有指向此渠道的版本")}
             </strong>{" "}
-            — otherwise the public API will start 404'ing your clients.
+            {t("— otherwise the public API will start 404'ing your clients.", "，否则公开 API 将对客户端返回 404。")}
             {app?.default_channel_id === channel.id && (
               <div className="mt-2 p-2 bg-warning-soft border border-warning/30 rounded-sm text-xs text-warning-strong">
-                ⚠ This is the app's <strong>default release channel</strong>.
-                After deletion, the New Release wizard will fall back to the
-                first channel by created_at.
+                {t("⚠ This is the app's", "⚠ 这是应用的")} <strong>{t("default release channel", "默认发布渠道")}</strong>{t(". After deletion, the New Release wizard will fall back to the first channel by created_at.", "。删除后，新建版本向导将使用按创建时间排列的第一个渠道。")}
               </div>
             )}
             <TypedConfirmField
@@ -1963,8 +1970,8 @@ function EditChannelDialog({
             />
           </>
         }
-        confirmLabel="Delete channel"
-        cancelLabel="Keep channel"
+        confirmLabel={t("Delete channel", "删除渠道")}
+        cancelLabel={t("Keep channel", "保留渠道")}
         confirmKind="danger"
         confirmDisabled={typedConfirm !== channel.slug}
         pending={remove.isPending}

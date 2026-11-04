@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -70,7 +71,7 @@ export function Operations({ appId }: { appId: string }) {
       const patch = {
         kind: "error",
         title: t("Retry failed", "重试失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       } as const;
       if (retryToastRef.current !== null) toast.update(retryToastRef.current, patch);
       else toast.show(patch);
@@ -88,7 +89,7 @@ export function Operations({ appId }: { appId: string }) {
       toast.show({
         kind: "error",
         title: t("Delete failed", "删除失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -103,7 +104,7 @@ export function Operations({ appId }: { appId: string }) {
 
       {isLoading && <p className="text-foreground-muted text-sm">{t("Loading…", "加载中…")}</p>}
       {error && (
-        <p className="text-danger text-sm">{t("Failed:", "加载失败：")} {(error as Error).message}</p>
+        <p className="text-danger text-sm">{t("Failed:", "加载失败：")} {errorMessage(error)}</p>
       )}
 
       <div className="space-y-6">

@@ -1,4 +1,4 @@
-import { currentLocale } from "./locale";
+import { currentLocale, type Locale } from "./locale";
 
 const messages = {
   en: {
@@ -10,6 +10,6 @@ const messages = {
     description: "管理所属服务器继承的权限、外部 Raft 服务器可见性和应用的直接成员权限。",
   },
 };
-export function appAccessMessage(key: keyof typeof messages.en): string {
-  return messages[currentLocale()][key];
+export function appAccessMessage(key: keyof typeof messages.en, locale: Locale = currentLocale()): string {
+  return messages[locale][key];
 }

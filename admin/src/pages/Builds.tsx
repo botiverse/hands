@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Builds tab — list of build artifacts for an app.
  *
@@ -110,7 +111,7 @@ export function Builds({ appId }: { appId: string }) {
         </div>
       )}
       {builds.error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {(builds.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(builds.error)}</p>
       )}
 
       {builds.data && builds.data.builds.length === 0 && !builds.isLoading && (
@@ -222,7 +223,7 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
       qc.invalidateQueries({ queryKey: ["agc-build-submission", appId, build.id] });
       toast.show({ kind: "success", title: t("Build uploaded to AppGallery", "构建已上传到 AppGallery"), description: t("Huawei is compiling the App Pack. Testing has not been submitted.", "华为正在编译 App Pack，尚未提交测试。") });
     },
-    onError: (e) => toast.show({ kind: "error", title: t("AppGallery upload failed", "上传到 AppGallery 失败"), description: (e as Error).message }),
+    onError: (e) => toast.show({ kind: "error", title: t("AppGallery upload failed", "上传到 AppGallery 失败"), description: errorMessage(e) }),
   });
   const submissionId = upload.data?.submission_id ?? upload.data?.submission?.id ?? existing.data?.submission?.id ?? null;
   const status = useQuery({
@@ -242,7 +243,7 @@ function AgcTestingPanel({ appId, build, packageName }: { appId: string; build: 
       qc.invalidateQueries({ queryKey: ["agc-build-submission", appId, build.id] });
       toast.show({ kind: "success", title: t("Submitted to invitation testing", "已提交邀请测试") });
     },
-    onError: (e) => toast.show({ kind: "error", title: t("Review submission failed", "提交审核失败"), description: (e as Error).message }),
+    onError: (e) => toast.show({ kind: "error", title: t("Review submission failed", "提交审核失败"), description: errorMessage(e) }),
   });
   const state = submission?.state;
   const stateClass = state === "failed" || state === "rejected" ? "text-danger" : state === "stopped" ? "text-foreground-muted" : state === "ready" || state === "testing_review" || state === "testing_scheduled" || state === "testing_active" ? "text-success-strong" : "text-info-strong";
@@ -319,7 +320,7 @@ function TestflightUploadPanel({ appId, build }: { appId: string; build: Build }
       }
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Upload failed", "上传失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Upload failed", "上传失败"), description: errorMessage(e) }),
   });
 
   const status = useQuery({
@@ -487,7 +488,7 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
                         toast.show({
                           kind: "error",
                           title: t("Download failed", "下载失败"),
-                          description: (e as Error).message,
+                          description: errorMessage(e),
                         });
                       } finally {
                         setDownloading((s) => {
@@ -568,7 +569,7 @@ function PrepareReleaseDialog({
       toast.show({
         kind: "error",
         title: t("Failed to create release", "创建版本失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 

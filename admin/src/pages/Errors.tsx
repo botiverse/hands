@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Dedicated error triage page (/apps/:appId/errors): captured exceptions
  * (kind=error) grouped by signature. Clicking a group jumps to the Feedback
@@ -46,7 +47,7 @@ export function AppErrors({ appId }: { appId: string }) {
         {groups.isLoading && <p className="text-sm text-foreground-muted">{t("Loading…", "加载中…")}</p>}
         {groups.error && (
           <p className="text-sm text-danger">
-            {t("Failed to load error groups:", "加载错误分组失败：")} {(groups.error as Error).message}
+            {t("Failed to load error groups:", "加载错误分组失败：")} {errorMessage(groups.error)}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (

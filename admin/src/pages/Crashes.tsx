@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Dedicated crash triage page (/apps/:appId/crashes): crashes-by-version
  * overview plus signature groups. Clicking a group jumps to the Feedback
@@ -104,7 +105,7 @@ export function AppCrashes({ appId }: { appId: string }) {
         {groups.isLoading && <p className="text-sm text-foreground-muted">{t("Loading…", "加载中…")}</p>}
         {groups.error && (
           <p className="text-sm text-danger">
-            {t("Failed to load crash groups:", "加载崩溃分组失败：")} {(groups.error as Error).message}
+            {t("Failed to load crash groups:", "加载崩溃分组失败：")} {errorMessage(groups.error)}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (

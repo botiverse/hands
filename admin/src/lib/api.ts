@@ -444,7 +444,9 @@ export type AppPermission =
   | "app:admin"
   | "feedback:write"
   | "feedback:read"
-  | "feedback:comment";
+  | "feedback:comment"
+  | "feedback:route"
+  | "feedback:triage";
 
 export interface AppPermissionModel {
   permissions: Array<{ permission: AppPermission; label: string; description: string }>;

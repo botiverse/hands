@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * App-level share management (task #65 P1).
  *
@@ -62,7 +63,7 @@ export function AppShares({ appId }: { appId: string }) {
       toast.show({
         kind: "error",
         title: t("Expiry update failed", "更新有效期失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -83,7 +84,7 @@ export function AppShares({ appId }: { appId: string }) {
       toast.show({
         kind: "error",
         title: t("Password update failed", "更新密码失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -98,7 +99,7 @@ export function AppShares({ appId }: { appId: string }) {
       toast.show({
         kind: "error",
         title: t("Revoke failed", "撤销失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -147,7 +148,7 @@ export function AppShares({ appId }: { appId: string }) {
         )}
         {shares.error && (
           <p className="text-sm text-danger">
-            {t("Failed to load shares:", "加载分享失败：")} {(shares.error as Error).message}
+            {t("Failed to load shares:", "加载分享失败：")} {errorMessage(shares.error)}
           </p>
         )}
         {!shares.isLoading && rows.length === 0 && (
@@ -399,7 +400,7 @@ function RebindShareModal({
     onError: (error) => toast.show({
       kind: "error",
       title: t("Release rebind failed", "更换关联版本失败"),
-      description: (error as Error).message,
+      description: errorMessage(error),
     }),
   });
 
@@ -511,7 +512,7 @@ function CreateShareModal({
       toast.show({
         kind: "error",
         title: t("Create share failed", "创建分享失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 

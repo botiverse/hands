@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * OrgSettings — per-organization admin page.
  *
@@ -43,6 +44,7 @@ import {
   principalServer,
 } from "../lib/principalIdentity";
 import { useToast } from "../components/Toast";
+import { useText } from "../lib/locale";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 import {
@@ -87,6 +89,10 @@ const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   audit: "Audit",
   webhooks: "Webhooks",
 };
+const ORG_SETTINGS_TAB_LABELS_ZH: Record<OrgSettingsTab, string> = { general: "常规", members: "成员", invites: "邀请", audit: "审计", webhooks: "Webhook" };
+const ROLE_ZH: Record<string, string> = { owner: "所有者", admin: "管理员", member: "成员", viewer: "查看者", publisher: "发布者" };
+const INVITE_ZH: Record<string, string> = { pending: "待接受", accepted: "已接受", revoked: "已撤销", expired: "已过期" };
+const roleText = (role: string, t: (english: string, chinese: string) => string) => t(role, ROLE_ZH[role] ?? role);
 
 export const ORG_SETTINGS_TABS = [
   "general",
@@ -109,6 +115,7 @@ export function OrgSettings({
   orgId: string;
   tab: OrgSettingsTab;
 }) {
+  const t = useText();
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
   const account = me.data?.account;
   const currentOrgId = account?.org_id ?? null;
@@ -119,21 +126,20 @@ export function OrgSettings({
   return (
     <div>
       <div className="mb-6">
-        <div className="text-sm text-foreground-muted">Organization</div>
+        <div className="text-sm text-foreground-muted">{t("Organization", "组织")}</div>
         <h1 className="text-2xl font-bold">
           {account
-            ? `${account.server_slug ?? account.server_id} · Raft org`
-            : "Settings"}
+            ? t(`${account.server_slug ?? account.server_id} · Raft org`, `${account.server_slug ?? account.server_id} · Raft 组织`)
+            : t("Settings", "设置")}
         </h1>
         <div className="text-sm text-foreground-muted font-mono">{orgId}</div>
       </div>
 
-      {me.isLoading && <p className="text-foreground-muted">Loading…</p>}
+      {me.isLoading && <p className="text-foreground-muted">{t("Loading…", "加载中…")}</p>}
 
       {!isCurrentOrg && currentOrgId && (
         <div className="rounded-md bg-warning-soft px-4 py-3 text-warning-strong text-sm mb-4">
-          ⚠ The org in the URL ({orgId}) doesn't match your current org (
-          {currentOrgId}). Multi-org support deferred to v2.
+          {t(`⚠ The org in the URL (${orgId}) doesn't match your current org (${currentOrgId}). Multi-org support deferred to v2.`, `⚠ 链接中的组织（${orgId}）与当前组织（${currentOrgId}）不一致。多组织支持计划在 v2 提供。`)}
         </div>
       )}
 
@@ -142,13 +148,13 @@ export function OrgSettings({
           parent route component) so the sliding indicator tracks it. */}
       <Tabs value={tab} className="mb-4">
         <TabsList>
-          {ORG_SETTINGS_TABS.map((t) => (
+          {ORG_SETTINGS_TABS.map((item) => (
             <TabsTab
-              key={t}
-              value={t}
-              render={<NavLink to={`/orgs/${orgId}/${t}`} end />}
+              key={item}
+              value={item}
+              render={<NavLink to={`/orgs/${orgId}/${item}`} end />}
             >
-              {ORG_SETTINGS_TAB_LABELS[t]}
+              {t(ORG_SETTINGS_TAB_LABELS[item], ORG_SETTINGS_TAB_LABELS_ZH[item])}
             </TabsTab>
           ))}
           <TabsIndicator />
@@ -157,23 +163,23 @@ export function OrgSettings({
 
       {tab === "general" && (
         <div className="text-sm space-y-2">
-          <Row k="External provider" v={account?.provider ?? "?"} />
-          <Row k="External ID (Raft server_id)" v={account?.server_id ?? "?"} />
-          <Row k="Server slug" v={account?.server_slug ?? "—"} />
+          <Row k={t("External provider", "外部服务提供方")} v={account?.provider ?? "?"} />
+          <Row k={t("External ID (Raft server_id)", "外部 ID（Raft server_id）")} v={account?.server_id ?? "?"} />
+          <Row k={t("Server slug", "服务器标识")} v={account?.server_slug ?? "—"} />
           <Row
-            k="Your principal type"
+            k={t("Your principal type", "您的身份类型")}
             v={
               account?.principal_type === "agent"
-                ? "agent (Raft)"
+                ? t("agent (Raft)", "智能体（Raft）")
                 : account?.principal_type === "human"
-                  ? "human (Raft)"
+                  ? t("human (Raft)", "用户（Raft）")
                   : "—"
             }
           />
-          <Row k="Your org_id" v={currentOrgId ?? "—"} mono />
+          <Row k={t("Your org_id", "您的组织 ID")} v={currentOrgId ?? "—"} mono />
           <Row
-            k="Your org_role"
-            v={currentRole ?? "—"}
+            k={t("Your org_role", "您的组织角色")}
+            v={currentRole ? roleText(currentRole, t) : "—"}
             color={
               currentRole === "owner"
                 ? "#a855f7"
@@ -183,12 +189,11 @@ export function OrgSettings({
             }
           />
           <Row
-            k="Your server_role (from Raft)"
-            v={account?.server_role ?? "—"}
+            k={t("Your server_role (from Raft)", "您的服务器角色（来自 Raft）")}
+            v={account?.server_role ? roleText(account.server_role, t) : "—"}
           />
           <p className="text-xs text-foreground-muted pt-3 border-t border-line-hairline">
-            Future: editable org name + slug, danger zone (archive org),
-            sign-up mode (open vs invite-only).
+            {t("Future: editable org name + slug, danger zone (archive org), sign-up mode (open vs invite-only).", "后续计划：编辑组织名称和标识、危险操作（归档组织）及注册方式（开放或仅限邀请）。")}
           </p>
         </div>
       )}
@@ -225,6 +230,7 @@ function MembersTab({
   currentAccountId: string | null;
   currentRole: string | null;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const isAdmin = currentRole === "admin" || currentRole === "owner";
@@ -246,41 +252,41 @@ function MembersTab({
     mutationFn: ({ accountId, role }: { accountId: string; role: OrgMember["org_role"] }) =>
       updateOrgMember(orgId, accountId, role),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Member role updated" });
+      toast.show({ kind: "success", title: t("Member role updated", "成员角色已更新") });
       qc.invalidateQueries({ queryKey: ["org-members", orgId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: t("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
 
   const remove = useMutation({
     mutationFn: (accountId: string) => removeOrgMember(orgId, accountId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Member removed" });
+      toast.show({ kind: "success", title: t("Member removed", "成员已移除") });
       qc.invalidateQueries({ queryKey: ["org-members", orgId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Remove failed",
-        description: (e as Error).message,
+        title: t("Remove failed", "移除失败"),
+        description: errorMessage(e),
       }),
   });
 
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Members</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Members", "成员")}</h3>
         <div className="flex items-center gap-2">
           <Select
             items={{
-              all: "All types",
-              human: "Humans only",
-              agent: "Agents only",
+              all: t("All types", "全部类型"),
+              human: t("Humans only", "仅用户"),
+              agent: t("Agents only", "仅智能体"),
             }}
             value={principalFilter}
             onValueChange={(v) =>
@@ -296,28 +302,27 @@ function MembersTab({
                   </SelectTrigger>
                 }
               />
-              <TooltipContent>Filter by principal type</TooltipContent>
+              <TooltipContent>{t("Filter by principal type", "按身份类型筛选")}</TooltipContent>
             </Tooltip>
             <SelectContent>
               <SelectList>
-              <SelectItem value="all">All types</SelectItem>
-              <SelectItem value="human">Humans only</SelectItem>
-              <SelectItem value="agent">Agents only</SelectItem>
+              <SelectItem value="all">{t("All types", "全部类型")}</SelectItem>
+              <SelectItem value="human">{t("Humans only", "仅用户")}</SelectItem>
+              <SelectItem value="agent">{t("Agents only", "仅智能体")}</SelectItem>
             </SelectList>
             </SelectContent>
           </Select>
           <span className="text-xs text-foreground-muted">
-            {filteredMembers.length} member{filteredMembers.length === 1 ? "" : "s"}
+            {t(`${filteredMembers.length} member${filteredMembers.length === 1 ? "" : "s"}`, `${filteredMembers.length} 位成员`)}
             {principalFilter !== "all" && (
-              <span className="ml-1">({principalFilter})</span>
+              <span className="ml-1">({t(principalFilter, principalFilter === "human" ? "用户" : "智能体")})</span>
             )}
           </span>
         </div>
       </div>
       {!isAdmin && (
         <p className="text-xs text-warning mb-2">
-          ⚠ Your current role is "{currentRole ?? "—"}" — you can view
-          members but not edit them.
+          {t(`⚠ Your current role is "${currentRole ?? "—"}" — you can view members but not edit them.`, `⚠ 您的当前角色为“${currentRole ? roleText(currentRole, t) : "—"}”，可以查看成员但不能编辑。`)}
         </p>
       )}
       {members.isLoading && (
@@ -328,14 +333,14 @@ function MembersTab({
         </div>
       )}
       {members.error && (
-        <p className="text-danger">Failed: {(members.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(members.error)}</p>
       )}
       {members.data && filteredMembers.length === 0 && (
         <EmptyState>
           <EmptyStateTitle>
             {principalFilter === "all"
-              ? "No members yet."
-              : `No ${principalFilter} members.`}
+              ? t("No members yet.", "暂无成员。")
+              : t(`No ${principalFilter} members.`, `暂无${principalFilter === "human" ? "用户" : "智能体"}成员。`)}
           </EmptyStateTitle>
         </EmptyState>
       )}
@@ -343,12 +348,12 @@ function MembersTab({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">Principal</th>
-              <th className="font-normal py-1 pr-2">Type</th>
-              <th className="font-normal py-1 pr-2">Role</th>
-              <th className="font-normal py-1 pr-2">Joined</th>
-              <th className="font-normal py-1 pr-2">Last login</th>
-              {isAdmin && <th className="font-normal py-1">Actions</th>}
+              <th className="font-normal py-1 pr-2">{t("Principal", "身份")}</th>
+              <th className="font-normal py-1 pr-2">{t("Type", "类型")}</th>
+              <th className="font-normal py-1 pr-2">{t("Role", "角色")}</th>
+              <th className="font-normal py-1 pr-2">{t("Joined", "加入日期")}</th>
+              <th className="font-normal py-1 pr-2">{t("Last login", "上次登录")}</th>
+              {isAdmin && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -366,7 +371,7 @@ function MembersTab({
                       </Badge>
                     )}
                     {m.account_id === currentAccountId && (
-                      <span className="ml-1 text-xs text-foreground-muted">(you)</span>
+                      <span className="ml-1 text-xs text-foreground-muted">{t("(you)", "（您）")}</span>
                     )}
                   </div>
                   <div className="text-xs text-foreground-muted">
@@ -381,9 +386,9 @@ function MembersTab({
                 </td>
                 <td className="py-2 pr-2">
                   {m.principal_type === "agent" ? (
-                    <Badge variant="accent">agent</Badge>
+                    <Badge variant="accent">{t("agent", "智能体")}</Badge>
                   ) : (
-                    <span className="text-xs">human</span>
+                    <span className="text-xs">{t("human", "用户")}</span>
                   )}
                 </td>
                 <td className="py-2 pr-2">
@@ -391,7 +396,7 @@ function MembersTab({
                     <Select
                       items={Object.fromEntries(
                         (["owner", "admin", "member", "viewer"] as const).map(
-                          (r) => [r, r],
+                          (r) => [r, roleText(r, t)],
                         ),
                       )}
                       value={m.org_role}
@@ -412,7 +417,7 @@ function MembersTab({
                         {(["owner", "admin", "member", "viewer"] as const).map(
                           (r) => (
                             <SelectItem key={r} value={r}>
-                              {r}
+                              {roleText(r, t)}
                             </SelectItem>
                           ),
                         )}
@@ -431,7 +436,7 @@ function MembersTab({
                               : "#374151",
                       }}
                     >
-                      {m.org_role}
+                      {roleText(m.org_role, t)}
                     </span>
                   )}
                 </td>
@@ -453,7 +458,7 @@ function MembersTab({
                         onClick={() => {
                           if (
                             confirm(
-                              `Remove ${m.display_name} from this org?`,
+                              t(`Remove ${m.display_name} from this org?`, `将 ${m.display_name} 从此组织移除？`),
                             )
                           ) {
                             remove.mutate(m.account_id);
@@ -461,7 +466,7 @@ function MembersTab({
                         }}
                         disabled={remove.isPending}
                       >
-                        Remove
+                        {t("Remove", "移除")}
                       </Button>
                     )}
                   </td>
@@ -482,6 +487,7 @@ function InvitesTab({
   orgId: string;
   canManage: boolean;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [showCreate, setShowCreate] = useState(false);
@@ -496,14 +502,14 @@ function InvitesTab({
   const revoke = useMutation({
     mutationFn: (inviteId: string) => revokeOrgInvite(orgId, inviteId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Invite revoked" });
+      toast.show({ kind: "success", title: t("Invite revoked", "邀请已撤销") });
       qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Revoke failed",
-        description: (e as Error).message,
+        title: t("Revoke failed", "撤销失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -512,8 +518,8 @@ function InvitesTab({
     onSuccess: (data) => {
       toast.show({
         kind: "success",
-        title: "Invite link refreshed",
-        description: `Copied URL: ${data.invite_url.slice(0, 60)}…`,
+        title: t("Invite link refreshed", "邀请链接已刷新"),
+        description: t(`Copied URL: ${data.invite_url.slice(0, 60)}…`, `已复制链接：${data.invite_url.slice(0, 60)}…`),
       });
       navigator.clipboard?.writeText(data.invite_url).catch(() => {});
       qc.invalidateQueries({ queryKey: ["org-invites", orgId] });
@@ -521,23 +527,23 @@ function InvitesTab({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Refresh failed",
-        description: (e as Error).message,
+        title: t("Refresh failed", "刷新失败"),
+        description: errorMessage(e),
       }),
   });
 
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Invites</h3>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Invites", "邀请")}</h3>
         <div className="flex items-center gap-2">
           <Select
             items={{
-              all: "All statuses",
-              pending: "Pending",
-              accepted: "Accepted",
-              revoked: "Revoked",
-              expired: "Expired",
+              all: t("All statuses", "全部状态"),
+              pending: t("Pending", "待接受"),
+              accepted: t("Accepted", "已接受"),
+              revoked: t("Revoked", "已撤销"),
+              expired: t("Expired", "已过期"),
             }}
             value={statusFilter}
             onValueChange={(v) => setStatusFilter(v as string)}
@@ -551,15 +557,15 @@ function InvitesTab({
                   </SelectTrigger>
                 }
               />
-              <TooltipContent>Filter by invite status</TooltipContent>
+              <TooltipContent>{t("Filter by invite status", "按邀请状态筛选")}</TooltipContent>
             </Tooltip>
             <SelectContent>
               <SelectList>
-              <SelectItem value="all">All statuses</SelectItem>
-              <SelectItem value="pending">Pending</SelectItem>
-              <SelectItem value="accepted">Accepted</SelectItem>
-              <SelectItem value="revoked">Revoked</SelectItem>
-              <SelectItem value="expired">Expired</SelectItem>
+              <SelectItem value="all">{t("All statuses", "全部状态")}</SelectItem>
+              <SelectItem value="pending">{t("Pending", "待接受")}</SelectItem>
+              <SelectItem value="accepted">{t("Accepted", "已接受")}</SelectItem>
+              <SelectItem value="revoked">{t("Revoked", "已撤销")}</SelectItem>
+              <SelectItem value="expired">{t("Expired", "已过期")}</SelectItem>
             </SelectList>
             </SelectContent>
           </Select>
@@ -569,14 +575,14 @@ function InvitesTab({
               className="text-xs"
               onClick={() => setShowCreate(true)}
             >
-              + Invite link
+              {t("+ Invite link", "+ 邀请链接")}
             </Button>
           )}
         </div>
       </div>
       {!canManage && (
         <p className="text-xs text-warning mb-2">
-          ⚠ Owner / admin required to manage invites.
+          {t("⚠ Owner / admin required to manage invites.", "⚠ 管理邀请需要所有者或管理员权限。")}
         </p>
       )}
       {invites.isLoading && (
@@ -586,14 +592,14 @@ function InvitesTab({
         </div>
       )}
       {invites.error && (
-        <p className="text-danger">Failed: {(invites.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(invites.error)}</p>
       )}
       {invites.data && filteredInvites.length === 0 && (
         <EmptyState>
           <EmptyStateTitle>
             {statusFilter === "all"
-              ? "No pending invites."
-              : `No ${statusFilter} invites.`}
+              ? t("No pending invites.", "暂无待接受的邀请。")
+              : t(`No ${statusFilter} invites.`, `暂无${INVITE_ZH[statusFilter] ?? statusFilter}的邀请。`)}
           </EmptyStateTitle>
         </EmptyState>
       )}
@@ -601,11 +607,11 @@ function InvitesTab({
         <table className="w-full text-sm">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">Email</th>
-              <th className="font-normal py-1 pr-2">Role</th>
-              <th className="font-normal py-1 pr-2">Status</th>
-              <th className="font-normal py-1 pr-2">Expires</th>
-              {canManage && <th className="font-normal py-1">Actions</th>}
+              <th className="font-normal py-1 pr-2">{t("Email", "邮箱")}</th>
+              <th className="font-normal py-1 pr-2">{t("Role", "角色")}</th>
+              <th className="font-normal py-1 pr-2">{t("Status", "状态")}</th>
+              <th className="font-normal py-1 pr-2">{t("Expires", "过期时间")}</th>
+              {canManage && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -615,7 +621,7 @@ function InvitesTab({
                 className="border-b border-line-hairline hover:bg-fill-muted"
               >
                 <td className="py-2 pr-2 font-mono text-xs">{inv.email}</td>
-                <td className="py-2 pr-2 text-xs">{inv.role}</td>
+                <td className="py-2 pr-2 text-xs">{roleText(inv.role, t)}</td>
                 <td className="py-2 pr-2 text-xs">
                   <InviteStatusBadge status={inv.status} />
                 </td>
@@ -630,20 +636,20 @@ function InvitesTab({
                       onClick={() => resend.mutate(inv.id)}
                       disabled={resend.isPending}
                     >
-                      Refresh link
+                      {t("Refresh link", "刷新链接")}
                     </Button>
                     <Button
                       variant="link"
                       size="sm"
                       className="text-danger"
                       onClick={() => {
-                        if (confirm(`Revoke invite to ${inv.email}?`)) {
+                        if (confirm(t(`Revoke invite to ${inv.email}?`, `撤销发给 ${inv.email} 的邀请？`))) {
                           revoke.mutate(inv.id);
                         }
                       }}
                       disabled={revoke.isPending}
                     >
-                      Revoke
+                      {t("Revoke", "撤销")}
                     </Button>
                   </td>
                 )}
@@ -676,6 +682,7 @@ function CreateInviteDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const t = useText();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"member" | "viewer">("member");
   const [message, setMessage] = useState("");
@@ -690,8 +697,8 @@ function CreateInviteDialog({
     onSuccess: (data) => {
       toast.show({
         kind: "success",
-        title: `Invite link created for ${email}`,
-        description: `Copied URL: ${data.invite_url.slice(0, 60)}…`,
+        title: t(`Invite link created for ${email}`, `已为 ${email} 创建邀请链接`),
+        description: t(`Copied URL: ${data.invite_url.slice(0, 60)}…`, `已复制链接：${data.invite_url.slice(0, 60)}…`),
       });
       // Copy invite URL to clipboard for the admin to share
       navigator.clipboard?.writeText(data.invite_url).catch(() => {});
@@ -700,15 +707,15 @@ function CreateInviteDialog({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Invite failed",
-        description: (e as Error).message,
+        title: t("Invite failed", "邀请失败"),
+        description: errorMessage(e),
       }),
   });
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Create member invite link</DialogTitle>
+          <DialogTitle>{t("Create member invite link", "创建成员邀请链接")}</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <form
@@ -720,7 +727,7 @@ function CreateInviteDialog({
             className="space-y-3"
           >
             <div>
-              <label className="block text-sm font-medium text-foreground-strong mb-1">Email</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">{t("Email", "邮箱")}</label>
               <Input
                 type="email"
                 value={email}
@@ -730,11 +737,11 @@ function CreateInviteDialog({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground-strong mb-1">Role</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">{t("Role", "角色")}</label>
               <Select
                 items={{
-                  member: "member (default)",
-                  viewer: "viewer (read-only)",
+                  member: t("member (default)", "成员（默认）"),
+                  viewer: t("viewer (read-only)", "查看者（只读）"),
                 }}
                 value={role}
                 onValueChange={(v) => setRole(v as "member" | "viewer")}
@@ -745,14 +752,14 @@ function CreateInviteDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectList>
-                  <SelectItem value="member">member (default)</SelectItem>
-                  <SelectItem value="viewer">viewer (read-only)</SelectItem>
+                  <SelectItem value="member">{t("member (default)", "成员（默认）")}</SelectItem>
+                  <SelectItem value="viewer">{t("viewer (read-only)", "查看者（只读）")}</SelectItem>
                 </SelectList>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground-strong mb-1">Message (optional)</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">{t("Message (optional)", "附言（可选）")}</label>
               <Textarea
                 className="text-xs min-h-[60px]"
                 value={message}
@@ -767,7 +774,7 @@ function CreateInviteDialog({
             variant="outline"
             onClick={onClose}
           >
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
           <Button
             type="submit"
@@ -775,7 +782,7 @@ function CreateInviteDialog({
             variant="primary"
             disabled={create.isPending || !email.trim()}
           >
-            {create.isPending ? "Creating…" : "Create invite link"}
+            {create.isPending ? t("Creating…", "创建中…") : t("Create invite link", "创建邀请链接")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -784,13 +791,14 @@ function CreateInviteDialog({
 }
 
 function InviteStatusBadge({ status }: { status: string }) {
+  const t = useText();
   const map: Record<string, BadgeVariant> = {
     pending: "information",
     accepted: "success",
     revoked: "muted",
     expired: "warning",
   };
-  return <Badge variant={map[status] ?? "muted"}>{status}</Badge>;
+  return <Badge variant={map[status] ?? "muted"}>{t(status, INVITE_ZH[status] ?? status)}</Badge>;
 }
 
 function AuditTab({
@@ -800,6 +808,7 @@ function AuditTab({
   orgId: string;
   canView: boolean;
 }) {
+  const t = useText();
   const audit = useQuery({
     queryKey: ["org-audit", orgId],
     queryFn: () => listOrgAuditLogs(orgId, 100),
@@ -807,10 +816,10 @@ function AuditTab({
   });
   return (
     <section className="border-t border-line-hairline pt-5">
-      <h3 className="text-sm font-medium text-foreground-strong mb-3">Audit log</h3>
+      <h3 className="text-sm font-medium text-foreground-strong mb-3">{t("Audit log", "审计日志")}</h3>
       {!canView && (
         <p className="text-xs text-warning mb-2">
-          ⚠ Org member required to view audit log.
+          {t("⚠ Org member required to view audit log.", "⚠ 查看审计日志需要组织成员权限。")}
         </p>
       )}
       {audit.isLoading && (
@@ -821,11 +830,11 @@ function AuditTab({
         </div>
       )}
       {audit.error && (
-        <p className="text-danger">Failed: {(audit.error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(audit.error)}</p>
       )}
       {audit.data && audit.data.logs.length === 0 && (
         <EmptyState>
-          <EmptyStateTitle>No audit log entries yet.</EmptyStateTitle>
+          <EmptyStateTitle>{t("No audit log entries yet.", "暂无审计日志。")}</EmptyStateTitle>
         </EmptyState>
       )}
       {audit.data && audit.data.logs.length > 0 && (
@@ -833,11 +842,11 @@ function AuditTab({
         <table className="w-full text-xs">
           <thead>
             <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">When</th>
-              <th className="font-normal py-1 pr-2">Actor</th>
-              <th className="font-normal py-1 pr-2">App</th>
-              <th className="font-normal py-1 pr-2">Action</th>
-              <th className="font-normal py-1 pr-2">Payload</th>
+              <th className="font-normal py-1 pr-2">{t("When", "时间")}</th>
+              <th className="font-normal py-1 pr-2">{t("Actor", "操作者")}</th>
+              <th className="font-normal py-1 pr-2">{t("App", "应用")}</th>
+              <th className="font-normal py-1 pr-2">{t("Action", "操作")}</th>
+              <th className="font-normal py-1 pr-2">{t("Payload", "内容")}</th>
             </tr>
           </thead>
           <tbody>
@@ -870,10 +879,10 @@ function AuditTab({
                       </Avatar>
                       <span>{actorName}</span>
                       {log.actor_type === "agent" && (
-                        <Badge variant="accent">agent</Badge>
+                        <Badge variant="accent">{t("agent", "智能体")}</Badge>
                       )}
                       {log.actor_type === "system" && (
-                        <Badge variant="muted">system</Badge>
+                        <Badge variant="muted">{t("system", "系统")}</Badge>
                       )}
                     </span>
                   </td>
@@ -930,6 +939,7 @@ function WebhooksTab({
   orgId: string;
   canManage: boolean;
 }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [showCreate, setShowCreate] = useState(false);
@@ -945,13 +955,13 @@ function WebhooksTab({
     mutationFn: (id: string) => deleteOrgWebhook(orgId, id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["org-webhooks", orgId] });
-      toast.show({ kind: "success", title: "Webhook archived" });
+      toast.show({ kind: "success", title: t("Webhook archived", "Webhook 已归档") });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Delete failed",
-        description: (e as Error).message,
+        title: t("Delete failed", "删除失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -969,9 +979,8 @@ function WebhooksTab({
           <div>
             <h3 className="text-sm font-medium text-foreground-strong">Webhooks</h3>
             <p className="text-xs text-foreground-muted">
-              Subscribe external HTTP endpoints to release and build events.
-              Deliveries are signed with HMAC SHA-256
-              (<code className="font-mono">X-Hands-Signature</code>).
+              {t("Subscribe external HTTP endpoints to release and build events. Deliveries are signed with HMAC SHA-256", "让外部 HTTP 接收地址订阅发布和构建事件。投递使用 HMAC SHA-256 签名")}
+              (<code className="font-mono">X-Hands-Signature</code>){t(".", "。")}
             </p>
           </div>
           {canManage && (
@@ -980,14 +989,14 @@ function WebhooksTab({
               className="text-xs"
               onClick={() => setShowCreate(true)}
             >
-              + Add webhook
+              {t("+ Add webhook", "+ 添加 Webhook")}
             </Button>
           )}
         </div>
 
         {!canManage && (
           <p className="text-xs text-warning mb-2">
-            ⚠ Org owner / admin required to manage webhooks.
+            {t("⚠ Org owner / admin required to manage webhooks.", "⚠ 管理 Webhook 需要组织所有者或管理员权限。")}
           </p>
         )}
 
@@ -999,12 +1008,12 @@ function WebhooksTab({
         )}
         {webhooks.error && (
           <p className="text-danger text-xs">
-            Failed: {(webhooks.error as Error).message}
+            {t("Failed:", "加载失败：")} {errorMessage(webhooks.error)}
           </p>
         )}
         {webhooks.data && webhooks.data.webhooks.length === 0 && (
           <EmptyState>
-            <EmptyStateTitle>No webhooks configured yet.</EmptyStateTitle>
+            <EmptyStateTitle>{t("No webhooks configured yet.", "尚未配置 Webhook。")}</EmptyStateTitle>
           </EmptyState>
         )}
 
@@ -1023,7 +1032,7 @@ function WebhooksTab({
                   toggle.mutate({ id: w.id, enabled })
                 }
                 onDelete={() => {
-                  if (confirm(`Archive webhook ${w.url}?`)) remove.mutate(w.id);
+                  if (confirm(t(`Archive webhook ${w.url}?`, `归档 Webhook ${w.url}？`))) remove.mutate(w.id);
                 }}
                 canManage={canManage}
               />
@@ -1033,20 +1042,19 @@ function WebhooksTab({
       </section>
 
       <section className="border-t border-line-hairline pt-5 text-xs text-foreground">
-        <h4 className="text-sm font-medium text-foreground-strong mb-1">Delivery semantics</h4>
+        <h4 className="text-sm font-medium text-foreground-strong mb-1">{t("Delivery semantics", "投递规则")}</h4>
         <ul className="list-disc pl-5 space-y-1">
           <li>
-            Pending deliveries are retried every 5 minutes.
+            {t("Pending deliveries are retried every 5 minutes.", "待投递的消息每 5 分钟重试一次。")}
           </li>
           <li>
-            Retries use exponential backoff: 5m → 30m → 2h (3 attempts max),
-            then marked permanently <code className="font-mono">failed</code>.
+            {t("Retries use exponential backoff: 5m → 30m → 2h (3 attempts max), then marked permanently", "重试采用指数退避：5 分钟 → 30 分钟 → 2 小时（最多尝试 3 次），之后永久标记为")} <code className="font-mono">failed</code>{t(".", "。")}
           </li>
           <li>
-            Receiver must verify
+            {t("Receiver must verify", "接收方必须使用 Webhook 的密钥验证")}
             <code className="font-mono"> X-Hands-Signature: sha256=&lt;hmac&gt;</code>
-            using the webhook&apos;s secret (legacy{" "}
-            <code className="font-mono">X-Quiver-Signature</code> is still sent too).
+            {t("using the webhook's secret (legacy", "（仍会发送旧版")}{" "}
+            <code className="font-mono">X-Quiver-Signature</code>{t(" is still sent too).", "）。")}
           </li>
         </ul>
       </section>
@@ -1082,6 +1090,8 @@ function WebhookRow({
   onDelete: () => void;
   canManage: boolean;
 }) {
+  const t = useText();
+  const statusZh: Record<string, string> = { pending: "待投递", succeeded: "成功", failed: "失败", retrying: "重试中" };
   let events: string[] = [];
   try {
     events = JSON.parse(webhook.events_json);
@@ -1099,14 +1109,14 @@ function WebhookRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <Badge variant={webhook.enabled === 1 ? "success" : "muted"}>
-              {webhook.enabled === 1 ? "enabled" : "disabled"}
+              {webhook.enabled === 1 ? t("enabled", "已启用") : t("disabled", "已停用")}
             </Badge>
             <span className="font-mono text-xs truncate">{webhook.url}</span>
           </div>
           <div className="text-xs text-foreground-muted mt-1">
-            events:{" "}
+            {t("events:", "事件：")}{" "}
             {events.length === 0 ? (
-              <span className="italic">(all)</span>
+              <span className="italic">{t("(all)", "（全部）")}</span>
             ) : (
               events.map((e) => (
                 <Badge key={e} variant="information" className="mr-1">
@@ -1124,7 +1134,7 @@ function WebhookRow({
               onClick={() => onToggleEnabled(webhook.enabled !== 1)}
               disabled={!onToggleEnabled}
             >
-              {webhook.enabled === 1 ? "Disable" : "Enable"}
+              {webhook.enabled === 1 ? t("Disable", "停用") : t("Enable", "启用")}
             </Button>
           )}
           <Button
@@ -1132,11 +1142,11 @@ function WebhookRow({
             className="text-xs"
             onClick={onToggleExpand}
           >
-            {expanded ? "Hide" : "Deliveries"}
+            {expanded ? t("Hide", "隐藏") : t("Deliveries", "投递记录")}
           </Button>
           {canManage && (
             <Button variant="outline" className="text-xs" onClick={onDelete}>
-              Archive
+              {t("Archive", "归档")}
             </Button>
           )}
         </div>
@@ -1145,26 +1155,26 @@ function WebhookRow({
       {expanded && (
         <div className="mt-3 pt-3 border-t border-line-hairline">
           {deliveries.isLoading && (
-            <p className="text-xs text-foreground-muted">Loading deliveries…</p>
+            <p className="text-xs text-foreground-muted">{t("Loading deliveries…", "正在加载投递记录…")}</p>
           )}
           {deliveries.error && (
             <p className="text-danger text-xs">
-              Failed: {(deliveries.error as Error).message}
+              {t("Failed:", "加载失败：")} {errorMessage(deliveries.error)}
             </p>
           )}
           {deliveries.data && deliveries.data.deliveries.length === 0 && (
-            <p className="text-xs text-foreground-muted">No deliveries yet.</p>
+            <p className="text-xs text-foreground-muted">{t("No deliveries yet.", "暂无投递记录。")}</p>
           )}
           {deliveries.data && deliveries.data.deliveries.length > 0 && (
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-foreground-muted text-left border-b border-line-hairline">
-                  <th className="font-normal py-1 pr-2">When</th>
-                  <th className="font-normal py-1 pr-2">Event</th>
-                  <th className="font-normal py-1 pr-2">Status</th>
-                  <th className="font-normal py-1 pr-2">Attempts</th>
+                  <th className="font-normal py-1 pr-2">{t("When", "时间")}</th>
+                  <th className="font-normal py-1 pr-2">{t("Event", "事件")}</th>
+                  <th className="font-normal py-1 pr-2">{t("Status", "状态")}</th>
+                  <th className="font-normal py-1 pr-2">{t("Attempts", "尝试次数")}</th>
                   <th className="font-normal py-1 pr-2">HTTP</th>
-                  <th className="font-normal py-1 pr-2">Next / error</th>
+                  <th className="font-normal py-1 pr-2">{t("Next / error", "下次尝试 / 错误")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1187,7 +1197,7 @@ function WebhookRow({
                               : "information"
                         }
                       >
-                        {d.status}
+                        {t(d.status, statusZh[d.status] ?? d.status)}
                       </Badge>
                     </td>
                     <td className="py-1 pr-2 font-mono">
@@ -1200,9 +1210,9 @@ function WebhookRow({
                       {d.last_error
                         ? d.last_error
                         : d.next_attempt_at
-                          ? `next ${new Date(d.next_attempt_at).toISOString().slice(11, 19)}Z`
+                          ? t(`next ${new Date(d.next_attempt_at).toISOString().slice(11, 19)}Z`, `下次 ${new Date(d.next_attempt_at).toISOString().slice(11, 19)}Z`)
                           : d.completed_at
-                            ? `done ${new Date(d.completed_at).toISOString().slice(11, 19)}Z`
+                            ? t(`done ${new Date(d.completed_at).toISOString().slice(11, 19)}Z`, `完成于 ${new Date(d.completed_at).toISOString().slice(11, 19)}Z`)
                             : "—"}
                     </td>
                   </tr>
@@ -1225,6 +1235,7 @@ function CreateWebhookDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const t = useText();
   const toast = useToast();
   const [url, setUrl] = useState("");
   const [secret, setSecret] = useState("");
@@ -1238,14 +1249,14 @@ function CreateWebhookDialog({
         events,
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Webhook created" });
+      toast.show({ kind: "success", title: t("Webhook created", "Webhook 已创建") });
       onCreated();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Create failed",
-        description: (e as Error).message,
+        title: t("Create failed", "创建失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1259,7 +1270,7 @@ function CreateWebhookDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Add webhook</DialogTitle>
+          <DialogTitle>{t("Add webhook", "添加 Webhook")}</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <form
@@ -1282,23 +1293,22 @@ function CreateWebhookDialog({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground-strong mb-1">Secret (HMAC)</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">{t("Secret (HMAC)", "密钥（HMAC）")}</label>
               <Input
                 type="text"
                 className="font-mono text-xs"
                 value={secret}
                 onChange={(e) => setSecret(e.target.value)}
-                placeholder="at-least-16-random-bytes"
+                placeholder={t("at-least-16-random-bytes", "至少 16 个随机字节")}
                 required
               />
               <p className="text-xs text-foreground-muted mt-1">
-                Used to sign deliveries via{" "}
-                <code className="font-mono">X-Hands-Signature</code>. Choose a
-                strong secret; receivers must verify the signature.
+                {t("Used to sign deliveries via", "用于通过")} {" "}
+                <code className="font-mono">X-Hands-Signature</code>{t(". Choose a strong secret; receivers must verify the signature.", "对投递进行签名。请选择强密钥；接收方必须验证签名。")}
               </p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-foreground-strong mb-1">Events (empty = all)</label>
+              <label className="block text-sm font-medium text-foreground-strong mb-1">{t("Events (empty = all)", "事件（不选则为全部）")}</label>
               <div className="grid grid-cols-2 gap-1">
                 {WEBHOOK_EVENT_TYPES.map((ev) => (
                   <label
@@ -1322,7 +1332,7 @@ function CreateWebhookDialog({
             variant="outline"
             onClick={onClose}
           >
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
           <Button
             type="submit"
@@ -1332,7 +1342,7 @@ function CreateWebhookDialog({
               create.isPending || !url.trim() || secret.trim().length < 8
             }
           >
-            {create.isPending ? "Creating…" : "Create webhook"}
+            {create.isPending ? t("Creating…", "创建中…") : t("Create webhook", "创建 Webhook")}
           </Button>
         </DialogFooter>
       </DialogContent>

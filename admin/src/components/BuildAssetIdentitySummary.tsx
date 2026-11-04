@@ -4,7 +4,7 @@ import {
   buildAssetFilename,
   formatBuildAssetExactSize,
 } from "../lib/buildAssetDisplay";
-import { useText } from "../lib/locale";
+import { useLocale, useText } from "../lib/locale";
 
 function CopyableAssetValue({
   label,
@@ -40,12 +40,13 @@ function AssetValue({ label, value }: { label: string; value: string }) {
 
 export function BuildAssetIdentitySummary({ asset }: { asset: BuildAsset }) {
   const t = useText();
+  const { locale } = useLocale();
   return (
     <dl
       className="grid min-w-0 grid-cols-1 gap-y-2 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4"
       data-testid="build-asset-identity-summary"
     >
-      <AssetValue label={t("filename", "文件名")} value={buildAssetFilename(asset)} />
+      <AssetValue label={t("filename", "文件名")} value={buildAssetFilename(asset, locale)} />
       <CopyableAssetValue label={t("asset id", "文件 ID")} value={asset.id} />
       <CopyableAssetValue label={t("build id", "构建 ID")} value={asset.build_id} />
       <AssetValue label={t("kind", "类型")} value={asset.artifact_kind} />
@@ -55,7 +56,7 @@ export function BuildAssetIdentitySummary({ asset }: { asset: BuildAsset }) {
       <AssetValue label={t("filetype", "文件类型")} value={asset.filetype} />
       <AssetValue
         label={t("size", "大小")}
-        value={formatBuildAssetExactSize(asset.size_bytes)}
+        value={formatBuildAssetExactSize(asset.size_bytes, locale)}
       />
       <CopyableAssetValue label="sha256" value={asset.file_hash} />
       <CopyableAssetValue label={t("r2 key", "R2 键")} value={asset.r2_key} />

@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * OrgSwitcher — sidebar dropdown for switching the active organization.
  *
@@ -42,7 +43,7 @@ export function OrgSwitcher({
       )}
       {orgs.error && (
         <p className="text-xs text-danger px-3 py-2">
-          {t("Failed:", "操作失败：")} {(orgs.error as Error).message}
+          {t("Failed:", "操作失败：")} {errorMessage(orgs.error)}
         </p>
       )}
       {orgs.data?.orgs.map((o: Org) => {

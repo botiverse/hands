@@ -111,7 +111,7 @@ iOS Release 工作流             Hands                          Apple
 
 ## 一次性设置（应用管理员）
 
-将 App Store Connect API 凭据存入 Hands：控制台 → 应用 → 设置 → TestFlight（`PUT /api/apps/{app_id}/asc-credentials`）。在 App Store Connect → 用户与访问 → 集成中生成密钥（App Manager 角色）；需要 Key ID、Issuer ID 和 `.p8` 文件。凭据存储时加密，可以在不暴露凭据的情况下验证（`POST .../asc-credentials/verify`）。同一凭据也用于 App Store 审核状态接口（`GET /api/apps/{app_id}/appstore-review`）。Hands 是凭据的唯一保存位置；CI 不需要副本，因此轮换只需维护一个来源。
+将 App Store Connect API 凭据存入 Hands：控制台 → 应用 → 集成 → TestFlight（`PUT /api/apps/{app_id}/asc-credentials`）。在 App Store Connect → 用户与访问 → 集成中生成密钥（App Manager 角色）；需要 Key ID、Issuer ID 和 `.p8` 文件。凭据存储时加密，可以在不暴露凭据的情况下验证（`POST .../asc-credentials/verify`）。同一凭据也用于 App Store 审核状态接口（`GET /api/apps/{app_id}/appstore-review`）。Hands 是凭据的唯一保存位置；CI 不需要副本，因此轮换只需维护一个来源。
 
 Hands 角色有意分离：上传构建到 Apple 和分发构建都要求应用发布者权限（上传是自己应用的发布操作，限定为发布者的 CI 令牌必须能够执行）；使准确的测试构建过期需要应用管理员权限；读取状态和测试组需要应用查看者权限。保存的密钥仍受 Apple 自身角色限制：外部测试需要 Account Holder、Admin 或 App Manager；内部测试也允许 Developer 或 Marketing。
 

@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * TestFlight tab — one place to see every Hands→Apple upload and distribution
  * request. Upload attempts are recorded as `testflight-upload` operations;
@@ -363,8 +364,8 @@ function friendlyError(raw: unknown): string {
   const text = raw instanceof Error ? raw.message : String(raw);
   try {
     const parsed = JSON.parse(text) as { error?: string; detail?: string | null };
-    return [parsed.error, parsed.detail].filter(Boolean).join(" — ") || text;
+    return [parsed.error && errorMessage(parsed.error), parsed.detail && errorMessage(parsed.detail)].filter(Boolean).join(" — ") || errorMessage(text);
   } catch {
-    return text;
+    return errorMessage(text);
   }
 }

@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * AcceptInvite — public magic-link landing page.
  *
@@ -64,7 +65,7 @@ export function AcceptInvite({ token }: { token: string }) {
       toast.show({
         kind: "error",
         title: t("Accept failed", "接受邀请失败"),
-        description: (e as Error).message,
+        description: errorMessage(e),
       }),
   });
 
@@ -81,7 +82,7 @@ export function AcceptInvite({ token }: { token: string }) {
       <div className="max-w-md mx-auto mt-20 p-4">
         <LanguagePicker />
         <div className="rounded-md bg-danger-soft p-4 text-sm text-danger-strong">
-          <strong>{t("Invite error:", "邀请出错：")}</strong> {error}
+          <strong>{t("Invite error:", "邀请出错：")}</strong> {errorMessage(error)}
         </div>
       </div>
     );

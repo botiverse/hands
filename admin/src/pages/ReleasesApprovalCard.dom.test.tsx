@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -23,8 +23,9 @@ vi.mock("../lib/api", async (importOriginal) => ({
 }));
 
 import { PendingReleaseApprovals } from "./Releases";
+import { LanguagePicker, LocaleProvider } from "../lib/locale";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); localStorage.clear(); document.cookie = "hands_locale=; Path=/; Max-Age=0"; });
 beforeEach(() => vi.clearAllMocks());
 
 function renderCard() {
@@ -113,4 +114,24 @@ describe("PendingReleaseApprovals card — publish-intent context", () => {
     // Card still renders; falls back, no throw.
     expect(await screen.findByText("full:all")).toBeTruthy();
   });
+  it("retains the exact approval intent when displayed and approved in Chinese", async () => {
+    mocks.listReleaseApprovals.mockResolvedValue({ approvals: [{
+      ...baseApproval,
+      expected_scopes: JSON.stringify([{ scope_type: "platform", scope_value: "android" }]),
+      required_external_targets: JSON.stringify(["linux-x64"]),
+    }] });
+    mocks.approve.mockResolvedValue({});
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<LocaleProvider><LanguagePicker /><QueryClientProvider client={client}>
+      <PendingReleaseApprovals appId="app-a" gateOn={true} />
+    </QueryClientProvider></LocaleProvider>);
+    await screen.findByText("platform:android");
+    fireEvent.change(screen.getByRole("combobox", { name: "Language" }), { target: { value: "zh-CN" } });
+    expect(screen.getByText("待审核的发布")).toBeTruthy();
+    expect(screen.getByText("platform:android")).toBeTruthy();
+    expect(screen.getByText("linux-x64")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+    await waitFor(() => expect(mocks.approve).toHaveBeenCalledWith("app-a", "req1"));
+  });
+
 });

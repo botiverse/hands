@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useQuery } from "@tanstack/react-query";
 import { Avatar, AvatarImage, AvatarFallback, Badge } from "raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
@@ -28,7 +29,7 @@ export function AuditLog({ appId }: { appId: string }) {
       <h1 className="text-2xl font-bold mb-4">{t("Audit log", "审计日志")}</h1>
       {isLoading && <p className="text-foreground-muted">{t("Loading...", "加载中…")}</p>}
       {error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {(error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(error)}</p>
       )}
       {data && data.logs.length === 0 && (
         <p className="text-foreground-muted text-sm">{t("No audit log entries yet.", "暂无审计日志。")}</p>

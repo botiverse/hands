@@ -1,3 +1,4 @@
+import { errorMessage } from "../../lib/errorMessage";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Apple, ChevronDown } from "lucide-react";
@@ -55,7 +56,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
       qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: errorMessage(e) }),
   });
   const remove = useMutation({
     mutationFn: () => deleteAscCredentials(appId),
@@ -64,7 +65,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
       qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: errorMessage(e) }),
   });
 
   const test = useMutation({
@@ -95,7 +96,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
     },
     onError: (e) => {
       if ((e as Error).message === "cancelled") return;
-      toast.show({ kind: "error", title: t("Test failed", "测试失败"), description: (e as Error).message });
+      toast.show({ kind: "error", title: t("Test failed", "测试失败"), description: errorMessage(e) });
     },
   });
 

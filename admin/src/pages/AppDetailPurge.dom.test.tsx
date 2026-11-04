@@ -27,8 +27,9 @@ vi.mock("../lib/api", async (importOriginal) => ({
 }));
 
 import { AppSettings } from "./AppDetail";
+import { LanguagePicker, LocaleProvider } from "../lib/locale";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); localStorage.clear(); document.cookie = "hands_locale=; Path=/; Max-Age=0"; });
 
 function renderApp() {
   const client = new QueryClient({
@@ -94,6 +95,24 @@ describe("AppDetail purge confirmation gate", () => {
     // Only the exact slug arms it.
     fireEvent.change(field, { target: { value: "myapp-android" } });
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps the exact-slug gate in Chinese", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<LocaleProvider><LanguagePicker /><MemoryRouter><QueryClientProvider client={client}>
+      <AppSettings appId="app-1" />
+    </QueryClientProvider></MemoryRouter></LocaleProvider>);
+    fireEvent.change(screen.getByRole("combobox", { name: "Language" }), { target: { value: "zh-CN" } });
+    fireEvent.click(await screen.findByRole("button", { name: /永久删除/ }));
+    const field = await screen.findByRole("textbox");
+    fireEvent.change(field, { target: { value: "myapp-androi" } });
+    expect((field as HTMLInputElement).value).toBe("myapp-androi");
+    const confirm = screen.getByRole("button", { name: /永久删除/ }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(field, { target: { value: "myapp-android" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocks.purgeApp).toHaveBeenCalledWith("app-1", "myapp-android"));
   });
 
   it("wires the gate and the submitted value to the SAME state", async () => {
