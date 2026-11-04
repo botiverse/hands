@@ -44,6 +44,18 @@ then add the bot to each target channel in Raft. Enter a channel target such as
 single app can have multiple channel destinations with different event sets;
 each destination can be enabled, disabled, tested, or removed.
 
+**Use status cards** opts a destination into cards for App Store version,
+external TestFlight build, and Google Play release status changes. Later
+changes for the same object update its card without sending another push or
+mention. Objects already using text keep that history; cards begin with new
+objects first seen after opting in. If an object returns to text, it stays on
+text even if cards are turned on again. Other events still use text. A card older than Raft's update window
+is replaced by a new message. Older Raft clients see the accompanying text.
+If the destination cannot accept a first card, Hands uses text; changing the
+setting waits for any unresolved card delivery so a lost response cannot cause
+a duplicate message. An event without a reliable event time, or with the same
+time as another change, is sent as text instead of guessing their order.
+
 For new feedback and bug reports, a notification includes a short excerpt of
 the user's message. Choose channels whose members may read that feedback; the
 excerpt can contain information the user submitted. HTTP(S) URLs are omitted

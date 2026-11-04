@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { encryptP8 } from "../src/lib/asc_credentials";
@@ -9,6 +10,8 @@ import {
   handleConnectRaftBot,
   handleGetRaftNotifications,
   handleRaftNotificationWebhook,
+  handleTestRaftNotification,
+  handleUpdateRaftNotification,
 } from "../src/routes/raft_notifications";
 import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex } from "../src/routes/webhooks";
 
@@ -32,7 +35,19 @@ function d1(sqlite: Database.Database): D1Database {
     };
     return { bind, run: () => bind().run(), all: <T>() => bind().all<T>(), first: <T>() => bind().first<T>() };
   };
-  return { prepare } as unknown as D1Database;
+  const batch = async (statements: Array<{ run(): Promise<unknown> }>) => {
+    sqlite.exec("BEGIN");
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      sqlite.exec("COMMIT");
+      return results;
+    } catch (error) {
+      sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  };
+  return { prepare, batch } as unknown as D1Database;
 }
 
 const APP_ID = "app-1";
@@ -69,6 +84,7 @@ async function harness() {
       PRIMARY KEY(subscription_id, object_key)
     );
   `);
+  sqlite.exec(readFileSync(new URL("../../migrations/sql/0087_raft_notification_cards.sql", import.meta.url), "utf8"));
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
   sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, archived) VALUES (?, 'org-1', 'sample-app', 'Sample App', 0)").run(APP_ID);
   sqlite.prepare(
@@ -98,6 +114,8 @@ async function harness() {
   app.delete("/api/apps/:appId/webhooks/:webhookId", handleDeleteAppWebhook);
   app.post("/api/apps/:appId/raft-notifications/connect", handleConnectRaftBot);
   app.get("/api/apps/:appId/raft-notifications", handleGetRaftNotifications);
+  app.patch("/api/apps/:appId/raft-notifications/:subscriptionId", handleUpdateRaftNotification);
+  app.post("/api/apps/:appId/raft-notifications/:subscriptionId/test", handleTestRaftNotification);
   app.post("/api/internal/raft-notifications/:subscriptionId", handleRaftNotificationWebhook);
   const request = async (body: Record<string, unknown>, deliveryId: string, signature = SECRET) => {
     const raw = JSON.stringify(body);
@@ -112,6 +130,10 @@ async function harness() {
     }), env);
   };
   const getConfig = () => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications`), env);
+  const updateConfig = (values: Record<string, unknown>) => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications/${SUBSCRIPTION_ID}`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(values),
+  }), env);
+  const testDestination = () => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications/${SUBSCRIPTION_ID}/test`, { method: "POST" }), env);
   const connect = (appId = APP_ID, rotate = false) => app.fetch(new Request(`https://hands.test/api/apps/${appId}/raft-notifications/connect`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -122,7 +144,7 @@ async function harness() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ events: ["build:failed"] }),
   }), env);
-  return { sqlite, env, request, getConfig, connect, mutateHiddenWebhook };
+  return { sqlite, env, request, getConfig, updateConfig, testDestination, connect, mutateHiddenWebhook };
 }
 
 const body = (state: string) => ({
@@ -138,6 +160,9 @@ const body = (state: string) => ({
     review_message: "provider prose must never be forwarded",
   },
 });
+const stateBody = (state: string, occurredAt: string) => ({
+  ...body(state), payload: { ...body(state).payload, occurred_at: occurredAt },
+});
 
 const TICKET_ID = "38d49b32-9499-40d2-ad45-3a23dd8c37f7";
 const feedbackBody = (event: string, extra: Record<string, unknown> = {}) => ({
@@ -148,6 +173,17 @@ const feedbackBody = (event: string, extra: Record<string, unknown> = {}) => ({
 });
 
 afterEach(() => vi.restoreAllMocks());
+
+function mockRaftFetch(implementation: typeof fetch) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (init?.method === "GET" && url.endsWith("/resolve")) {
+      const messageId = decodeURIComponent(url.slice(url.lastIndexOf("/messages/") + "/messages/".length, -"/resolve".length));
+      return Response.json({ message: { message_id: messageId, message_card: { revision: 1 } } });
+    }
+    return implementation(input, init);
+  });
+}
 
 describe("Hands-managed Raft notifications", () => {
   it("renders a safe review card and omits provider prose", () => {
@@ -320,6 +356,20 @@ describe("Hands-managed Raft notifications", () => {
     expect(text).not.toContain(BOT_KEY);
   });
 
+  it("tests the selected card mode against Raft and reports unsupported destinations", async () => {
+    const { updateConfig, testDestination } = await harness();
+    await updateConfig({ card_updates: true });
+    let requestBody: Record<string, unknown> | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({ code: "message_card_unsupported_target" }, { status: 400 });
+    });
+    const response = await testDestination();
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "message_card_unsupported_target" });
+    expect(requestBody).toMatchObject({ target: "#releases", card: { version: 1 } });
+  });
+
   it("mints and stores a bot key without returning it to the admin UI", async () => {
     const { connect } = await harness();
     const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -380,6 +430,372 @@ describe("Hands-managed Raft notifications", () => {
     expect(second.status).toBe(200);
     expect(sentTargets).toEqual(["#releases", "#releases:parent-m"]);
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key LIKE 'app_store:%'").get(SUBSCRIPTION_ID)).toMatchObject({ parent_message_id: "parent-message-1" });
+  });
+
+  it("sends a card, updates the same message and ignores an older event", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    expect((await updateConfig({ card_updates: true })).status).toBe(200);
+    const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
+    mockRaftFetch(async (input, init) => {
+      sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+      return sent.length === 1 ? Response.json({ state: "sent", messageId: "parent-message-1" })
+        : Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    const second = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(second, "b")).status).toBe(200);
+    expect((await request(first, "c")).status).toBe(200);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.body).toMatchObject({ target: "#releases", card: { version: 1 }, content: expect.stringContaining("IN\\_REVIEW") });
+    expect(sent[1]!.url).toContain("/messages/parent-message-1/card");
+    expect(sent[1]!.body).toMatchObject({ expectedRevision: 1, card: { version: 1 }, content: expect.stringContaining("REJECTED") });
+    expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
+  });
+
+  it("uses Raft's explicit card receipt without relying on joint message readback", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 },
+    }));
+    const response = await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ card: true, message_id: "parent-message-1" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("recognizes an older server that silently sent text and never tries to update it as a card", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const method = String(init?.method);
+      methods.push(method);
+      if (method === "GET") return Response.json({ message: { message_id: "parent-message-1" } });
+      return Response.json({ state: "sent", messageId: methods.length === 1 ? "parent-message-1" : "reply-1" });
+    });
+    const response = await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    expect(await response.json()).toMatchObject({ card: false, card_fallback: "card_not_supported" });
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(methods).toEqual(["POST", "GET", "POST"]);
+    expect(sqlite.prepare("SELECT state,revision FROM raft_notification_cards").get()).toEqual({ state: "retired", revision: 0 });
+  });
+
+  it("recovers an unreadable joint message from its same-key card receipt", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const sent: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "GET") return Response.json({ code: "not_found" }, { status: 404 });
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      sent.push(data);
+      if (sent.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
+      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "parent-message-1" });
+      return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+    });
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(event, "b")).status).toBe(200);
+    expect(sent).toHaveLength(3);
+    expect(sent[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: sent[0]!.idempotencyKey });
+    expect(sent[2]).toEqual(sent[0]);
+  });
+
+  it("does not send text when card readback is refused after a successful send", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      methods.push(String(init?.method));
+      return init?.method === "GET" ? Response.json({ code: "message_card_not_found" }, { status: 404 })
+        : Response.json({ state: "sent", messageId: "parent-message-1" });
+    });
+    const response = await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    expect(response.status).toBe(503);
+    expect(methods).toEqual(["POST", "GET"]);
+    expect(sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("pending");
+  });
+
+  it("accepts a card marker in the reconciliation receipt without a message read", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (!data.reconcileOnly) throw new Error("response lost");
+      return Response.json({ state: "committed", messageId: "parent-message-1", messageCard: { revision: 1 } });
+    });
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(event, "b")).status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses reconciliation after a lost send response, including when cards are later disabled", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      if (requests.length === 1) throw new Error("response lost after commit");
+      return Response.json({ state: "committed", messageId: "parent-message-1", reconciliation: true });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(first, "a")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(409);
+    // The original parent claim is deliberately held for the existing five-minute lease.
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(first, "a-retry")).status).toBe(200);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ target: "#releases", reconcileOnly: true, idempotencyKey: requests[0]!.idempotencyKey });
+    expect(requests[1]).not.toHaveProperty("card");
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
+  });
+
+  it("never falls back to a new text message after an uncertain send", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const parsed = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(parsed);
+      if (requests.length === 1) throw new Error("unknown result");
+      if (parsed.reconcileOnly) return Response.json({ state: "not_found" });
+      return Response.json({ code: "message_cards_disabled" }, { status: 400 });
+    });
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const retry = await request(event, "b");
+    expect(retry.status).toBe(503);
+    expect(await retry.json()).toMatchObject({ error: "card_delivery_uncertain" });
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.idempotencyKey).toBe(requests[0]!.idempotencyKey);
+    expect(requests[2]!.card).toEqual(requests[0]!.card);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("pending");
+  });
+
+  it("safely falls back to text when the first card attempt is definitely refused", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return requests.length === 1 ? Response.json({ code: "message_card_unsupported_target" }, { status: 400 })
+        : Response.json({ state: "sent", messageId: "text-parent-1" });
+    });
+    const delivered = await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    expect(delivered.status).toBe(200);
+    expect(await delivered.json()).toMatchObject({ card_fallback: "message_card_unsupported_target" });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toHaveProperty("card");
+    expect(requests[1]).not.toHaveProperty("card");
+    expect(sqlite.prepare("SELECT state FROM raft_notification_cards").pluck().get()).toBe("retired");
+  });
+
+  it("replays a lost update with the same body and revision", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      if (requests.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
+      if (requests.length === 2) throw new Error("response lost after update committed");
+      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const next = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(next, "b")).status).toBe(503);
+    expect((await request(next, "b-retry")).status).toBe(200);
+    expect(requests).toHaveLength(3);
+    expect(requests[2]).toEqual(requests[1]);
+  });
+
+  it("holds an uncertain update when a changed flag refuses its replay", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      if (requests.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      if (requests.length === 2) throw new Error("response lost after update committed");
+      if (requests.length === 3) return Response.json({ code: "message_cards_disabled" }, { status: 400 });
+      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const next = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(next, "b")).status).toBe(503);
+    const refused = await request(next, "b-retry");
+    expect(refused.status).toBe(503);
+    expect(await refused.json()).toMatchObject({ error: "card_delivery_uncertain" });
+    expect(sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+    expect((await request(next, "b-final")).status).toBe(200);
+    expect(requests[2]).toEqual(requests[1]);
+    expect(requests[3]).toEqual(requests[1]);
+  });
+
+  it("repairs a committed root after a crash before the thread pointer was saved", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const fetchMock = mockRaftFetch(async () => Response.json({ state: "sent", messageId: "parent-message-1" }));
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "a")).status).toBe(200);
+    sqlite.prepare("UPDATE raft_notification_threads SET parent_message_id='pending',updated_at=1").run();
+    expect((await request(event, "a-retry")).status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
+  });
+
+  it("recovers an earlier unknown send before updating it with a newer event", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const requests: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const parsed = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(parsed);
+      if (requests.length === 1) throw new Error("response lost");
+      if (parsed.reconcileOnly) return Response.json({ state: "committed", messageId: "parent-message-1" });
+      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(requests).toHaveLength(3);
+    expect(requests[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: requests[0]!.idempotencyKey });
+    expect(requests[2]).toMatchObject({ expectedRevision: 1, content: expect.stringContaining("REJECTED") });
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
+  });
+
+  it("serializes concurrent notifications and blocks changing mode during a send", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    let releaseSend: ((value: Response) => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const fetchMock = mockRaftFetch(async () => {
+      signalStarted?.();
+      return new Promise<Response>((resolve) => { releaseSend = resolve; });
+    });
+    const first = request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    await started;
+    expect((await updateConfig({ card_updates: false })).status).toBe(409);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    if (!releaseSend) throw new Error("send did not start");
+    releaseSend(Response.json({ state: "sent", messageId: "parent-message-1" }));
+    expect((await first).status).toBe(200);
+  });
+
+  it("fences an expired lease holder after a newer worker recovers its update", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    let now = Date.parse("2026-11-04T07:00:00Z");
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let releaseOld: ((value: Response) => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      if (calls.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
+      if (calls.length === 2) {
+        signalStarted?.();
+        return new Promise<Response>((resolve) => { releaseOld = resolve; });
+      }
+      if (calls.length === 3) return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      return Response.json({ ok: true, messageId: "parent-message-1", revision: 3 });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const old = request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b");
+    await started;
+    now += 31_000;
+    expect((await request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "c")).status).toBe(200);
+    expect(calls[2]).toEqual(calls[1]);
+    expect(calls[3]).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    if (!releaseOld) throw new Error("old update did not start");
+    releaseOld(Response.json({ ok: true, messageId: "parent-message-1", revision: 2 }));
+    expect((await old).status).toBe(503);
+    expect(sqlite.prepare("SELECT revision FROM raft_notification_cards").pluck().get()).toBe(3);
+  });
+
+  it("keeps an ambiguous timestamp and later events as text instead of guessing their order", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push({ method: String(init?.method), body: JSON.parse(String(init?.body)) });
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : `reply-${calls.length}` });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:00:00Z"), "b")).status).toBe(200);
+    expect((await request(stateBody("APPROVED", "2026-11-04T07:01:00Z"), "c")).status).toBe(200);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "POST", "POST"]);
+    expect(calls[1]!.body).toMatchObject({ target: "#releases:parent-m" });
+    expect(calls[1]!.body).not.toHaveProperty("card");
+    expect(sqlite.prepare("SELECT state FROM raft_notification_cards").pluck().get()).toBe("retired");
+  });
+
+  it("does not turn an existing text thread into a card when the destination is opted in", async () => {
+    const { request, updateConfig } = await harness();
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : "reply-1" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    await updateConfig({ card_updates: true });
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(calls[1]).toMatchObject({ target: "#releases:parent-m" });
+    expect(calls[1]).not.toHaveProperty("card");
+  });
+
+  it("keeps an object on text after cards are disabled and re-enabled", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : `reply-${calls.length}` });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    await updateConfig({ card_updates: false });
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    await updateConfig({ card_updates: true });
+    expect((await request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "c")).status).toBe(200);
+    expect(calls[1]).not.toHaveProperty("card");
+    expect(calls[2]).not.toHaveProperty("card");
+  });
+
+  it("keeps a new object on text when its first event has an invalid timestamp", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : "reply-1" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-02-30T07:00:00Z"), "a")).status).toBe(200);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(calls[0]).not.toHaveProperty("card");
+    expect(calls[1]).not.toHaveProperty("card");
+  });
+
+  it("sends a new card in the thread after the update window", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : "next-card-1" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    sqlite.prepare("UPDATE raft_notification_cards SET message_created_at=?").run(Date.now() - 15 * 24 * 60 * 60_000);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(calls[1]).toMatchObject({ target: "#releases:parent-m", card: { version: 1 } });
+    expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "next-card-1", revision: 1 });
   });
 
   it("sends feedback, comment, and status for one ticket to the same thread", async () => {

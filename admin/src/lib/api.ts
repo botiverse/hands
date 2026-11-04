@@ -1705,6 +1705,7 @@ export interface RaftNotificationSubscription {
   channel_target: string;
   events: WebhookEventType[];
   enabled: boolean;
+  card_updates: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -1738,7 +1739,7 @@ export const createRaftNotification = (
 export const updateRaftNotification = (
   appId: string,
   subscriptionId: string,
-  input: { events?: WebhookEventType[]; enabled?: boolean },
+  input: { events?: WebhookEventType[]; enabled?: boolean; card_updates?: boolean },
 ) =>
   request<{ ok: true }>(`/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}`, {
     method: "PATCH",
