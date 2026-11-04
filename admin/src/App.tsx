@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronsUpDown,
   Gauge,
+  Globe,
   LayoutGrid,
   MessageSquare,
   Package,
@@ -1014,7 +1015,7 @@ function CliCallback({ token }: { token: string }) {
 
 export function PublicLanding({ account }: { account?: AuthAccount }) {
   const t = useText();
-  const { locale } = useLocale();
+  const { locale, setLocale } = useLocale();
   const docs = (path = "") => `/docs/${locale === "zh-CN" ? "zh/" : ""}${path}`;
   useEffect(() => {
     document.title = t("Hands - Agent-native platform for client apps", "Hands - 面向客户端应用的智能体原生平台");
@@ -1041,7 +1042,6 @@ export function PublicLanding({ account }: { account?: AuthAccount }) {
             >
               {t("API explorer", "API 浏览器")}
             </a>
-            <LanguagePicker />
             <Button variant="primary" render={<a href={dashboardHref(account)} />}>
               <RaftIcon className="h-5 w-5" />
               {account ? t("Open dashboard", "打开控制台") : t("Login", "登录")}
@@ -1208,8 +1208,31 @@ export function PublicLanding({ account }: { account?: AuthAccount }) {
               </nav>
             ))}
           </div>
-          <div className="mt-8 border-t border-layer-hud-foreground/15 pt-6 text-xs text-layer-hud-foreground/70">
-            © {new Date().getFullYear()} Botiverse, Inc. {legalMessage("copyright")}
+          <div className="mt-8 flex flex-col items-start gap-5 border-t border-layer-hud-foreground/15 pt-6 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-layer-hud-foreground/70">
+              © {new Date().getFullYear()} Botiverse, Inc. {legalMessage("copyright")}
+            </p>
+            <div
+              role="group"
+              aria-label={t("Language", "语言")}
+              className="inline-flex items-center gap-1 rounded-full border border-layer-hud-foreground/15 bg-layer-hud-foreground/5 p-1"
+            >
+              <Globe aria-hidden="true" className="ml-2 h-4 w-4 text-layer-hud-foreground/60" />
+              {([ ["en", "English"], ["zh-CN", "简体中文"] ] as const).map(([language, label]) => (
+                <button
+                  key={language}
+                  type="button"
+                  lang={language}
+                  aria-pressed={locale === language}
+                  onClick={() => setLocale(language)}
+                  className={`min-h-9 rounded-full px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${locale === language
+                    ? "bg-layer-hud-foreground/15 text-layer-hud-foreground"
+                    : "text-layer-hud-foreground/70 hover:bg-layer-hud-foreground/10 hover:text-layer-hud-foreground"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </footer>
