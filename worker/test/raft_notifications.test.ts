@@ -9,11 +9,13 @@ import { notificationObjectKey } from "../src/lib/raft_notification_identity";
 import {
   handleConnectRaftBot,
   handleGetRaftNotifications,
+  handleListRaftNotificationFailures,
   handleRaftNotificationWebhook,
+  handleRetryRaftNotificationFailure,
   handleTestRaftNotification,
   handleUpdateRaftNotification,
 } from "../src/routes/raft_notifications";
-import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex } from "../src/routes/webhooks";
+import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex, reapWebhookDeliveries } from "../src/routes/webhooks";
 
 function d1(sqlite: Database.Database): D1Database {
   const prepare = (sql: string) => {
@@ -25,6 +27,10 @@ function d1(sqlite: Database.Database): D1Database {
     const bind = (...parameters: unknown[]) => {
       const expanded = indexes.length ? indexes.map((index) => parameters[index - 1]) : parameters;
       return {
+        _run: () => {
+          const result = statement.run(...expanded);
+          return { success: true, meta: { changes: result.changes } };
+        },
         run: async () => {
           const result = statement.run(...expanded);
           return { success: true, meta: { changes: result.changes } };
@@ -35,7 +41,9 @@ function d1(sqlite: Database.Database): D1Database {
     };
     return { bind, run: () => bind().run(), all: <T>() => bind().all<T>(), first: <T>() => bind().first<T>() };
   };
-  return { prepare } as unknown as D1Database;
+  const batch = async (statements: Array<{ _run: () => unknown }>) =>
+    sqlite.transaction(() => statements.map((statement) => statement._run()))();
+  return { prepare, batch } as unknown as D1Database;
 }
 
 const APP_ID = "app-1";
@@ -71,6 +79,17 @@ async function harness() {
       parent_message_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       PRIMARY KEY(subscription_id, object_key)
     );
+    CREATE TABLE webhook_deliveries (
+      id TEXT PRIMARY KEY, webhook_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+      signing_secret TEXT, external_event_id TEXT, event_id TEXT, feedback_submission_event_id TEXT,
+      status TEXT NOT NULL, attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
+      last_attempt_at INTEGER, next_attempt_at INTEGER, last_response_status INTEGER, last_response_body TEXT,
+      last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, completed_at INTEGER
+    );
+    CREATE TABLE audit_logs (
+      id TEXT PRIMARY KEY, app_id TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL,
+      actor_id TEXT, actor_type TEXT, payload TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
   `);
   sqlite.exec(readFileSync(new URL("../../migrations/sql/0087_raft_notification_cards.sql", import.meta.url), "utf8"));
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
@@ -104,6 +123,8 @@ async function harness() {
   app.get("/api/apps/:appId/raft-notifications", handleGetRaftNotifications);
   app.patch("/api/apps/:appId/raft-notifications/:subscriptionId", handleUpdateRaftNotification);
   app.post("/api/apps/:appId/raft-notifications/:subscriptionId/test", handleTestRaftNotification);
+  app.get("/api/apps/:appId/raft-notifications/:subscriptionId/failures", handleListRaftNotificationFailures);
+  app.post("/api/apps/:appId/raft-notifications/:subscriptionId/failures/:deliveryId/retry", handleRetryRaftNotificationFailure);
   app.post("/api/internal/raft-notifications/:subscriptionId", handleRaftNotificationWebhook);
   const request = async (body: Record<string, unknown>, deliveryId: string, signature = SECRET) => {
     const raw = JSON.stringify(body);
@@ -122,6 +143,8 @@ async function harness() {
     method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(values),
   }), env);
   const testDestination = () => app.fetch(new Request(`https://hands.test/api/apps/${APP_ID}/raft-notifications/${SUBSCRIPTION_ID}/test`, { method: "POST" }), env);
+  const failures = (appId = APP_ID) => app.fetch(new Request(`https://hands.test/api/apps/${appId}/raft-notifications/${SUBSCRIPTION_ID}/failures`), env);
+  const retryFailure = (id: string, appId = APP_ID) => app.fetch(new Request(`https://hands.test/api/apps/${appId}/raft-notifications/${SUBSCRIPTION_ID}/failures/${id}/retry`, { method: "POST" }), env);
   const connect = (appId = APP_ID, rotate = false) => app.fetch(new Request(`https://hands.test/api/apps/${appId}/raft-notifications/connect`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -132,7 +155,7 @@ async function harness() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ events: ["build:failed"] }),
   }), env);
-  return { sqlite, env, request, getConfig, updateConfig, testDestination, connect, mutateHiddenWebhook };
+  return { sqlite, env, app, request, getConfig, updateConfig, testDestination, failures, retryFailure, connect, mutateHiddenWebhook };
 }
 
 const body = (state: string) => ({
@@ -522,24 +545,28 @@ describe("Hands-managed Raft notifications", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("uses reconciliation after a lost send response, including when cards are later disabled", async () => {
+  it("recovers the card when it wins a same-key race against a switch to text", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
     const requests: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)));
       if (requests.length === 1) throw new Error("response lost after commit");
-      return Response.json({ state: "committed", messageId: "parent-message-1", reconciliation: true });
+      if (requests.length === 2) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
     });
     const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
     expect((await request(first, "a")).status).toBe(503);
-    expect((await updateConfig({ card_updates: false })).status).toBe(409);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    expect((await updateConfig({ card_updates: true })).status).toBe(409);
+    expect(sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
     // The original parent claim is deliberately held for the existing five-minute lease.
     sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
     expect((await request(first, "a-retry")).status).toBe(200);
-    expect(requests).toHaveLength(2);
-    expect(requests[1]).toMatchObject({ target: "#releases", reconcileOnly: true, idempotencyKey: requests[0]!.idempotencyKey });
+    expect(requests).toHaveLength(3);
+    expect(requests[1]).toMatchObject({ target: "#releases", idempotencyKey: requests[0]!.idempotencyKey });
     expect(requests[1]).not.toHaveProperty("card");
+    expect(requests[2]).toEqual(requests[0]);
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
   });
 
@@ -625,6 +652,204 @@ describe("Hands-managed Raft notifications", () => {
     expect(requests[3]).toEqual(requests[1]);
   });
 
+  it("delivers later events as warned text while keeping an uncertain update for same-key recovery", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const texts: Array<Record<string, unknown>> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (String(input).endsWith("/card")) {
+        updates.push(data);
+        if (updates.length < 3) throw new Error("unknown update result");
+        return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      }
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      texts.push(data);
+      return Response.json({ state: "sent", messageId: "text-reply-1" });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    const uncertain = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const later = stateBody("APPROVED", "2026-11-04T07:02:00Z");
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(uncertain, "b")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    expect((await request(later, "c")).status).toBe(200);
+    expect(texts[0]).toMatchObject({ target: "#releases:parent-m", content: expect.stringContaining("previous status card may be out of date") });
+    expect(sqlite.prepare("SELECT state,pending_uncertain FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_uncertain: 1 });
+    expect((await updateConfig({ card_updates: true })).status).toBe(409);
+    expect((await request(uncertain, "b-retry")).status).toBe(200);
+    expect(updates[2]).toEqual(updates[0]);
+    expect((await request(later, "c-retry")).status).toBe(200);
+    expect(texts[1]).toEqual(texts[0]);
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
+  it("fences an uncertain root with same-key text before posting later events", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    let sendCount = 0;
+    const requests: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(data);
+      if (data.reconcileOnly) return Response.json({ state: "not_found" });
+      if (data.card) {
+        sendCount++;
+        if (sendCount === 1) throw new Error("unknown send result");
+        return Response.json({ code: "message_cards_disabled" }, { status: 400 });
+      }
+      return Response.json({ state: "sent", messageId: data.target === "#releases" ? "text-parent-1" : "reply-1" });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(first, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("text-parent-1");
+    expect((await request(first, "a-retry")).status).toBe(200);
+    expect(requests[3]).toMatchObject({ target: "#releases", idempotencyKey: requests[0]!.idempotencyKey });
+    expect(requests[3]).not.toHaveProperty("card");
+    expect(requests[4]).toMatchObject({ target: "#releases:text-par", content: expect.stringContaining("previous status card may be out of date") });
+    expect(requests).toHaveLength(5); // Retry of the fenced first event did not post again.
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
+  it("lets same-key text win while an earlier card request is still running", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    let now = Date.parse("2026-11-04T07:00:00Z");
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let releaseOld: ((value: Response) => void) | undefined;
+    let signalStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const calls: Array<Record<string, unknown>> = [];
+    let firstCardKey: unknown;
+    let committedText = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (data.card && !firstCardKey) {
+        firstCardKey = data.idempotencyKey;
+        signalStarted?.();
+        return new Promise<Response>((resolve) => { releaseOld = resolve; });
+      }
+      if (data.reconcileOnly) return Response.json({ state: "not_found" });
+      if (data.card) throw new Error("retry response lost");
+      if (data.idempotencyKey === firstCardKey) {
+        expect(committedText).toBe(false);
+        committedText = true;
+        return Response.json({ state: "sent", messageId: "text-parent-1" });
+      }
+      return Response.json({ state: "sent", messageId: "text-reply-1" });
+    });
+    const first = request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
+    await started;
+    now += 6 * 60_000;
+    expect((await request(stateBody("APPROVED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(committedText).toBe(true);
+    expect(calls[3]).toMatchObject({ target: "#releases", idempotencyKey: firstCardKey });
+    expect(calls[3]).not.toHaveProperty("card");
+    if (!releaseOld) throw new Error("old card request did not start");
+    // Model Raft's sender+key uniqueness: the late card loses to the text.
+    releaseOld(Response.json({ code: "idempotency_key_reused" }, { status: 409 }));
+    expect((await first).status).toBe(503);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("text-parent-1");
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
+  it("retries a lost text-fence response with the same key and does not send the event twice", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (calls.length <= 2) throw new Error("response lost after commit");
+      return Response.json({ state: "sent", messageId: "text-parent-1" });
+    });
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "a")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(event, "b")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(event, "c")).status).toBe(200);
+    expect(calls[1]).toEqual(calls[2]);
+    expect(calls[1]).toMatchObject({ idempotencyKey: calls[0]!.idempotencyKey });
+    expect(calls[1]).not.toHaveProperty("card");
+    expect((await request(event, "d")).status).toBe(200);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("lets an app admin retry an exhausted internal delivery with the same body, key and an audit entry", async () => {
+    const { request, sqlite, env, app, updateConfig, failures, retryFailure } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      if (calls.length === 1) throw new Error("response lost");
+      return Response.json({ state: "committed", messageId: "parent-message-1" });
+    });
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    expect((await request(event, "original")).status).toBe(503);
+    const raw = JSON.stringify(event);
+    sqlite.prepare(`INSERT INTO webhook_deliveries
+      (id,webhook_id,event_type,payload_json,signing_secret,status,attempts,max_attempts,created_at,updated_at)
+      VALUES ('failed-1','webhook-1',?,?,'old-secret','failed',3,3,1,1)`).run(event.event, raw);
+    const listing = await failures();
+    expect(await listing.json()).toEqual({ failures: [{ id: "failed-1", event_type: event.event, created_at: 1,
+      last_attempt_at: null, last_response_status: null }] });
+    expect((await failures("another-app")).status).toBe(404);
+    expect((await retryFailure("failed-1", "another-app")).status).toBe(404);
+    const scheduled = await retryFailure("failed-1");
+    expect(scheduled.status).toBe(202);
+    const { delivery_id: retryId } = await scheduled.json() as { delivery_id: string };
+    expect((await retryFailure("failed-1")).status).toBe(409);
+    expect(sqlite.prepare("SELECT payload_json,signing_secret,status FROM webhook_deliveries WHERE id=?").get(retryId))
+      .toEqual({ payload_json: raw, signing_secret: SECRET, status: "pending" });
+    expect(sqlite.prepare("SELECT action,payload FROM audit_logs").all()).toEqual([{
+      action: "raft_notification.retry",
+      payload: JSON.stringify({ subscription_id: SUBSCRIPTION_ID, failed_delivery_id: "failed-1", retry_delivery_id: retryId }),
+    }]);
+    // Even if the event is no longer subscribed, the old in-flight operation
+    // still has to be reconciled before it can be forgotten.
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json='[\"build:failed\"]'").run();
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const fetchInternal: typeof fetch = async (input, init) => app.fetch(new Request(input, init), env);
+    const summary = await reapWebhookDeliveries(env, { fetchImpl: fetchInternal, now: Date.now() + 1_000 });
+    expect(summary.succeeded).toBe(1);
+    expect(sqlite.prepare("SELECT status FROM webhook_deliveries WHERE id=?").pluck().get(retryId)).toBe("succeeded");
+    expect(calls[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: calls[0]!.idempotencyKey });
+    expect(sqlite.prepare("SELECT pending_json FROM raft_notification_cards").pluck().get()).toBeNull();
+    expect(await (await failures()).json()).toEqual({ failures: [] });
+  });
+
+  it("does not queue a retry without its audit record or for a disabled destination", async () => {
+    const { sqlite, retryFailure } = await harness();
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    sqlite.prepare(`INSERT INTO webhook_deliveries
+      (id,webhook_id,event_type,payload_json,status,attempts,max_attempts,created_at,updated_at)
+      VALUES ('failed-1','webhook-1',?,?,'failed',3,3,1,1)`).run(event.event, JSON.stringify(event));
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET enabled=0").run();
+    expect((await retryFailure("failed-1")).status).toBe(409);
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET enabled=1").run();
+    sqlite.exec("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+    expect((await retryFailure("failed-1")).status).toBe(503);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM webhook_deliveries WHERE status='pending'").pluck().get()).toBe(0);
+  });
+
+  it("queues only one audited retry for simultaneous admin requests", async () => {
+    const { sqlite, retryFailure } = await harness();
+    const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    sqlite.prepare(`INSERT INTO webhook_deliveries
+      (id,webhook_id,event_type,payload_json,status,attempts,max_attempts,created_at,updated_at)
+      VALUES ('failed-1','webhook-1',?,?,'failed',3,3,1,1)`).run(event.event, JSON.stringify(event));
+    const responses = await Promise.all([retryFailure("failed-1"), retryFailure("failed-1")]);
+    expect(responses.map((response) => response.status).sort()).toEqual([202, 409]);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM webhook_deliveries WHERE status='pending'").pluck().get()).toBe(1);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM audit_logs").pluck().get()).toBe(1);
+  });
+
   it("repairs a committed root after a crash before the thread pointer was saved", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
@@ -657,7 +882,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
   });
 
-  it("serializes concurrent notifications and blocks changing mode during a send", async () => {
+  it("serializes concurrent notifications and retains an in-flight send when cards are disabled", async () => {
     const { request, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
     let releaseSend: ((value: Response) => void) | undefined;
@@ -669,7 +894,8 @@ describe("Hands-managed Raft notifications", () => {
     });
     const first = request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a");
     await started;
-    expect((await updateConfig({ card_updates: false })).status).toBe(409);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    expect((await updateConfig({ card_updates: true })).status).toBe(409);
     expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(503);
     expect(fetchMock).toHaveBeenCalledOnce();
     if (!releaseSend) throw new Error("send did not start");

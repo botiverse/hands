@@ -64,6 +64,8 @@ import {
   createRaftNotification,
   deleteRaftNotification,
   getRaftNotificationConfig,
+  listRaftNotificationFailures,
+  retryRaftNotificationFailure,
   testRaftNotification,
   updateRaftNotification,
   WEBHOOK_EVENT_TYPES,
@@ -1343,7 +1345,10 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
   });
   const updateCards = useMutation({
     mutationFn: (input: { id: string; card_updates: boolean }) => updateRaftNotification(appId, input.id, { card_updates: input.card_updates }),
-    onSuccess: refresh,
+    onSuccess: (_result, input) => {
+      if (!input.card_updates) toast.show({ kind: "success", title: "Text selected", description: "In-flight card requests may still finish; later notifications will use text." });
+      refresh();
+    },
     onError: (error) => toast.show({ kind: "error", title: "Could not update card settings", description: (error as Error).message }),
   });
   const remove = useMutation({
@@ -1414,7 +1419,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
             <div className="space-y-2">
               <div className="text-xs font-medium">Configured destinations</div>
               {subscriptions.map((subscription) => (
-                <RaftNotificationRow key={subscription.id} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onToggleCards={(card_updates) => updateCards.mutate({ id: subscription.id, card_updates })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || updateCards.isPending || test.isPending || remove.isPending} />
+                <RaftNotificationRow key={subscription.id} appId={appId} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onToggleCards={(card_updates) => updateCards.mutate({ id: subscription.id, card_updates })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || updateCards.isPending || test.isPending || remove.isPending} />
               ))}
             </div>
           )}
@@ -1425,6 +1430,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
 }
 
 function RaftNotificationRow({
+  appId,
   subscription,
   onToggle,
   onToggleCards,
@@ -1432,6 +1438,7 @@ function RaftNotificationRow({
   onDelete,
   busy,
 }: {
+  appId: string;
   subscription: RaftNotificationSubscription;
   onToggle: (enabled: boolean) => void;
   onToggleCards: (enabled: boolean) => void;
@@ -1439,6 +1446,20 @@ function RaftNotificationRow({
   onDelete: () => void;
   busy: boolean;
 }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const failures = useQuery({
+    queryKey: ["raft-notification-failures", appId, subscription.id],
+    queryFn: () => listRaftNotificationFailures(appId, subscription.id),
+  });
+  const retry = useMutation({
+    mutationFn: (id: string) => retryRaftNotificationFailure(appId, subscription.id, id),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Retry scheduled", description: "Hands will retry when the delivery service next runs." });
+      void qc.invalidateQueries({ queryKey: ["raft-notification-failures", appId, subscription.id] });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Could not retry notification", description: (error as Error).message }),
+  });
   return (
     <div className="rounded-md border border-line-hairline p-2 flex flex-wrap items-center gap-2">
       <div className="min-w-48 flex-1">
@@ -1450,6 +1471,13 @@ function RaftNotificationRow({
       <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? "Disable" : "Enable"}</Button>
       <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>Test</Button>
       <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>Remove</Button>
+      {failures.isError && <div className="w-full text-xs text-foreground-muted">Could not load failed notifications.</div>}
+      {failures.data?.failures.map((failure) => (
+        <div key={failure.id} className="w-full flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+          <span>Failed: {failure.event_type} · {new Date(failure.created_at).toLocaleString()}</span>
+          <Button variant="ghost" size="xs" onClick={() => retry.mutate(failure.id)} disabled={busy || retry.isPending || !subscription.enabled}>Retry</Button>
+        </div>
+      ))}
     </div>
   );
 }

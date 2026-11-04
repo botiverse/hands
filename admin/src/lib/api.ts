@@ -1759,6 +1759,26 @@ export const testRaftNotification = (appId: string, subscriptionId: string) =>
     { method: "POST", admin: true },
   );
 
+export interface RaftNotificationFailure {
+  id: string;
+  event_type: WebhookEventType;
+  created_at: number;
+  last_attempt_at: number | null;
+  last_response_status: number | null;
+}
+
+export const listRaftNotificationFailures = (appId: string, subscriptionId: string) =>
+  request<{ failures: RaftNotificationFailure[] }>(
+    `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/failures`,
+    { admin: true },
+  );
+
+export const retryRaftNotificationFailure = (appId: string, subscriptionId: string, deliveryId: string) =>
+  request<{ ok: true; delivery_id: string }>(
+    `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/failures/${encodeURIComponent(deliveryId)}/retry`,
+    { method: "POST", admin: true },
+  );
+
 // ---- Release shares (P1: share management tab) ----
 
 export interface AppShare {

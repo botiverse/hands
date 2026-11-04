@@ -26,6 +26,7 @@ interface Pending {
   expectedRevision: number;
   createsRoot: boolean;
   createdAt: number;
+  sendAsText?: boolean;
 }
 
 interface CardRow {
@@ -40,7 +41,7 @@ interface CardRow {
 }
 
 export interface CardTransport {
-  send(request: { target: string; content: string; card: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
+  send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;
   update(request: { messageId: string; content: string; card: RaftMessageCard; expectedRevision: number; idempotencyKey: string }): Promise<{ messageId: string; revision: number }>;
@@ -128,7 +129,30 @@ export async function deliverRaftNotificationCard(input: {
       let sentAsText = false;
       let mayHaveCommitted = wasUncertain;
       try {
-        if (pending.kind === "send") {
+        if (pending.kind === "send" && pending.sendAsText) {
+          // A text send competes with the original card send under the *same*
+          // Raft key. The sender+key unique constraint lets only one win.
+          try {
+            const text = await transport.send({ target: pending.target, content: pending.content, idempotencyKey: pending.idempotencyKey });
+            result = { messageId: text.messageId, revision: 0 };
+            sentAsText = true;
+          } catch (error) {
+            const conflict = error && typeof error === "object" ? error as { status?: unknown; code?: unknown } : null;
+            if (conflict?.status !== 409 || conflict.code !== "idempotency_key_reused") throw error;
+            // The card may have won the race. Replay that exact request to
+            // identify it; a conflict or missing proof leaves it pending.
+            const card = await transport.send(pending);
+            let revision = card.cardRevision;
+            if (revision === undefined) {
+              const readback = await transport.resolve(card.messageId);
+              if (readback.kind !== "card") throw error;
+              revision = readback.revision;
+            }
+            if (revision !== 1) return { kind: "retry", code: "card_delivery_unexpected_revision" };
+            result = { messageId: card.messageId, revision };
+          }
+          mayHaveCommitted = true;
+        } else if (pending.kind === "send") {
           const found = wasUncertain ? await transport.reconcile(pending) : { state: "not_found" as const };
           // A not_found read is only a point-in-time observation: the old
           // request may still be running. Retry the exact same key and body.
@@ -191,7 +215,40 @@ export async function deliverRaftNotificationCard(input: {
     if (row.pending_json) {
       let pending: Pending;
       try { pending = JSON.parse(row.pending_json) as Pending; } catch { return { kind: "retry", code: "card_delivery_invalid_pending" }; }
-      const recovered = await replay(pending, row.pending_uncertain === 1);
+      const settings = await db.prepare(`SELECT card_updates FROM raft_notification_subscriptions
+        WHERE id=?1 AND archived_at IS NULL`).bind(subscriptionId).first<{ card_updates: number }>();
+      // On an explicit switch to text, a pending initial send can be fenced by
+      // competing with its original key. Persist that choice before sending.
+      if (pending.kind === "send" && row.pending_uncertain === 1 && !pending.sendAsText && settings?.card_updates === 0) {
+        const changed = { ...pending, sendAsText: true };
+        const saved = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',pending_json=?1,updated_at=?2
+          WHERE subscription_id=?3 AND object_key=?4 AND lease_token=?5 AND pending_json=?6`,
+          JSON.stringify(changed), now(), subscriptionId, objectKey, token, JSON.stringify(pending));
+        if (!saved) return { kind: "retry", code: "card_delivery_lease_lost" };
+        pending = changed;
+      }
+      let recovered = await replay(pending, row.pending_uncertain === 1);
+      if (recovered.kind === "retry" && pending.kind === "send" && !pending.sendAsText && pending.eventHash !== input.eventHash) {
+        const changed = { ...pending, sendAsText: true };
+        const saved = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',pending_json=?1,updated_at=?2
+          WHERE subscription_id=?3 AND object_key=?4 AND lease_token=?5 AND pending_json=?6`,
+          JSON.stringify(changed), now(), subscriptionId, objectKey, token, JSON.stringify(pending));
+        if (!saved) return { kind: "retry", code: "card_delivery_lease_lost" };
+        pending = changed;
+        recovered = await replay(pending, true);
+      }
+      if (recovered.kind === "retry" && pending.eventHash !== input.eventHash) {
+        // Do not let one unresolved write silence later events. Retire this
+        // object's card but retain the exact uncertain request for recovery;
+        // the later event can be posted as text with an outdated-card warning.
+        // If the original root is still unknown, do not create another root;
+        // its same-key text fence above must first obtain a definite result.
+        if (pending.createsRoot && input.createsRoot) return recovered;
+        const retired = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',updated_at=?1
+          WHERE subscription_id=?2 AND object_key=?3 AND lease_token=?4 AND pending_json=?5`,
+          now(), subscriptionId, objectKey, token, JSON.stringify(pending));
+        return retired ? { kind: "text", reason: "card_pending" } : { kind: "retry", code: "card_delivery_lease_lost" };
+      }
       if (recovered.kind !== "delivered" || pending.eventHash === input.eventHash) return recovered;
       row = await load();
       if (!row) return { kind: "retry", code: "card_delivery_lease_lost" };
@@ -206,8 +263,13 @@ export async function deliverRaftNotificationCard(input: {
         .bind(row.message_id, now(), subscriptionId, objectKey).run();
     }
 
-    // Re-read settings under the object lease; admin switches cannot take
-    // effect while a request for this subscription is in flight.
+    // The send may have resolved to a text message under the card's original
+    // key. A delivery retry of that same event must not send it a second time
+    // under the ordinary text key after the object was retired.
+    if (row.last_event_hash === input.eventHash) return { kind: "skipped" };
+
+    // Re-read settings under the object lease. A switch to text may happen
+    // while a prior request is in flight; that request is still reconciled.
     const settings = await db.prepare(`SELECT enabled,card_updates FROM raft_notification_subscriptions
       WHERE id=?1 AND archived_at IS NULL`).bind(subscriptionId).first<{ enabled: number; card_updates: number }>();
     if (!settings || settings.enabled !== 1) return { kind: "retry", code: "card_destination_disabled" };

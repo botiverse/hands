@@ -295,6 +295,94 @@ export async function handleGetRaftNotifications(c: AdminContext) {
   });
 }
 
+// Do not expose the internal webhook URL, signing secret, or event body. The
+// newest failed delivery for each exact body is enough to recover an exhausted
+// card delivery while retaining its original idempotency key.
+export async function handleListRaftNotificationFailures(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const subscriptionId = c.req.param("subscriptionId") ?? "";
+  const subscription = await c.env.DB.prepare(
+    `SELECT webhook_id FROM raft_notification_subscriptions
+     WHERE id=?1 AND app_id=?2 AND archived_at IS NULL`,
+  ).bind(subscriptionId, appId).first<{ webhook_id: string }>();
+  if (!subscription) return c.json({ error: "notification destination not found" }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT d.id,d.event_type,d.created_at,d.last_attempt_at,d.last_response_status
+     FROM webhook_deliveries d
+     WHERE d.webhook_id=?1 AND d.status='failed'
+       AND d.event_type IN ('app_store:version_state_changed','testflight:external_state_changed','google_play:release_state_changed')
+       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries newer
+         WHERE newer.webhook_id=d.webhook_id AND newer.payload_json=d.payload_json
+           AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.id>d.id)))
+     ORDER BY d.created_at DESC,d.id DESC LIMIT 25`,
+  ).bind(subscription.webhook_id).all<{
+    id: string; event_type: string; created_at: number;
+    last_attempt_at: number | null; last_response_status: number | null;
+  }>();
+  return c.json({ failures: results });
+}
+
+export async function handleRetryRaftNotificationFailure(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const subscriptionId = c.req.param("subscriptionId") ?? "";
+  const deliveryId = c.req.param("deliveryId") ?? "";
+  const subscription = await c.env.DB.prepare(
+    `SELECT s.webhook_id,s.enabled,w.enabled AS webhook_enabled,w.archived_at AS webhook_archived_at
+     FROM raft_notification_subscriptions s JOIN webhooks w ON w.id=s.webhook_id
+     WHERE s.id=?1 AND s.app_id=?2 AND s.archived_at IS NULL`,
+  ).bind(subscriptionId, appId).first<{
+    webhook_id: string; enabled: number;
+    webhook_enabled: number; webhook_archived_at: number | null;
+  }>();
+  if (!subscription) return c.json({ error: "notification destination not found" }, 404);
+  if (subscription.enabled !== 1 || subscription.webhook_enabled !== 1 || subscription.webhook_archived_at !== null) {
+    return c.json({ error: "notification destination disabled" }, 409);
+  }
+  const failed = await c.env.DB.prepare(
+    `SELECT event_type FROM webhook_deliveries WHERE id=?1 AND webhook_id=?2 AND status='failed'`,
+  ).bind(deliveryId, subscription.webhook_id).first<{ event_type: string }>();
+  if (!failed || !supportsRaftNotificationCards(failed.event_type)) return c.json({ error: "failed delivery not found" }, 404);
+  // Append a new delivery instead of resetting the old row: an older worker
+  // could still be finishing its attempt, and its completion must not mutate
+  // the new attempt. The body is copied byte-for-byte, so the internal callback
+  // derives the same Raft idempotency key. The current internal signing key is
+  // used; neither the key nor the body leaves this route.
+  const now = Date.now();
+  const retryId = crypto.randomUUID();
+  const actor = currentActorInfo(c);
+  let inserted: D1Result | undefined;
+  try {
+    [inserted] = await c.env.DB.batch([c.env.DB.prepare(
+    `INSERT INTO webhook_deliveries
+       (id,webhook_id,event_type,payload_json,signing_secret,status,attempts,max_attempts,next_attempt_at,created_at,updated_at)
+     SELECT ?1,d.webhook_id,d.event_type,d.payload_json,w.secret,'pending',0,3,?2,MAX(?2,d.created_at+1),?2
+     FROM webhook_deliveries d
+     JOIN raft_notification_subscriptions s ON s.webhook_id=d.webhook_id
+     JOIN webhooks w ON w.id=d.webhook_id
+     WHERE d.id=?3 AND d.webhook_id=?4 AND d.status='failed'
+       AND s.id=?5 AND s.app_id=?6 AND s.enabled=1 AND s.archived_at IS NULL
+       AND w.enabled=1 AND w.archived_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries newer
+         WHERE newer.webhook_id=d.webhook_id AND newer.payload_json=d.payload_json
+           AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.id>d.id)))
+       AND NOT EXISTS (SELECT 1 FROM webhook_deliveries pending
+         WHERE pending.webhook_id=d.webhook_id AND pending.payload_json=d.payload_json AND pending.status='pending')`,
+  ).bind(retryId, now, deliveryId, subscription.webhook_id, subscriptionId, appId),
+  c.env.DB.prepare(
+    `INSERT INTO audit_logs (id,app_id,action,actor,actor_id,actor_type,payload,created_at)
+     SELECT ?1,?2,'raft_notification.retry',?3,?4,?5,?6,?7
+     WHERE EXISTS (SELECT 1 FROM webhook_deliveries WHERE id=?8)`,
+  ).bind(crypto.randomUUID(), appId, actor.display_name, actor.id, actor.type,
+    JSON.stringify({ subscription_id: subscriptionId, failed_delivery_id: deliveryId, retry_delivery_id: retryId }), now, retryId)]);
+  } catch {
+    return c.json({ error: "notification retry unavailable" }, 503);
+  }
+  if (inserted?.meta.changes !== 1) return c.json({ error: "delivery already retried or no longer available" }, 409);
+  // The existing scheduled reaper picks up the pending row; no separate
+  // provider request is started in this admin handler.
+  return c.json({ ok: true, delivery_id: retryId }, 202);
+}
+
 export async function handleConnectRaftBot(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await appContext(c.env.DB, appId);
@@ -426,12 +514,13 @@ export async function handleUpdateRaftNotification(c: AdminContext) {
   }
   if (body.card_updates !== undefined) {
     if (typeof body.card_updates !== "boolean") return c.json({ error: "card_updates must be a boolean" }, 400);
-    // Check the lock in the same update that changes the setting. A send with
-    // a lost response must be reconciled before its presentation can change.
+    // Turning cards off is always available; it does not discard in-flight or
+    // uncertain writes, which may still complete and must be reconciled. Do
+    // not re-enable cards while one of those writes is still outstanding.
     const changed = await c.env.DB.prepare(`UPDATE raft_notification_subscriptions SET card_updates=?1,updated_at=?2
-      WHERE id=?3 AND app_id=?4 AND archived_at IS NULL AND NOT EXISTS (
+      WHERE id=?3 AND app_id=?4 AND archived_at IS NULL AND (?1=0 OR NOT EXISTS (
         SELECT 1 FROM raft_notification_cards c WHERE c.subscription_id=?3
-          AND (c.pending_json IS NOT NULL OR (c.lease_token IS NOT NULL AND c.lease_expires_at>=?2)))`)
+          AND (c.pending_json IS NOT NULL OR (c.lease_token IS NOT NULL AND c.lease_expires_at>=?2))))`)
       .bind(body.card_updates ? 1 : 0, Date.now(), subscriptionId, appId).run();
     if (changed.meta.changes !== 1) {
       const exists = await c.env.DB.prepare(`SELECT 1 FROM raft_notification_subscriptions
@@ -690,12 +779,22 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   if (typeof event !== "string" || !WEBHOOK_EVENT_TYPES.includes(event as NotificationEvent)) {
     return c.json({ error: "invalid event" }, 400);
   }
+  const objectKey = await notificationObjectKey(eventBody);
+  const eventHash = await sha256Hex(body);
   const events = parseStoredEvents(row.events_json);
-  if (events.length > 0 && !events.includes(event) && !events.includes("*")) return c.json({ ok: true, skipped: true });
+  if (events.length > 0 && !events.includes(event) && !events.includes("*")) {
+    // An already-started card request still needs reconciliation even if the
+    // event was unsubscribed later. Do not deliver any new unsubscribed event.
+    const prior = await c.env.DB.prepare(`SELECT pending_json FROM raft_notification_cards
+      WHERE subscription_id=?1 AND object_key=?2`).bind(subscriptionId, objectKey).first<{ pending_json: string | null }>();
+    let pendingHash: unknown = null;
+    try { pendingHash = prior?.pending_json ? parseJsonRecord(JSON.parse(prior.pending_json)).eventHash : null; }
+    catch { return c.json({ error: "card_delivery_invalid_pending" }, 503); }
+    if (pendingHash !== eventHash) return c.json({ ok: true, skipped: true });
+  }
   const bot = await botForServer(c.env.DB, row.server_id);
   if (!bot || bot.state !== "active") return c.json({ error: "bot unavailable" }, 503);
 
-  const objectKey = await notificationObjectKey(eventBody);
   let thread = await c.env.DB.prepare(
     `SELECT parent_message_id, updated_at FROM raft_notification_threads
      WHERE subscription_id = ?1 AND object_key = ?2 LIMIT 1`,
@@ -751,9 +850,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   // The delivery header is metadata outside the signed body and can change on
   // a replay. Derive the provider idempotency key only from the signed payload
   // so the same event cannot be sent again with a substituted delivery id.
-  const eventHash = await sha256Hex(body);
   const idempotencyKey = `hands-raft:${subscriptionId}:${eventHash}`.slice(0, 240);
   let cardFallbackReason: string | undefined;
+  let cardTextFallback = false;
   if (supportsRaftNotificationCards(event)) {
     // A previously pending request must be reconciled even if the destination
     // was subsequently switched back to text.
@@ -779,6 +878,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
       if (result.kind === "delivered") return c.json({ ok: true, message_id: result.messageId, card: result.card,
         ...(!result.card ? { card_fallback: "card_not_supported" } : {}) });
       cardFallbackReason = result.reason;
+      cardTextFallback = true;
       // Recovery may have filled the root while processing an earlier event.
       if (ownsParentClaim) {
         const current = await c.env.DB.prepare(`SELECT parent_message_id FROM raft_notification_threads
@@ -791,9 +891,10 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     }
   }
   try {
-    const sent = await sendBotMessage(c.env, bot, target, formatRaftNotificationMessage(eventBody, {
+    const content = formatRaftNotificationMessage(eventBody, {
       id: row.app_id, slug: row.app_slug, name: row.app_name,
-    }), idempotencyKey);
+    }) + (cardTextFallback ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates." : "");
+    const sent = await sendBotMessage(c.env, bot, target, content, idempotencyKey);
     const now = Date.now();
     if (ownsParentClaim) {
       await c.env.DB.prepare(
