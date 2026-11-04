@@ -48,8 +48,8 @@ store the raw token in your CI secret store.
 
 Raft Agent Login sessions are not exported to this CLI. `raft integration login`
 authenticates `raft integration invoke`; it does not populate
-`HANDS_AUTH_TOKEN`. An admin agent that needs to bootstrap CI should call the
-manifest `create-deploy-token` action, write the returned one-time token
+`HANDS_AUTH_TOKEN`. An admin agent that needs to bootstrap CI should use
+`hands login` and `hands deploy-tokens create`, write the returned one-time token
 directly to the CI secret store, and then let the CLI consume that deploy
 token.
 
@@ -465,9 +465,8 @@ without it, iOS crashes for that version show only raw frames.
 recorded as build metadata. `publish-ios` creates the Hands build/release; it
 does not itself upload to Apple or activate TestFlight testing.
 
-An app admin then starts the **server-side upload** through the Hands console,
-API, or Raft integration action `upload-testflight-build`. Poll the returned
-Apple Build Upload id with `get-testflight-upload-status` until `COMPLETE` or
+An app publisher then starts the **server-side upload** through the Hands console,
+API, or CLI. Poll the returned Apple Build Upload id with the upload-status API until `COMPLETE` or
 `FAILED` (`response.state.state`; Apple errors/warnings/infos remain alongside
 it). This stage only uploads and processes the binary: it never assigns a beta
 group, notifies testers, activates the Hands release, or submits an App Store
@@ -535,8 +534,8 @@ same publish without `--wait` to preserve `already_sent`, then fresh-read the
 status again. `VALID`, group assignment, `BETA_APPROVED`, and
 `auto_notify_enabled=false` are not notification receipts.
 
-Hands follows Apple's role boundary: uploading the IPA requires Hands app
-admin; TestFlight group distribution requires Hands app publisher. The stored
+Hands follows Apple's role boundary: uploading the IPA and TestFlight group
+distribution require Hands app publisher. The stored
 App Store Connect key must have an Apple role permitted for the requested
 operation (external testing: Account Holder, Admin, or App Manager; internal
 testing also permits Developer or Marketing). Apple limits beta builds to 90

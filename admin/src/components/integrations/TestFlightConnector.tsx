@@ -17,6 +17,7 @@ import {
   verifyAscCredentials,
 } from "../../lib/api";
 import { useToast } from "../Toast";
+import { useText } from "../../lib/locale";
 
 /**
  * App Store Connect / TestFlight connector row for the Integrations page.
@@ -24,6 +25,7 @@ import { useToast } from "../Toast";
  * and form flow — the row is collapsed until configured, then expandable.
  */
 export function TestFlightConnector({ appId }: { appId: string }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const creds = useQuery({
@@ -45,7 +47,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
         p8: p8.trim(),
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "TestFlight credentials saved" });
+      toast.show({ kind: "success", title: t("TestFlight credentials saved", "TestFlight 凭据已保存") });
       setEditing(false);
       setKeyId("");
       setIssuerId("");
@@ -53,22 +55,22 @@ export function TestFlightConnector({ appId }: { appId: string }) {
       qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Save failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Save failed", "保存失败"), description: (e as Error).message }),
   });
   const remove = useMutation({
     mutationFn: () => deleteAscCredentials(appId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "TestFlight credentials removed" });
+      toast.show({ kind: "success", title: t("TestFlight credentials removed", "TestFlight 凭据已移除") });
       qc.invalidateQueries({ queryKey: ["asc-credentials", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Remove failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: t("Remove failed", "移除失败"), description: (e as Error).message }),
   });
 
   const test = useMutation({
     mutationFn: () => {
       const bundleId = window.prompt(
-        "Bundle ID to verify against App Store Connect (e.g. build.raft.app):",
+        t("Bundle ID to verify against App Store Connect (e.g. build.raft.app):", "要在 App Store Connect 中验证的 Bundle ID（例如 build.raft.app）："),
         "",
       );
       if (!bundleId || !bundleId.trim()) throw new Error("cancelled");
@@ -78,22 +80,22 @@ export function TestFlightConnector({ appId }: { appId: string }) {
       if (res.ok) {
         toast.show({
           kind: "success",
-          title: "Connection OK",
+          title: t("Connection OK", "连接成功"),
           description: res.asc_app_id
-            ? `App Store Connect app ${res.asc_app_id} found.`
+            ? t(`App Store Connect app ${res.asc_app_id} found.`, `已找到 App Store Connect 应用 ${res.asc_app_id}。`)
             : res.detail ?? "",
         });
       } else {
         toast.show({
           kind: "error",
-          title: "Verification failed",
-          description: res.detail ?? res.error ?? "unknown",
+          title: t("Verification failed", "验证失败"),
+          description: res.detail ?? res.error ?? t("unknown", "未知错误"),
         });
       }
     },
     onError: (e) => {
       if ((e as Error).message === "cancelled") return;
-      toast.show({ kind: "error", title: "Test failed", description: (e as Error).message });
+      toast.show({ kind: "error", title: t("Test failed", "测试失败"), description: (e as Error).message });
     },
   });
 
@@ -101,7 +103,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
     if (!file) return;
     file.text().then(
       (text) => setP8(text),
-      () => toast.show({ kind: "error", title: "Could not read the .p8 file" }),
+      () => toast.show({ kind: "error", title: t("Could not read the .p8 file", "无法读取 .p8 文件") }),
     );
   };
 
@@ -113,7 +115,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
       {!meta && (
         <ol className="text-xs text-foreground-muted list-decimal pl-4 space-y-1">
           <li>
-            In{" "}
+            {t("In", "在")}{" "}
             <a
               className="text-info-strong hover:underline"
               href="https://appstoreconnect.apple.com"
@@ -122,30 +124,24 @@ export function TestFlightConnector({ appId }: { appId: string }) {
             >
               App Store Connect
             </a>
-            {" → My Apps, create an app record for this bundle ID if one "}
-            does not exist yet (TestFlight only needs the record — no store
-            listing or review required).
+            {t(" → My Apps, create an app record for this bundle ID if one does not exist yet (TestFlight only needs the record — no store listing or review required).", " → 我的 App 中，如果尚无对应此 Bundle ID 的应用记录，请先创建（TestFlight 只需要记录，无需商店页面或审核）。")}
           </li>
           <li>
-            Go to{" "}
+            {t("Go to", "前往")}{" "}
             <a
               className="text-info-strong hover:underline"
               href="https://appstoreconnect.apple.com/access/integrations/api"
               target="_blank"
               rel="noopener noreferrer"
             >
-              Users and Access → Integrations → App Store Connect API
+              {t("Users and Access → Integrations → App Store Connect API", "用户和访问 → 集成 → App Store Connect API")}
             </a>
-            {" and generate a Team Key with the "}
-            <strong>App Manager</strong> role (requires an Admin account).
+            {t(" and generate a Team Key with the ", "，生成具有")}<strong>{t("App Manager", "App 管理员")}</strong>{t(" role (requires an Admin account).", "角色的团队密钥（需要管理员账号）。")}
           </li>
           <li>
-            Note the <strong>Issuer ID</strong> (top of that page) and the
-            key's <strong>Key ID</strong>, then download the{" "}
-            <span className="font-mono">AuthKey_XXXXXXXXXX.p8</span> file —
-            Apple lets you download it <strong>once</strong>.
+            {t("Note the", "记下页面顶部的")} <strong>Issuer ID</strong>{t(" (top of that page) and the key's", "以及密钥的")} <strong>Key ID</strong>{t(", then download the", "，然后下载")} <span className="font-mono">AuthKey_XXXXXXXXXX.p8</span>{t(" file — Apple lets you download it", "文件；Apple 仅允许下载")} <strong>{t("once", "一次")}</strong>{t(".", "。")}
           </li>
-          <li>Paste all three below and save.</li>
+          <li>{t("Paste all three below and save.", "将三项内容填入下方并保存。")}</li>
         </ol>
       )}
       <div className="flex flex-col gap-3 md:flex-row">
@@ -169,17 +165,17 @@ export function TestFlightConnector({ appId }: { appId: string }) {
         </label>
       </div>
       <label className="block text-xs text-foreground-muted">
-        Private key (.p8 contents)
+        {t("Private key (.p8 contents)", "私钥（.p8 文件内容）")}
         <Textarea
           className="w-full font-mono h-24 resize-y mt-1"
-          placeholder={"Paste the contents of the downloaded .p8 AuthKey file"}
+          placeholder={t("Paste the contents of the downloaded .p8 AuthKey file", "粘贴下载的 .p8 AuthKey 文件内容")}
           value={p8}
           onChange={(e) => setP8(e.target.value)}
         />
       </label>
       <div className="flex items-center gap-2">
         <Button variant="outline" size="xs" render={<label className="cursor-pointer" />}>
-          Load from .p8 file
+          {t("Load from .p8 file", "从 .p8 文件加载")}
           <input
             type="file"
             accept=".p8,.pem"
@@ -198,7 +194,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
               setP8("");
             }}
           >
-            Cancel
+            {t("Cancel", "取消")}
           </Button>
         )}
         <Button
@@ -206,19 +202,16 @@ export function TestFlightConnector({ appId }: { appId: string }) {
           disabled={!formValid || save.isPending}
           onClick={() => save.mutate()}
         >
-          {save.isPending ? "…" : meta ? "Replace credentials" : "Save & enable"}
+          {save.isPending ? "…" : meta ? t("Replace credentials", "更换凭据") : t("Save & enable", "保存并启用")}
         </Button>
       </div>
       {p8.trim().length > 0 && !(p8.includes("BEGIN") && p8.includes("KEY")) && (
         <p className="text-xs text-warning-strong">
-          This does not look like a .p8 private key — paste the full PEM
-          contents of the downloaded AuthKey file, including the header and
-          footer lines.
+          {t("This does not look like a .p8 private key — paste the full PEM contents of the downloaded AuthKey file, including the header and footer lines.", "这不像是 .p8 私钥，请粘贴下载的 AuthKey 文件的完整 PEM 内容，包括开头和结尾行。")}
         </p>
       )}
       <p className="text-xs text-foreground-hint">
-        The App Store Connect app record must match the bundle ID your IPAs
-        are signed with.
+        {t("The App Store Connect app record must match the bundle ID your IPAs are signed with.", "App Store Connect 的应用记录必须与 IPA 签名使用的 Bundle ID 一致。")}
       </p>
     </div>
   );
@@ -232,16 +225,14 @@ export function TestFlightConnector({ appId }: { appId: string }) {
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-medium text-foreground-strong">TestFlight</h3>
           <p className="mt-0.5 text-xs text-foreground-muted">
-            App Store Connect API key used to upload builds of this app to
-            TestFlight. Stored encrypted; the private key is never shown again
-            after saving.
+            {t("App Store Connect API key used to upload builds of this app to TestFlight. Stored encrypted; the private key is never shown again after saving.", "用于将此应用构建上传到 TestFlight 的 App Store Connect API 密钥。密钥会加密保存；私钥保存后不会再次显示。")}
           </p>
         {meta ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
-            <Badge variant="success">Configured</Badge>
+            <Badge variant="success">{t("Configured", "已配置")}</Badge>
             <span className="min-w-0 truncate font-mono">Key ID {meta.key_id}</span>
-            <span className="min-w-0 truncate font-mono">Issuer {meta.issuer_id}</span>
-            <span>updated {new Date(meta.updated_at).toISOString().slice(0, 10)}</span>
+            <span className="min-w-0 truncate font-mono">{t("Issuer", "签发者")} {meta.issuer_id}</span>
+            <span>{t(`updated ${new Date(meta.updated_at).toISOString().slice(0, 10)}`, `更新于 ${new Date(meta.updated_at).toISOString().slice(0, 10)}`)}</span>
           </div>
         ) : null}
         </div>
@@ -251,7 +242,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
               variant="outline"
               size="icon-sm"
               aria-expanded={expanded}
-              aria-label={expanded ? "Collapse" : "Expand"}
+              aria-label={expanded ? t("Collapse", "收起") : t("Expand", "展开")}
               onClick={() => setExpanded(!expanded)}
             >
               <ChevronDown
@@ -265,7 +256,7 @@ export function TestFlightConnector({ appId }: { appId: string }) {
               disabled={creds.isLoading}
               onClick={() => setExpanded(true)}
             >
-              Configure
+              {t("Configure", "配置")}
             </Button>
           )}
         </div>
@@ -282,17 +273,16 @@ export function TestFlightConnector({ appId }: { appId: string }) {
                       disabled={test.isPending}
                       onClick={() => test.mutate()}
                     >
-                      {test.isPending ? "Testing…" : "Test connection"}
+                      {test.isPending ? t("Testing…", "测试中…") : t("Test connection", "测试连接")}
                     </Button>
                   }
                 />
                 <TooltipContent>
-                  Verify the stored key against App Store Connect for this app's
-                  bundle id
+                  {t("Verify the stored key against App Store Connect for this app's bundle id", "使用此应用的 Bundle ID 在 App Store Connect 中验证已保存的密钥")}
                 </TooltipContent>
               </Tooltip>
               <Button variant="outline" onClick={() => setEditing(true)}>
-                Replace key
+                {t("Replace key", "更换密钥")}
               </Button>
               <Button
                 variant="danger"
@@ -300,14 +290,14 @@ export function TestFlightConnector({ appId }: { appId: string }) {
                 onClick={() => {
                   if (
                     window.confirm(
-                      "Remove the App Store Connect key? TestFlight uploads for this app stop until a new key is saved.",
+                      t("Remove the App Store Connect key? TestFlight uploads for this app stop until a new key is saved.", "移除 App Store Connect 密钥？在保存新密钥之前，此应用将无法上传到 TestFlight。"),
                     )
                   ) {
                     remove.mutate();
                   }
                 }}
               >
-                {remove.isPending ? "…" : "Remove"}
+                {remove.isPending ? "…" : t("Remove", "移除")}
               </Button>
             </div>
           )}

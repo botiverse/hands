@@ -2,8 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Avatar, AvatarImage, AvatarFallback, Badge } from "raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
 import { collidingPrincipalLabels, needsServerBadge } from "../lib/principalIdentity";
+import { useLocale, useText } from "../lib/locale";
 
 export function AuditLog({ appId }: { appId: string }) {
+  const t = useText();
   const { data, isLoading, error } = useQuery({
     queryKey: ["audit", appId],
     queryFn: () => listAuditLogs(appId),
@@ -23,13 +25,13 @@ export function AuditLog({ appId }: { appId: string }) {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-4">Audit log</h1>
-      {isLoading && <p className="text-foreground-muted">Loading...</p>}
+      <h1 className="text-2xl font-bold mb-4">{t("Audit log", "审计日志")}</h1>
+      {isLoading && <p className="text-foreground-muted">{t("Loading...", "加载中…")}</p>}
       {error && (
-        <p className="text-danger">Failed: {(error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "加载失败：")} {(error as Error).message}</p>
       )}
       {data && data.logs.length === 0 && (
-        <p className="text-foreground-muted text-sm">No audit log entries yet.</p>
+        <p className="text-foreground-muted text-sm">{t("No audit log entries yet.", "暂无审计日志。")}</p>
       )}
       <div className="space-y-6">
         {data?.logs.map((entry) => (
@@ -47,6 +49,7 @@ function AuditEntry({
   entry: AuditLogEntry;
   collidingLabels: ReadonlySet<string>;
 }) {
+  const { locale } = useLocale();
   let payload: any = {};
   try {
     payload = JSON.parse(entry.payload);
@@ -83,7 +86,7 @@ function AuditEntry({
           />
         </div>
         <span className="text-xs text-foreground-muted">
-          {new Date(entry.created_at).toLocaleString()}
+          {new Date(entry.created_at).toLocaleString(locale)}
         </span>
       </div>
       <pre className="text-xs bg-layer-canvas-muted p-2 rounded-sm overflow-x-auto max-w-full whitespace-pre">
@@ -107,6 +110,7 @@ function ActorBadge({
   /** Only set when this actor name collides with another server. */
   serverSlug?: string | null | undefined;
 }) {
+  const t = useText();
   const isAgent = actorType === "agent";
   const isSystem = actorType === "system";
   return (
@@ -117,8 +121,8 @@ function ActorBadge({
       </Avatar>
       <span className="text-sm font-medium min-w-0 break-words">{displayName}</span>
       {serverSlug && <Badge variant="muted">{serverSlug}</Badge>}
-      {isAgent && <Badge variant="accent">agent</Badge>}
-      {isSystem && <Badge variant="muted">system</Badge>}
+      {isAgent && <Badge variant="accent">{t("agent", "智能体")}</Badge>}
+      {isSystem && <Badge variant="muted">{t("system", "系统")}</Badge>}
       {username && (
         <span className="text-xs text-foreground-muted">@{username}</span>
       )}

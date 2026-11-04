@@ -4,7 +4,7 @@ body { margin: 0; }
 a { color: #0369a1; text-underline-offset: 3px; }
 header { background: #fff; border-bottom: 1px solid #e2e8f0; }
 header nav, main { max-width: 840px; margin: 0 auto; }
-header nav { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; }
+header nav { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 16px 24px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; color: #0f172a; font-size: 20px; font-weight: 600; text-decoration: none; }
 main { padding: 36px 24px; }
 h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.2; }

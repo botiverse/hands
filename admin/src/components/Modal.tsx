@@ -21,6 +21,7 @@ import {
   DialogClose,
   Button,
 } from "raft-ui";
+import { useText } from "../lib/locale";
 
 export function Modal({
   title,
@@ -33,6 +34,7 @@ export function Modal({
   children: ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
+  const t = useText();
   const maxW =
     size === "sm" ? "max-w-sm" : size === "lg" ? "max-w-2xl" : "max-w-md";
 
@@ -51,7 +53,7 @@ export function Modal({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Close"
+                aria-label={t("Close", "关闭")}
                 className="text-foreground-hint hover:text-foreground-strong -mr-2 -mt-1"
               />
             }

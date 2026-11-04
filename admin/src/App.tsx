@@ -62,6 +62,7 @@ import {
 } from "raft-ui";
 import { appRouteMessage } from "./lib/appRouteMessages";
 import { legalMessage } from "./lib/legalMessages";
+import { LanguagePicker, useLocale, useText } from "./lib/locale";
 import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
 import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
@@ -217,6 +218,7 @@ const APPEARANCE_OPTIONS: Array<{
 ];
 
 function Header({ account }: { account: AuthAccount }) {
+  const t = useText();
   const { theme, mode, setTheme } = useTheme();
   const navigate = useNavigate();
   const onLogout = async () => {
@@ -273,8 +275,8 @@ function Header({ account }: { account: AuthAccount }) {
             type="button"
             className="relative z-10 hidden h-10 w-10 flex-none touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
             onClick={() => setCollapsed(true)}
-            aria-label="Collapse sidebar"
-            title="Collapse sidebar"
+            aria-label={t("Collapse sidebar", "收起侧边栏")}
+            title={t("Collapse sidebar", "收起侧边栏")}
           >
             <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -289,8 +291,8 @@ function Header({ account }: { account: AuthAccount }) {
                   render={
                     <SidebarItem
                       active={false}
-                      title={collapsed ? currentApp?.name ?? "Switch app" : undefined}
-                      aria-label="Switch app"
+                      title={collapsed ? currentApp?.name ?? t("Switch app", "切换应用") : undefined}
+                      aria-label={t("Switch app", "切换应用")}
                       render={<button type="button" />}
                       className={
                         collapsed
@@ -333,14 +335,14 @@ function Header({ account }: { account: AuthAccount }) {
                     </DropdownMenuItem>
                   ))}
                   {otherApps.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-foreground-hint">No other apps</div>
+                    <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
                   )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem render={<Link to="/apps?new=1" />}>
-                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New app
+                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> {t("New app", "新建应用")}
                   </DropdownMenuItem>
                   <DropdownMenuItem render={<Link to="/apps?all=1" />}>
-                    <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> All apps
+                    <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> {t("All apps", "所有应用")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -350,7 +352,7 @@ function Header({ account }: { account: AuthAccount }) {
                 <div key={section.label} className="mb-1">
                   {!collapsed && (
                     <SidebarGroupLabel className="hidden md:block">
-                      {section.label}
+                      {t(section.label, section.labelZh)}
                     </SidebarGroupLabel>
                   )}
                   <div>
@@ -366,14 +368,14 @@ function Header({ account }: { account: AuthAccount }) {
                           to={item.to ? `${appBase}/${item.to}` : (appBase ?? "/apps")}
                           end={item.end ?? false}
                           collapsed={collapsed}
-                          label={item.label}
+                          label={t(item.label, item.labelZh)}
                           icon={item.icon}
                         />
                       );
                       return collapsed ? (
                         <Tooltip key={item.label}>
                           <TooltipTrigger render={link} />
-                          <TooltipContent side="right">{item.label}</TooltipContent>
+                          <TooltipContent side="right">{t(item.label, item.labelZh)}</TooltipContent>
                         </Tooltip>
                       ) : (
                         link
@@ -392,8 +394,8 @@ function Header({ account }: { account: AuthAccount }) {
             type="button"
             className="relative z-10 mb-2 hidden h-10 w-full touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
             onClick={() => setCollapsed(false)}
-            aria-label="Expand sidebar"
-            title="Expand sidebar"
+            aria-label={t("Expand sidebar", "展开侧边栏")}
+            title={t("Expand sidebar", "展开侧边栏")}
           >
             <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -445,23 +447,23 @@ function Header({ account }: { account: AuthAccount }) {
               <div className="font-medium text-foreground-strong flex items-center gap-1">
                 {account.display_name}
                 {account.principal_type === "agent" && (
-                  <Badge variant="accent" title="Raft agent principal">agent</Badge>
+                  <Badge variant="accent" title={t("Raft agent principal", "Raft 智能体身份")}>{t("agent", "智能体")}</Badge>
                 )}
               </div>
               <div className="text-xs text-foreground-muted">
                 {account.server_slug || account.server_id}
               </div>
               <div className="mt-1 text-xs text-foreground-muted">
-                {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
+                {account.principal_type === "agent" ? t("Raft agent", "Raft 智能体") : t("Raft user", "Raft 用户")}
               </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuSubmenu>
-              <DropdownMenuSubmenuTrigger>Switch organization</DropdownMenuSubmenuTrigger>
+              <DropdownMenuSubmenuTrigger>{t("Switch organization", "切换组织")}</DropdownMenuSubmenuTrigger>
               <DropdownMenuContent side="right" align="start" className="w-72">
                 <OrgSwitcher
                   currentOrgId={account.org_id ?? null}
-                  buttonLabel="Switch organization"
+                  buttonLabel={t("Switch organization", "切换组织")}
                   onSwitch={(org) => {
                     switchOrg(org);
                     window.location.assign("/apps");
@@ -471,7 +473,7 @@ function Header({ account }: { account: AuthAccount }) {
             </DropdownMenuSubmenu>
             <DropdownMenuSeparator />
             <DropdownMenuSubmenu>
-              <DropdownMenuSubmenuTrigger>Appearance</DropdownMenuSubmenuTrigger>
+              <DropdownMenuSubmenuTrigger>{t("Appearance", "外观")}</DropdownMenuSubmenuTrigger>
               <DropdownMenuContent side="right" align="start" className="w-44">
                 {APPEARANCE_OPTIONS.map((option) => (
                   <DropdownMenuItem
@@ -483,17 +485,19 @@ function Header({ account }: { account: AuthAccount }) {
                       className={`size-3.5 ${option.isActive(theme, mode) ? "opacity-100" : "opacity-0"}`}
                       aria-hidden="true"
                     />
-                    <span>{option.label}</span>
+                    <span>{option.id === "elegant-light" ? t("Elegant Light", "Elegant 浅色") : option.id === "elegant-dark" ? t("Elegant Dark", "Elegant 深色") : option.id === "elegant-system" ? t("System", "跟随系统") : option.label}</span>
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
             </DropdownMenuSubmenu>
             <DropdownMenuSeparator />
+            <div className="px-3 py-2"><LanguagePicker /></div>
+            <DropdownMenuSeparator />
             <DropdownMenuItem render={<Link to="/settings" />}>
-              Settings
+              {t("Settings", "设置")}
             </DropdownMenuItem>
             <DropdownMenuItem className="text-danger" onClick={onLogout}>
-              <span>Logout</span>
+              <span>{t("Logout", "退出登录")}</span>
               <span aria-hidden="true">↗</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -509,6 +513,7 @@ function Header({ account }: { account: AuthAccount }) {
 // SAME `APP_NAV_SECTIONS` const the desktop rail uses) as a horizontally
 // scrollable chip row. It is `md:hidden` and sticky at the top on mobile.
 function MobileTopNav({ account }: { account: AuthAccount }) {
+  const t = useText();
   const navigate = useNavigate();
   const location = useLocation();
   const appId = location.pathname.startsWith("/apps/")
@@ -552,7 +557,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
               <button
                 type="button"
                 className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
-                aria-label={`Organization ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
+                aria-label={`${t("Organization", "组织")} ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
               >
                 <Avatar size="xs" type="human" className="border border-line-muted">
                   <AvatarFallback>
@@ -560,7 +565,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                   </AvatarFallback>
                 </Avatar>
                 <span className="truncate text-sm font-medium text-foreground-strong">
-                  {currentOrg?.name ?? account.server_slug ?? "Organization"}
+                  {currentOrg?.name ?? account.server_slug ?? t("Organization", "组织")}
                 </span>
                 <ChevronDown className="h-4 w-4 flex-none text-foreground-hint" aria-hidden="true" />
               </button>
@@ -569,7 +574,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
           <DropdownMenuContent side="bottom" align="start" className="w-72">
             <OrgSwitcher
               currentOrgId={account.org_id ?? null}
-              buttonLabel="Switch organization"
+              buttonLabel={t("Switch organization", "切换组织")}
               onSwitch={(org) => {
                 switchOrg(org);
                 window.location.assign("/apps");
@@ -584,7 +589,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                 <button
                   type="button"
                   className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
-                  aria-label="Switch app"
+                  aria-label={t("Switch app", "切换应用")}
                 >
                   <Avatar size="xs" type="human" className="border border-line-muted">
                     <AvatarFallback>
@@ -612,14 +617,14 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                 </DropdownMenuItem>
               ))}
               {otherApps.length === 0 && (
-                <div className="px-3 py-2 text-xs text-foreground-hint">No other apps</div>
+                <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem render={<Link to="/apps?new=1" />}>
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New app
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" /> {t("New app", "新建应用")}
               </DropdownMenuItem>
               <DropdownMenuItem render={<Link to="/apps?all=1" />}>
-                <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> All apps
+                <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> {t("All apps", "所有应用")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -653,22 +658,24 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                 <div className="font-medium text-foreground-strong flex items-center gap-1">
                   {account.display_name}
                   {account.principal_type === "agent" && (
-                    <Badge variant="accent" title="Raft agent principal">agent</Badge>
+                    <Badge variant="accent" title={t("Raft agent principal", "Raft 智能体身份")}>{t("agent", "智能体")}</Badge>
                   )}
                 </div>
                 <div className="text-xs text-foreground-muted">
                   {account.server_slug || account.server_id}
                 </div>
                 <div className="mt-1 text-xs text-foreground-muted">
-                  {account.principal_type === "agent" ? "Raft agent" : "Raft user"}
+                  {account.principal_type === "agent" ? t("Raft agent", "Raft 智能体") : t("Raft user", "Raft 用户")}
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
+              <div className="px-3 py-2"><LanguagePicker /></div>
+              <DropdownMenuSeparator />
               <DropdownMenuItem render={<Link to="/settings" />}>
-                Settings
+                {t("Settings", "设置")}
               </DropdownMenuItem>
               <DropdownMenuItem className="text-danger" onClick={onLogout}>
-                <span>Logout</span>
+                <span>{t("Logout", "退出登录")}</span>
                 <span aria-hidden="true">↗</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -691,7 +698,7 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
                 className={chip}
               >
                 <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
-                <span className="whitespace-nowrap">{item.label}</span>
+                <span className="whitespace-nowrap">{t(item.label, item.labelZh)}</span>
               </NavLink>
             );
           })
@@ -777,6 +784,7 @@ function TestflightRoute() {
 }
 
 function AppStoreReviewRoute() {
+  const t = useText();
   const { appId } = useParams();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((a) => a.id === appId);
@@ -784,13 +792,13 @@ function AppStoreReviewRoute() {
   return (
     <div key={appId} className="space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">App Store review status</h1>
+        <h1 className="text-lg font-semibold">{t("App Store review status", "App Store 审核状态")}</h1>
       </div>
       {app && app.platform === "ios" ? (
         <AppStoreReviewPanel appId={appId} app={app} />
       ) : app ? (
         <p className="text-sm text-foreground-muted">
-          This is only available for iOS apps.
+          {t("This is only available for iOS apps.", "此功能仅适用于 iOS 应用。")}
         </p>
       ) : null}
     </div>
@@ -863,6 +871,7 @@ function AcceptInviteRoute() {
 }
 
 function PageTitle() {
+  const t = useText();
   const { pathname } = useLocation();
   const appId = pathname.startsWith("/apps/") ? pathname.split("/")[2] : null;
   const apps = useQuery({
@@ -874,20 +883,20 @@ function PageTitle() {
   const appName = appId ? apps.data?.apps.find((app) => app.id === appId)?.name : null;
 
   const section = (() => {
-    if (pathname === "/") return "Home";
-    if (pathname === "/apps") return "Apps";
-    if (pathname === "/settings") return "Settings";
-    if (pathname.startsWith("/orgs/")) return "Org";
-    if (pathname.startsWith("/invites/")) return "Invite";
-    if (pathname.includes("/channels")) return "Channels";
-    if (pathname.includes("/releases")) return "Releases";
+    if (pathname === "/") return t("Home", "首页");
+    if (pathname === "/apps") return t("Apps", "应用");
+    if (pathname === "/settings") return t("Settings", "设置");
+    if (pathname.startsWith("/orgs/")) return t("Org", "组织");
+    if (pathname.startsWith("/invites/")) return t("Invite", "邀请");
+    if (pathname.includes("/channels")) return t("Channels", "渠道");
+    if (pathname.includes("/releases")) return t("Releases", "版本");
     if (pathname.includes("/testflight")) return "TestFlight";
-    if (pathname.includes("/builds")) return "Builds";
-    if (pathname.includes("/access")) return "Settings";
-    if (pathname.includes("/audit")) return "Audit";
-    if (pathname.includes("/settings")) return "Settings";
-    if (pathname.startsWith("/apps/")) return "Overview";
-    return "Not Found";
+    if (pathname.includes("/builds")) return t("Builds", "构建");
+    if (pathname.includes("/access")) return t("Settings", "设置");
+    if (pathname.includes("/audit")) return t("Audit", "审计");
+    if (pathname.includes("/settings")) return t("Settings", "设置");
+    if (pathname.startsWith("/apps/")) return t("Overview", "概览");
+    return t("Not Found", "页面不存在");
   })();
   const title = appId && appName ? `${section} - ${appName}` : section;
 
@@ -908,6 +917,7 @@ export function App() {
 }
 
 function AuthGate() {
+  const t = useText();
   const location = useLocation();
   const me = useQuery({
     queryKey: ["auth", "me"],
@@ -918,7 +928,7 @@ function AuthGate() {
   if (me.isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-layer-canvas">
-        <div className="text-sm text-foreground-muted">Checking Raft session...</div>
+        <div className="text-sm text-foreground-muted">{t("Checking Raft session...", "正在检查 Raft 会话…")}</div>
       </div>
     );
   }
@@ -953,56 +963,62 @@ function AuthGate() {
 }
 
 function AuthError({ onRetry }: { onRetry: () => void }) {
+  const t = useText();
   return (
     <main className="min-h-screen flex items-center justify-center bg-layer-canvas-muted px-4">
       <section role="alert" className="w-full max-w-md rounded-md border border-danger/30 bg-layer-panel p-6 shadow-xs">
-        <h1 className="text-lg font-semibold text-foreground-strong">Unable to check your Raft session</h1>
+        <h1 className="text-lg font-semibold text-foreground-strong">{t("Unable to check your Raft session", "无法检查你的 Raft 会话")}</h1>
         <p className="mt-2 text-sm text-foreground-muted">
-          Hands could not reach the authentication service. Check your connection and try again.
+          {t("Hands could not reach the authentication service. Check your connection and try again.", "Hands 无法连接认证服务。请检查网络连接后重试。")}
         </p>
-        <Button className="mt-4" onClick={onRetry}>Retry</Button>
+        <Button className="mt-4" onClick={onRetry}>{t("Retry", "重试")}</Button>
       </section>
     </main>
   );
 }
 
 function BrowserReplace({ to }: { to: string }) {
+  const t = useText();
   useEffect(() => {
     window.location.replace(to);
   }, [to]);
   return (
     <div className="min-h-screen flex items-center justify-center bg-layer-canvas-muted">
-      <div className="text-sm text-foreground-muted">Opening Hands console...</div>
+      <div className="text-sm text-foreground-muted">{t("Opening Hands console...", "正在打开 Hands 控制台…")}</div>
     </div>
   );
 }
 
 function CliCallback({ token }: { token: string }) {
+  const t = useText();
   return (
     <main className="flex min-h-screen items-center justify-center bg-layer-canvas-muted px-4">
       <section className="w-full max-w-xl rounded-md border border-line-muted bg-layer-panel p-6 shadow-xs">
         <div className="mb-5 flex items-center gap-3">
           <QuiverMark className="h-9 w-9" />
           <div>
-            <h1 className="text-lg font-semibold text-foreground-strong">Hands CLI login</h1>
-            <p className="text-sm text-foreground-muted">Signed in with Raft</p>
+            <h1 className="text-lg font-semibold text-foreground-strong">{t("Hands CLI login", "Hands 命令行登录")}</h1>
+            <p className="text-sm text-foreground-muted">{t("Signed in with Raft", "已通过 Raft 登录")}</p>
           </div>
         </div>
         <CopyableCodeRoot className="w-full">
           <CopyableCode truncate className="font-mono text-xs text-foreground-strong">
             {token}
           </CopyableCode>
-          <CopyableCodeAction aria-label="Copy JWT" />
+          <CopyableCodeAction aria-label={t("Copy JWT", "复制 JWT")} />
         </CopyableCodeRoot>
       </section>
     </main>
   );
 }
 
-function PublicLanding({ account }: { account?: AuthAccount }) {
+export function PublicLanding({ account }: { account?: AuthAccount }) {
+  const t = useText();
+  const { locale } = useLocale();
+  const docs = (path = "") => `/docs/${locale === "zh-CN" ? "zh/" : ""}${path}`;
   useEffect(() => {
-    document.title = "Hands - Agent-native platform for client apps";
-  }, []);
+    document.title = t("Hands - Agent-native platform for client apps", "Hands - 面向客户端应用的智能体原生平台");
+  }, [locale]);
 
   return (
     <div className="min-h-screen bg-layer-canvas-muted text-foreground-strong">
@@ -1014,20 +1030,21 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           </a>
           <nav className="flex items-center gap-2 text-sm">
             <a
-              href="/docs"
+              href={docs()}
               className="hidden h-10 items-center rounded-md px-3 text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong sm:inline-flex"
             >
-              Docs
+              {t("Docs", "文档")}
             </a>
             <a
               href="/api-docs"
               className="hidden h-10 items-center rounded-md px-3 text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong sm:inline-flex"
             >
-              API explorer
+              {t("API explorer", "API 浏览器")}
             </a>
+            <LanguagePicker />
             <Button variant="primary" render={<a href={dashboardHref(account)} />}>
               <RaftIcon className="h-5 w-5" />
-              {account ? "Open dashboard" : "Login"}
+              {account ? t("Open dashboard", "打开控制台") : t("Login", "登录")}
             </Button>
           </nav>
         </div>
@@ -1038,21 +1055,20 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
           <div className="mx-auto grid max-w-6xl gap-10 px-4 pt-7 pb-14 md:grid-cols-[1.1fr_0.9fr] md:items-center md:pt-10 md:pb-20">
             <div className="max-w-2xl">
               <Badge className="mb-4">
-                The agent-native platform for Raft-built client apps.
+                {t("The agent-native platform for Raft-built client apps.", "面向 Raft 构建的客户端应用的智能体原生平台。")}
               </Badge>
               <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
-                Ship it, roll it out, hear it break, fix it.
+                {t("Ship it, roll it out, hear it break, fix it.", "发布应用、逐步推广、收集问题、持续修复。")}
               </h1>
               <p className="mt-5 text-lg leading-8 text-foreground-muted">
-                Hands runs the whole release loop: builds land as drafts,
-                humans and agents review and publish with bilingual
-                changelogs, staged rollouts meter exposure, and in-app
-                feedback and crash reports come back as tickets — grouped,
-                deobfuscated, and actionable from the console, CLI, and API.
+                {t(
+                  "Hands runs the whole release loop: builds land as drafts, humans and agents review and publish with bilingual changelogs, staged rollouts meter exposure, and in-app feedback and crash reports come back as tickets — grouped, deobfuscated, and actionable from the console, CLI, and API.",
+                  "Hands 覆盖完整发布流程：构建先保存为草稿，用户和智能体审核后发布双语更新说明，通过分阶段发布控制覆盖范围。应用内反馈和崩溃报告会形成工单，经分组和反混淆后，可在控制台、命令行或 API 中处理。",
+                )}
               </p>
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium text-foreground-muted">
-                  Client stacks:
+                  {t("Client stacks:", "支持的客户端：")}
                 </span>
                 {["Android", "iOS", "HarmonyOS", "Electron", "Tauri"].map((p) => (
                   <span
@@ -1066,10 +1082,10 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <Button variant="primary" size="lg" render={<a href={dashboardHref(account)} />}>
                   <RaftIcon className="h-5 w-5" />
-                  {account ? "Open dashboard" : "Login with Raft"}
+                  {account ? t("Open dashboard", "打开控制台") : t("Login with Raft", "使用 Raft 登录")}
                 </Button>
-                <Button variant="outline" size="lg" render={<a href="/docs" />}>
-                  Read docs
+                <Button variant="outline" size="lg" render={<a href={docs()} />}>
+                  {t("Read docs", "阅读文档")}
                 </Button>
                 <Button
                   variant="outline"
@@ -1093,59 +1109,57 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
 
         <section id="features" className="mx-auto grid max-w-6xl gap-4 px-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
           <LandingFeature
-            title="Channels & staged rollouts"
-            body="Separate main, preview, and nightly; publish at 5% and raise it as confidence grows — devices keep their cohort."
+            title={t("Channels & staged rollouts", "渠道与分阶段发布")}
+            body={t("Separate main, preview, and nightly; publish at 5% and raise it as confidence grows — devices keep their cohort.", "区分 main、preview 和 nightly 渠道；从 5% 开始发布，根据验证结果逐步扩大范围，设备始终保留在原来的分组。")}
           />
           <LandingFeature
-            title="Share pages & history"
-            body="Expiring, password-protectable download pages with QR codes, real app icons, and opt-in public version history."
+            title={t("Share pages & history", "分享页面与版本历史")}
+            body={t("Expiring, password-protectable download pages with QR codes, real app icons, and opt-in public version history.", "创建可设置有效期和密码的下载页面，展示二维码与应用图标，也可选择公开版本历史。")}
           />
           <LandingFeature
-            title="Feedback tickets"
-            body="In-app feedback with attachments and device context lands in a built-in ticket system with assignees and comments."
+            title={t("Feedback tickets", "反馈工单")}
+            body={t("In-app feedback with attachments and device context lands in a built-in ticket system with assignees and comments.", "应用内反馈、附件与设备信息汇入内置工单系统，支持分配负责人和评论。")}
           />
           <LandingFeature
-            title="Crash reporting"
-            body="Crash capture across Android, iOS, HarmonyOS, and Electron — grouped by signature and symbolicated server-side (R8 mappings, native symbols, dSYM, minidumps)."
+            title={t("Crash reporting", "崩溃报告")}
+            body={t("Crash capture across Android, iOS, HarmonyOS, and Electron — grouped by signature and symbolicated server-side (R8 mappings, native symbols, dSYM, minidumps).", "捕获 Android、iOS、HarmonyOS 和 Electron 崩溃，按特征分组，并在服务端使用 R8 映射、原生符号、dSYM 和 minidump 进行符号化。")}
           />
         </section>
 
         <section id="integrations" className="border-t border-line-muted bg-layer-panel">
           <div className="mx-auto max-w-6xl px-4 py-10">
             <div className="max-w-2xl">
-              <h2 className="text-xl font-semibold">Choose an integration path.</h2>
+              <h2 className="text-xl font-semibold">{t("Choose an integration path.", "选择接入方式。")}</h2>
               <p className="mt-2 text-sm leading-6 text-foreground-muted">
-                Start with the stack you ship, then use the CLI and Console
-                guides to automate draft-first delivery and operate releases.
+                {t("Start with the stack you ship, then use the CLI and Console guides to automate draft-first delivery and operate releases.", "先选择应用使用的技术栈，再参考命令行和控制台指南，实现先建草稿的自动化交付和版本管理。")}
               </p>
             </div>
             <div className="mt-6 grid gap-4 md:grid-cols-3">
               <LandingIntegrationCard
-                title="Native mobile SDKs"
-                body="Updates, feedback, crash capture, and device context inside mobile apps."
+                title={t("Native mobile SDKs", "原生移动端 SDK")}
+                body={t("Updates, feedback, crash capture, and device context inside mobile apps.", "为移动应用接入更新、反馈、崩溃捕获和设备信息。")}
                 links={[
-                  { label: "Android", detail: "Updates, rollout, feedback, crashes", href: "/docs/android-sdk/" },
-                  { label: "iOS", detail: "Feedback and crash reporting", href: "/docs/ios-sdk/" },
-                  { label: "HarmonyOS", detail: "Feedback and crash reporting", href: "/docs/ohos-sdk/" },
+                  { label: "Android", detail: t("Updates, rollout, feedback, crashes", "更新、分阶段发布、反馈与崩溃"), href: docs("android-sdk/") },
+                  { label: "iOS", detail: t("Feedback and crash reporting", "反馈与崩溃报告"), href: docs("ios-sdk/") },
+                  { label: "HarmonyOS", detail: t("Feedback and crash reporting", "反馈与崩溃报告"), href: docs("ohos-sdk/") },
                 ]}
               />
               <LandingIntegrationCard
-                title="Web & desktop integrations"
-                body="Embed feedback conversations, host updater artifacts, and add native desktop crash capture."
+                title={t("Web & desktop integrations", "网页与桌面端接入")}
+                body={t("Embed feedback conversations, host updater artifacts, and add native desktop crash capture.", "嵌入反馈对话、托管更新文件，并接入桌面端原生崩溃捕获。")}
                 links={[
-                  { label: "React Feedback", detail: "Inbox, conversations, replies", href: "/docs/feedback-react/" },
-                  { label: "Electron SDK", detail: "Crashpad crash reporting", href: "/docs/electron-sdk/" },
-                  { label: "Electron Updater", detail: "Generic-provider release files", href: "/docs/cli-reference/#publish-electron-generic-provider" },
-                  { label: "Tauri Updater", detail: "Signed Tauri v2 updater bundles", href: "/docs/tauri-updater/" },
+                  { label: t("React Feedback", "React 反馈"), detail: t("Inbox, conversations, replies", "收件箱、对话与回复"), href: docs("feedback-react/") },
+                  { label: "Electron SDK", detail: t("Crashpad crash reporting", "Crashpad 崩溃报告"), href: docs("electron-sdk/") },
+                  { label: t("Electron Updater", "Electron 更新器"), detail: t("Generic-provider release files", "通用提供方发布文件"), href: docs("cli-reference/#publish-electron-generic-provider") },
                 ]}
               />
               <LandingIntegrationCard
-                title="Publishing & operations"
-                body="Build release automation and inspect every public contract."
+                title={t("Publishing & operations", "发布与运维")}
+                body={t("Build release automation and inspect every public contract.", "构建自动发布流程，查看所有公开接口约定。")}
                 links={[
-                  { label: "CLI Reference", detail: "Publish from CI or Raft agents", href: "/docs/cli-reference/" },
-                  { label: "Admin Guide", detail: "Operate apps and releases", href: "/docs/admin-user-guide/" },
-                  { label: "API Explorer", detail: "Try the HTTP API", href: "/api-docs" },
+                  { label: t("CLI Reference", "命令行参考"), detail: t("Publish from CI or Raft agents", "从 CI 或 Raft 智能体发布"), href: docs("cli-reference/") },
+                  { label: t("Admin Guide", "管理指南"), detail: t("Operate apps and releases", "管理应用与版本"), href: docs("admin-user-guide/") },
+                  { label: t("API Explorer", "API 浏览器"), detail: t("Try the HTTP API", "尝试 HTTP API"), href: "/api-docs" },
                 ]}
               />
             </div>
@@ -1167,21 +1181,21 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
                 { label: legalMessage("integrations"), href: "/#integrations" },
               ] },
               { title: legalMessage("resources"), links: [
-                { label: legalMessage("docs"), href: "/docs/" },
-                { label: legalMessage("cli"), href: "/docs/cli-reference/" },
+                { label: legalMessage("docs"), href: docs("") },
+                { label: legalMessage("cli"), href: docs("cli-reference/") },
                 { label: legalMessage("api"), href: "/api-docs" },
               ] },
               { title: legalMessage("sdks"), links: [
-                { label: "Android", href: "/docs/android-sdk/" },
-                { label: "iOS", href: "/docs/ios-sdk/" },
-                { label: "HarmonyOS", href: "/docs/ohos-sdk/" },
-                { label: "Electron", href: "/docs/electron-sdk/" },
+                { label: "Android", href: docs("android-sdk/") },
+                { label: "iOS", href: docs("ios-sdk/") },
+                { label: "HarmonyOS", href: docs("ohos-sdk/") },
+                { label: "Electron", href: docs("electron-sdk/") },
               ] },
               { title: legalMessage("company"), links: [
                 { label: "Botiverse", href: "https://botiverse.dev/" },
                 { label: legalMessage("contact"), href: "mailto:contact@raft.build" },
-                { label: legalMessage("privacy"), href: "/privacy/" },
-                { label: legalMessage("terms"), href: "/terms/" },
+                { label: legalMessage("privacy"), href: locale === "zh-CN" ? "/zh/privacy/" : "/privacy/" },
+                { label: legalMessage("terms"), href: locale === "zh-CN" ? "/zh/terms/" : "/terms/" },
               ] },
             ].map((group) => (
               <nav key={group.title} aria-label={group.title}>
@@ -1205,22 +1219,20 @@ function PublicLanding({ account }: { account?: AuthAccount }) {
 
 type TerminalLine = { text: string; tone?: "muted" | "ok" | "warn" };
 
-const TERMINAL_DEMOS: {
-  key: string;
-  label: string;
-  badge: string;
-  lines: TerminalLine[];
-}[] = [
+function terminalDemos(t: ReturnType<typeof useText>): Array<{
+  key: string; label: string; badge: string; lines: TerminalLine[];
+}> {
+  return [
   {
     key: "release",
-    label: "Release",
+    label: t("Release", "发布"),
     badge: "main",
     lines: [
       { text: "$ hands builds publish-android raft-android --apk app-release.apk --channel main" },
-      { text: "uploading APK and metadata...", tone: "muted" },
-      { text: "creating release on channel main...", tone: "muted" },
-      { text: "release: 14998dba-cfde-4002-8c01-230a2760f662", tone: "ok" },
-      { text: `share: ${window.location.origin}/share/...`, tone: "ok" },
+      { text: t("uploading APK and metadata...", "正在上传 APK 和元数据…"), tone: "muted" },
+      { text: t("creating release on channel main...", "正在 main 渠道创建版本…"), tone: "muted" },
+      { text: t("release: 14998dba-cfde-4002-8c01-230a2760f662", "版本：14998dba-cfde-4002-8c01-230a2760f662"), tone: "ok" },
+      { text: t(`share: ${window.location.origin}/share/...`, `分享：${window.location.origin}/share/...`), tone: "ok" },
     ],
   },
   {
@@ -1230,41 +1242,41 @@ const TERMINAL_DEMOS: {
     lines: [
       { text: "$ hands builds publish-ios raft-ios --ipa Raft.ipa --dsym Raft.dSYM.zip \\" },
       { text: "    --version-name 1.1.0 --version-code 1010000", tone: "muted" },
-      { text: "uploading signed .ipa + dSYM for symbolication...", tone: "muted" },
-      { text: "release: b0b3aeac-8201-4ab6-a3cc-a0229987953a", tone: "ok" },
-      { text: "iOS crashes will now symbolicate against this dSYM", tone: "ok" },
+      { text: t("uploading signed .ipa + dSYM for symbolication...", "正在上传签名后的 .ipa 和用于符号化的 dSYM…"), tone: "muted" },
+      { text: t("release: b0b3aeac-8201-4ab6-a3cc-a0229987953a", "版本：b0b3aeac-8201-4ab6-a3cc-a0229987953a"), tone: "ok" },
+      { text: t("iOS crashes will now symbolicate against this dSYM", "iOS 崩溃现可使用此 dSYM 符号化"), tone: "ok" },
     ],
   },
   {
     key: "feedback",
-    label: "Feedback",
-    badge: "triage",
+    label: t("Feedback", "反馈"),
+    badge: t("triage", "处理"),
     lines: [
       { text: "$ hands feedback list raft-android --status open --kind crash" },
-      { text: "crash   1.1.0   NullPointerException in FeedView   37 devices", tone: "warn" },
+      { text: t("crash   1.1.0   NullPointerException in FeedView   37 devices", "崩溃   1.1.0   FeedView 中的 NullPointerException   37 台设备"), tone: "warn" },
       { text: "$ hands feedback update raft-android <id> --status in_progress --assignee cc" },
-      { text: "ticket -> in_progress, assigned cc", tone: "ok" },
+      { text: t("ticket -> in_progress, assigned cc", "工单 → 处理中，已分配给 cc"), tone: "ok" },
       { text: "$ hands feedback comment raft-android <id> \"repro'd, fixing\"", tone: "muted" },
     ],
   },
   {
     key: "metrics",
-    label: "Metrics",
-    badge: "30d",
+    label: t("Metrics", "指标"),
+    badge: t("30d", "30 天"),
     lines: [
       { text: `$ curl ${window.location.origin}/api/apps/$APP_ID/analytics/versions?window_days=30` },
-      { text: "1.1.0   active devices 1,284   update offers 642", tone: "ok" },
-      { text: "1.0.4   active devices   319   crash tickets 3", tone: "muted" },
+      { text: t("1.1.0   active devices 1,284   update offers 642", "1.1.0   活跃设备 1,284   更新提示 642"), tone: "ok" },
+      { text: t("1.0.4   active devices   319   crash tickets 3", "1.0.4   活跃设备 319   崩溃工单 3"), tone: "muted" },
     ],
   },
 ];
-
-const DEFAULT_TERMINAL_DEMO = TERMINAL_DEMOS[0]!;
+}
 
 function LandingTerminal() {
-  const [active, setActive] = useState(DEFAULT_TERMINAL_DEMO.key);
-  const demo =
-    TERMINAL_DEMOS.find((d) => d.key === active) ?? DEFAULT_TERMINAL_DEMO;
+  const t = useText();
+  const demos = terminalDemos(t);
+  const [active, setActive] = useState("release");
+  const demo = demos.find((d) => d.key === active) ?? demos[0]!;
   // Status accents on the fixed dark pane keep literal hues (theme-independent
   // decoration, same policy as chart categorical colors — gzj, b529da37).
   const toneClass = (tone?: TerminalLine["tone"]) =>
@@ -1279,7 +1291,7 @@ function LandingTerminal() {
     <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-line-muted bg-layer-hud p-5 text-sm text-layer-hud-foreground shadow-xs">
       <div className="mb-4 flex items-center justify-between border-b border-layer-hud-foreground/20 pb-3">
         <div className="flex flex-wrap gap-1">
-          {TERMINAL_DEMOS.map((d) => (
+          {demos.map((d) => (
             <Button
               key={d.key}
               size="sm"
@@ -1362,6 +1374,7 @@ function LandingIntegrationCard({
 }
 
 function AuthenticatedApp({ account }: { account: AuthAccount }) {
+  const t = useText();
   return (
     <div className="min-h-screen flex">
       <Header account={account} />
@@ -1396,7 +1409,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
           path="*"
           element={
             <div className="max-w-5xl mx-auto px-4 py-8">
-              <p className="text-foreground-muted">404 - not found</p>
+              <p className="text-foreground-muted">{t("404 - not found", "404 - 页面不存在")}</p>
             </div>
           }
         />
@@ -1407,6 +1420,7 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
 }
 
 function AppsListWithNav() {
+  const t = useText();
   const navigate = useNavigate();
   const location = useLocation();
   const params = new URLSearchParams(location.search);
@@ -1436,10 +1450,10 @@ function AppsListWithNav() {
       return (
         <StandardPageShell>
           <div role="alert" className="rounded-md border border-danger/30 bg-danger-soft p-4 text-sm text-danger-strong">
-            <p className="font-medium">Could not load apps</p>
-            <p className="mt-1 text-danger-strong">Check your connection and try again.</p>
+            <p className="font-medium">{t("Could not load apps", "无法加载应用")}</p>
+            <p className="mt-1 text-danger-strong">{t("Check your connection and try again.", "请检查网络连接后重试。")}</p>
             <Button className="mt-3" variant="outline" onClick={() => void apps.refetch()}>
-              Retry
+              {t("Retry", "重试")}
             </Button>
           </div>
         </StandardPageShell>
@@ -1459,35 +1473,37 @@ function AppsListWithNav() {
 
 const APP_NAV_SECTIONS: Array<{
   label: string;
+  labelZh: string;
   items: Array<{
     to: string;
     label: string;
+    labelZh: string;
     icon: LucideIcon;
     end?: boolean;
     platform?: "ios" | "android" | "ohos" | "electron";
   }>;
 }> = [
   {
-    label: "Distribute",
+    label: "Distribute", labelZh: "分发",
     items: [
-      { to: "", label: "Overview", icon: Gauge, end: true },
-      { to: "channels", label: "Channels", icon: Radio },
-      { to: "releases", label: "Releases", icon: Rocket },
-      { to: "builds", label: "Builds", icon: Package },
-      { to: "testflight", label: "TestFlight", icon: Plane, platform: "ios" },
-      { to: "appstore", label: "App Store", icon: Store, platform: "ios" },
-      { to: "shares", label: "Shares", icon: Share2 },
+      { to: "", label: "Overview", labelZh: "概览", icon: Gauge, end: true },
+      { to: "channels", label: "Channels", labelZh: "渠道", icon: Radio },
+      { to: "releases", label: "Releases", labelZh: "版本", icon: Rocket },
+      { to: "builds", label: "Builds", labelZh: "构建", icon: Package },
+      { to: "testflight", label: "TestFlight", labelZh: "TestFlight", icon: Plane, platform: "ios" },
+      { to: "appstore", label: "App Store", labelZh: "App Store", icon: Store, platform: "ios" },
+      { to: "shares", label: "Shares", labelZh: "分享", icon: Share2 },
     ],
   },
   {
-    label: "Operate",
+    label: "Operate", labelZh: "运营",
     items: [
-      { to: "feedback", label: "Feedback", icon: MessageSquare },
-      { to: "crashes", label: "Crashes", icon: Bug },
-      { to: "errors", label: "Errors", icon: AlertTriangle },
-      { to: "integrations", label: "Integrations", icon: Plug },
-      { to: "audit", label: "Audit", icon: ScrollText },
-      { to: "settings", label: "Settings", icon: SettingsIcon },
+      { to: "feedback", label: "Feedback", labelZh: "反馈", icon: MessageSquare },
+      { to: "crashes", label: "Crashes", labelZh: "崩溃", icon: Bug },
+      { to: "errors", label: "Errors", labelZh: "错误", icon: AlertTriangle },
+      { to: "integrations", label: "Integrations", labelZh: "集成", icon: Plug },
+      { to: "audit", label: "Audit", labelZh: "审计", icon: ScrollText },
+      { to: "settings", label: "Settings", labelZh: "设置", icon: SettingsIcon },
     ],
   },
 ];

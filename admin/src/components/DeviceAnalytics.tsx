@@ -7,10 +7,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getDeviceAnalytics, getVersionMetrics } from "../lib/api";
+import { useText } from "../lib/locale";
 
 const BAR_COLOR = "#2a78d6";
 
 export function DeviceAnalytics({ appId }: { appId: string }) {
+  const t = useText();
   const navigate = useNavigate();
   const analytics = useQuery({
     queryKey: ["device-analytics", appId],
@@ -30,20 +32,20 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">Active devices</h3>
-        <span className="text-xs text-foreground-muted">reported in last 30 days</span>
+        <h3 className="text-sm font-medium text-foreground-strong">{t("Active devices", "活跃设备")}</h3>
+        <span className="text-xs text-foreground-muted">{t("reported in last 30 days", "最近 30 天上报")}</span>
       </div>
 
       <div className="flex items-end gap-2 mb-4">
         <span className="text-3xl font-semibold tabular-nums">{data.active_devices}</span>
         <span className="text-xs text-foreground-muted mb-1">
-          device{data.active_devices === 1 ? "" : "s"} reported
+          {t(`device${data.active_devices === 1 ? "" : "s"} reported`, "台设备上报")}
         </span>
       </div>
 
       <div className="grid gap-6 md:grid-cols-[1fr_200px]">
         <div>
-          <h4 className="text-xs font-medium text-foreground-muted mb-2">Version distribution</h4>
+          <h4 className="text-xs font-medium text-foreground-muted mb-2">{t("Version distribution", "版本分布")}</h4>
           <div className="space-y-1.5">
             {data.by_version.map((v) => {
               const pct = Math.round((v.devices / data.active_devices) * 100);
@@ -80,7 +82,7 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
                     }
                   />
                   <TooltipContent>
-                    {v.version_code ? `Feedback on version ${v.version_code}` : v.version_name}
+                    {v.version_code ? t(`Feedback on version ${v.version_code}`, `版本 ${v.version_code} 的反馈`) : v.version_name}
                   </TooltipContent>
                 </Tooltip>
               );
@@ -90,7 +92,7 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
 
         {data.by_platform.length > 1 && (
           <div>
-            <h4 className="text-xs font-medium text-foreground-muted mb-2">Platform</h4>
+            <h4 className="text-xs font-medium text-foreground-muted mb-2">{t("Platform", "平台")}</h4>
             <div className="space-y-1">
               {data.by_platform.map((p) => (
                 <div key={p.platform} className="flex justify-between text-xs text-foreground-muted">
@@ -106,21 +108,21 @@ export function DeviceAnalytics({ appId }: { appId: string }) {
       {(versionMetrics.data?.versions.length ?? 0) > 0 && (
         <div className="mt-5 border-t border-line-hairline pt-4">
           <div className="flex items-baseline justify-between mb-2">
-            <h4 className="text-xs font-medium text-foreground-muted">Version metrics</h4>
-            <span className="text-xs text-foreground-muted">reported in last {versionMetrics.data?.window_days ?? 30} days</span>
+            <h4 className="text-xs font-medium text-foreground-muted">{t("Version metrics", "版本指标")}</h4>
+            <span className="text-xs text-foreground-muted">{t(`reported in last ${versionMetrics.data?.window_days ?? 30} days`, `最近 ${versionMetrics.data?.window_days ?? 30} 天上报`)}</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-foreground-muted">
                 <tr className="border-b border-line-hairline">
-                  <th className="py-1.5 pr-3 text-left font-medium">Version</th>
-                  <th className="py-1.5 pr-3 text-left font-medium">Channel</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Active</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Seen</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Current</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Offered</th>
-                  <th className="py-1.5 pr-3 text-right font-medium">Feedback</th>
-                  <th className="py-1.5 text-right font-medium">Downloads</th>
+                  <th className="py-1.5 pr-3 text-left font-medium">{t("Version", "版本")}</th>
+                  <th className="py-1.5 pr-3 text-left font-medium">{t("Channel", "渠道")}</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">{t("Active", "活跃")}</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">{t("Seen", "上报设备")}</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">{t("Current", "已是最新")}</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">{t("Offered", "已提供更新")}</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">{t("Feedback", "反馈")}</th>
+                  <th className="py-1.5 text-right font-medium">{t("Downloads", "下载")}</th>
                 </tr>
               </thead>
               <tbody>

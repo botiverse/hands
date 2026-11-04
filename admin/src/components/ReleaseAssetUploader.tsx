@@ -39,6 +39,7 @@ import {
 import { useToast } from "./Toast";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
 import { BuildAssetIdentitySummary } from "./BuildAssetIdentitySummary";
+import { useText } from "../lib/locale";
 import {
   KNOWN_FILETYPES,
   KNOWN_PLATFORMS,
@@ -79,6 +80,7 @@ interface DialogProps extends BaseProps {
 type Props = PanelProps | DialogProps;
 
 export function ReleaseAssetUploader(props: Props) {
+  const t = useText();
   const { appId, buildId, productTypeHint, onUploaded } = props;
   const deferUpload = props.variant === "dialog" && props.deferUpload === true;
   const onFilesChanged =
@@ -109,13 +111,13 @@ export function ReleaseAssetUploader(props: Props) {
   const remove = useMutation({
     mutationFn: (assetId: string) => deleteBuildAsset(appId, buildId, assetId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Asset removed" });
+      toast.show({ kind: "success", title: t("Asset removed", "文件已移除") });
       refresh();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Delete failed",
+        title: t("Delete failed", "删除失败"),
         description: (e as Error).message,
       }),
   });
@@ -189,8 +191,7 @@ export function ReleaseAssetUploader(props: Props) {
     <div>
       {props.variant === "panel" && existing.length > 0 && (
         <div className="mb-3 text-xs text-foreground-muted">
-          {existing.length} asset{existing.length === 1 ? "" : "s"} ·{" "}
-          {formatBuildAssetSize(totalBytes)} total
+          {t(`${existing.length} asset${existing.length === 1 ? "" : "s"} · ${formatBuildAssetSize(totalBytes)} total`, `${existing.length} 个文件 · 共 ${formatBuildAssetSize(totalBytes)}`)}
         </div>
       )}
 
@@ -199,11 +200,11 @@ export function ReleaseAssetUploader(props: Props) {
           <table className="w-full min-w-[760px] text-xs">
             <thead>
               <tr className="border-b border-line-hairline text-left text-foreground-muted">
-                <th className="py-1 pr-3 font-normal">Asset</th>
-                <th className="py-1 pr-3 font-normal">Kind</th>
-                <th className="py-1 pr-3 font-normal">Platform</th>
-                <th className="py-1 pr-3 font-normal">Arch</th>
-                <th className="py-1 pr-3 font-normal">Size</th>
+                <th className="py-1 pr-3 font-normal">{t("Asset", "文件")}</th>
+                <th className="py-1 pr-3 font-normal">{t("Kind", "类型")}</th>
+                <th className="py-1 pr-3 font-normal">{t("Platform", "平台")}</th>
+                <th className="py-1 pr-3 font-normal">{t("Arch", "架构")}</th>
+                <th className="py-1 pr-3 font-normal">{t("Size", "大小")}</th>
                 <th className="py-1 pr-2 font-normal"></th>
               </tr>
             </thead>
@@ -235,11 +236,11 @@ export function ReleaseAssetUploader(props: Props) {
                       <Button
                         variant="outline"
                         className="text-[10px]"
-                        aria-label={`Remove ${filename}`}
+                        aria-label={t(`Remove ${filename}`, `移除 ${filename}`)}
                         onClick={() => setRemoveTarget(a)}
                         disabled={remove.isPending}
                       >
-                        Remove
+                        {t("Remove", "移除")}
                       </Button>
                     </td>
                   </tr>
@@ -265,8 +266,7 @@ export function ReleaseAssetUploader(props: Props) {
             : "border-line-muted text-foreground-muted hover:border-line-strong"
         }`}
       >
-        Drop APK / dmg / deb / exe here, or click to choose.
-        Multiple files OK.
+        {t("Drop APK / dmg / deb / exe here, or click to choose. Multiple files OK.", "将 APK / dmg / deb / exe 文件拖到此处，或点击选择。可选择多个文件。")}
       </div>
       <input
         ref={fileInputRef}
@@ -301,7 +301,7 @@ export function ReleaseAssetUploader(props: Props) {
 
       <ConfirmActionDialog
         open={removeTarget !== null}
-        title="Remove asset registration?"
+        title={t("Remove asset registration?", "移除文件登记？")}
         objectLabel={removeTarget ? buildAssetFilename(removeTarget) : ""}
         objectSummary={
           removeTarget ? (
@@ -310,13 +310,10 @@ export function ReleaseAssetUploader(props: Props) {
         }
         body={
           <>
-            Removing this asset detaches it from the build and release. The
-            build and release remain available.{" "}
-            The uploaded file is also kept, so this action does not reclaim its
-            storage.
+            {t("Removing this asset detaches it from the build and release. The build and release remain available. The uploaded file is also kept, so this action does not reclaim its storage.", "移除此文件会解除它与构建及版本的关联。构建和版本仍然可用；已上传的文件也会保留，因此不会释放存储空间。")}
           </>
         }
-        confirmLabel="Remove asset"
+        confirmLabel={t("Remove asset", "移除文件")}
         confirmKind="danger"
         pending={remove.isPending}
         {...(removeTarget
@@ -347,6 +344,7 @@ export function PendingFileRow({
   onChange: (patch: Partial<PendingFile>) => void;
   onRemove: () => void;
 }) {
+  const t = useText();
   const [editing, setEditing] = useState(false);
   const canEdit = pending.status === "pending";
   const detectedSummary = [
@@ -382,7 +380,7 @@ export function PendingFileRow({
             className="text-[11px]"
             onClick={() => setEditing((v) => !v)}
           >
-            {editing ? "Done" : "Edit metadata"}
+            {editing ? t("Done", "完成") : t("Edit metadata", "编辑元数据")}
           </Button>
         )}
         {pending.status === "error" && (
@@ -395,7 +393,7 @@ export function PendingFileRow({
           size="icon-sm"
           className="text-foreground-hint hover:text-danger text-xs"
           onClick={onRemove}
-          aria-label="Dismiss"
+          aria-label={t("Dismiss", "关闭")}
         >
           ✕
         </Button>
@@ -424,7 +422,7 @@ export function PendingFileRow({
           </Select>
           <Input
             className="py-0.5! text-xs!"
-            placeholder="arch (optional)"
+            placeholder={t("arch (optional)", "架构（可选）")}
             value={pending.arch ?? ""}
             onChange={(e) => onChange({ arch: e.target.value || null })}
           />

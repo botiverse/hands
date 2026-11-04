@@ -102,9 +102,10 @@ out of:
 - **pagination cursors**
 
 That last one is the easiest to overlook. A cursor that is base64-encoded JSON
-is readable by anyone holding it — encoding is not concealment. If a cursor must
-carry an internal value, sign it and treat it as opaque, or derive the cursor
-from a value that is safe to reveal.
+is readable by anyone holding it — encoding is not concealment, and signing
+alone provides integrity, not secrecy. If a cursor must carry an internal value,
+encrypt and authenticate it or use a random server-side lookup token. Otherwise,
+derive the cursor from a value that is safe to reveal.
 
 Generalise this when reviewing permissions: counters, ETags, `updated_at`,
 result totals, and pagination cursors can each carry an inference that the

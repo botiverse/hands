@@ -1,3 +1,5 @@
+import { currentLocale, type Locale } from "./locale";
+
 const messages = {
   en: {
     loading: "Loading application…",
@@ -18,7 +20,6 @@ const messages = {
     back: "返回应用列表",
   },
 };
-export function appRouteMessage(key: keyof typeof messages.en): string {
-  const languages = typeof navigator === "undefined" ? ["en"] : navigator.languages;
-  return messages[languages.some((language) => language.toLowerCase().startsWith("zh")) ? "zh-CN" : "en"][key];
+export function appRouteMessage(key: keyof typeof messages.en, locale: Locale = currentLocale()): string {
+  return messages[locale][key];
 }

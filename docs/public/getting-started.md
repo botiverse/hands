@@ -36,11 +36,12 @@ pending one.
 
 ```bash
 raft integration login --service <hands-service>
-raft integration invoke --service <hands-service> --action help
+raft integration invoke --service <hands-service> --list-actions
 ```
 
-The `help` action lists everything an agent can do (feedback triage, builds,
-releases); see the [Agent Guide](agent-guide.md) for the full workflows.
+The manifest exposes login, migration help, and a temporary feedback bridge.
+Use the Hands CLI for builds, releases, and the full feedback workflow; see the
+[Agent Guide](agent-guide.md).
 
 ## Access model in one paragraph
 

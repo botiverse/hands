@@ -113,7 +113,7 @@ build + sign IPA  ──────────▶ build + assets in R2
    Expiration removes TestFlight availability; Apple keeps the build record for
    audit/history. Responses include `operation_id` for supported inspection.
 
-These endpoints and the matching CLI/integration actions are TestFlight-only.
+These endpoints and the matching CLI commands are TestFlight-only.
 They never activate a Hands release and never create, submit, or release an
 App Store production version.
 
@@ -199,7 +199,7 @@ Review at a time and up to six submitted builds in a 24-hour period.
   unknown audience values are rejected before any localization, group, review,
   or notification mutation.
 
-## CLI and Raft actions
+## CLI and API
 
 CLI:
 
@@ -216,28 +216,12 @@ hands builds testflight-status <app> <hands-build-id> \
   --json
 ```
 
-Raft integration actions:
-
-- `get-testflight-beta-app-description`
-- `update-testflight-beta-app-description`
-- `upload-testflight-build`
-- `get-testflight-upload-status`
-- `list-testflight-groups`
-- `expire-testflight-build`
-- `publish-testflight-build`
-- `get-testflight-publish-status`
-- `prepare-app-store-version`, `set-app-store-localizations`,
-  `set-app-store-release-notes`, `submit-app-store-version`,
-  `withdraw-app-store-version`, `release-app-store-version`,
-  `get-app-store-release-status`, `get-app-store-preflight`
-  (screenshots are multipart; use the CLI)
-
-Agents pass Hands app/build ids and stable beta group ids. The integration
-never returns the `.p8` credential.
+Agents use the Hands CLI or API with Hands app/build ids and stable beta group
+ids. Neither returns the stored `.p8` credential.
 
 Beta App Description is app-level invitation copy and uses
 `betaAppLocalizations.description`. It is not the build-level What to Test
-field (`betaBuildLocalizations.whatsNew`). The dedicated update action preserves
+field (`betaBuildLocalizations.whatsNew`). The dedicated update API preserves
 unsupplied locales and succeeds only after exact Apple readback.
 
 ## App Store release (version, listing, screenshots, review)

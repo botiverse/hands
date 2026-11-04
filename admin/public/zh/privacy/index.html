@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Hands 如何处理账号、应用、诊断和 Google Play 数据。" />
+<title>隐私政策 — Hands</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="/legal.css" />
+<script type="module" src="/legal-locale.js"></script>
+</head>
+<body>
+<header><nav aria-label="主导航"><a class="brand" href="/"><img src="/favicon.svg" alt="" width="32" height="32" />Hands</a><a href="/docs/zh/">文档</a><a href="/privacy/" lang="en">English</a><span lang="zh-CN" aria-current="page">简体中文</span></nav></header>
+<main><h1>隐私政策</h1><p>生效日期：2026 年 10 月 2 日。</p>
+<p>Hands 由 Botiverse, Inc.（“我们”）运营，提供用于管理应用构建、发布、分发、反馈和崩溃报告的工具。本政策说明 Hands 在 hands.build 和 app.hands.build 提供的托管服务（包括 Google Play 集成）所处理的数据。</p>
+<h2>我们处理的数据</h2>
+<ul>
+<li><strong>账号和访问信息：</strong>标识符、Raft 登录提供的个人资料信息、组织和应用成员关系、角色及授权记录。</li>
+<li><strong>应用数据：</strong>你、你授权的集成或集成 Hands 的应用用户提交的构建文件、符号、版本元数据、分发设置、反馈、附件和诊断数据。</li>
+<li><strong>设备和诊断信息：</strong>根据宿主应用的 SDK 配置，可能包括安装标识符、应用版本、设备和操作系统信息、会话和更新事件、崩溃详情及日志。附件可能包含宿主应用或其用户提供的信息。</li>
+<li><strong>服务和安全信息：</strong>用于运营和保护服务的请求元数据、身份认证 Cookie 或浏览器存储、操作历史和审计记录。网络请求也会向我们的托管服务提供方暴露 IP 地址等元数据。</li>
+</ul>
+<p>应用所有者决定启用哪些 Hands SDK 功能以及提交哪些信息，并负责向自己的用户提供告知、取得同意和依法收集数据。请避免在反馈和诊断附件中提交不必要的个人信息或秘密。</p>
+<h2>Google Play 授权和数据</h2>
+<p>连接 Google Play 是可选的。Hands 请求 OpenID 和电子邮件权限，以识别你授权的 Google 账号；同时请求 Android Publisher 权限，以在该账号的 Play Console 权限范围内使用 Google Play 发布功能。</p>
+<p>Hands 会收到授权账号的电子邮件地址及其验证状态、OAuth 令牌，以及验证和操作所选应用所需的响应，包括包、轨道、版本和发布操作信息。我们会存储账号电子邮件地址、所选包和轨道、加密凭据，以及验证和操作记录。</p>
+<p>Hands 使用这些访问权限检查连接、上传你选择的构建、检查已配置轨道，并执行你或你授权的应用成员或智能体请求的发布操作。连接测试会创建并删除一个临时 Google Play 编辑；连接本身不会发布版本。发布仍受你的 Hands 权限及所有已启用的审批要求约束。</p>
+<p>Google 凭据在服务端存储时经过加密。服务使用这些凭据获取访问令牌并调用 Google API。原始 Google 凭据不会通过控制台或公开 API 返回给应用成员或其智能体。</p>
+<h2>我们如何使用和共享数据</h2>
+<p>我们使用数据提供你请求的功能、管理访问、交付构建和版本、处理反馈及诊断信息、维护服务可靠性，以及调查安全事件或滥用行为。</p>
+<p>通过 Hands 角色和权限获得你授权的人员及智能体可以访问应用数据和连接元数据。你明确发布的内容，例如公开版本、版本历史页面或分享链接，可能对你选择的受众可见。</p>
+<p>Cloudflare 作为基础设施提供方处理托管服务数据。Raft 处理登录请求。Google 接收你授权的 Google Play 操作所需的请求和构建文件；当你配置并使用其他已连接商店或通知目标时，它们也会收到数据。这些提供方还适用各自的条款和隐私政策。</p>
+<p>我们不会出售 Google 用户数据、将其用于广告，或用于训练通用人工智能模型。Google 数据仅用于披露的集成功能。人员访问 Google 数据仅限于经你许可检查特定数据、必要的安全调查、法律义务或 Google 政策允许的汇总内部运营。其他披露仅限于提供你授权的功能、保护安全或遵守适用法律。</p>
+<p>Hands 使用和传输从 Google API 收到的信息时遵守 <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API 服务用户数据政策</a>，包括其有限使用要求。</p>
+<h2>存储、保留和安全</h2>
+<p>我们会在提供服务、维护你配置的集成以及满足安全或法律要求所需期间保留数据。保留期限取决于数据类型和应用设置；本政策不承诺统一的固定删除期限。访问控制、HTTPS、加密的集成凭据和审计记录有助于保护数据，但任何系统都无法保证绝对安全。</p>
+<p>停用 Google Play 绑定会停止通过它发布，但保留加密凭据。解除绑定会从 Hands 删除该应用存储的 Google 凭据及待处理 OAuth 请求，但不会删除已上传文件、操作和审计记录，也不会自行撤销 Google 授权。</p>
+<h2>法律依据、跨境传输和隐私权利</h2>
+<p>在适用情况下，处理依据包括同意、服务协议、必要的安全和运营利益，或法律义务。服务提供方可能在你所在国家或地区以外处理信息，并遵循适用的保障措施。</p>
+<p>根据你所在的司法辖区，你可以请求访问、更正、删除、可携带性或限制处理，也可以反对处理。你可以撤回同意，并向当地监管机构投诉。要行使隐私权利或对隐私请求提出申诉，请联系我们；我们可能需要验证身份，且可能适用法律允许的例外。</p>
+<h2>儿童</h2>
+<p>Hands 开发者账号面向成年人。宿主应用运营者必须依法处理未成年人的信息。如发现未经适当授权提交的儿童信息，请告知我们，以便调查并在法律要求时删除。</p>
+<h2>你的选择和请求</h2>
+<p>你可以在 Hands 中管理应用成员、公开分发和集成。应用管理员可以在应用设置中停用或解除 Google Play 绑定。你也可以通过 <a href="https://myaccount.google.com/connections">Google 账号连接</a>撤销 Google 授权；撤销可能影响使用同一 Google 授权的其他 Hands 应用。</p>
+<p>有关访问、更正、删除或隐私的问题，请联系 <a href="mailto:contact@raft.build">contact@raft.build</a>。我们可能需要验证你的身份和你对相关应用的权限。有关宿主应用收集信息的请求，也应直接向该应用运营者提出。</p>
+<h2>变更和联系方式</h2>
+<p>本政策变更时，我们会更新本页及生效日期。如果新增对 Google 用户数据的用途，我们会在使用前予以披露并取得任何必要同意。请联系 <a href="mailto:contact@raft.build">contact@raft.build</a>，或致函 Botiverse, Inc., 1111B S Governors Ave, Suite 95905, Dover, DE 19904, United States。</p></main>
+<footer class="site-footer"><div class="footer-grid"><div><a class="brand" href="/"><img src="/favicon.svg" alt="" width="32" height="32" />Hands</a><p>与人和智能体一起发布客户端应用。</p></div><nav aria-label="产品"><h2>产品</h2><a href="/#features">功能</a><a href="/#integrations">集成</a></nav><nav aria-label="资源"><h2>资源</h2><a href="/docs/zh/">文档</a><a href="/docs/zh/cli-reference/">命令行参考</a><a href="/api-docs">API 浏览器</a></nav><nav aria-label="SDK"><h2>SDK</h2><a href="/docs/zh/android-sdk/">Android</a><a href="/docs/zh/ios-sdk/">iOS</a><a href="/docs/zh/ohos-sdk/">HarmonyOS</a><a href="/docs/zh/electron-sdk/">Electron</a></nav><nav aria-label="公司"><h2>公司</h2><a href="https://botiverse.dev/">Botiverse</a><a href="mailto:contact@raft.build">联系我们</a><a href="/zh/privacy/">隐私政策</a><a href="/zh/terms/">服务条款</a></nav></div><div class="copyright">© 2026 Botiverse, Inc. 保留所有权利。</div></footer>
+</body>
+</html>

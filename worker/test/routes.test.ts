@@ -8683,6 +8683,66 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(afterDrop.status).toBe(302);
   });
 
+  it("public pages honor language choice for chrome and notes across share, history and pagination", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    await seedRelease(env, "rel-locale", "build-locale", [["full", "all"]], { versionCode: 123, versionName: "1.2.3" });
+    await seedAsset(env, "build-locale", "asset-locale", { filetype: "apk" });
+    await env.DB.prepare("UPDATE releases SET changelog = ? WHERE id = ?")
+      .bind(JSON.stringify({ en: "English release note", "zh-CN": "中文更新说明" }), "rel-locale").run();
+    env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any;
+    const { handleCreateReleaseShare, handlePublicReleaseShare } = await import("../src/routes/shares");
+    const { handlePublicAppHistory, handlePublicLatestReleaseLanding, handlePublicReleaseNotes } = await import("../src/routes/history");
+    const created = await responseJson<any>(await handleCreateReleaseShare(
+      makeShareAdminContext(env, { appId: "app-scope", releaseId: "rel-locale" }),
+    ));
+    const token = new URL(created.share_url).pathname.replace("/share/", "");
+    const shareCtx = (lang: string, cookie = "hands_locale=en") => {
+      const ctx = makeSharePublicContext(env, token, {
+        "cf-connecting-ip": "203.0.113.10", "user-agent": "vitest", "accept-language": "en-US", cookie,
+      });
+      return { ...ctx, req: { ...ctx.req, query: (name: string) => name === "lang" ? lang : undefined } } as any;
+    };
+    const zhShare = await handlePublicReleaseShare(shareCtx("zh-CN"));
+    const zhShareHtml = await zhShare.text();
+    expect(zhShare.headers.get("cache-control")).toContain("no-store");
+    expect(zhShareHtml).toContain('<html lang="zh-CN">');
+    expect(zhShareHtml).toContain("下载 APK");
+    expect(zhShareHtml).toContain("中文更新说明");
+    expect(zhShareHtml).not.toContain("English release note");
+    expect(zhShareHtml).toContain(`/share/${token}?lang=en`);
+    const enShare = await handlePublicReleaseShare(shareCtx("en", "hands_locale=zh-CN"));
+    expect(await enShare.text()).toContain("English release note");
+
+    const historyCtx = (path: string, params: Record<string, string> = {}) => ({
+      env,
+      req: {
+        url: `https://hands.build/apps/scope-app/${path}`,
+        param: (name: string) => name === "slug" ? "scope-app" : "",
+        query: (name: string) => params[name],
+        header: (name: string) => name.toLowerCase() === "cookie" ? "hands_locale=zh-CN" :
+          name.toLowerCase() === "accept-language" ? "en-US" : undefined,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const history = await handlePublicAppHistory(historyCtx("history"));
+    const historyHtml = await history.text();
+    expect(history.headers.get("vary")).toBe("*");
+    expect(historyHtml).toContain("版本历史");
+    expect(historyHtml).toContain("中文更新说明");
+    expect(historyHtml).toContain('next.searchParams.set("lang", document.documentElement.lang)');
+    const fragment = await handlePublicAppHistory(historyCtx("history", { fragment: "1", lang: "zh-CN" }));
+    expect(await fragment.text()).toContain("中文更新说明");
+    const latest = await handlePublicLatestReleaseLanding(historyCtx("latest"));
+    expect(latest.headers.get("cache-control")).toContain("no-store");
+    expect(await latest.text()).toContain("中文更新说明");
+    const notes = await handlePublicReleaseNotes(historyCtx("notes", { lang: "en", version_code: "123" }));
+    const notesHtml = await notes.text();
+    expect(notesHtml).toContain("English release note");
+    expect(notesHtml).toContain("version_code=123&amp;lang=zh-CN");
+    expect(notesHtml).not.toContain("中文更新说明");
+  });
+
   it("latest landing: stable app URL renders the highest active published release", async () => {
     const env = makeEnv();
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?")
@@ -11222,6 +11282,13 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(gatedHtml).toContain("Password required");
     expect(gatedHtml).not.toContain("Download APK");
 
+    // Selecting Chinese survives the password POST even without JS cookies.
+    const chineseGate = await handlePublicReleaseShare(makeSharePublicContextWithQuery(env, token, "?lang=zh-CN"));
+    const chineseGateHtml = await chineseGate.text();
+    expect(chineseGateHtml).toContain("需要密码");
+    expect(chineseGateHtml).toContain(`/share/${token}/unlock?lang=zh-CN`);
+    expect(chineseGateHtml).toContain(`/share/${token}?lang=en`);
+
     // Download without unlock bounces back to the page.
     const blocked = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
     expect(blocked.status).toBe(302);
@@ -11249,12 +11316,22 @@ describe("quiver public API v2 — scope resolution", () => {
     const denied = await handlePublicReleaseShareUnlock(makeUnlockContext("nope"));
     expect(denied.status).toBe(401);
 
+    const selectedContext = makeUnlockContext("nope");
+    selectedContext.req.query = (name: string) => name === "lang" ? "zh-CN" : undefined;
+    const deniedChinese = await handlePublicReleaseShareUnlock(selectedContext);
+    expect(deniedChinese.status).toBe(401);
+    expect(await deniedChinese.text()).toContain("密码错误，请重试。");
+
     // Right password: 303 + unlock cookie.
     const unlocked = await handlePublicReleaseShareUnlock(makeUnlockContext("hunter2"));
     expect(unlocked.status).toBe(303);
     const setCookie = unlocked.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("qshare_");
     const cookiePair = setCookie.split(";")[0]!;
+    const selectedUnlockContext = makeUnlockContext("hunter2");
+    selectedUnlockContext.req.query = (name: string) => name === "lang" ? "zh-CN" : undefined;
+    const selectedUnlock = await handlePublicReleaseShareUnlock(selectedUnlockContext);
+    expect(selectedUnlock.headers.get("location")).toBe(`/share/${token}?lang=zh-CN`);
 
     // With the cookie both page and download work.
     const open = await handlePublicReleaseShare(
@@ -11283,7 +11360,7 @@ describe("quiver public API v2 — scope resolution", () => {
     )
       .bind()
       .first()) as { count: number } | null;
-    expect(failures?.count).toBe(1);
+    expect(failures?.count).toBe(2); // both English and Chinese wrong-password attempts
   });
 
   it("share PATCH can set and clear a password on an existing share", async () => {

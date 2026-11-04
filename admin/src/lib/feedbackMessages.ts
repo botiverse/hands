@@ -1,3 +1,5 @@
+import { currentLocale, preferredLocale } from "./locale";
+
 export const FEEDBACK_MESSAGE_KEYS = [
   "internalNote",
   "visibleToReporter",
@@ -24,12 +26,8 @@ export const FEEDBACK_MESSAGES: Record<"en" | "zh-CN", Record<FeedbackMessageKey
 
 export function feedbackMessage(
   key: FeedbackMessageKey,
-  languages: readonly string[] = typeof navigator === "undefined"
-    ? ["en"]
-    : navigator.languages,
+  languages?: readonly string[],
 ): string {
-  const locale = languages.some((language) => language.toLowerCase().startsWith("zh"))
-    ? "zh-CN"
-    : "en";
+  const locale = languages ? preferredLocale(languages) : currentLocale();
   return FEEDBACK_MESSAGES[locale][key] ?? FEEDBACK_MESSAGES.en[key];
 }

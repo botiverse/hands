@@ -1,3 +1,5 @@
+import { currentLocale } from "./locale";
+
 const messages = {
   en: {
     title: "Access",
@@ -9,6 +11,5 @@ const messages = {
   },
 };
 export function appAccessMessage(key: keyof typeof messages.en): string {
-  const languages = typeof navigator === "undefined" ? ["en"] : navigator.languages;
-  return messages[languages.some((language) => language.toLowerCase().startsWith("zh")) ? "zh-CN" : "en"][key];
+  return messages[currentLocale()][key];
 }

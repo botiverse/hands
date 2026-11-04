@@ -40,6 +40,7 @@ import {
   Input,
   Label,
 } from "raft-ui";
+import { useText } from "../lib/locale";
 
 export interface ConfirmActionDialogProps {
   open: boolean;
@@ -84,8 +85,8 @@ export function ConfirmActionDialog({
   objectHint,
   objectSummary,
   body,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel,
+  cancelLabel,
   confirmKind = "primary",
     requiredText,
     typedValue = "",
@@ -95,6 +96,9 @@ export function ConfirmActionDialog({
   onConfirm,
   onCancel,
 }: ConfirmActionDialogProps) {
+  const t = useText();
+  const confirmText = confirmLabel ?? t("Confirm", "确认");
+  const cancelText = cancelLabel ?? t("Cancel", "取消");
   const confirmVariant = confirmKind === "danger" ? "danger" : "primary";
   return (
     <AlertDialog
@@ -146,7 +150,7 @@ export function ConfirmActionDialog({
             className="w-full sm:w-auto"
             disabled={pending}
           >
-            {cancelLabel}
+            {cancelText}
           </AlertDialogCancel>
           <AlertDialogAction
             variant={confirmVariant}
@@ -155,7 +159,7 @@ export function ConfirmActionDialog({
             disabled={pending || confirmDisabled}
             onClick={onConfirm}
           >
-            {pending ? `${confirmLabel}…` : confirmLabel}
+            {pending ? `${confirmText}…` : confirmText}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -181,14 +185,15 @@ export function TypedConfirmField({
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
+  const t = useText();
   return (
     <div className="mb-3">
       <Label>
-        Type{" "}
+        {t("Type", "输入")}{" "}
         <code className="font-mono text-xs bg-layer-inset px-1 py-0.5 rounded-sm">
           {required}
         </code>{" "}
-        to confirm
+        {t("to confirm", "以确认")}
       </Label>
       <Input
         value={value}
