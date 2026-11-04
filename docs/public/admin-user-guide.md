@@ -44,6 +44,30 @@ then add the bot to each target channel in Raft. Enter a channel target such as
 single app can have multiple channel destinations with different event sets;
 each destination can be enabled, disabled, tested, or removed.
 
+**Use status cards** opts a destination into cards for App Store version,
+external TestFlight build, and Google Play release status changes. Later
+changes for the same object update its card without sending another push or
+mention. Objects already using text keep that history; cards begin with new
+objects first seen after opting in. If an object returns to text, it stays on
+text even if cards are turned on again. Other events still use text. A card older than Raft's update window
+is replaced by a new message. Older Raft clients see the accompanying text.
+If the destination cannot accept a first card, Hands uses text. You can switch
+back to text even while a card request is unresolved; the request is retained
+and may still complete. If a later event arrives before it is reconciled,
+Hands sends that event as text with a warning that the earlier card may be out
+of date. An earlier update that finishes late can still change that card; use
+the newer text in the thread as the status. For an unresolved first message,
+Hands attempts text with the original send key so that only one of the card or
+text can win. A later event may be delayed while the first message is resolved.
+
+The destination shows up to 25 failed release-status notifications. **Retry**
+schedules the selected event for delivery, using its
+original contents and idempotency key; it does not discard an uncertain card
+request. Retries are recorded in the app's audit history. Resolve outstanding
+requests before turning cards back on. An event without a reliable event time,
+or with the same time as another change, is sent as text instead of guessing
+their order.
+
 For new feedback and bug reports, a notification includes a short excerpt of
 the user's message. Choose channels whose members may read that feedback; the
 excerpt can contain information the user submitted. HTTP(S) URLs are omitted

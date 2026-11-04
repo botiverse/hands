@@ -1705,6 +1705,7 @@ export interface RaftNotificationSubscription {
   channel_target: string;
   events: WebhookEventType[];
   enabled: boolean;
+  card_updates: boolean;
   created_at: number;
   updated_at: number;
 }
@@ -1738,7 +1739,7 @@ export const createRaftNotification = (
 export const updateRaftNotification = (
   appId: string,
   subscriptionId: string,
-  input: { events?: WebhookEventType[]; enabled?: boolean },
+  input: { events?: WebhookEventType[]; enabled?: boolean; card_updates?: boolean },
 ) =>
   request<{ ok: true }>(`/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}`, {
     method: "PATCH",
@@ -1755,6 +1756,26 @@ export const deleteRaftNotification = (appId: string, subscriptionId: string) =>
 export const testRaftNotification = (appId: string, subscriptionId: string) =>
   request<{ ok: true; message_id: string }>(
     `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/test`,
+    { method: "POST", admin: true },
+  );
+
+export interface RaftNotificationFailure {
+  id: string;
+  event_type: WebhookEventType;
+  created_at: number;
+  last_attempt_at: number | null;
+  last_response_status: number | null;
+}
+
+export const listRaftNotificationFailures = (appId: string, subscriptionId: string) =>
+  request<{ failures: RaftNotificationFailure[] }>(
+    `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/failures`,
+    { admin: true },
+  );
+
+export const retryRaftNotificationFailure = (appId: string, subscriptionId: string, deliveryId: string) =>
+  request<{ ok: true; delivery_id: string }>(
+    `/api/apps/${appId}/raft-notifications/${encodeURIComponent(subscriptionId)}/failures/${encodeURIComponent(deliveryId)}/retry`,
     { method: "POST", admin: true },
   );
 

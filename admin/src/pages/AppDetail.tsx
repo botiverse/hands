@@ -64,6 +64,8 @@ import {
   createRaftNotification,
   deleteRaftNotification,
   getRaftNotificationConfig,
+  listRaftNotificationFailures,
+  retryRaftNotificationFailure,
   testRaftNotification,
   updateRaftNotification,
   WEBHOOK_EVENT_TYPES,
@@ -1341,6 +1343,14 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
     onSuccess: refresh,
     onError: (error) => toast.show({ kind: "error", title: "Could not update destination", description: (error as Error).message }),
   });
+  const updateCards = useMutation({
+    mutationFn: (input: { id: string; card_updates: boolean }) => updateRaftNotification(appId, input.id, { card_updates: input.card_updates }),
+    onSuccess: (_result, input) => {
+      if (!input.card_updates) toast.show({ kind: "success", title: "Text selected", description: "In-flight card requests may still finish; later notifications will use text." });
+      refresh();
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Could not update card settings", description: (error as Error).message }),
+  });
   const remove = useMutation({
     mutationFn: (id: string) => deleteRaftNotification(appId, id),
     onSuccess: () => { toast.show({ kind: "success", title: "Raft notification destination removed" }); refresh(); },
@@ -1371,6 +1381,9 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
         </p>
         <p className="text-xs text-foreground-muted mt-1">
           Feedback notifications can include an excerpt of user-submitted text. TestFlight notifications can include test group names and an excerpt of testing notes. Choose a channel whose members may see them.
+        </p>
+        <p className="text-xs text-foreground-muted mt-1">
+          Release status cards update the same message when App Store, external TestFlight or Google Play status changes. Cards start with new objects; existing text threads stay as text. Updates do not send a new notification.
         </p>
       </div>
       <div className="rounded-md bg-fill-muted p-3 flex flex-wrap items-center justify-between gap-2">
@@ -1406,7 +1419,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
             <div className="space-y-2">
               <div className="text-xs font-medium">Configured destinations</div>
               {subscriptions.map((subscription) => (
-                <RaftNotificationRow key={subscription.id} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || test.isPending || remove.isPending} />
+                <RaftNotificationRow key={subscription.id} appId={appId} subscription={subscription} onToggle={(enabled) => update.mutate({ id: subscription.id, enabled })} onToggleCards={(card_updates) => updateCards.mutate({ id: subscription.id, card_updates })} onTest={() => test.mutate(subscription.id)} onDelete={() => { if (window.confirm(`Remove ${subscription.channel_target}?`)) remove.mutate(subscription.id); }} busy={update.isPending || updateCards.isPending || test.isPending || remove.isPending} />
               ))}
             </div>
           )}
@@ -1417,18 +1430,36 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
 }
 
 function RaftNotificationRow({
+  appId,
   subscription,
   onToggle,
+  onToggleCards,
   onTest,
   onDelete,
   busy,
 }: {
+  appId: string;
   subscription: RaftNotificationSubscription;
   onToggle: (enabled: boolean) => void;
+  onToggleCards: (enabled: boolean) => void;
   onTest: () => void;
   onDelete: () => void;
   busy: boolean;
 }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const failures = useQuery({
+    queryKey: ["raft-notification-failures", appId, subscription.id],
+    queryFn: () => listRaftNotificationFailures(appId, subscription.id),
+  });
+  const retry = useMutation({
+    mutationFn: (id: string) => retryRaftNotificationFailure(appId, subscription.id, id),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: "Retry scheduled", description: "Hands will retry when the delivery service next runs." });
+      void qc.invalidateQueries({ queryKey: ["raft-notification-failures", appId, subscription.id] });
+    },
+    onError: (error) => toast.show({ kind: "error", title: "Could not retry notification", description: (error as Error).message }),
+  });
   return (
     <div className="rounded-md border border-line-hairline p-2 flex flex-wrap items-center gap-2">
       <div className="min-w-48 flex-1">
@@ -1436,9 +1467,17 @@ function RaftNotificationRow({
         <div className="text-[11px] text-foreground-muted mt-1">{subscription.events.length} event{subscription.events.length === 1 ? "" : "s"}</div>
       </div>
       <Badge variant={subscription.enabled ? "success" : "muted"}>{subscription.enabled ? "enabled" : "disabled"}</Badge>
+      <Button variant="ghost" size="xs" onClick={() => onToggleCards(!subscription.card_updates)} disabled={busy}>{subscription.card_updates ? "Use text" : "Use status cards"}</Button>
       <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? "Disable" : "Enable"}</Button>
       <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>Test</Button>
       <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>Remove</Button>
+      {failures.isError && <div className="w-full text-xs text-foreground-muted">Could not load failed notifications.</div>}
+      {failures.data?.failures.map((failure) => (
+        <div key={failure.id} className="w-full flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
+          <span>Failed: {failure.event_type} · {new Date(failure.created_at).toLocaleString()}</span>
+          <Button variant="ghost" size="xs" onClick={() => retry.mutate(failure.id)} disabled={busy || retry.isPending || !subscription.enabled}>Retry</Button>
+        </div>
+      ))}
     </div>
   );
 }

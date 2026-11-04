@@ -305,7 +305,9 @@ import {
   handleCreateRaftNotification,
   handleDeleteRaftNotification,
   handleGetRaftNotifications,
+  handleListRaftNotificationFailures,
   handleRaftNotificationWebhook,
+  handleRetryRaftNotificationFailure,
   handleTestRaftNotification,
   handleUpdateRaftNotification,
 } from "./routes/raft_notifications";
@@ -993,6 +995,8 @@ bindAdmin("post", "/api/apps/:appId/raft-notifications", requireAppRole("admin")
 bindAdmin("patch", "/api/apps/:appId/raft-notifications/:subscriptionId", requireAppRole("admin"), handleUpdateRaftNotification);
 bindAdmin("delete", "/api/apps/:appId/raft-notifications/:subscriptionId", requireAppRole("admin"), handleDeleteRaftNotification);
 bindAdmin("post", "/api/apps/:appId/raft-notifications/:subscriptionId/test", requireAppRole("admin"), handleTestRaftNotification);
+bindAdmin("get", "/api/apps/:appId/raft-notifications/:subscriptionId/failures", requireAppRole("admin"), handleListRaftNotificationFailures);
+bindAdmin("post", "/api/apps/:appId/raft-notifications/:subscriptionId/failures/:deliveryId/retry", requireAppRole("admin"), handleRetryRaftNotificationFailure);
 
 // Scheduled reaper (no auth — Worker Cron Trigger schedules `scheduled()` in exports)
 // bindApp("get", "/api/webhook-reaper", handleReapDeliveries);  // removed; use scheduled() instead
