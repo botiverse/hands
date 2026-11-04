@@ -35,19 +35,7 @@ function d1(sqlite: Database.Database): D1Database {
     };
     return { bind, run: () => bind().run(), all: <T>() => bind().all<T>(), first: <T>() => bind().first<T>() };
   };
-  const batch = async (statements: Array<{ run(): Promise<unknown> }>) => {
-    sqlite.exec("BEGIN");
-    try {
-      const results = [];
-      for (const statement of statements) results.push(await statement.run());
-      sqlite.exec("COMMIT");
-      return results;
-    } catch (error) {
-      sqlite.exec("ROLLBACK");
-      throw error;
-    }
-  };
-  return { prepare, batch } as unknown as D1Database;
+  return { prepare } as unknown as D1Database;
 }
 
 const APP_ID = "app-1";

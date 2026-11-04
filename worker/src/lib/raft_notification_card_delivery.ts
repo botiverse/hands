@@ -223,7 +223,7 @@ export async function deliverRaftNotificationCard(input: {
     const when = eventTime(input.body);
     if (when === null || (row.last_event_ms === when && row.last_event_hash !== input.eventHash)) {
       // A later state cannot safely be ordered against an event whose time is
-      // missing or ambiguous. Keep that object on text until re-enabled.
+      // missing or ambiguous. Keep that object on text for its remaining life.
       const retired = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',updated_at=?1
         WHERE subscription_id=?2 AND object_key=?3 AND lease_token=?4`, now(), subscriptionId, objectKey, token);
       if (!retired) return { kind: "retry", code: "card_delivery_lease_lost" };
