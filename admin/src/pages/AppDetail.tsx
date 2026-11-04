@@ -655,7 +655,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
           <div className="flex items-center gap-2">
             <div className="text-sm font-medium">{t("App Store review status", "App Store 审核状态")}</div>
             {currentBadge && (
-              <Badge variant={currentBadge.variant}>{t(currentBadge.label, badgeZh[currentBadge.label] ?? currentBadge.label)}</Badge>
+              <Badge variant={currentBadge.variant}>{t(currentBadge.label, badgeZh[currentBadge.label] ?? current?.appStoreState ?? currentBadge.label)}</Badge>
             )}
           </div>
           <div className="text-xs text-foreground-muted">
@@ -730,7 +730,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         <span className="font-mono">
                           {v.versionString ?? "—"}
                         </span>
-                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? b.label)}</Badge>
+                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? v.appStoreState ?? b.label)}</Badge>
                         {(v.appStoreState === "REJECTED" ||
                           v.appStoreState === "METADATA_REJECTED" ||
                           v.appStoreState === "DEVELOPER_REJECTED") && (
@@ -767,7 +767,7 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
                         {bld.processingState &&
                           bld.processingState !== "VALID" && (
                             <span className="text-xs text-foreground-hint">
-                              {bld.processingState.toLowerCase()}
+                              {t(bld.processingState.toLowerCase(), ({ PROCESSING: "处理中", FAILED: "处理失败", INVALID: "无效" } as Record<string, string>)[bld.processingState] ?? bld.processingState)}
                             </span>
                           )}
                       </li>

@@ -115,6 +115,13 @@ function shareStrings(c: Context<{ Bindings: Env }>): ShareStrings {
   return lang.startsWith("zh") ? SHARE_I18N.zh : SHARE_I18N.en;
 }
 
+// Retain an explicit selection across page links even when cookies or JS are unavailable.
+function withExplicitPageLanguage(path: string, lang: string | undefined): string {
+  // Bound URL/QR size and reject non-language characters from untrusted queries.
+  if (!lang || lang.length > 35 || !/^[A-Za-z0-9-]+$/.test(lang)) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}lang=${encodeURIComponent(lang)}`;
+}
+
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
 type ShareRow = {
@@ -607,6 +614,7 @@ export async function handleRebindReleaseShare(c: AdminContext) {
 export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
+  const explicitLang = c.req.query?.("lang");
   const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
   if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
 
@@ -614,7 +622,7 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
 
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -629,13 +637,13 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
     const fallbackKey = await findLatestActiveInstallableKey(c.env, row.app_id);
     if (fallbackKey) {
-      return c.redirect(`/apps/${encodeURIComponent(row.app_slug)}/latest`, 302);
+      return c.redirect(withExplicitPageLanguage(`/apps/${encodeURIComponent(row.app_slug)}/latest`, explicitLang), 302);
     }
     return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
   }
   const origin = publicRequestOrigin(c);
-  const downloadUrl = new URL(`/share/${token}/download`, origin).toString();
-  const shareUrl = new URL(`/share/${token}`, origin).toString();
+  const downloadUrl = new URL(withExplicitPageLanguage(`/share/${token}/download`, explicitLang), origin).toString();
+  const shareUrl = new URL(withExplicitPageLanguage(`/share/${token}`, explicitLang), origin).toString();
   const lang = publicPageLanguage(c);
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
   // Only fetch the artifact list when the page can actually show it. Signed
@@ -644,7 +652,7 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const artifacts = await listShareArtifacts(c.env.DB, row.share_id);
   const artifactUrl = (assetId: string) =>
     new URL(
-      `/share/${encodeURIComponent(token)}/download?asset=${encodeURIComponent(assetId)}`,
+      withExplicitPageLanguage(`/share/${encodeURIComponent(token)}/download?asset=${encodeURIComponent(assetId)}`, explicitLang),
       origin,
     ).toString();
   return htmlResponse(
@@ -655,17 +663,18 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
+  const explicitLang = c.req.query?.("lang");
   const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
   if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
-    return c.redirect(`/share/${token}`, 302);
+    return c.redirect(withExplicitPageLanguage(`/share/${token}`, explicitLang), 302);
   }
 
   // Per-artifact download from the "all formats" list: ?asset=<assetId>.
@@ -699,7 +708,7 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   }
   if (!r2Key) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   await recordShareEvent(c, row.share_id, "download");
@@ -760,7 +769,7 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, lang), 404);
   }
   if (!row.password_hash) return c.redirect(`/share/${token}${lang ? `?lang=${encodeURIComponent(lang)}` : ""}`, 302);
 
@@ -1252,7 +1261,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lan
 </html>`;
 }
 
-function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null, languageMenu = ""): string {
+function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null, languageMenu = "", lang?: string): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -1279,7 +1288,7 @@ function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | 
     <div class="badge" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
-    ${latestSlug ? `<a href="/apps/${escapeAttribute(encodeURIComponent(latestSlug))}/latest">${t.goToLatest}</a>` : ""}
+    ${latestSlug ? `<a href="${escapeAttribute(withExplicitPageLanguage(`/apps/${encodeURIComponent(latestSlug)}/latest`, lang))}">${t.goToLatest}</a>` : ""}
   </main>
 </body>
 </html>`;

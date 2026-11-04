@@ -34,6 +34,13 @@ describe("build-asset display identity", () => {
     ).toBe("fallback.patch.gz");
   });
 
+  it("localizes missing metadata while keeping real filenames and byte counts intact", () => {
+    expect(buildAssetFilename({ metadata_json: "{}", r2_key: "" }, "zh-CN")).toBe("未命名文件");
+    expect(buildAssetFilename({ metadata_json: '{"original_filename":"keep.apk"}', r2_key: "" }, "zh-CN")).toBe("keep.apk");
+    expect(formatBuildAssetSize(-1, "zh-CN")).toBe("大小未知");
+    expect(formatBuildAssetExactSize(11_295_525, "zh-CN")).toBe("10.77 MiB (11,295,525 字节)");
+  });
+
   it("keeps tiny patches exact instead of rounding them to zero megabytes", () => {
     expect(formatBuildAssetSize(64)).toBe("64 B");
     expect(formatBuildAssetSize(11_295_525)).toBe("10.77 MiB");

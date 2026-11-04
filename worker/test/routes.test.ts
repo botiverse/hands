@@ -8688,6 +8688,7 @@ describe("quiver public API v2 — scope resolution", () => {
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
     await seedRelease(env, "rel-locale", "build-locale", [["full", "all"]], { versionCode: 123, versionName: "1.2.3" });
     await seedAsset(env, "build-locale", "asset-locale", { filetype: "apk" });
+    await seedAsset(env, "build-locale", "asset-locale-aab", { filetype: "aab" });
     await env.DB.prepare("UPDATE releases SET changelog = ? WHERE id = ?")
       .bind(JSON.stringify({ en: "English release note", "zh-CN": "中文更新说明" }), "rel-locale").run();
     env.APK_BUCKET = { head: async (key: string) => ({ key }) } as any;
@@ -8711,6 +8712,8 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(zhShareHtml).toContain("中文更新说明");
     expect(zhShareHtml).not.toContain("English release note");
     expect(zhShareHtml).toContain(`/share/${token}?lang=en`);
+    expect(zhShareHtml).toContain(`/share/${token}/download?lang=zh-CN`);
+    expect(zhShareHtml).toContain(`/share/${token}/download?asset=asset-locale-aab&amp;lang=zh-CN`);
     const enShare = await handlePublicReleaseShare(shareCtx("en", "hands_locale=zh-CN"));
     expect(await enShare.text()).toContain("English release note");
 
@@ -8741,6 +8744,34 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(notesHtml).toContain("English release note");
     expect(notesHtml).toContain("version_code=123&amp;lang=zh-CN");
     expect(notesHtml).not.toContain("中文更新说明");
+  });
+
+  it("localizes public page errors without changing machine-readable notes errors", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    const { handlePublicAppHistory, handlePublicLatestReleaseLanding, handlePublicVersionLanding,
+      handlePublicReleaseNotes, handlePublicReleaseNotesJson } = await import("../src/routes/history");
+    const ctx = (slug: string, lang?: string) => ({
+      env,
+      req: {
+        url: `https://hands.build/apps/${slug}/latest`,
+        param: (name: string) => name === "slug" ? slug : name === "version" ? "1.2" : "",
+        query: (name: string) => name === "lang" ? lang : undefined,
+        header: () => undefined,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    for (const handler of [handlePublicAppHistory, handlePublicLatestReleaseLanding, handlePublicVersionLanding, handlePublicReleaseNotes]) {
+      const res = await handler(ctx("missing-app", "zh-CN"));
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe("未找到");
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+      expect(res.headers.get("vary")).toBe("*");
+    }
+    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "zh-CN"))).text()).toBe("没有可用的发布版本");
+    expect(await (await handlePublicVersionLanding(ctx("scope-app", "zh-CN"))).text()).toBe("未找到此版本");
+    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "en"))).text()).toBe("No active release");
+    expect(await (await handlePublicReleaseNotesJson(ctx("missing-app", "zh-CN"))).json()).toEqual({ error: "not found" });
   });
 
   it("latest landing: stable app URL renders the highest active published release", async () => {
@@ -11248,6 +11279,8 @@ describe("quiver public API v2 — scope resolution", () => {
     const res = await handlePublicReleaseShare(makeSharePublicContext(env, token));
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/apps/scope-app/latest"); // jumps to latest version
+    const zhRes = await handlePublicReleaseShare(makeSharePublicContextWithQuery(env, token, "?lang=zh-CN"));
+    expect(zhRes.headers.get("location")).toBe("/apps/scope-app/latest?lang=zh-CN");
   });
 
   it("password-protected share gates page and download until unlocked", async () => {
@@ -11293,6 +11326,8 @@ describe("quiver public API v2 — scope resolution", () => {
     const blocked = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));
     expect(blocked.status).toBe(302);
     expect(blocked.headers.get("location")).toBe(`/share/${token}`);
+    const blockedZh = await handlePublicReleaseShareDownload(makeSharePublicContextWithQuery(env, token, "?lang=zh-CN"));
+    expect(blockedZh.headers.get("location")).toBe(`/share/${token}?lang=zh-CN`);
 
     const makeUnlockContext = (password: string, cookie?: string) =>
       ({

@@ -86,6 +86,14 @@ function historyStrings(c: Context<{ Bindings: Env }>): HistoryStrings {
   return lang.startsWith("zh") ? HISTORY_I18N.zh : HISTORY_I18N.en;
 }
 
+function publicPageNotFound(c: Context<{ Bindings: Env }>, english: string, chinese: string): Response {
+  const lang = (publicPageLanguage(c) ?? "").toLowerCase();
+  return new Response(lang.startsWith("zh") ? chinese : english, {
+    status: 404,
+    headers: { "cache-control": "private, no-store", "vary": "*" },
+  });
+}
+
 type HistoryRow = {
   release_id: string;
   release_status: string;
@@ -208,13 +216,13 @@ export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: En
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
-  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  if (!app || !app.public_history) return publicPageNotFound(c, "Not found", "未找到");
   const requested = c.req.query("channel")?.trim() || null;
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
     : null;
   const row = await loadLatestLanding(c.env.DB, app.id, channel, historyChannelJson(app));
-  if (!row) return new Response("No active release", { status: 404 });
+  if (!row) return publicPageNotFound(c, "No active release", "没有可用的发布版本");
   const lang = publicPageLanguage(c);
   const t = historyStrings(c);
   return new Response(
@@ -273,9 +281,9 @@ const VERSION_LANDING_SQL = `
 export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   const version = c.req.param("version");
-  if (!slug || !version) return new Response("Not found", { status: 404 });
+  if (!slug || !version) return publicPageNotFound(c, "Not found", "未找到");
   const app = await loadHistoryApp(c.env.DB, slug);
-  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  if (!app || !app.public_history) return publicPageNotFound(c, "Not found", "未找到");
   const requested = c.req.query("channel")?.trim() || null;
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
@@ -283,7 +291,7 @@ export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) 
   const row = await c.env.DB.prepare(VERSION_LANDING_SQL)
     .bind(app.id, version, channel, historyChannelJson(app))
     .first<LatestLandingRow>();
-  if (!row) return new Response("Version not found", { status: 404 });
+  if (!row) return publicPageNotFound(c, "Version not found", "未找到此版本");
   const lang = publicPageLanguage(c);
   const t = historyStrings(c);
   return new Response(
@@ -364,7 +372,7 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) {
-    return new Response("Not found", { status: 404 });
+    return publicPageNotFound(c, "Not found", "未找到");
   }
   // offset-based paging; `fragment=1` returns the bare <li> rows so the page
   // can lazy-append without re-rendering the shell.
@@ -411,7 +419,7 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) {
-    return new Response("Not found", { status: 404 });
+    return publicPageNotFound(c, "Not found", "未找到");
   }
   const rawVc = c.req.query("version_code");
   const requestedCode =
