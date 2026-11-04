@@ -2,13 +2,12 @@ import type { Context } from "hono";
 import qrcode from "qrcode-generator";
 import { requestOrigin } from "../lib/origin";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { generateSignedR2Url, resolveChangelog , changelogToHtml, requestedLang } from "./public_v2";
+import { generateSignedR2Url, resolveChangelog , changelogToHtml } from "./public_v2";
+import { publicPageLanguage, publicLanguageMenu } from "../lib/public_locale";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 
-// UI-chrome localization for the public share/password/error pages. Detection
-// reuses requestedLang() (Accept-Language / ?lang=); anything not Chinese falls
-// back to English. The changelog itself is still localized separately via
-// resolveChangelog().
+// UI chrome and release notes follow the selected page language. API language
+// selection remains independent of the browser's saved preference.
 type ShareStrings = {
   htmlLang: string;
   preRelease: string; // draft tag
@@ -42,6 +41,7 @@ type ShareStrings = {
   purposeStoreOnly: string;
   /** Shown under the disclosure when an artifact is store-only. */
   storeOnlyNote: string;
+  unknownSize: string;
 };
 
 const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
@@ -75,9 +75,10 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     purposeStoreOnly: "Store upload — can't be installed directly",
     storeOnlyNote:
       "Store-upload artifacts (such as .aab or HarmonyOS .app) are for uploading to an app store; they can't be installed on a device directly.",
+    unknownSize: "unknown size",
   },
   zh: {
-    htmlLang: "zh",
+    htmlLang: "zh-CN",
     preRelease: "预发布",
     build: "构建",
     packageLabel: "包名",
@@ -105,12 +106,20 @@ const SHARE_I18N: { en: ShareStrings; zh: ShareStrings } = {
     purposeSideload: "侧载 — 可直接安装",
     purposeStoreOnly: "商店上传 — 不能直接安装",
     storeOnlyNote: "商店上传用的产物（如 .aab 或鸿蒙 .app）是给应用商店用的，不能直接装到设备上。",
+    unknownSize: "大小未知",
   },
 };
 
 function shareStrings(c: Context<{ Bindings: Env }>): ShareStrings {
-  const lang = (requestedLang(c) ?? "").toLowerCase();
+  const lang = (publicPageLanguage(c) ?? "").toLowerCase();
   return lang.startsWith("zh") ? SHARE_I18N.zh : SHARE_I18N.en;
+}
+
+// Retain an explicit selection across page links even when cookies or JS are unavailable.
+function withExplicitPageLanguage(path: string, lang: string | undefined): string {
+  // Bound URL/QR size and reject non-language characters from untrusted queries.
+  if (!lang || lang.length > 35 || !/^[A-Za-z0-9-]+$/.test(lang)) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}lang=${encodeURIComponent(lang)}`;
 }
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -605,18 +614,20 @@ export async function handleRebindReleaseShare(c: AdminContext) {
 export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
+  const explicitLang = c.req.query?.("lang");
+  const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
 
   const row = await findActiveShare(c.env.DB, token);
 
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
     await recordShareEvent(c, row.share_id, "view");
-    return htmlResponse(renderPasswordPage(t, token, false));
+    return htmlResponse(renderPasswordPage(t, token, false, menu, c.req.query?.("lang")));
   }
 
   await recordShareEvent(c, row.share_id, "view");
@@ -626,14 +637,14 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   if (!(await c.env.APK_BUCKET.head(row.r2_key))) {
     const fallbackKey = await findLatestActiveInstallableKey(c.env, row.app_id);
     if (fallbackKey) {
-      return c.redirect(`/apps/${encodeURIComponent(row.app_slug)}/latest`, 302);
+      return c.redirect(withExplicitPageLanguage(`/apps/${encodeURIComponent(row.app_slug)}/latest`, explicitLang), 302);
     }
-    return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
   }
   const origin = publicRequestOrigin(c);
-  const downloadUrl = new URL(`/share/${token}/download`, origin).toString();
-  const shareUrl = new URL(`/share/${token}`, origin).toString();
-  const lang = (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
+  const downloadUrl = new URL(withExplicitPageLanguage(`/share/${token}/download`, explicitLang), origin).toString();
+  const shareUrl = new URL(withExplicitPageLanguage(`/share/${token}`, explicitLang), origin).toString();
+  const lang = publicPageLanguage(c);
   const localized = { ...row, changelog: resolveChangelog(row.changelog, lang) };
   // Only fetch the artifact list when the page can actually show it. Signed
   // URLs are generated lazily on click (?asset=<id>), so rendering the list
@@ -641,27 +652,29 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const artifacts = await listShareArtifacts(c.env.DB, row.share_id);
   const artifactUrl = (assetId: string) =>
     new URL(
-      `/share/${encodeURIComponent(token)}/download?asset=${encodeURIComponent(assetId)}`,
+      withExplicitPageLanguage(`/share/${encodeURIComponent(token)}/download?asset=${encodeURIComponent(assetId)}`, explicitLang),
       origin,
     ).toString();
   return htmlResponse(
-    renderSharePage(t, localized, downloadUrl, shareUrl, token, artifacts, artifactUrl),
+    renderSharePage(t, localized, downloadUrl, shareUrl, token, artifacts, artifactUrl, menu),
   );
 }
 
 export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
+  const explicitLang = c.req.query?.("lang");
+  const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
-    return c.redirect(`/share/${token}`, 302);
+    return c.redirect(withExplicitPageLanguage(`/share/${token}`, explicitLang), 302);
   }
 
   // Per-artifact download from the "all formats" list: ?asset=<assetId>.
@@ -671,9 +684,9 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   const requestedAssetId = (c.req.query("asset") ?? "").trim();
   if (requestedAssetId) {
     const artifact = await findShareArtifact(c.env.DB, row.share_id, requestedAssetId);
-    if (!artifact) return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+    if (!artifact) return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
     if (!(await c.env.APK_BUCKET.head(artifact.r2_key))) {
-      return htmlResponse(renderErrorPage(t, t.errUnavailable), 404);
+      return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
     }
     await recordShareEvent(c, row.share_id, "download");
     const ttlSeconds = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
@@ -695,7 +708,7 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   }
   if (!r2Key) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
   }
 
   await recordShareEvent(c, row.share_id, "download");
@@ -750,13 +763,15 @@ export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>
 export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken), 400);
+  const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
+  const lang = c.req.query?.("lang");
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, lang), 404);
   }
-  if (!row.password_hash) return c.redirect(`/share/${token}`, 302);
+  if (!row.password_hash) return c.redirect(`/share/${token}${lang ? `?lang=${encodeURIComponent(lang)}` : ""}`, 302);
 
   const form = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
   const password = typeof form["password"] === "string" ? (form["password"] as string).trim() : "";
@@ -776,12 +791,12 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
         row.release_id,
       )
       .run();
-    return htmlResponse(renderPasswordPage(t, token, true), 401);
+    return htmlResponse(renderPasswordPage(t, token, true, menu, lang), 401);
   }
 
   const proof = await shareUnlockProof(row, currentDayBucket());
   const headers = new Headers({
-    location: `/share/${token}`,
+    location: `/share/${token}${lang ? `?lang=${encodeURIComponent(lang)}` : ""}`,
     "set-cookie":
       `${unlockCookieName(row.share_id)}=${proof}; Path=/share/${encodeURIComponent(token)}; ` +
       "Max-Age=86400; HttpOnly; Secure; SameSite=Lax",
@@ -1061,6 +1076,7 @@ function htmlResponse(html: string, status = 200): Response {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "private, max-age=0, no-store",
+      "vary": "*",
     },
   });
 }
@@ -1095,7 +1111,7 @@ function renderAllFormats(
       return `<tr>
         <td>${label}</td>
         <td class="${storeOnly ? "storeonly" : ""}">${purpose}</td>
-        <td>${formatBytes(a.size_bytes)}</td>
+        <td>${formatBytes(a.size_bytes, t)}</td>
         <td class="mono">${escapeHtml(a.file_hash)}</td>
         <td><a href="${escapeAttribute(artifactUrl(a.asset_id))}">${t.fmtDownload}</a></td>
       </tr>`;
@@ -1119,6 +1135,7 @@ function renderSharePage(
   shareToken: string,
   artifacts: ShareArtifactRow[],
   artifactUrl: (assetId: string) => string,
+  languageMenu: string,
 ): string {
   const title = `${row.app_slug} ${row.version_name} (${row.version_code})`;
   const qrSvg = renderShareQrSvg(shareUrl);
@@ -1169,6 +1186,7 @@ function renderSharePage(
 </head>
 <body>
   <main>
+    ${languageMenu}
     <div class="apphead">
       ${row.icon_r2_key ? `<img class="appicon" src="/share/${escapeAttribute(encodeURIComponent(shareToken))}/icon" alt="" width="56" height="56">` : ""}
       <div>
@@ -1183,7 +1201,7 @@ function renderSharePage(
     <dl>
       <dt>${t.packageLabel}</dt><dd>${escapeHtml(row.package_id || row.app_slug)}</dd>
       <dt>${t.versionLabel}</dt><dd>${escapeHtml(row.version_name)} (${row.version_code})</dd>
-      <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes)}</dd>
+      <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes, t)}</dd>
       <dt>${t.platformLabel}</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
       <dt>${t.checksumLabel}</dt><dd>${escapeHtml(row.file_hash)}</dd>
     </dl>
@@ -1206,7 +1224,7 @@ function renderShareQrSvg(url: string): string {
   return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
 
-function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): string {
+function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, languageMenu: string, lang?: string): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -1231,9 +1249,10 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): st
 </head>
 <body>
   <main>
+    ${languageMenu}
     <h1>${t.passwordRequired}</h1>
     <p>${failed ? `<span class="error">${t.wrongPassword}</span>` : t.passwordProtected}</p>
-    <form method="post" action="/share/${escapeAttribute(encodeURIComponent(token))}/unlock">
+    <form method="post" action="/share/${escapeAttribute(encodeURIComponent(token))}/unlock${lang ? `?lang=${escapeAttribute(encodeURIComponent(lang))}` : ""}">
       <input type="password" name="password" placeholder="${escapeAttribute(t.passwordPlaceholder)}" autofocus autocomplete="off" required>
       <button type="submit">${t.unlock}</button>
     </form>
@@ -1242,7 +1261,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean): st
 </html>`;
 }
 
-function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null): string {
+function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null, languageMenu = "", lang?: string): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -1265,10 +1284,11 @@ function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | 
 </head>
 <body>
   <main>
+    ${languageMenu}
     <div class="badge" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
-    ${latestSlug ? `<a href="/apps/${escapeAttribute(encodeURIComponent(latestSlug))}/latest">${t.goToLatest}</a>` : ""}
+    ${latestSlug ? `<a href="${escapeAttribute(withExplicitPageLanguage(`/apps/${encodeURIComponent(latestSlug)}/latest`, lang))}">${t.goToLatest}</a>` : ""}
   </main>
 </body>
 </html>`;
@@ -1287,8 +1307,8 @@ function escapeAttribute(value: string): string {
   return escapeHtml(value);
 }
 
-function formatBytes(size: number): string {
-  if (!Number.isFinite(size)) return "unknown size";
+function formatBytes(size: number, t: ShareStrings): string {
+  if (!Number.isFinite(size)) return t.unknownSize;
   const mib = size / (1024 * 1024);
   return `${mib.toFixed(mib >= 10 ? 0 : 1)} MiB`;
 }

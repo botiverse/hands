@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -8,6 +9,7 @@ import {
   type App,
 } from "../lib/api";
 import { AppCreationWizard } from "../components/AppCreationWizard";
+import { useText } from "../lib/locale";
 import {
   Badge,
   Button,
@@ -24,6 +26,7 @@ import {
 import { AlertTriangle, Archive, LayoutGrid, Package, Rocket } from "lucide-react";
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {
+  const t = useText();
   const qc = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: ["apps"],
@@ -39,7 +42,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Apps</h1>
+        <h1 className="text-2xl font-bold">{t("Apps", "应用")}</h1>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
             <Checkbox
@@ -47,10 +50,10 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
               onCheckedChange={(v) => setShowArchived(Boolean(v))}
               className="rounded-sm"
             />
-            Show archived ({data?.apps.filter((a) => a.archived).length ?? 0})
+            {t(`Show archived (${data?.apps.filter((a) => a.archived).length ?? 0})`, `显示已归档（${data?.apps.filter((a) => a.archived).length ?? 0}）`)}
           </label>
           <Button variant="primary" onClick={() => setShowCreate(true)}>
-            + New app
+            {t("+ New app", "+ 新建应用")}
           </Button>
         </div>
       </div>
@@ -63,7 +66,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
         </div>
       )}
       {error && (
-        <p className="text-danger">Failed: {(error as Error).message}</p>
+        <p className="text-danger">{t("Failed:", "操作失败：")} {errorMessage(error)}</p>
       )}
 
       {visible.length === 0 && !isLoading && (
@@ -74,10 +77,10 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
           </EmptyStateIcon>
           <EmptyStateTitle>
             {showArchived
-              ? "No apps yet. Click \"+ New app\" to create your first one."
+              ? t('No apps yet. Click "+ New app" to create your first one.', '还没有应用。点击“+ 新建应用”创建第一个应用。')
               : data?.apps.some((a) => a.archived)
-                ? "All apps are archived. Toggle \"Show archived\" to view them."
-                : "No apps yet. Click \"+ New app\" to create your first one."}
+                ? t('All apps are archived. Toggle "Show archived" to view them.', '所有应用都已归档。开启“显示已归档”即可查看。')
+                : t('No apps yet. Click "+ New app" to create your first one.', '还没有应用。点击“+ 新建应用”创建第一个应用。')}
           </EmptyStateTitle>
           </EmptyStateContent>
         </EmptyState>
@@ -103,6 +106,7 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
 }
 
 function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
+  const t = useText();
   const isArchived = !!app.archived;
 
   // Fetch counts for product_types / channels per app.
@@ -134,7 +138,7 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             <div className="text-base font-medium">{app.name}</div>
             {isArchived && (
               <Badge variant="muted">
-                <Archive className="size-3.5" aria-hidden="true" /> Archived
+                <Archive className="size-3.5" aria-hidden="true" /> {t("Archived", "已归档")}
               </Badge>
             )}
             {!sameOrg && app.org_id && (
@@ -142,12 +146,12 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
                 <TooltipTrigger
                   render={
                     <Badge variant="warning">
-                      <AlertTriangle className="size-3.5" aria-hidden="true" /> other org
+                      <AlertTriangle className="size-3.5" aria-hidden="true" /> {t("other org", "其他组织")}
                     </Badge>
                   }
                 />
                 <TooltipContent>
-                  {`This app belongs to a different org (${app.org_id})`}
+                  {t(`This app belongs to a different org (${app.org_id})`, `此应用属于其他组织（${app.org_id}）`)}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -163,22 +167,22 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
               <TooltipTrigger
                 render={
                   <Badge variant="information">
-                    <Package className="size-3.5" aria-hidden="true" /> {ptCount} product type{ptCount === 1 ? "" : "s"}
+                    <Package className="size-3.5" aria-hidden="true" /> {t(`${ptCount} product type${ptCount === 1 ? "" : "s"}`, `${ptCount} 种产品类型`)}
                   </Badge>
                 }
               />
-              <TooltipContent>Product types (what we ship)</TooltipContent>
+              <TooltipContent>{t("Product types (what we ship)", "产品类型（发布的内容）")}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger
                 render={
                   <Badge variant="muted">
-                    <Rocket className="size-3.5" aria-hidden="true" /> {chCount} channel{chCount === 1 ? "" : "s"}
+                    <Rocket className="size-3.5" aria-hidden="true" /> {t(`${chCount} channel${chCount === 1 ? "" : "s"}`, `${chCount} 个渠道`)}
                   </Badge>
                 }
               />
               <TooltipContent>
-                Distribution channels (main / preview / nightly)
+                {t("Distribution channels (main / preview / nightly)", "分发渠道（main / preview / nightly）")}
               </TooltipContent>
             </Tooltip>
           </div>

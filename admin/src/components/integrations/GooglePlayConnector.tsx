@@ -1,3 +1,4 @@
+import { errorMessage } from "../../lib/errorMessage";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Play } from "lucide-react";
@@ -61,7 +62,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   }, [meta, suggestedPackage]);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["google-play-binding", appId] });
-  const fail = (error: unknown) => toast.show({ kind: "error", title: gp("actionFailed"), description: (error as Error).message });
+  const fail = (error: unknown) => toast.show({ kind: "error", title: gp("actionFailed"), description: errorMessage(error) });
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get("google_play_oauth");
@@ -210,7 +211,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
         </label>}
       </div>
       <div className="md:col-span-2 text-xs text-foreground-muted">
-        {tracksLoading ? gp("loadingTracks") : tracksError ? <span role="alert">{tracksError}</span> : discovered && availableTracks.length === 0 ? gp("noTracks") : gp("tracksHelp")}
+        {tracksLoading ? gp("loadingTracks") : tracksError ? <span role="alert">{errorMessage(tracksError)}</span> : discovered && availableTracks.length === 0 ? gp("noTracks") : gp("tracksHelp")}
         {meta && <Button variant="outline" className="ml-2" disabled={tracksLoading || !packageName} onClick={() => setTrackReload((n) => n + 1)}>{gp("reloadTracks")}</Button>}
       </div>
       {([

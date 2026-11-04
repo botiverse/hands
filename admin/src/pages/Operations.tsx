@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../lib/api";
 import { useToast } from "../components/Toast";
 import { Badge, Button, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { useLocale, useText } from "../lib/locale";
 
 const STATUS_VARIANTS: Record<Operation["status"], "muted" | "information" | "success" | "danger"> = {
   pending: "muted",
@@ -17,8 +19,10 @@ const STATUS_VARIANTS: Record<Operation["status"], "muted" | "information" | "su
   failed: "danger",
   cancelled: "muted",
 };
+const STATUS_ZH: Record<Operation["status"], string> = { pending: "等待中", in_progress: "进行中", success: "成功", failed: "失败", cancelled: "已取消" };
 
 export function Operations({ appId }: { appId: string }) {
+  const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const retryToastRef = useRef<string | null>(null);
@@ -49,14 +53,14 @@ export function Operations({ appId }: { appId: string }) {
     onMutate: () => {
       retryToastRef.current = toast.show({
         kind: "loading",
-        title: "Retrying operation...",
+        title: t("Retrying operation...", "正在重试操作…"),
         ttlMs: 0,
       });
     },
     onSuccess: (op) => {
       const patch = {
         kind: "success",
-        title: `Retry queued (attempt #${op.retry_count + 1})`,
+        title: t(`Retry queued (attempt #${op.retry_count + 1})`, `已加入重试队列（第 ${op.retry_count + 1} 次尝试）`),
       } as const;
       if (retryToastRef.current !== null) toast.update(retryToastRef.current, patch);
       else toast.show(patch);
@@ -66,8 +70,8 @@ export function Operations({ appId }: { appId: string }) {
     onError: (e) => {
       const patch = {
         kind: "error",
-        title: "Retry failed",
-        description: (e as Error).message,
+        title: t("Retry failed", "重试失败"),
+        description: errorMessage(e),
       } as const;
       if (retryToastRef.current !== null) toast.update(retryToastRef.current, patch);
       else toast.show(patch);
@@ -78,34 +82,34 @@ export function Operations({ appId }: { appId: string }) {
   const remove = useMutation({
     mutationFn: (opId: string) => deleteOperation(appId, opId),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Operation log removed" });
+      toast.show({ kind: "success", title: t("Operation log removed", "操作日志已删除") });
       qc.invalidateQueries({ queryKey: ["operations", appId] });
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Delete failed",
-        description: (e as Error).message,
+        title: t("Delete failed", "删除失败"),
+        description: errorMessage(e),
       }),
   });
 
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold">Operations</h2>
+        <h2 className="text-lg font-semibold">{t("Operations", "操作记录")}</h2>
         <span className="text-xs text-foreground-muted">
-          {live.size > 0 ? "live (SSE)" : "polling (5s)"} · {data?.operations.length ?? 0} recent
+          {live.size > 0 ? t("live (SSE)", "实时更新（SSE）") : t("polling (5s)", "轮询（5 秒）")} · {t(`${data?.operations.length ?? 0} recent`, `最近 ${data?.operations.length ?? 0} 条`)}
         </span>
       </div>
 
-      {isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
+      {isLoading && <p className="text-foreground-muted text-sm">{t("Loading…", "加载中…")}</p>}
       {error && (
-        <p className="text-danger text-sm">Failed: {(error as Error).message}</p>
+        <p className="text-danger text-sm">{t("Failed:", "加载失败：")} {errorMessage(error)}</p>
       )}
 
       <div className="space-y-6">
         {data?.operations.length === 0 && (
-          <p className="text-foreground-muted text-sm">No operations yet. Upload an APK to start.</p>
+          <p className="text-foreground-muted text-sm">{t("No operations yet. Upload an APK to start.", "暂无操作记录。上传 APK 即可开始。")}</p>
         )}
         {data?.operations.map((op) => (
           <OperationRow
@@ -135,6 +139,8 @@ function OperationRow({
   onDelete: () => void;
   busy: boolean;
 }) {
+  const t = useText();
+  const { locale } = useLocale();
   const [expanded, setExpanded] = useState(false);
   let inputPayload: any = {};
   let outputPayload: any = {};
@@ -152,13 +158,13 @@ function OperationRow({
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center gap-3">
-        <Badge variant={STATUS_VARIANTS[op.status]}>{op.status}</Badge>
+        <Badge variant={STATUS_VARIANTS[op.status]}>{t(op.status, STATUS_ZH[op.status] ?? op.status)}</Badge>
         <span className="font-mono text-sm">{op.kind}</span>
         <span className="text-xs text-foreground-muted">
-          {timeAgo(op.created_at)}
+          {timeAgo(op.created_at, locale)}
         </span>
         {op.retry_count > 0 && (
-          <span className="text-xs text-foreground-hint">retry #{op.retry_count + 1}</span>
+          <span className="text-xs text-foreground-hint">{t(`retry #${op.retry_count + 1}`, `第 ${op.retry_count + 1} 次重试`)}</span>
         )}
         <div className="flex-1" />
         {op.status === "failed" && (
@@ -168,14 +174,14 @@ function OperationRow({
             variant="outline"
             className="text-xs"
           >
-            Retry
+            {t("Retry", "重试")}
           </Button>
         )}
         <Button
           variant="ghost"
           size="icon-sm"
           onClick={() => setExpanded(!expanded)}
-          aria-label={expanded ? "Collapse" : "Expand"}
+          aria-label={expanded ? t("Collapse", "收起") : t("Expand", "展开")}
         >
           {expanded ? "▲" : "▼"}
         </Button>
@@ -185,7 +191,7 @@ function OperationRow({
           className="hover:text-danger"
           onClick={onDelete}
           disabled={busy}
-          aria-label="Delete"
+          aria-label={t("Delete", "删除")}
         >
           ×
         </Button>
@@ -209,7 +215,7 @@ function OperationRow({
         <div className="mt-3 space-y-2 text-xs">
           <details>
             <summary className="cursor-pointer text-foreground-muted font-medium">
-              Input
+              {t("Input", "输入")}
             </summary>
             <pre className="mt-1 bg-layer-inset p-2 rounded-sm overflow-x-auto">
               {JSON.stringify(inputPayload, null, 2)}
@@ -218,7 +224,7 @@ function OperationRow({
           {op.output !== "{}" && (
             <details>
               <summary className="cursor-pointer text-foreground-muted font-medium">
-                Output
+                {t("Output", "输出")}
               </summary>
               <pre className="mt-1 bg-layer-inset p-2 rounded-sm overflow-x-auto">
                 {JSON.stringify(outputPayload, null, 2)}
@@ -232,8 +238,14 @@ function OperationRow({
   );
 }
 
-function timeAgo(ts: number): string {
+function timeAgo(ts: number, locale: string): string {
   const diff = Date.now() - ts;
+  if (locale === "zh-CN") {
+    if (diff < 60_000) return `${Math.floor(diff / 1000)} 秒前`;
+    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+    return `${Math.floor(diff / 86_400_000)} 天前`;
+  }
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;

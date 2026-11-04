@@ -4,6 +4,7 @@ import {
   buildAssetFilename,
   formatBuildAssetExactSize,
 } from "../lib/buildAssetDisplay";
+import { useLocale, useText } from "../lib/locale";
 
 function CopyableAssetValue({
   label,
@@ -12,6 +13,7 @@ function CopyableAssetValue({
   label: string;
   value: string;
 }) {
+  const t = useText();
   return (
     <>
       <dt className="text-foreground-muted">{label}</dt>
@@ -20,7 +22,7 @@ function CopyableAssetValue({
           <CopyableCode className="min-w-0 font-mono text-[11px] text-foreground-strong">
             {value}
           </CopyableCode>
-          <CopyableCodeAction aria-label={`Copy ${label}`} />
+          <CopyableCodeAction aria-label={t(`Copy ${label}`, `复制${label}`)} />
         </CopyableCodeRoot>
       </dd>
     </>
@@ -37,25 +39,27 @@ function AssetValue({ label, value }: { label: string; value: string }) {
 }
 
 export function BuildAssetIdentitySummary({ asset }: { asset: BuildAsset }) {
+  const t = useText();
+  const { locale } = useLocale();
   return (
     <dl
       className="grid min-w-0 grid-cols-1 gap-y-2 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4"
       data-testid="build-asset-identity-summary"
     >
-      <AssetValue label="filename" value={buildAssetFilename(asset)} />
-      <CopyableAssetValue label="asset id" value={asset.id} />
-      <CopyableAssetValue label="build id" value={asset.build_id} />
-      <AssetValue label="kind" value={asset.artifact_kind} />
-      <AssetValue label="platform" value={asset.platform} />
-      <AssetValue label="arch" value={asset.arch ?? "—"} />
-      <AssetValue label="variant" value={asset.variant ?? "—"} />
-      <AssetValue label="filetype" value={asset.filetype} />
+      <AssetValue label={t("filename", "文件名")} value={buildAssetFilename(asset, locale)} />
+      <CopyableAssetValue label={t("asset id", "文件 ID")} value={asset.id} />
+      <CopyableAssetValue label={t("build id", "构建 ID")} value={asset.build_id} />
+      <AssetValue label={t("kind", "类型")} value={asset.artifact_kind} />
+      <AssetValue label={t("platform", "平台")} value={asset.platform} />
+      <AssetValue label={t("arch", "架构")} value={asset.arch ?? "—"} />
+      <AssetValue label={t("variant", "变体")} value={asset.variant ?? "—"} />
+      <AssetValue label={t("filetype", "文件类型")} value={asset.filetype} />
       <AssetValue
-        label="size"
-        value={formatBuildAssetExactSize(asset.size_bytes)}
+        label={t("size", "大小")}
+        value={formatBuildAssetExactSize(asset.size_bytes, locale)}
       />
       <CopyableAssetValue label="sha256" value={asset.file_hash} />
-      <CopyableAssetValue label="r2 key" value={asset.r2_key} />
+      <CopyableAssetValue label={t("r2 key", "R2 键")} value={asset.r2_key} />
     </dl>
   );
 }

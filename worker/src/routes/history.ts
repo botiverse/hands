@@ -6,14 +6,14 @@
 import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes } from "../lib/release_notes";
-import { generateSignedR2Url, resolveChangelog, changelogToHtml, requestedLang } from "./public_v2";
+import { generateSignedR2Url, resolveChangelog, changelogToHtml } from "./public_v2";
+import { publicPageLanguage, publicLanguageMenu } from "../lib/public_locale";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 import { recordPublicAssetDownload } from "../lib/download_stats";
 
-// UI-chrome localization (task: localize surrounding chrome, not just the
-// changelog). Detection reuses requestedLang() (Accept-Language / ?lang=);
-// anything that isn't Chinese falls back to English.
+// UI chrome and release notes follow the selected page language; anything
+// other than Chinese falls back to English for the chrome.
 type HistoryStrings = {
   htmlLang: string;
   versionsSuffix: string; // page <title>: "{app} — {suffix}"
@@ -59,7 +59,7 @@ const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
     checksumLabel: "Checksum",
   },
   zh: {
-    htmlLang: "zh",
+    htmlLang: "zh-CN",
     versionsSuffix: "版本",
     versionHistory: "版本历史",
     build: "构建",
@@ -82,8 +82,16 @@ const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
 };
 
 function historyStrings(c: Context<{ Bindings: Env }>): HistoryStrings {
-  const lang = (requestedLang(c) ?? "").toLowerCase();
+  const lang = (publicPageLanguage(c) ?? "").toLowerCase();
   return lang.startsWith("zh") ? HISTORY_I18N.zh : HISTORY_I18N.en;
+}
+
+function publicPageNotFound(c: Context<{ Bindings: Env }>, english: string, chinese: string): Response {
+  const lang = (publicPageLanguage(c) ?? "").toLowerCase();
+  return new Response(lang.startsWith("zh") ? chinese : english, {
+    status: 404,
+    headers: { "cache-control": "private, no-store", "vary": "*" },
+  });
 }
 
 type HistoryRow = {
@@ -208,25 +216,25 @@ export async function handlePublicLatestReleaseLanding(c: Context<{ Bindings: En
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
-  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  if (!app || !app.public_history) return publicPageNotFound(c, "Not found", "未找到");
   const requested = c.req.query("channel")?.trim() || null;
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
     : null;
   const row = await loadLatestLanding(c.env.DB, app.id, channel, historyChannelJson(app));
-  if (!row) return new Response("No active release", { status: 404 });
-  const lang =
-    c.req.query("lang")?.trim() ||
-    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
-    null;
+  if (!row) return publicPageNotFound(c, "No active release", "没有可用的发布版本");
+  const lang = publicPageLanguage(c);
+  const t = historyStrings(c);
   return new Response(
-    renderLatestLandingPage(app, row, lang, historyStrings(c), {
+    renderLatestLandingPage(app, row, lang, t, {
       showDownloads: app.history_show_downloads !== 0,
+      languageMenu: publicLanguageMenu(c, t.htmlLang),
     }),
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
-        "cache-control": "public, max-age=60",
+        "cache-control": "private, no-store",
+        "vary": "*",
       },
     },
   );
@@ -273,9 +281,9 @@ const VERSION_LANDING_SQL = `
 export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   const version = c.req.param("version");
-  if (!slug || !version) return new Response("Not found", { status: 404 });
+  if (!slug || !version) return publicPageNotFound(c, "Not found", "未找到");
   const app = await loadHistoryApp(c.env.DB, slug);
-  if (!app || !app.public_history) return new Response("Not found", { status: 404 });
+  if (!app || !app.public_history) return publicPageNotFound(c, "Not found", "未找到");
   const requested = c.req.query("channel")?.trim() || null;
   const channel = requested
     ? await resolvePublicChannelSlug(c.env.DB, app.id, requested)
@@ -283,20 +291,20 @@ export async function handlePublicVersionLanding(c: Context<{ Bindings: Env }>) 
   const row = await c.env.DB.prepare(VERSION_LANDING_SQL)
     .bind(app.id, version, channel, historyChannelJson(app))
     .first<LatestLandingRow>();
-  if (!row) return new Response("Version not found", { status: 404 });
-  const lang =
-    c.req.query("lang")?.trim() ||
-    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
-    null;
+  if (!row) return publicPageNotFound(c, "Version not found", "未找到此版本");
+  const lang = publicPageLanguage(c);
+  const t = historyStrings(c);
   return new Response(
-    renderLatestLandingPage(app, row, lang, historyStrings(c), {
+    renderLatestLandingPage(app, row, lang, t, {
       pinned: true,
       showDownloads: app.history_show_downloads !== 0,
+      languageMenu: publicLanguageMenu(c, t.htmlLang),
     }),
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
-        "cache-control": "public, max-age=60",
+        "cache-control": "private, no-store",
+        "vary": "*",
       },
     },
   );
@@ -364,7 +372,7 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) {
-    return new Response("Not found", { status: 404 });
+    return publicPageNotFound(c, "Not found", "未找到");
   }
   // offset-based paging; `fragment=1` returns the bare <li> rows so the page
   // can lazy-append without re-rendering the shell.
@@ -376,13 +384,12 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
   const rows = results ?? [];
   const hasMore = rows.length > HISTORY_PAGE_SIZE;
   const page = hasMore ? rows.slice(0, HISTORY_PAGE_SIZE) : rows;
-  const lang =
-    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ?? null;
+  const lang = publicPageLanguage(c);
   const t = historyStrings(c);
   if (typeof c.req.query === "function" && c.req.query("fragment") === "1") {
     return new Response(
       renderHistoryItems(app, page, lang, t, { showDownloads: app.history_show_downloads !== 0 }),
-      { headers: { "content-type": "text/html; charset=utf-8" } },
+      { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "vary": "*" } },
     );
   }
   return new Response(
@@ -390,9 +397,10 @@ export async function handlePublicAppHistory(c: Context<{ Bindings: Env }>) {
       showDownloads: app.history_show_downloads !== 0,
       hasMore,
       nextOffset: offset + page.length,
+      languageMenu: publicLanguageMenu(c, t.htmlLang),
     }),
     {
-      headers: { "content-type": "text/html; charset=utf-8" },
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "vary": "*" },
     },
   );
 }
@@ -411,7 +419,7 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
   if (!slug) return c.json({ error: "slug required" }, 400);
   const app = await loadHistoryApp(c.env.DB, slug);
   if (!app || !app.public_history) {
-    return new Response("Not found", { status: 404 });
+    return publicPageNotFound(c, "Not found", "未找到");
   }
   const rawVc = c.req.query("version_code");
   const requestedCode =
@@ -437,14 +445,12 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
     (r) => requestedCode == null || r.version_code <= requestedCode,
   );
 
-  const lang =
-    c.req.query("lang")?.trim() ||
-    (c.req.header("accept-language") ?? "").split(",")[0]?.trim().split(";")[0] ||
-    null;
+  const lang = publicPageLanguage(c);
+  const t = historyStrings(c);
 
   return new Response(
-    renderReleaseNotesPage(app, visible, requestedCode, lang, historyStrings(c)),
-    { headers: { "content-type": "text/html; charset=utf-8" } },
+    renderReleaseNotesPage(app, visible, requestedCode, lang, t, publicLanguageMenu(c, t.htmlLang)),
+    { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "vary": "*" } },
   );
 }
 
@@ -543,7 +549,7 @@ function renderLatestLandingPage(
   row: LatestLandingRow,
   lang: string | null,
   t: HistoryStrings,
-  opts: { pinned?: boolean; showDownloads?: boolean } = {},
+  opts: { pinned?: boolean; showDownloads?: boolean; languageMenu?: string } = {},
 ): string {
   const notes = resolveChangelog(row.changelog, lang);
   const channelQuery = `?channel=${encodeURIComponent(row.channel_slug)}`;
@@ -581,6 +587,7 @@ function renderLatestLandingPage(
 </head>
 <body>
   <main>
+    ${opts.languageMenu ?? ""}
     <header>
       ${app.icon_r2_key ? `<img src="/public/apps/${esc(app.slug)}/icon" alt="" width="56" height="56">` : ""}
       <div>
@@ -595,7 +602,7 @@ function renderLatestLandingPage(
       <dt>${t.checksumLabel}</dt><dd>${esc(row.file_hash)}</dd>
     </dl>
     ${showDownloads ? `<a class="download" href="${downloadHref}">${t.download}</a>` : ""}
-    <a class="history" href="/apps/${esc(app.slug)}/history">${t.versionHistory}</a>
+    <a class="history" href="/apps/${esc(app.slug)}/history?lang=${encodeURIComponent(t.htmlLang)}">${t.versionHistory}</a>
     ${notes ? `<div class="notes">${changelogToHtml(notes)}</div>` : ""}
   </main>
 </body>
@@ -640,7 +647,7 @@ function renderHistoryPage(
   rows: HistoryRow[],
   lang: string | null,
   t: HistoryStrings,
-  opts: { showDownloads?: boolean; hasMore?: boolean; nextOffset?: number } = {},
+  opts: { showDownloads?: boolean; hasMore?: boolean; nextOffset?: number; languageMenu?: string } = {},
 ): string {
   const items = renderHistoryItems(app, rows, lang, t, opts);
   const hasMore = opts.hasMore === true;
@@ -682,6 +689,7 @@ function renderHistoryPage(
 </head>
 <body>
   <main>
+    ${opts.languageMenu ?? ""}
     <header>
       ${app.icon_r2_key ? `<img src="/public/apps/${esc(app.slug)}/icon" alt="" width="56" height="56">` : ""}
       <div>
@@ -698,7 +706,7 @@ function renderHistoryPage(
         const ms = Number(el.dataset.ts);
         if (!Number.isFinite(ms)) return;
         try {
-          el.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms));
+          el.textContent = new Intl.DateTimeFormat(document.documentElement.lang, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ms));
         } catch { el.textContent = new Date(ms).toLocaleString(); }
       });
     }
@@ -713,7 +721,11 @@ function renderHistoryPage(
         if (!entries.some((e) => e.isIntersecting) || loading) return;
         loading = true;
         try {
-          const res = await fetch(location.pathname + "?fragment=1&offset=" + more.dataset.offset);
+          const next = new URL(location.href);
+          next.searchParams.set("fragment", "1");
+          next.searchParams.set("offset", more.dataset.offset);
+          next.searchParams.set("lang", document.documentElement.lang);
+          const res = await fetch(next);
           if (!res.ok) { observer.disconnect(); more.remove(); return; }
           const html = await res.text();
           more.insertAdjacentHTML("beforebegin", html);
@@ -740,6 +752,7 @@ function renderReleaseNotesPage(
   requestedCode: number | null,
   lang: string | null,
   t: HistoryStrings,
+  languageMenu: string,
 ): string {
   const items = rows
     .map((row) => {
@@ -826,6 +839,7 @@ function renderReleaseNotesPage(
 </head>
 <body>
   <main>
+    ${languageMenu}
     <header>
       <h1>${t.whatsNewIn(esc(app.name))}</h1>
       <div class="sub">${t.releaseNotes}</div>
@@ -837,7 +851,7 @@ function renderReleaseNotesPage(
       const ms = Number(el.dataset.ts);
       if (!Number.isFinite(ms)) return;
       try {
-        el.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(ms));
+        el.textContent = new Intl.DateTimeFormat(document.documentElement.lang, { dateStyle: "medium" }).format(new Date(ms));
       } catch { el.textContent = new Date(ms).toLocaleDateString(); }
     });
   </script>

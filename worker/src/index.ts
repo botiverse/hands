@@ -341,6 +341,9 @@ import {
   requireOrgRole,
 } from "./lib/permissions";
 import { openApiDocument } from "./openapi";
+import { localizeOpenApi } from "./openapi_locale";
+import { publicPageLanguage, publicLanguageMenu } from "./lib/public_locale";
+import { scalarChineseLabels } from "./lib/scalar_locale";
 import { feedbackRoutes } from "./openapi/feedback";
 import { registerAppRoutes } from "./openapi/apps";
 import { registerAndroidDistributionRoutes } from "./openapi/android_distribution";
@@ -641,38 +644,42 @@ bindApp("post", "/api/internal/raft-notifications/:subscriptionId", handleRaftNo
 // Public — health check (no auth)
 bindApp("get", "/health", handleHealth);
 bindApp("get", "/.well-known/raft-agent-manifest.json", handleAgentManifest);
-bindApp("get", "/openapi.json", (c) => c.json({
-  ...openApiDocument,
-  servers: [
-    {
-      url: requestOrigin(c),
-      description: "Current request origin",
-    },
-    {
-      url: "http://localhost:8787",
-      description: "Local wrangler dev",
-    },
-  ],
-}));
-bindApp("get", "/api-docs", (c) => c.html(`<!doctype html>
-<html lang="en">
+// The default machine-readable contract remains English. The browser requests
+// the translated reference explicitly; neither cookies nor Accept-Language alter
+// the API contract returned by /openapi.json without a query parameter.
+const openApiDocumentZh = localizeOpenApi(openApiDocument);
+bindApp("get", "/openapi.json", (c) => {
+  const zh = (c.req.query("lang") ?? "").toLowerCase().startsWith("zh");
+  return c.json({
+    ...(zh ? openApiDocumentZh : openApiDocument),
+    servers: [
+      { url: requestOrigin(c), description: zh ? "当前请求来源" : "Current request origin" },
+      { url: "http://localhost:8787", description: zh ? "本地 Wrangler 开发环境" : "Local wrangler dev" },
+    ],
+  });
+});
+bindApp("get", "/api-docs", (c) => {
+  const zh = (publicPageLanguage(c) ?? "").toLowerCase().startsWith("zh");
+  return c.html(`<!doctype html>
+<html lang="${zh ? "zh-CN" : "en"}">
   <head>
-    <title>Hands API Reference</title>
+    <title>${zh ? "Hands API 参考" : "Hands API Reference"}</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <style>
       body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
       .quiver-api-header {
-        height: 56px;
+        min-height: 56px;
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 10px;
         padding: 0 18px;
         border-bottom: 1px solid #e2e8f0;
         background: #ffffff;
       }
-      .quiver-api-header a {
+      .quiver-api-header > a {
         display: inline-flex;
         align-items: center;
         gap: 10px;
@@ -682,27 +689,33 @@ bindApp("get", "/api-docs", (c) => c.html(`<!doctype html>
         text-decoration: none;
       }
       .quiver-api-header img { width: 32px; height: 32px; border-radius: 8px; }
+      .quiver-api-header .hands-language { margin: 0 !important; white-space: nowrap; }
       #app { min-height: calc(100vh - 57px); }
     </style>
   </head>
   <body>
     <header class="quiver-api-header">
-      <a href="/" aria-label="Hands home">
+      <a href="/" aria-label="${zh ? "Hands 首页" : "Hands home"}">
         <img src="/favicon.svg" alt="" />
         <span>Hands</span>
       </a>
+      ${publicLanguageMenu(c, zh ? "zh-CN" : "en")}
     </header>
     <div id="app"></div>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    ${zh ? `<script>${scalarChineseLabels}</script>` : ""}
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.76.4/dist/browser/standalone.js"></script>
     <script>
       Scalar.createApiReference('#app', {
-        url: '/openapi.json',
+        url: '${zh ? "/openapi.json?lang=zh-CN" : "/openapi.json"}',
+        localization: { locale: '${zh ? "zh-CN" : "en"}' },
+        ${zh ? "modelsSectionLabel: '模型'," : ""}
         theme: 'default',
         customCss: '#references { min-height: calc(100vh - 57px); }'
       })
     </script>
   </body>
-</html>`));
+</html>`, 200, { "cache-control": "private, no-store", "vary": "*" });
+});
 async function handlePublicDocs(c: Context<{ Bindings: Env }>) {
   const path = new URL(c.req.url).pathname;
   // VitePress emits CSS, scripts, fonts and search chunks without Markdown

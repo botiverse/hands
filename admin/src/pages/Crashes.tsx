@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Dedicated crash triage page (/apps/:appId/crashes): crashes-by-version
  * overview plus signature groups. Clicking a group jumps to the Feedback
@@ -10,6 +11,7 @@ import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, 
 import { Bug } from "lucide-react";
 import { CrashByVersion } from "../components/FeedbackTrends";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
+import { useLocale, useText } from "../lib/locale";
 
 export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
   exception: "Exception",
@@ -23,18 +25,22 @@ export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]>
   anr: "warning",
 };
 
-const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string }> = [
-  { value: "", label: "All" },
-  { value: "exception", label: "Exceptions" },
-  { value: "native", label: "Native" },
-  { value: "anr", label: "ANRs" },
+const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: string }> = [
+  { value: "", label: "All", labelZh: "全部" },
+  { value: "exception", label: "Exceptions", labelZh: "异常" },
+  { value: "native", label: "Native", labelZh: "原生崩溃" },
+  { value: "anr", label: "ANRs", labelZh: "无响应（ANR）" },
 ];
+
+const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = { exception: "异常", native: "原生崩溃", anr: "无响应（ANR）" };
 
 function parseCrashType(raw: string | null): CrashType | "" {
   return raw === "anr" || raw === "native" || raw === "exception" ? raw : "";
 }
 
 export function AppCrashes({ appId }: { appId: string }) {
+  const t = useText();
+  const { locale } = useLocale();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const crashType = parseCrashType(searchParams.get("crash_type"));
@@ -63,22 +69,20 @@ export function AppCrashes({ appId }: { appId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h2 className="text-lg font-semibold">Crashes</h2>
+          <h2 className="text-lg font-semibold">{t("Crashes", "崩溃")}</h2>
           <p className="text-sm text-foreground-muted">
-            Grouped by signature (exception class + top app frame; ANRs by the
-            main thread's first app frame). Stacks are auto-deobfuscated when
-            the build's mapping was uploaded.
+            {t("Grouped by signature (exception class + top app frame; ANRs by the main thread's first app frame). Stacks are auto-deobfuscated when the build's mapping was uploaded.", "按特征分组（异常类和栈顶应用帧；无响应按主线程的首个应用帧）。上传构建的映射文件后，调用栈会自动反混淆。")}
           </p>
         </div>
         <SegmentedControl
           value={crashType}
           onValueChange={(value) => setCrashType(value as CrashType | "")}
-          aria-label="Crash type"
+          aria-label={t("Crash type", "崩溃类型")}
           className="w-fit"
         >
           {TYPE_FILTERS.map((f) => (
             <SegmentedControlItem key={f.value || "all"} value={f.value}>
-              <SegmentedControlLabel>{f.label}</SegmentedControlLabel>
+              <SegmentedControlLabel>{t(f.label, f.labelZh)}</SegmentedControlLabel>
             </SegmentedControlItem>
           ))}
         </SegmentedControl>
@@ -98,10 +102,10 @@ export function AppCrashes({ appId }: { appId: string }) {
       )}
 
       <div className="overflow-x-auto">
-        {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
+        {groups.isLoading && <p className="text-sm text-foreground-muted">{t("Loading…", "加载中…")}</p>}
         {groups.error && (
           <p className="text-sm text-danger">
-            Failed to load crash groups: {(groups.error as Error).message}
+            {t("Failed to load crash groups:", "加载崩溃分组失败：")} {errorMessage(groups.error)}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
@@ -111,7 +115,7 @@ export function AppCrashes({ appId }: { appId: string }) {
                 <Bug aria-hidden="true" />
               </EmptyStateIcon>
               <EmptyStateTitle>
-                {crashType ? `No ${CRASH_TYPE_LABELS[crashType]} crashes reported` : "No crashes reported yet"}
+                {crashType ? t(`No ${CRASH_TYPE_LABELS[crashType]} crashes reported`, `尚无${CRASH_TYPE_LABELS_ZH[crashType]}报告`) : t("No crashes reported yet", "尚无崩溃报告")}
               </EmptyStateTitle>
             </EmptyStateContent>
           </EmptyState>
@@ -120,14 +124,14 @@ export function AppCrashes({ appId }: { appId: string }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
-                <th className="py-2 pr-3">Type</th>
-                <th className="py-2 pr-3">Signature</th>
-                <th className="py-2 pr-3">Count</th>
-                <th className="py-2 pr-3">Devices</th>
-                <th className="py-2 pr-3">Open</th>
-                <th className="py-2 pr-3">Versions</th>
-                <th className="py-2 pr-3">First seen</th>
-                <th className="py-2 pr-3">Last seen</th>
+                <th className="py-2 pr-3">{t("Type", "类型")}</th>
+                <th className="py-2 pr-3">{t("Signature", "特征")}</th>
+                <th className="py-2 pr-3">{t("Count", "次数")}</th>
+                <th className="py-2 pr-3">{t("Devices", "设备")}</th>
+                <th className="py-2 pr-3">{t("Open", "未关闭")}</th>
+                <th className="py-2 pr-3">{t("Versions", "版本")}</th>
+                <th className="py-2 pr-3">{t("First seen", "首次出现")}</th>
+                <th className="py-2 pr-3">{t("Last seen", "最近出现")}</th>
               </tr>
             </thead>
             <tbody>
@@ -143,7 +147,7 @@ export function AppCrashes({ appId }: { appId: string }) {
                 >
                   <td className="py-2 pr-3">
                     <Badge variant={CRASH_TYPE_BADGE_VARIANTS[g.crash_type] ?? CRASH_TYPE_BADGE_VARIANTS.exception}>
-                      {CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type}
+                      {t(CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type, CRASH_TYPE_LABELS_ZH[g.crash_type] ?? g.crash_type)}
                     </Badge>
                   </td>
                   <td className="py-2 pr-3 max-w-lg">
@@ -156,10 +160,10 @@ export function AppCrashes({ appId }: { appId: string }) {
                     {g.versions ?? "—"}
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground-muted">
-                    {new Date(g.first_seen).toLocaleDateString()}
+                    {new Date(g.first_seen).toLocaleDateString(locale)}
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground-muted">
-                    {new Date(g.last_seen).toLocaleString()}
+                    {new Date(g.last_seen).toLocaleString(locale)}
                   </td>
                 </tr>
               ))}

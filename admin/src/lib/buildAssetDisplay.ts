@@ -1,4 +1,5 @@
 import type { BuildAsset } from "./api";
+import type { Locale } from "./localePreference";
 
 type AssetDisplaySource = Pick<BuildAsset, "metadata_json" | "r2_key">;
 
@@ -24,13 +25,13 @@ function assetMetadata(metadataJson: string): Record<string, unknown> {
  * may not have it, so fall back to the final R2 path segment rather than
  * rendering an empty identity in a destructive-action dialog.
  */
-export function buildAssetFilename(asset: AssetDisplaySource): string {
+export function buildAssetFilename(asset: AssetDisplaySource, locale: Locale = "en"): string {
   const metadata = assetMetadata(asset.metadata_json);
   return (
     nonEmptyString(metadata.original_filename) ??
     nonEmptyString(metadata.filename) ??
     nonEmptyString(asset.r2_key.split("/").filter(Boolean).at(-1)) ??
-    "Unnamed asset"
+    (locale === "zh-CN" ? "未命名文件" : "Unnamed asset")
   );
 }
 
@@ -38,11 +39,11 @@ export function buildAssetFilename(asset: AssetDisplaySource): string {
  * Human-readable binary size. Bytes stay exact so a 64-byte patch is never
  * shown as 0.00 MB.
  */
-export function formatBuildAssetSize(sizeBytes: number): string {
-  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return "Unknown size";
+export function formatBuildAssetSize(sizeBytes: number, locale: Locale = "en"): string {
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return locale === "zh-CN" ? "大小未知" : "Unknown size";
 
   const roundedBytes = Math.round(sizeBytes);
-  if (roundedBytes < 1024) return `${roundedBytes.toLocaleString("en-US")} B`;
+  if (roundedBytes < 1024) return `${roundedBytes.toLocaleString(locale)} B`;
 
   const units = ["KiB", "MiB", "GiB", "TiB"] as const;
   let value = roundedBytes / 1024;
@@ -54,8 +55,8 @@ export function formatBuildAssetSize(sizeBytes: number): string {
   return `${value.toFixed(2)} ${units[unitIndex]!}`;
 }
 
-export function formatBuildAssetExactSize(sizeBytes: number): string {
-  const readable = formatBuildAssetSize(sizeBytes);
+export function formatBuildAssetExactSize(sizeBytes: number, locale: Locale = "en"): string {
+  const readable = formatBuildAssetSize(sizeBytes, locale);
   if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return readable;
-  return `${readable} (${Math.round(sizeBytes).toLocaleString("en-US")} bytes)`;
+  return `${readable} (${Math.round(sizeBytes).toLocaleString(locale)} ${locale === "zh-CN" ? "字节" : "bytes"})`;
 }

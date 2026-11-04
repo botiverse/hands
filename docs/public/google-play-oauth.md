@@ -1,6 +1,6 @@
 ---
 title: "Google Play Authorization"
-description: "通过 Google 授权连接 Play：创建 Web 客户端、配置、验证和撤销，无需服务账号密钥。"
+description: "Connect, configure, verify, and revoke Google Play access without a service-account key."
 category: "Console"
 order: 7
 ---

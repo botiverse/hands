@@ -71,7 +71,7 @@ The raw token is returned exactly once. Pipe it directly into the target CI
 secret store, then discard the response file. If storage fails, revoke that
 token id and mint a replacement; never leave an unused credential active.
 
-Deploy tokens are app-scoped, never expire unless revoked, and are
+Deploy tokens are app-scoped, can have an expiration, and are
 attributed in audit logs as
 `deploy-token:<name>@<app>`. Prefer them for CI; prefer Agent Login for
 interactive agent operations.

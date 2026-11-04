@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Releases tab — live releases per channel and product type.
  *
@@ -61,6 +62,7 @@ import {
 } from "raft-ui";
 import type { BadgeProps } from "raft-ui";
 import { useToast } from "../components/Toast";
+import { useLocale, useText } from "../lib/locale";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
 import { ReleaseAssetsPanel } from "../components/ReleaseAssetsPanel";
 import { ReleaseAssetUploader } from "../components/ReleaseAssetUploader";
@@ -100,8 +102,9 @@ function AlwaysIncludedDeviceGroups({
   selectedIds: string[];
   onChange: (next: string[]) => void;
 }) {
+  const tx = useText();
   if (groups.length === 0) {
-    return <p className="text-xs text-foreground-muted">No device groups available.</p>;
+    return <p className="text-xs text-foreground-muted">{tx("No device groups available.", "暂无设备组。")}</p>;
   }
   return (
     <div className="max-h-36 overflow-y-auto rounded-sm border border-line-muted divide-y divide-line-hairline">
@@ -200,6 +203,8 @@ function productTypeMatchesPlatform(productType: ProductType, appPlatform?: stri
 }
 
 export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gateOn: boolean }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const qc = useQueryClient();
   const toast = useToast();
   const approvals = useQuery({
@@ -212,13 +217,13 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
     onSuccess: (_data, vars) => {
       toast.show({
         kind: "success",
-        title: vars.action === "approve" ? "Release approved and published" : "Release request rejected",
+        title: vars.action === "approve" ? tx("Release approved and published", "发布已批准并发布") : tx("Release request rejected", "发布请求已拒绝"),
       });
       qc.invalidateQueries({ queryKey: ["release-approvals", appId] });
       qc.invalidateQueries({ queryKey: ["releases", appId] });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Action failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: tx("Action failed", "操作失败"), description: errorMessage(e) }),
   });
   const items = approvals.data?.approvals ?? [];
   // The queue stays reachable even if the gate was switched off after requests
@@ -227,11 +232,11 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
   if (!gateOn && !approvals.isLoading && items.length === 0) return null;
   return (
     <section className="border-t border-line-hairline pt-5 mb-4">
-      <h3 className="text-sm font-medium text-foreground-strong mb-2">Pending release approvals</h3>
+      <h3 className="text-sm font-medium text-foreground-strong mb-2">{tx("Pending release approvals", "待审核的发布")}</h3>
       {approvals.isLoading ? (
         <Skeleton className="h-10" />
       ) : items.length === 0 ? (
-        <div className="text-xs text-foreground-muted">No releases waiting for approval.</div>
+        <div className="text-xs text-foreground-muted">{tx("No releases waiting for approval.", "没有等待审核的发布。")}</div>
       ) : (
         <ul className="space-y-2">
           {items.map((a: ReleaseApproval) => (
@@ -243,7 +248,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                 <div className="font-medium">
                   {a.version_name ?? "?"}{" "}
                   <span className="text-xs text-foreground-muted">
-                    (code {a.version_code ?? "?"}) · {a.channel_slug ?? ""}
+                    ({tx("code", "版本号")} {a.version_code ?? "?"}) · {a.channel_slug ?? ""}
                   </span>
                 </div>
                 {a.changelog && (
@@ -289,7 +294,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                   const targets = parseTargets();
                   return (
                     <div className="text-xs text-foreground mt-1 flex flex-wrap items-center gap-1">
-                      <span className="text-foreground-muted">Publishes to</span>
+                      <span className="text-foreground-muted">{tx("Publishes to", "发布范围")}</span>
                       {scopes.length === 0 ? (
                         <span className="font-mono">full:all</span>
                       ) : (
@@ -301,7 +306,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                       )}
                       {targets.length > 0 && (
                         <>
-                          <span className="text-foreground-muted">· requires targets</span>
+                          <span className="text-foreground-muted">{tx("· requires targets", "· 必需的目标")}</span>
                           {targets.map((t, i) => (
                             <span key={i} className="font-mono rounded-sm bg-layer-inset px-1">
                               {t}
@@ -313,7 +318,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                   );
                 })()}
                 <div className="text-xs text-foreground-muted mt-1">
-                  Requested by {a.requested_by_actor} · {new Date(a.created_at).toLocaleString()}
+                  {tx("Requested by", "申请人：")} {a.requested_by_actor} · {new Date(a.created_at).toLocaleString(locale)}
                 </div>
               </div>
               <div className="flex gap-2 shrink-0">
@@ -323,14 +328,14 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
                   disabled={mutation.isPending}
                   onClick={() => mutation.mutate({ requestId: a.id, action: "approve" })}
                 >
-                  Approve
+                  {tx("Approve", "批准")}
                 </Button>
                 <Button
                   className="text-sm"
                   disabled={mutation.isPending}
                   onClick={() => mutation.mutate({ requestId: a.id, action: "reject" })}
                 >
-                  Reject
+                  {tx("Reject", "拒绝")}
                 </Button>
               </div>
             </li>
@@ -342,6 +347,7 @@ export function PendingReleaseApprovals({ appId, gateOn }: { appId: string; gate
 }
 
 export function Releases({ appId }: { appId: string }) {
+  const tx = useText();
   const qc = useQueryClient();
   const toast = useToast();
   const [channelFilter, setChannelFilter] = useState<string>("all");
@@ -378,29 +384,29 @@ export function Releases({ appId }: { appId: string }) {
   return (
     <div>
       <div className="mb-4 flex items-center justify-between gap-4 flex-wrap">
-        <h2 className="text-lg font-semibold">Releases</h2>
+        <h2 className="text-lg font-semibold">{tx("Releases", "发布")}</h2>
         <Button
           variant="primary"
           className="text-sm"
           onClick={() => setShowNewRelease(true)}
         >
-          + New release
+          {tx("+ New release", "+ 新建发布")}
         </Button>
       </div>
 
       {/* Stats summary */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-        <Stat label="Total" value={releases.data?.releases.length ?? 0} />
+        <Stat label={tx("Total", "总数")} value={releases.data?.releases.length ?? 0} />
         <Stat
-          label="Active"
+          label={tx("Active", "生效中")}
           value={releases.data?.releases.filter((r) => r.status === "active").length ?? 0}
         />
         <Stat
-          label="Draft"
+          label={tx("Draft", "草稿")}
           value={releases.data?.releases.filter((r) => r.status === "draft").length ?? 0}
         />
         <Stat
-          label="Channels"
+          label={tx("Channels", "渠道")}
           value={channels.data?.channels.length ?? 0}
         />
       </div>
@@ -414,7 +420,7 @@ export function Releases({ appId }: { appId: string }) {
       <div className="mb-4 flex flex-row flex-wrap gap-3 items-center">
         <Select
           items={{
-            all: "All channels",
+            all: tx("All channels", "所有渠道"),
             ...Object.fromEntries(
               (channels.data?.channels ?? []).map((c) => [c.slug, c.slug]),
             ),
@@ -428,7 +434,7 @@ export function Releases({ appId }: { appId: string }) {
           </SelectTrigger>
           <SelectContent>
             <SelectList>
-            <SelectItem value="all">All channels</SelectItem>
+            <SelectItem value="all">{tx("All channels", "所有渠道")}</SelectItem>
             {channels.data?.channels.map((c) => (
               <SelectItem key={c.id} value={c.slug}>
                 {c.slug}
@@ -439,11 +445,11 @@ export function Releases({ appId }: { appId: string }) {
         </Select>
         <Select
           items={{
-            all: "All statuses",
-            draft: "Draft",
-            active: "Active",
-            superseded: "Superseded",
-            cancelled: "Cancelled",
+            all: tx("All statuses", "所有状态"),
+            draft: tx("Draft", "草稿"),
+            active: tx("Active", "生效中"),
+            superseded: tx("Superseded", "已替代"),
+            cancelled: tx("Cancelled", "已取消"),
           }}
           value={statusFilter}
           onValueChange={(v) => setStatusFilter(v as string)}
@@ -454,11 +460,11 @@ export function Releases({ appId }: { appId: string }) {
           </SelectTrigger>
           <SelectContent>
             <SelectList>
-            <SelectItem value="all">All statuses</SelectItem>
-            <SelectItem value="draft">Draft</SelectItem>
-            <SelectItem value="active">Active</SelectItem>
-            <SelectItem value="superseded">Superseded</SelectItem>
-            <SelectItem value="cancelled">Cancelled</SelectItem>
+            <SelectItem value="all">{tx("All statuses", "所有状态")}</SelectItem>
+            <SelectItem value="draft">{tx("Draft", "草稿")}</SelectItem>
+            <SelectItem value="active">{tx("Active", "生效中")}</SelectItem>
+            <SelectItem value="superseded">{tx("Superseded", "已替代")}</SelectItem>
+            <SelectItem value="cancelled">{tx("Cancelled", "已取消")}</SelectItem>
           </SelectList>
           </SelectContent>
         </Select>
@@ -472,14 +478,14 @@ export function Releases({ appId }: { appId: string }) {
         </div>
       )}
       {releases.error && (
-        <p className="text-danger">Failed: {(releases.error as Error).message}</p>
+        <p className="text-danger">{tx("Failed:", "加载失败：")} {errorMessage(releases.error)}</p>
       )}
 
       {filtered.length === 0 && !releases.isLoading && (
         <EmptyState>
-          <EmptyStateTitle>No releases match your filter.</EmptyStateTitle>
+          <EmptyStateTitle>{tx("No releases match your filter.", "没有符合筛选条件的发布。")}</EmptyStateTitle>
           <EmptyStateDescription>
-            Create a new release and upload the required assets from this tab.
+            {tx("Create a new release and upload the required assets from this tab.", "在此页面新建发布并上传所需文件。")}
           </EmptyStateDescription>
         </EmptyState>
       )}
@@ -539,6 +545,8 @@ function ReleaseRow({
   productTypeName: string;
   onAction: () => void;
 }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const toast = useToast();
   const [showRollout, setShowRollout] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
@@ -554,7 +562,7 @@ function ReleaseRow({
   const publish = useMutation({
     mutationFn: () => {
       const scopes = detail.data?.scopes ?? [];
-      if (scopes.length === 0) throw new Error("Release has no scope to publish");
+      if (scopes.length === 0) throw new Error(tx("Release has no scope to publish", "发布没有可发布的范围"));
       return publishRelease(
         appId,
         r.id,
@@ -566,14 +574,14 @@ function ReleaseRow({
       );
     },
     onSuccess: () => {
-      toast.show({ kind: "success", title: `Published ${channelSlug}` });
+      toast.show({ kind: "success", title: tx(`Published ${channelSlug}`, `已发布到 ${channelSlug}`) });
       onAction();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Publish failed",
-        description: (e as Error).message,
+        title: tx("Publish failed", "发布失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -585,16 +593,16 @@ function ReleaseRow({
       toast.show({
         kind: "success",
         title: data.restored_to_draft
-          ? `Restored ${channelSlug} draft`
-          : `Restored ${channelSlug} as active`,
+          ? tx(`Restored ${channelSlug} draft`, `已恢复 ${channelSlug} 的草稿`)
+          : tx(`Restored ${channelSlug} as active`, `已恢复 ${channelSlug} 并使其生效`),
       });
       onAction();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Rollback failed",
-        description: (e as Error).message,
+        title: tx("Rollback failed", "恢复失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -606,7 +614,7 @@ function ReleaseRow({
     onSuccess: (data) => {
       toast.show({
         kind: "success",
-        title: `Rollout set to ${data.rollout_cohort_count ?? "?"}%`,
+        title: tx(`Rollout set to ${data.rollout_cohort_count ?? "?"}%`, `发布比例已设为 ${data.rollout_cohort_count ?? "?"}%`),
       });
       onAction();
       setShowRollout(false);
@@ -614,8 +622,8 @@ function ReleaseRow({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Bump rollout failed",
-        description: (e as Error).message,
+        title: tx("Bump rollout failed", "调整发布比例失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -628,16 +636,16 @@ function ReleaseRow({
       toast.show({
         kind: "success",
         title: data.should_force_update
-          ? "Now forcing update on clients"
-          : "No longer forcing update",
+          ? tx("Now forcing update on clients", "已要求客户端强制更新")
+          : tx("No longer forcing update", "已取消强制更新"),
       });
       onAction();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Force-update toggle failed",
-        description: (e as Error).message,
+        title: tx("Force-update toggle failed", "切换强制更新失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -646,7 +654,7 @@ function ReleaseRow({
     onSuccess: () => {
       toast.show({
         kind: "success",
-        title: r.status === "draft" ? "Draft deleted" : "Release cancelled",
+        title: r.status === "draft" ? tx("Draft deleted", "草稿已删除") : tx("Release cancelled", "发布已取消"),
       });
       setConfirmCancel(false);
       onAction();
@@ -654,8 +662,8 @@ function ReleaseRow({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: r.status === "draft" ? "Delete failed" : "Cancel failed",
-        description: (e as Error).message,
+        title: r.status === "draft" ? tx("Delete failed", "删除失败") : tx("Cancel failed", "取消失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -666,16 +674,16 @@ function ReleaseRow({
         <span className="font-medium">{channelSlug}</span>
         <span className="text-xs text-foreground-muted">{productTypeName}</span>
         {r.is_full ? (
-          <Badge variant="success">full</Badge>
+          <Badge variant="success">{tx("full", "全量")}</Badge>
         ) : (
-          <Badge variant="warning">scoped</Badge>
+          <Badge variant="warning">{tx("scoped", "限定范围")}</Badge>
         )}
         {r.should_force_update ? (
-          <Badge variant="warning">⚠ force</Badge>
+          <Badge variant="warning">{tx("⚠ force", "⚠ 强制更新")}</Badge>
         ) : null}
         {r.rollout_cohort_count != null && r.rollout_cohort_count < 100 && (
           <Badge variant="warning">
-            {r.rollout_cohort_count}% rollout
+            {r.rollout_cohort_count}% {tx("rollout", "发布比例")}
           </Badge>
         )}
         <span className="text-xs text-foreground-muted ml-auto">
@@ -683,7 +691,7 @@ function ReleaseRow({
         </span>
       </div>
       <div className="text-xs text-foreground-muted font-mono mt-1 truncate">
-        {r.id} (build {r.build_id.slice(0, 8)}…)
+        {r.id} ({tx("build", "构建")} {r.build_id.slice(0, 8)}…)
       </div>
       {(r.offered_count || r.current_count || r.offered_uv || r.current_uv) ? (
         <div className="mt-1 flex items-center gap-3 text-xs text-foreground-muted">
@@ -691,29 +699,29 @@ function ReleaseRow({
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-foreground-strong">{r.current_uv ?? 0}</strong> on this version
+                  <strong className="text-foreground-strong">{r.current_uv ?? 0}</strong> {tx("on this version", "使用此版本")}
                 </span>
               }
             />
             <TooltipContent>
-              {r.current_count ?? 0} update checks (PV)
+              {r.current_count ?? 0} {tx("update checks (PV)", "次更新检查（PV）")}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={
                 <span>
-                  <strong className="text-foreground-strong">{r.offered_uv ?? 0}</strong> offered
+                  <strong className="text-foreground-strong">{r.offered_uv ?? 0}</strong> {tx("offered", "已收到更新提示")}
                 </span>
               }
             />
             <TooltipContent>
-              {r.offered_count ?? 0} update offers (PV)
+              {r.offered_count ?? 0} {tx("update offers (PV)", "次更新提示（PV）")}
             </TooltipContent>
           </Tooltip>
           {r.last_checked_at ? (
             <span className="text-foreground-hint">
-              last check {new Date(r.last_checked_at).toLocaleString()}
+              {tx("last check", "最近检查")} {new Date(r.last_checked_at).toLocaleString(locale)}
             </span>
           ) : null}
         </div>
@@ -731,7 +739,7 @@ function ReleaseRow({
             onClick={() => publish.mutate()}
             disabled={publish.isPending || !detail.data}
           >
-            {publish.isPending ? "Publishing..." : !detail.data ? "Loading scope..." : "Publish"}
+            {publish.isPending ? tx("Publishing...", "发布中…") : !detail.data ? tx("Loading scope...", "加载范围中…") : tx("Publish", "发布")}
           </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
@@ -740,7 +748,7 @@ function ReleaseRow({
             className="text-xs"
             onClick={() => setShowEdit(true)}
           >
-            Edit
+            {tx("Edit", "编辑")}
           </Button>
         )}
         {r.status === "active" && (
@@ -751,7 +759,7 @@ function ReleaseRow({
                 className="text-xs"
                 onClick={() => setShowRollout(!showRollout)}
               >
-                Bump rollout
+                {tx("Bump rollout", "调整发布比例")}
               </Button>
             )}
             <Button
@@ -760,7 +768,7 @@ function ReleaseRow({
               onClick={() => toggleForce.mutate()}
               disabled={toggleForce.isPending}
             >
-              {r.should_force_update ? "Unforce" : "Force"}
+              {r.should_force_update ? tx("Unforce", "取消强制") : tx("Force", "强制更新")}
             </Button>
           </>
         )}
@@ -772,8 +780,8 @@ function ReleaseRow({
             disabled={rollback.isPending}
           >
             {r.status === "cancelled" && r.activated_at == null
-              ? "Restore draft"
-              : "Restore as active"}
+              ? tx("Restore draft", "恢复草稿")
+              : tx("Restore as active", "恢复并生效")}
           </Button>
         )}
         {(r.status === "draft" || r.status === "active") && (
@@ -782,13 +790,13 @@ function ReleaseRow({
             className="text-xs"
             onClick={() => setConfirmCancel(true)}
           >
-            {r.status === "draft" ? "Delete draft" : "Cancel release"}
+            {r.status === "draft" ? tx("Delete draft", "删除草稿") : tx("Cancel release", "取消发布")}
           </Button>
         )}
       </div>
       {showRollout && (
         <div className="mt-2 pt-2 border-t border-line-hairline flex items-center gap-2 text-xs">
-          <label>Rollout %:</label>
+          <label>{tx("Rollout %:", "发布比例：")}</label>
           <RolloutPercentInput value={newPercent} onChange={setNewPercent} />
           <Button
             variant="primary"
@@ -796,27 +804,27 @@ function ReleaseRow({
             onClick={() => bump.mutate(newPercent)}
             disabled={bump.isPending}
           >
-            {bump.isPending ? "…" : "Set"}
+            {bump.isPending ? "…" : tx("Set", "设置")}
           </Button>
         </div>
       )}
       {detail.isLoading && (
         <div className="mt-2 pt-2 border-t border-line-hairline text-xs text-foreground-muted">
-          Loading release details...
+          {tx("Loading release details...", "正在加载发布详情…")}
         </div>
       )}
       {detail.data && (
         <div className="mt-2 pt-2 border-t border-line-hairline text-xs">
-          <div className="text-foreground-muted mb-1">Build: {detail.data.build?.version_name} ({detail.data.build?.version_code})</div>
+          <div className="text-foreground-muted mb-1">{tx("Build:", "构建：")} {detail.data.build?.version_name} ({detail.data.build?.version_code})</div>
           <div className="text-foreground-muted mb-1">
-            Assets: {detail.data.assets.length} · Scopes: {detail.data.scopes.length}
+            {tx("Assets:", "文件：")} {detail.data.assets.length} · {tx("Scopes:", "范围：")} {detail.data.scopes.length}
           </div>
           {detail.data.scopes.length > 0 && (
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-foreground-muted text-left">
-                  <th className="font-normal pr-2">type</th>
-                  <th className="font-normal pr-2">value</th>
+                  <th className="font-normal pr-2">{tx("type", "类型")}</th>
+                  <th className="font-normal pr-2">{tx("value", "值")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -831,7 +839,7 @@ function ReleaseRow({
           )}
           {(detail.data.checks ?? []).length > 0 && (
             <div className="mt-2">
-              <div className="text-foreground-muted mb-1">Checks (advisory)</div>
+              <div className="text-foreground-muted mb-1">{tx("Checks (advisory)", "检查（仅供参考）")}</div>
               {detail.data.checks.map((chk) => (
                 <div key={chk.id} className="flex items-center gap-2 mb-0.5">
                   <span
@@ -843,12 +851,12 @@ function ReleaseRow({
                           : "text-warning font-medium"
                     }
                   >
-                    {chk.verdict}
+                    {({ passed: tx("passed", "通过"), failed: tx("failed", "失败"), pending: tx("pending", "待处理") } as Record<string, string>)[chk.verdict] ?? chk.verdict}
                   </span>
                   <span className="font-mono">{chk.source}</span>
                   {chk.cases_total !== null && (
                     <span className="text-foreground-muted">
-                      {chk.cases_passed ?? 0}/{chk.cases_total} cases
+                      {chk.cases_passed ?? 0}/{chk.cases_total} {tx("cases", "个用例")}
                     </span>
                   )}
                   {chk.run_url && (
@@ -858,7 +866,7 @@ function ReleaseRow({
                       rel="noreferrer"
                       className="text-info-strong hover:underline"
                     >
-                      run
+                      {tx("run", "查看运行记录")}
                     </a>
                   )}
                   {chk.summary && (
@@ -898,15 +906,15 @@ function ReleaseRow({
 
       <ConfirmActionDialog
         open={confirmCancel}
-        title={r.status === "draft" ? "Delete this draft?" : "Cancel this release?"}
+        title={r.status === "draft" ? tx("Delete this draft?", "删除此草稿？") : tx("Cancel this release?", "取消此发布？")}
         objectLabel={`${channelSlug} / ${r.product_type}`}
         objectHint={r.id.slice(0, 8)}
         body={
           r.status === "draft"
-            ? "The draft will be disabled. Its build, assets, and audit history stay available, while this version becomes available for a corrected upload. No live release is affected."
-            : "This release will stop being served by update checks. Its build, assets, and audit history stay available. Although the version becomes available for historical correction, devices that already received this release will not update to different bits with the same version code; publish any client update with a higher version code."
+            ? tx("The draft will be disabled. Its build, assets, and audit history stay available, while this version becomes available for a corrected upload. No live release is affected.", "草稿将停用。其构建、文件和审计记录仍可查看；此版本可用于重新上传修正后的文件。线上发布不会受影响。")
+            : tx("This release will stop being served by update checks. Its build, assets, and audit history stay available. Although the version becomes available for historical correction, devices that already received this release will not update to different bits with the same version code; publish any client update with a higher version code.", "更新检查将不再返回此发布。其构建、文件和审计记录仍可查看。虽然此版本可用于修正历史记录，但已经收到该发布的设备不会更新到相同版本号下的不同文件；请使用更高的版本号发布客户端更新。")
         }
-        confirmLabel={r.status === "draft" ? "Delete draft" : "Cancel release"}
+        confirmLabel={r.status === "draft" ? tx("Delete draft", "删除草稿") : tx("Cancel release", "取消发布")}
         confirmKind="danger"
         pending={cancel.isPending}
         onCancel={() => setConfirmCancel(false)}
@@ -919,13 +927,15 @@ function ReleaseRow({
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 
 function ReleaseStatusBadge({ status }: { status: string }) {
+  const tx = useText();
+  const labels: Record<string, string> = { draft: tx("draft", "草稿"), active: tx("active", "生效中"), superseded: tx("superseded", "已替代"), cancelled: tx("cancelled", "已取消") };
   const variantMap: Record<string, BadgeVariant> = {
     draft: "information",
     active: "success",
     superseded: "muted",
     cancelled: "danger",
   };
-  return <Badge variant={variantMap[status] ?? "muted"}>{status}</Badge>;
+  return <Badge variant={variantMap[status] ?? "muted"}>{labels[status] ?? status}</Badge>;
 }
 
 function EditReleaseDialog({
@@ -943,6 +953,7 @@ function EditReleaseDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const tx = useText();
   const toast = useToast();
   const [changelog, setChangelog] = useState(release.changelog ?? "");
   const deviceGroups = useQuery({
@@ -996,14 +1007,14 @@ function EditReleaseDialog({
         scopes: buildReleaseScopes(scopeType, scopeValue, alwaysIncludedGroupIds),
       }),
     onSuccess: () => {
-      toast.show({ kind: "success", title: "Release updated" });
+      toast.show({ kind: "success", title: tx("Release updated", "发布已更新") });
       onSaved();
     },
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Update failed",
-        description: (e as Error).message,
+        title: tx("Update failed", "更新失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1014,28 +1025,28 @@ function EditReleaseDialog({
       <DialogContent className="w-[calc(100vw-2rem)] max-w-3xl">
         <DialogHeader>
           <div>
-            <DialogTitle>Edit release</DialogTitle>
+            <DialogTitle>{tx("Edit release", "编辑发布")}</DialogTitle>
             <DialogDescription className="font-mono">{release.id}</DialogDescription>
           </div>
           <DialogClose />
         </DialogHeader>
         <DialogBody>
-          {loading && <p className="text-sm text-foreground-muted">Loading release details...</p>}
+          {loading && <p className="text-sm text-foreground-muted">{tx("Loading release details...", "正在加载发布详情…")}</p>}
           <div className="space-y-3">
           <div>
-            <Label>Release notes</Label>
+            <Label>{tx("Release notes", "发布说明")}</Label>
             <ChangelogEditor value={changelog} onChange={setChangelog} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label>Scope type</Label>
+              <Label>{tx("Scope type", "范围类型")}</Label>
               <Select
                 items={{
-                  full: "Full",
-                  platform: "Platform",
-                  user_cohort: "User cohort",
-                  ip_range: "IP range",
-                  device_group: "Device group",
+                  full: tx("Full", "全量"),
+                  platform: tx("Platform", "平台"),
+                  user_cohort: tx("User cohort", "用户分组"),
+                  ip_range: tx("IP range", "IP 范围"),
+                  device_group: tx("Device group", "设备组"),
                 }}
                 value={scopeType}
                 onValueChange={(v) => {
@@ -1050,24 +1061,24 @@ function EditReleaseDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectList>
-                  <SelectItem value="full">Full</SelectItem>
-                  <SelectItem value="platform">Platform</SelectItem>
-                  <SelectItem value="user_cohort">User cohort</SelectItem>
-                  <SelectItem value="ip_range">IP range</SelectItem>
-                  <SelectItem value="device_group">Device group</SelectItem>
+                  <SelectItem value="full">{tx("Full", "全量")}</SelectItem>
+                  <SelectItem value="platform">{tx("Platform", "平台")}</SelectItem>
+                  <SelectItem value="user_cohort">{tx("User cohort", "用户分组")}</SelectItem>
+                  <SelectItem value="ip_range">{tx("IP range", "IP 范围")}</SelectItem>
+                  <SelectItem value="device_group">{tx("Device group", "设备组")}</SelectItem>
                 </SelectList>
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>Scope value</Label>
+              <Label>{tx("Scope value", "范围值")}</Label>
               {scopeType === "device_group" ? (
                 <Select
                   items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
                   value={scopeValue}
                   onValueChange={(value) => setScopeValue(value as string)}
                 >
-                  <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder={tx("Choose group", "选择设备组")} /><SelectIcon /></SelectTrigger>
                   <SelectContent>
                     <SelectList>
                     {(deviceGroups.data?.groups ?? []).map((group) => (
@@ -1088,7 +1099,7 @@ function EditReleaseDialog({
           </div>
           {scopeType === "full" && (
             <div>
-              <Label>Always included device groups</Label>
+              <Label>{tx("Always included device groups", "始终包含的设备组")}</Label>
               <AlwaysIncludedDeviceGroups
                 groups={deviceGroups.data?.groups ?? []}
                 selectedIds={alwaysIncludedGroupIds}
@@ -1101,11 +1112,11 @@ function EditReleaseDialog({
               checked={shouldForceUpdate}
               onCheckedChange={(v) => setShouldForceUpdate(Boolean(v))}
             />
-            Force update
+            {tx("Force update", "强制更新")}
           </label>
           {scopeType === "full" && (
             <div className="flex items-center gap-2 text-xs">
-              <label className="flex-1">Rollout cohort %</label>
+              <label className="flex-1">{tx("Rollout cohort %", "发布比例")}</label>
               <RolloutPercentInput value={rolloutPercent} onChange={setRolloutPercent} />
             </div>
           )}
@@ -1113,14 +1124,14 @@ function EditReleaseDialog({
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={save.isPending}>
-            Cancel
+            {tx("Cancel", "取消")}
           </Button>
           <Button
             variant="primary"
             onClick={() => save.mutate()}
             disabled={save.isPending || loading || !scopeValid}
           >
-            {save.isPending ? "Saving..." : "Save changes"}
+            {save.isPending ? tx("Saving...", "保存中…") : tx("Save changes", "保存更改")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1141,6 +1152,7 @@ function NewReleaseDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const tx = useText();
   const toast = useToast();
   const channels = useQuery({
     queryKey: ["channels", appId],
@@ -1168,7 +1180,7 @@ function NewReleaseDialog({
 
   // ---------------- 4-step wizard state ----------------
   type Step = 1 | 2 | 3 | 4;
-  const STEP_LABELS = ["Target", "Version", "Assets", "Review"] as const;
+  const STEP_LABELS = [tx("Target", "目标"), tx("Version", "版本"), tx("Assets", "文件"), tx("Review", "确认")] as const;
   const [step, setStep] = useState<Step>(1);
 
   const [channelSlug, setChannelSlug] = useState<string>("");
@@ -1229,12 +1241,12 @@ function NewReleaseDialog({
   // ---------------- submit (step 4 → draft / publish) ----------------
   const submitRelease = useMutation({
     mutationFn: async (mode: "draft" | "publish") => {
-      if (!step1Valid) throw new Error("Target incomplete");
-      if (!step2Valid) throw new Error("Version incomplete");
+      if (!step1Valid) throw new Error(tx("Target incomplete", "发布目标信息不完整"));
+      if (!step2Valid) throw new Error(tx("Version incomplete", "版本信息不完整"));
       const channel = channels.data?.channels.find(
         (c) => c.slug === channelSlug,
       );
-      if (!channel) throw new Error(`channel '${channelSlug}' not found`);
+      if (!channel) throw new Error(tx(`channel '${channelSlug}' not found`, `找不到渠道“${channelSlug}”`));
 
       // 1. create build (status=pending)
       const build = await createBuild(appId, {
@@ -1276,7 +1288,7 @@ function NewReleaseDialog({
             size_bytes: uploaded.size_bytes,
           });
         } catch (e) {
-          assetFailures.push(`${slot.file.name}: ${(e as Error).message}`);
+          assetFailures.push(`${slot.file.name}: ${errorMessage(e)}`);
         }
       }
       if (mode === "publish") {
@@ -1291,18 +1303,18 @@ function NewReleaseDialog({
       return { release, assetFailures, mode };
     },
     onSuccess: ({ release, assetFailures, mode }) => {
-      const action = mode === "publish" ? "published" : "saved as draft";
+      const action = mode === "publish" ? tx("published", "已发布") : tx("saved as draft", "已保存为草稿");
       if (assetFailures.length === 0) {
         toast.show({
           kind: "success",
-          title: `Release ${release.id.slice(0, 8)}… ${action}`,
-          description: `${pendingFiles.length} asset${pendingFiles.length === 1 ? "" : "s"} attached.`,
+          title: tx(`Release ${release.id.slice(0, 8)}… ${action}`, `发布 ${release.id.slice(0, 8)}… ${action}`),
+          description: tx(`${pendingFiles.length} asset${pendingFiles.length === 1 ? "" : "s"} attached.`, `已添加 ${pendingFiles.length} 个文件。`),
         });
       } else {
         toast.show({
           kind: "error",
-          title: `Release ${release.id.slice(0, 8)}… ${action} but ${assetFailures.length} asset(s) failed`,
-          description: `${assetFailures[0]?.slice(0, 80)}… — fix from the release row.`,
+          title: tx(`Release ${release.id.slice(0, 8)}… ${action} but ${assetFailures.length} asset(s) failed`, `发布 ${release.id.slice(0, 8)}… ${action}，但 ${assetFailures.length} 个文件上传失败`),
+          description: tx(`${assetFailures[0]?.slice(0, 80)}… — fix from the release row.`, `${assetFailures[0]?.slice(0, 80)}… — 请在发布列表中修复。`),
         });
       }
       onCreated();
@@ -1310,8 +1322,8 @@ function NewReleaseDialog({
     onError: (e) =>
       toast.show({
         kind: "error",
-        title: "Release save failed",
-        description: (e as Error).message,
+        title: tx("Release save failed", "保存发布失败"),
+        description: errorMessage(e),
       }),
   });
 
@@ -1320,9 +1332,9 @@ function NewReleaseDialog({
       <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <div>
-            <DialogTitle>Draft a new release</DialogTitle>
+            <DialogTitle>{tx("Draft a new release", "创建发布草稿")}</DialogTitle>
             <DialogDescription>
-              Draft the release, attach binaries, then publish — all in one flow.
+              {tx("Draft the release, attach binaries, then publish — all in one flow.", "创建发布草稿、添加二进制文件并发布，所有步骤在此完成。")}
             </DialogDescription>
           </div>
           <DialogClose />
@@ -1372,10 +1384,10 @@ function NewReleaseDialog({
             <div className="space-y-3">
               <div className={showProductTypePicker ? "grid grid-cols-2 gap-3" : "grid grid-cols-1 gap-3"}>
                 <div>
-                  <Label>Channel</Label>
+                  <Label>{tx("Channel", "渠道")}</Label>
                   <Select
                     items={{
-                      "": "— pick —",
+                      "": tx("— pick —", "— 请选择 —"),
                       ...Object.fromEntries(
                         (channels.data?.channels ?? []).map((c) => [
                           c.slug,
@@ -1392,7 +1404,7 @@ function NewReleaseDialog({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectList>
-                      <SelectItem value="">— pick —</SelectItem>
+                      <SelectItem value="">{tx("— pick —", "— 请选择 —")}</SelectItem>
                       {channels.data?.channels.map((c) => (
                         <SelectItem key={c.id} value={c.slug}>
                           {c.slug}
@@ -1404,10 +1416,10 @@ function NewReleaseDialog({
                 </div>
                 {showProductTypePicker && (
                   <div>
-                    <Label>Package type</Label>
+                    <Label>{tx("Package type", "软件包类型")}</Label>
                     <Select
                       items={{
-                        "": "— pick —",
+                        "": tx("— pick —", "— 请选择 —"),
                         ...Object.fromEntries(
                           targetProductTypes.map((p) => [
                             p.name,
@@ -1424,7 +1436,7 @@ function NewReleaseDialog({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectList>
-                        <SelectItem value="">— pick —</SelectItem>
+                        <SelectItem value="">{tx("— pick —", "— 请选择 —")}</SelectItem>
                         {targetProductTypes.map((p) => (
                           <SelectItem key={p.name} value={p.name}>
                             {p.display_name}
@@ -1438,13 +1450,13 @@ function NewReleaseDialog({
               </div>
               {!showProductTypePicker && selectedProductType && (
                 <p className="text-xs text-foreground-muted">
-                  Package type is set by this app:{" "}
+                  {tx("Package type is set by this app:", "软件包类型由此应用设定：")}{" "}
                   <span className="font-medium">{selectedProductType.display_name}</span>.
                 </p>
               )}
               {(!channels.data || channels.data.channels.length === 0) && (
                 <p className="text-xs text-warning-strong">
-                  ⚠ This app has no channels yet. Create one in AppDetail → Channels first.
+                  {tx("⚠ This app has no channels yet. Create one in AppDetail → Channels first.", "⚠ 此应用尚无渠道。请先在应用详情 → 渠道中创建。")}
                 </p>
               )}
             </div>
@@ -1455,7 +1467,7 @@ function NewReleaseDialog({
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label>Version name (e.g. 1.2.3)</Label>
+                  <Label>{tx("Version name (e.g. 1.2.3)", "版本名称（例如 1.2.3）")}</Label>
                   <Input
                     value={versionName}
                     onChange={(e) => setVersionName(e.target.value)}
@@ -1464,7 +1476,7 @@ function NewReleaseDialog({
                   />
                 </div>
                 <div>
-                  <Label>Version code (integer)</Label>
+                  <Label>{tx("Version code (integer)", "版本号（整数）")}</Label>
                   <Input
                     type="number"
                     value={versionCode}
@@ -1474,7 +1486,7 @@ function NewReleaseDialog({
                 </div>
               </div>
               <div>
-                <Label>Release notes</Label>
+                <Label>{tx("Release notes", "发布说明")}</Label>
                 <ChangelogEditor
                   value={changelog}
                   onChange={setChangelog}
@@ -1488,12 +1500,9 @@ function NewReleaseDialog({
           {step === 3 && (
             <div className="space-y-2">
               <p className="text-xs text-foreground-muted">
-                Drop one or more binaries. We auto-detect platform / arch /
-                filetype from the filename and keep optional fields blank when
-                they are not needed.
+                {tx("Drop one or more binaries. We auto-detect platform / arch / filetype from the filename and keep optional fields blank when they are not needed.", "拖入一个或多个二进制文件。系统会根据文件名自动识别平台、架构和文件类型；不需要的可选字段留空。")}
                 <br />
-                <em>Optional</em>: you can publish without binaries and attach
-                them later from the release row.
+                {tx("Optional: you can publish without binaries and attach them later from the release row.", "可选：也可以先发布，之后在发布列表中添加二进制文件。")}
               </p>
               <ReleaseAssetUploader
                 variant="dialog"
@@ -1504,8 +1513,7 @@ function NewReleaseDialog({
                 onFilesChanged={setPendingFiles}
               />
               <p className="text-[10px] text-foreground-hint">
-                Asset upload happens after the release is published. The release
-                is preserved even if individual assets fail.
+                {tx("Files are uploaded after the draft is created and before it is published. The draft is preserved even if individual files fail.", "创建草稿后、发布前上传文件。即使个别文件上传失败，草稿仍会保留。")}
               </p>
             </div>
           )}
@@ -1514,26 +1522,26 @@ function NewReleaseDialog({
           {step === 4 && (
             <div className="space-y-3 text-sm">
               <div className="border border-line-muted rounded-sm p-3 space-y-1">
-                <Row k="Channel" v={channelSlug || "—"} />
-                <Row k="Product type" v={productType || "—"} />
-                <Row k="Version" v={`${versionName || "—"} (${versionCode || "?"})`} />
+                <Row k={tx("Channel", "渠道")} v={channelSlug || "—"} />
+                <Row k={tx("Product type", "产品类型")} v={productType || "—"} />
+                <Row k={tx("Version", "版本")} v={`${versionName || "—"} (${versionCode || "?"})`} />
                 <Row
-                  k="Scope"
+                  k={tx("Scope", "范围")}
                   v={
                     scopeType === "full"
-                      ? `full (${rolloutPercent}%)${alwaysIncludedGroupIds.length > 0
-                        ? `; always ${alwaysIncludedGroupIds.map((groupId) =>
+                      ? `${tx("full", "全量")} (${rolloutPercent}%)${alwaysIncludedGroupIds.length > 0
+                        ? `; ${tx("always", "始终包含")} ${alwaysIncludedGroupIds.map((groupId) =>
                           deviceGroups.data?.groups.find((group) => group.id === groupId)?.name ?? groupId
                         ).join(", ")}`
                         : ""}`
-                      : `${scopeType}: ${scopeValue || "?"}`
+                      : `${({ platform: tx("Platform", "平台"), user_cohort: tx("User cohort", "用户分组"), ip_range: tx("IP range", "IP 范围"), device_group: tx("Device group", "设备组"), full: tx("Full", "全量") })[scopeType]}: ${scopeValue || "?"}`
                   }
                 />
-                <Row k="Assets" v={`${pendingFiles.length} file(s) queued`} />
+                <Row k={tx("Assets", "文件")} v={tx(`${pendingFiles.length} file(s) queued`, `已选择 ${pendingFiles.length} 个文件`)} />
                 {changelog && (
                   <details className="pt-2 border-t border-line-hairline">
                     <summary className="cursor-pointer text-xs text-foreground-muted">
-                      Release notes
+                      {tx("Release notes", "发布说明")}
                     </summary>
                     <div className="mt-2 rounded-md bg-layer-canvas-muted p-3">
                       <ChangelogViewer value={changelog} />
@@ -1550,15 +1558,15 @@ function NewReleaseDialog({
                     setShowAdvanced((v) => !v);
                   }}
                 >
-                  {showAdvanced ? "▾" : "▸"} Advanced options (scope, force update, rollout %)
+                  {showAdvanced ? "▾" : "▸"} {tx("Advanced options (scope, force update, rollout %)", "高级选项（范围、强制更新、发布比例）")}
                 </summary>
                 {showAdvanced && (
                   <div className="mt-2 p-3 border border-line-muted rounded-sm space-y-2">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <Label>Release scope</Label>
+                        <Label>{tx("Release scope", "发布范围")}</Label>
                         <Select
-                          items={{ full: "Full", platform: "Platform", user_cohort: "User cohort", ip_range: "IP range", device_group: "Device group" }}
+                          items={{ full: tx("Full", "全量"), platform: tx("Platform", "平台"), user_cohort: tx("User cohort", "用户分组"), ip_range: tx("IP range", "IP 范围"), device_group: tx("Device group", "设备组") }}
                           value={scopeType}
                           onValueChange={(value) => {
                             const next = value as typeof scopeType;
@@ -1569,24 +1577,24 @@ function NewReleaseDialog({
                           <SelectTrigger><SelectValue /><SelectIcon /></SelectTrigger>
                           <SelectContent>
                             <SelectList>
-                            <SelectItem value="full">Full</SelectItem>
-                            <SelectItem value="platform">Platform</SelectItem>
-                            <SelectItem value="user_cohort">User cohort</SelectItem>
-                            <SelectItem value="ip_range">IP range</SelectItem>
-                            <SelectItem value="device_group">Device group</SelectItem>
+                            <SelectItem value="full">{tx("Full", "全量")}</SelectItem>
+                            <SelectItem value="platform">{tx("Platform", "平台")}</SelectItem>
+                            <SelectItem value="user_cohort">{tx("User cohort", "用户分组")}</SelectItem>
+                            <SelectItem value="ip_range">{tx("IP range", "IP 范围")}</SelectItem>
+                            <SelectItem value="device_group">{tx("Device group", "设备组")}</SelectItem>
                           </SelectList>
                           </SelectContent>
                         </Select>
                       </div>
                       <div>
-                        <Label>Scope value</Label>
+                        <Label>{tx("Scope value", "范围值")}</Label>
                         {scopeType === "device_group" ? (
                           <Select
                             items={Object.fromEntries((deviceGroups.data?.groups ?? []).map((group) => [group.id, group.name]))}
                             value={scopeValue}
                             onValueChange={(value) => setScopeValue(value as string)}
                           >
-                            <SelectTrigger><SelectValue placeholder="Choose group" /><SelectIcon /></SelectTrigger>
+                            <SelectTrigger><SelectValue placeholder={tx("Choose group", "选择设备组")} /><SelectIcon /></SelectTrigger>
                             <SelectContent>
                               <SelectList>
                               {(deviceGroups.data?.groups ?? []).map((group) => (
@@ -1607,7 +1615,7 @@ function NewReleaseDialog({
                     </div>
                     {scopeType === "full" && (
                       <div>
-                        <Label>Always included device groups</Label>
+                        <Label>{tx("Always included device groups", "始终包含的设备组")}</Label>
                         <AlwaysIncludedDeviceGroups
                           groups={deviceGroups.data?.groups ?? []}
                           selectedIds={alwaysIncludedGroupIds}
@@ -1620,11 +1628,11 @@ function NewReleaseDialog({
                         checked={shouldForceUpdate}
                         onCheckedChange={(v) => setShouldForceUpdate(Boolean(v))}
                       />
-                      Force update — clients must upgrade on next launch
+                      {tx("Force update — clients must upgrade on next launch", "强制更新：客户端下次启动时必须升级")}
                     </label>
                     {scopeType === "full" && (
                       <div className="flex items-center gap-2 text-xs">
-                        <label className="flex-1">Rollout cohort %</label>
+                        <label className="flex-1">{tx("Rollout cohort %", "发布比例")}</label>
                         <RolloutPercentInput
                           value={rolloutPercent}
                           onChange={setRolloutPercent}
@@ -1636,8 +1644,7 @@ function NewReleaseDialog({
               </details>
 
               <p className="text-xs text-foreground-muted pt-2 border-t border-line-hairline">
-                Publishing creates the build, the release row, and uploads all
-                queued assets in order. Asset failures don't roll back the release.
+                {tx("Publishing creates the build and draft release, uploads queued assets, then publishes. Asset failures don't roll back the release.", "发布时会创建构建和发布草稿，上传已选择的文件，然后发布。文件上传失败不会撤销发布记录。")}
               </p>
             </div>
           )}
@@ -1647,7 +1654,7 @@ function NewReleaseDialog({
         {/* Wizard nav buttons */}
         <DialogFooter className="justify-between">
           <Button type="button" variant="outline" onClick={onClose}>
-            Cancel
+            {tx("Cancel", "取消")}
           </Button>
           <div className="flex gap-2">
             {step > 1 && (
@@ -1657,7 +1664,7 @@ function NewReleaseDialog({
                 onClick={() => setStep((step - 1) as Step)}
                 disabled={submitRelease.isPending}
               >
-                Back
+                {tx("Back", "上一步")}
               </Button>
             )}
             {step < 4 && (
@@ -1670,7 +1677,7 @@ function NewReleaseDialog({
                 }
                 onClick={() => setStep((step + 1) as Step)}
               >
-                Next
+                {tx("Next", "下一步")}
               </Button>
             )}
             {step === 4 && (
@@ -1681,7 +1688,7 @@ function NewReleaseDialog({
                   disabled={submitRelease.isPending || !step1Valid || !step2Valid}
                   onClick={() => submitRelease.mutate("draft")}
                 >
-                  {submitRelease.isPending ? "Saving..." : "Save draft"}
+                  {submitRelease.isPending ? tx("Saving...", "保存中…") : tx("Save draft", "保存草稿")}
                 </Button>
                 <Button
                   type="button"
@@ -1689,7 +1696,7 @@ function NewReleaseDialog({
                   disabled={submitRelease.isPending || !step1Valid || !step2Valid}
                   onClick={() => submitRelease.mutate("publish")}
                 >
-                  {submitRelease.isPending ? "Publishing..." : "Publish now"}
+                  {submitRelease.isPending ? tx("Publishing...", "发布中…") : tx("Publish now", "立即发布")}
                 </Button>
               </>
             )}

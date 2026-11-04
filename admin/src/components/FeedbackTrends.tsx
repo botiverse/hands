@@ -15,8 +15,10 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
 import { getFeedbackStats, type FeedbackBuildScope } from "../lib/api";
+import { useText } from "../lib/locale";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
+const KIND_ZH: Record<(typeof KINDS)[number], string> = { feedback: "反馈", bug: "缺陷", crash: "崩溃", error: "错误" };
 const KIND_COLOR: Record<(typeof KINDS)[number], string> = {
   feedback: "var(--chart-feedback)",
   bug: "var(--chart-bug)",
@@ -28,6 +30,7 @@ const GRIDLINE = "var(--line-hairline)";
 const HOVER_BAND = "var(--fill-muted)";
 
 export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScope?: FeedbackBuildScope }) {
+  const t = useText();
   const stats = useQuery({
     queryKey: ["feedback-stats", appId, buildScope],
     queryFn: () => getFeedbackStats(appId, buildScope),
@@ -73,9 +76,9 @@ export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScop
     <section className="mb-4 border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-1">
         <div>
-          <h3 className="text-sm font-medium text-foreground-strong">Last 30 days</h3>
+          <h3 className="text-sm font-medium text-foreground-strong">{t("Last 30 days", "最近 30 天")}</h3>
           <p className="text-xs text-foreground-muted">
-            {total} ticket{total === 1 ? "" : "s"} · hover for daily detail
+            {t(`${total} ticket${total === 1 ? "" : "s"} · hover for daily detail`, `${total} 个工单 · 悬停查看每天的详情`)}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -87,7 +90,7 @@ export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScop
                   className="inline-block h-2.5 w-2.5 rounded-xs"
                   style={{ background: KIND_COLOR[k] }}
                 />
-                {k}
+                {t(k, KIND_ZH[k])}
               </span>
             ))}
           </div>
@@ -96,7 +99,7 @@ export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScop
             className="py-0.5! px-2! text-xs!"
             onClick={() => setShowTable((v) => !v)}
           >
-            {showTable ? "Chart" : "Table"}
+            {showTable ? t("Chart", "图表") : t("Table", "表格")}
           </Button>
         </div>
       </div>
@@ -115,6 +118,7 @@ function StackedDaily({
 }: {
   days: Array<{ day: string; label: string } & Record<string, number | string>>;
 }) {
+  const t = useText();
   const [hover, setHover] = useState<number | null>(null);
   const W = 600;
   const H = 120;
@@ -127,7 +131,7 @@ function StackedDaily({
 
   return (
     <div className="relative">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Tickets per day, stacked by kind">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={t("Tickets per day, stacked by kind", "每日工单数，按类型堆叠")}>
         {/* recessive hairline gridlines at 0 and the top tick */}
         <line x1={0} y1={plotH} x2={W} y2={plotH} stroke={GRIDLINE} strokeWidth={1} />
         <line x1={0} y1={plotH - (plotH - 8)} x2={W} y2={plotH - (plotH - 8)} stroke={GRIDLINE} strokeWidth={1} />
@@ -187,7 +191,7 @@ function StackedDaily({
           {KINDS.map((k) => (
             <div key={k} className="flex items-center gap-1.5 text-foreground">
               <span className="inline-block h-2 w-2 rounded-xs" style={{ background: KIND_COLOR[k] }} />
-              {k}: {days[hover]![k] as number}
+              {t(k, KIND_ZH[k])}: {days[hover]![k] as number}
             </div>
           ))}
         </div>
@@ -201,17 +205,18 @@ export function CrashByVersion({
 }: {
   rows: Array<{ version_name: string; version_code: number | null; n: number }>;
 }) {
+  const t = useText();
   if (rows.length === 0) {
     return (
       <div className="flex items-center justify-center text-xs text-foreground-hint">
-        No crashes recorded
+        {t("No crashes recorded", "暂无崩溃记录")}
       </div>
     );
   }
   const max = Math.max(...rows.map((r) => r.n));
   return (
     <div>
-      <h4 className="text-xs font-medium text-foreground mb-2">Crashes by version</h4>
+      <h4 className="text-xs font-medium text-foreground mb-2">{t("Crashes by version", "各版本崩溃次数")}</h4>
       <div className="space-y-1.5">
         {rows.map((r) => (
           <div key={`${r.version_name}-${r.version_code}`} className="flex items-center gap-2 text-xs">
@@ -247,6 +252,7 @@ function TrendTable({
 }: {
   days: Array<{ day: string; label: string } & Record<string, number | string>>;
 }) {
+  const t = useText();
   const nonEmpty = days.filter(
     (d) => (d.feedback as number) + (d.bug as number) + (d.crash as number) > 0,
   );
@@ -254,11 +260,11 @@ function TrendTable({
     <table className="w-full text-xs">
       <thead>
         <tr className="text-left text-foreground-muted">
-          <th className="py-1 font-medium">Day</th>
+          <th className="py-1 font-medium">{t("Day", "日期")}</th>
           {KINDS.map((k) => (
-            <th key={k} className="py-1 font-medium capitalize">{k}</th>
+            <th key={k} className="py-1 font-medium capitalize">{t(k, KIND_ZH[k])}</th>
           ))}
-          <th className="py-1 font-medium">Total</th>
+          <th className="py-1 font-medium">{t("Total", "总计")}</th>
         </tr>
       </thead>
       <tbody>

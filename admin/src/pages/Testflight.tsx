@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * TestFlight tab — one place to see every Hands→Apple upload and distribution
  * request. Upload attempts are recorded as `testflight-upload` operations;
@@ -18,6 +19,14 @@ import {
   type AscUploadState,
   type TestflightPublishState,
 } from "../lib/api";
+import { useText } from "../lib/locale";
+
+const STATE_ZH: Record<string, string> = {
+  pending: "等待中", in_progress: "进行中", success: "成功", failed: "失败", cancelled: "已取消",
+  rejected: "已拒绝", expired: "已过期", processing_failed: "处理失败", blocked_export_compliance: "等待出口合规信息",
+  not_applicable: "不适用", testing: "测试中", approved: "已批准", approved_not_notified: "已批准，尚未通知",
+  internal: "内部", external: "外部",
+};
 
 interface UploadInput {
   version_name?: string;
@@ -44,6 +53,7 @@ function ascTestflightUrl(ascAppId: string | undefined): string {
 }
 
 export function Testflight({ appId }: { appId: string }) {
+  const t = useText();
   const ops = useQuery({
     queryKey: ["operations", appId],
     queryFn: () => listOperations(appId, 100),
@@ -62,34 +72,33 @@ export function Testflight({ appId }: { appId: string }) {
       <div className="mb-4">
         <h2 className="text-lg font-semibold">TestFlight</h2>
         <p className="text-xs text-foreground-muted mt-1">
-          Hands→Apple uploads, processing, beta-group distribution, and review
-          state. Configure the key in{" "}
-          <a className="underline" href={`/apps/${appId}/settings`}>
-            Settings → TestFlight
+          {t("Hands→Apple uploads, processing, beta-group distribution, and review state. Configure the key in", "查看 Hands 向 Apple 上传、处理、测试组分发和审核的状态。在")}{" "}
+          <a className="underline" href={`/apps/${appId}/integrations`}>
+            {t("Integrations → TestFlight", "集成 → TestFlight")}
           </a>
-          ; upload a build from the{" "}
+          {t("; upload a build from the", "中配置密钥；从")}{" "}
           <a className="underline" href={`/apps/${appId}/builds`}>
-            Builds
+            {t("Builds", "构建")}
           </a>{" "}
-          tab.
+          {t("tab.", "页面上传构建。")}
         </p>
       </div>
 
-      {ops.isLoading && <p className="text-foreground-muted text-sm">Loading…</p>}
+      {ops.isLoading && <p className="text-foreground-muted text-sm">{t("Loading…", "加载中…")}</p>}
       {!ops.isLoading && uploads.length === 0 && publishes.length === 0 && (
         <EmptyState>
           <EmptyStateContent>
             <EmptyStateIcon>
               <Plane aria-hidden="true" />
             </EmptyStateIcon>
-            <EmptyStateTitle>No TestFlight activity yet</EmptyStateTitle>
+            <EmptyStateTitle>{t("No TestFlight activity yet", "暂无 TestFlight 活动")}</EmptyStateTitle>
           </EmptyStateContent>
         </EmptyState>
       )}
 
       {uploads.length > 0 && (
         <section className="mb-6">
-          <h3 className="text-sm font-medium text-foreground-strong mb-2">Uploads</h3>
+          <h3 className="text-sm font-medium text-foreground-strong mb-2">{t("Uploads", "上传")}</h3>
           <div className="space-y-6">
             {uploads.map((op) => (
               <UploadRow key={op.id} appId={appId} op={op} />
@@ -100,7 +109,7 @@ export function Testflight({ appId }: { appId: string }) {
 
       {publishes.length > 0 && (
         <section>
-          <h3 className="text-sm font-medium text-foreground-strong mb-2">Distributions</h3>
+          <h3 className="text-sm font-medium text-foreground-strong mb-2">{t("Distributions", "分发")}</h3>
           <div className="space-y-6">
             {publishes.map((op) => (
               <PublishRow key={op.id} appId={appId} op={op} />
@@ -113,6 +122,7 @@ export function Testflight({ appId }: { appId: string }) {
 }
 
 function UploadRow({ appId, op }: { appId: string; op: Operation }) {
+  const t = useText();
   let input: UploadInput = {};
   let output: UploadOutput = {};
   try {
@@ -156,7 +166,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
             target="_blank"
             rel="noopener noreferrer"
           >
-            View in App Store Connect ↗
+            {t("View in App Store Connect ↗", "在 App Store Connect 中查看 ↗")}
           </a>
         )}
         <span className="text-xs text-foreground-muted ml-auto">
@@ -181,7 +191,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
       )}
       {appleState?.state === "COMPLETE" && (
         <p className="mt-1 text-xs text-success-strong">
-          Upload processed. Ready for group distribution. Inspect the build in{" "}
+          {t("Upload processed. Ready for group distribution. Inspect the build in", "上传已处理完成，可以分发给测试组。在")}{" "}
           <a
             className="underline"
             href={ascTestflightUrl(output.asc_app_id)}
@@ -190,7 +200,7 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
           >
             App Store Connect → TestFlight
           </a>
-          .
+          {t(".", "中查看构建。")}
         </p>
       )}
     </section>
@@ -220,6 +230,7 @@ function isTerminalPublishState(
 }
 
 function PublishRow({ appId, op }: { appId: string; op: Operation }) {
+  const t = useText();
   let input: PublishInput = {};
   let output: PublishOutput = {};
   try {
@@ -280,16 +291,16 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
           {current.build_number ? ` (${current.build_number})` : ""}
         </span>
         {input.distribution && (
-          <Badge variant="muted">{input.distribution}</Badge>
+          <Badge variant="muted">{t(input.distribution, STATE_ZH[input.distribution] ?? input.distribution)}</Badge>
         )}
-        <Badge variant={badgeVariant}>{state}</Badge>
+        <Badge variant={badgeVariant}>{t(state, STATE_ZH[state] ?? state)}</Badge>
         {current.beta_review?.state && (
           <Badge variant="muted">
-            review: {current.beta_review.state}
+            {t("review:", "审核：")} {current.beta_review.state}
           </Badge>
         )}
         {current.beta_detail?.auto_notify_enabled && (
-          <Badge variant="muted">auto notify on</Badge>
+          <Badge variant="muted">{t("auto notify on", "已开启自动通知")}</Badge>
         )}
         <span className="text-xs text-foreground-muted ml-auto">
           {new Date(op.created_at).toISOString().slice(0, 16)}Z
@@ -297,22 +308,22 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
       </div>
       {current.assigned_groups && current.assigned_groups.length > 0 && (
         <p className="mt-1 text-xs text-foreground">
-          Groups: {current.assigned_groups.map((group) => group.name ?? group.id).join(", ")}
+          {t("Groups:", "测试组：")} {current.assigned_groups.map((group) => group.name ?? group.id).join(", ")}
         </p>
       )}
       {localizationLocales.length > 0 && (
         <p className="mt-1 text-xs text-foreground">
-          What to Test: {localizationLocales.join(", ")}
+          {t("What to Test:", "测试说明：")} {localizationLocales.join(", ")}
         </p>
       )}
       {current.expiration_date && (
         <p className="mt-1 text-xs text-foreground-muted">
-          Expires: {new Date(current.expiration_date).toISOString().slice(0, 10)}
+          {t("Expires:", "过期日期：")} {new Date(current.expiration_date).toISOString().slice(0, 10)}
         </p>
       )}
       {output.notification && (
         <p className="mt-1 text-xs text-foreground">
-          Notification action: {output.notification}
+          {t("Notification action:", "通知操作：")} {output.notification}
         </p>
       )}
       {failed && op.error && (
@@ -322,7 +333,7 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
       )}
       {liveStatus.isError && !failed && (
         <p className="mt-1 text-xs text-danger">
-          Live state refresh failed: {friendlyError(liveStatus.error)}
+          {t("Live state refresh failed:", "实时状态刷新失败：")} {friendlyError(liveStatus.error)}
         </p>
       )}
     </section>
@@ -336,24 +347,25 @@ function StateBadge({
   uploadFailed: boolean;
   appleState: AscUploadState | null | undefined;
 }) {
+  const t = useText();
   if (uploadFailed) {
-    return <Badge variant="danger">upload failed</Badge>;
+    return <Badge variant="danger">{t("upload failed", "上传失败")}</Badge>;
   }
   const s = appleState?.state;
-  if (!s) return <Badge variant="muted">uploaded</Badge>;
+  if (!s) return <Badge variant="muted">{t("uploaded", "已上传")}</Badge>;
   if (s === "COMPLETE")
-    return <Badge variant="success">complete</Badge>;
+    return <Badge variant="success">{t("complete", "已完成")}</Badge>;
   if (s === "FAILED")
-    return <Badge variant="danger">Apple rejected</Badge>;
-  return <Badge variant="information">Apple processing…</Badge>;
+    return <Badge variant="danger">{t("Apple rejected", "Apple 已拒绝")}</Badge>;
+  return <Badge variant="information">{t("Apple processing…", "Apple 处理中…")}</Badge>;
 }
 
 function friendlyError(raw: unknown): string {
   const text = raw instanceof Error ? raw.message : String(raw);
   try {
     const parsed = JSON.parse(text) as { error?: string; detail?: string | null };
-    return [parsed.error, parsed.detail].filter(Boolean).join(" — ") || text;
+    return [parsed.error && errorMessage(parsed.error), parsed.detail && errorMessage(parsed.detail)].filter(Boolean).join(" — ") || errorMessage(text);
   } catch {
-    return text;
+    return errorMessage(text);
   }
 }

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { Badge, TextHeading, TextSans } from "raft-ui";
 import { listApps } from "../lib/api";
+import { useText } from "../lib/locale";
 import { AppGalleryConnector } from "../components/integrations/AppGalleryConnector";
 import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
 import { TestFlightConnector } from "../components/integrations/TestFlightConnector";
@@ -54,6 +55,7 @@ const CONNECTORS: ReadonlyArray<{
 ];
 
 export function Integrations({ appId }: { appId: string }) {
+  const t = useText();
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((candidate) => candidate.id === appId);
 
@@ -61,12 +63,10 @@ export function Integrations({ appId }: { appId: string }) {
     <div className="space-y-4">
       <div className="space-y-1">
         <TextHeading level={1} className="text-2xl leading-8">
-          Integrations
+          {t("Integrations", "集成")}
         </TextHeading>
         <TextSans size="small">
-          Connect the external services this app publishes or reports to.
-          Rows that don't apply to this app's platform are shown for
-          reference.
+          {t("Connect the external services this app publishes or reports to. Rows that don't apply to this app's platform are shown for reference.", "连接此应用发布或报告所用的外部服务。不适用于此平台的服务也会列出，供参考。")}
         </TextSans>
       </div>
       {app && (
@@ -85,10 +85,10 @@ export function Integrations({ appId }: { appId: string }) {
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-foreground-muted">{label}</div>
                   <div className="text-xs text-foreground-muted">
-                    Available for {platformLabel} apps.
+                    {t(`Available for ${platformLabel} apps.`, `适用于 ${platformLabel} 应用。`)}
                   </div>
                 </div>
-                <Badge variant="muted">Only for {platformLabel} apps</Badge>
+                <Badge variant="muted">{t(`Only for ${platformLabel} apps`, `仅适用于 ${platformLabel} 应用`)}</Badge>
               </div>
             ),
           )}

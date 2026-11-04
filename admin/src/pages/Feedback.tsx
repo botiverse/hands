@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Feedback ticket triage (task #66): list + filter tickets, and a routed
  * per-ticket page (/apps/:appId/feedback/:ticketId) so tickets are
@@ -21,6 +22,7 @@ import {
   updateFeedbackTicket,
 } from "../lib/api";
 import { feedbackMessage } from "../lib/feedbackMessages";
+import { useLocale, useText, type Locale } from "../lib/locale";
 import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
@@ -74,10 +76,29 @@ const TEAM_CLOSURE_REASONS: Array<{
   { reason: "duplicate", label: "Duplicate", description: "Close as a duplicate and link the original ticket." },
 ];
 
-function closureReasonLabel(reason: FeedbackTicket["closure_reason"]): string {
+const STATUS_ZH: Record<string, string> = { open: "待处理", in_progress: "处理中", resolved: "已解决", closed: "已关闭" };
+const KIND_ZH: Record<string, string> = { feedback: "反馈", bug: "缺陷", crash: "崩溃", error: "错误" };
+const CLOSURE_ZH: Record<string, { label: string; description: string }> = {
+  completed: { label: "已完成", description: "修复或改进已交付。" },
+  not_planned: { label: "暂不计划", description: "保留记录，暂时不处理。" },
+  cannot_reproduce: { label: "无法复现", description: "无法根据现有信息复现问题。" },
+  duplicate: { label: "重复工单", description: "作为重复项关闭，并关联原工单。" },
+  no_longer_needed: { label: "不再需要", description: "" },
+};
+const CRASH_SECTION_ZH: Record<string, string> = { summary: "摘要", stack: "调用栈", threads: "所有线程", process: "进程", fds: "文件描述符", logs: "日志", context: "应用上下文" };
+const SYMBOLICATION_ZH: Record<string, string> = { symbolicated: "已符号化", no_symbols: "没有符号文件", unsymbolicated: "未能符号化", not_applicable: "不适用", failed: "失败", pending: "等待中", not_run: "尚未运行", done: "已完成" };
+const ENVIRONMENT_ZH: Record<string, string> = {
+  device_id: "设备 ID", device_model: "设备型号", platform: "平台", os_version: "系统版本",
+  version_code: "版本号", version_name: "版本名称", commit: "提交", git_commit: "Git 提交",
+  bundle_id: "包标识符", app_version: "应用版本", build_number: "构建号", sdk_version: "SDK 版本",
+};
+function localizedValue(value: string, locale: Locale, dictionary: Record<string, string>): string {
+  return locale === "zh-CN" ? (dictionary[value] ?? value) : value;
+}
+function closureReasonLabel(reason: FeedbackTicket["closure_reason"], locale: Locale): string {
+  if (locale === "zh-CN") return CLOSURE_ZH[reason ?? ""]?.label ?? String(reason ?? "已关闭");
   if (reason === "no_longer_needed") return "No longer needed";
-  return TEAM_CLOSURE_REASONS.find((item) => item.reason === reason)?.label
-    ?? String(reason ?? "Closed");
+  return TEAM_CLOSURE_REASONS.find((item) => item.reason === reason)?.label ?? String(reason ?? "Closed");
 }
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
@@ -96,6 +117,8 @@ const KIND_VARIANTS: Record<string, BadgeVariant> = {
 };
 
 export function AppFeedback({ appId }: { appId: string }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState<string>("");
@@ -144,10 +167,10 @@ export function AppFeedback({ appId }: { appId: string }) {
       {versionFilter && (
         <div className="flex flex-row items-center justify-between rounded-md bg-fill-muted px-3 py-1.5 text-sm">
           <span className="text-foreground-muted">
-            Filtered to version code <span className="font-mono text-foreground">{versionFilter}</span>
+            {tx("Filtered to version code", "按版本号筛选")} <span className="font-mono text-foreground">{versionFilter}</span>
           </span>
           <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
-            clear
+            {tx("clear", "清除")}
           </Button>
         </div>
       )}
@@ -155,18 +178,18 @@ export function AppFeedback({ appId }: { appId: string }) {
         <div className="rounded-md bg-fill-muted p-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-xs text-foreground-muted">Crash signature</div>
+              <div className="text-xs text-foreground-muted">{tx("Crash signature", "崩溃特征")}</div>
               <code className="text-xs break-all">{signatureFilter}</code>
               {rows.length > 0 && (
                 <div className="mt-1 text-xs text-foreground-muted">
-                  {rows.length} instance{rows.length === 1 ? "" : "s"} ·{" "}
-                  {new Set(rows.map((r) => r.version_code).filter(Boolean)).size} version(s) ·{" "}
-                  {new Set(rows.map((r) => r.device_id).filter(Boolean)).size} device(s)
+                  {locale === "zh-CN" ? `${rows.length} 条记录` : `${rows.length} instance${rows.length === 1 ? "" : "s"}`} ·{" "}
+                  {new Set(rows.map((r) => r.version_code).filter(Boolean)).size} {tx("version(s)", "个版本")} ·{" "}
+                  {new Set(rows.map((r) => r.device_id).filter(Boolean)).size} {tx("device(s)", "台设备")}
                 </div>
               )}
             </div>
             <Button variant="link" size="sm" className="text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
-              clear
+              {tx("clear", "清除")}
             </Button>
           </div>
         </div>
@@ -174,14 +197,14 @@ export function AppFeedback({ appId }: { appId: string }) {
       {!deviceFilter && !versionFilter && !signatureFilter && <FeedbackTrends appId={appId} buildScope={buildScope} />}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h2 className="text-lg font-semibold">Feedback</h2>
+          <h2 className="text-lg font-semibold">{tx("Feedback", "反馈")}</h2>
           <p className="text-sm text-foreground-muted">
-            Feedback and crash reports submitted from this app.
+            {tx("Feedback and crash reports submitted from this app.", "此应用提交的反馈和崩溃报告。")}
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm">
           <Select
-            items={{ "": "All statuses", ...Object.fromEntries(STATUSES.map((s) => [s, s])) }}
+            items={{ "": tx("All statuses", "所有状态"), ...Object.fromEntries(STATUSES.map((s) => [s, localizedValue(s, locale, STATUS_ZH)])) }}
             value={statusFilter}
             onValueChange={(v) => setStatusFilter(v as string)}
           >
@@ -191,15 +214,15 @@ export function AppFeedback({ appId }: { appId: string }) {
             </SelectTrigger>
             <SelectContent>
               <SelectList>
-              <SelectItem value="">All statuses</SelectItem>
+              <SelectItem value="">{tx("All statuses", "所有状态")}</SelectItem>
               {STATUSES.map((s) => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
+                <SelectItem key={s} value={s}>{localizedValue(s, locale, STATUS_ZH)}</SelectItem>
               ))}
             </SelectList>
             </SelectContent>
           </Select>
           <Select
-            items={{ "": "All kinds", feedback: "feedback", bug: "bug", crash: "crash", error: "error" }}
+            items={{ "": tx("All kinds", "所有类型"), ...Object.fromEntries(Object.keys(KIND_ZH).map((kind) => [kind, localizedValue(kind, locale, KIND_ZH)])) }}
             value={kindFilter}
             onValueChange={(v) => setKindFilter(v as string)}
           >
@@ -209,10 +232,10 @@ export function AppFeedback({ appId }: { appId: string }) {
             </SelectTrigger>
             <SelectContent>
               <SelectList>
-              <SelectItem value="">All kinds</SelectItem>
-              <SelectItem value="feedback">feedback</SelectItem>
-              <SelectItem value="bug">bug</SelectItem>
-              <SelectItem value="crash">crash</SelectItem>
+              <SelectItem value="">{tx("All kinds", "所有类型")}</SelectItem>
+              <SelectItem value="feedback">{localizedValue("feedback", locale, KIND_ZH)}</SelectItem>
+              <SelectItem value="bug">{localizedValue("bug", locale, KIND_ZH)}</SelectItem>
+              <SelectItem value="crash">{localizedValue("crash", locale, KIND_ZH)}</SelectItem>
             </SelectList>
             </SelectContent>
           </Select>
@@ -237,24 +260,24 @@ export function AppFeedback({ appId }: { appId: string }) {
         )}
         {tickets.error && (
           <p className="text-sm text-danger">
-            Failed to load feedback: {(tickets.error as Error).message}
+            {tx("Failed to load feedback:", "加载反馈失败：")} {errorMessage(tickets.error)}
           </p>
         )}
         {!tickets.isLoading && rows.length === 0 && (
           <EmptyState>
-            <EmptyStateTitle>No feedback tickets yet.</EmptyStateTitle>
+            <EmptyStateTitle>{tx("No feedback tickets yet.", "暂无反馈工单。")}</EmptyStateTitle>
           </EmptyState>
         )}
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
-                <th className="py-2 pr-3">Ticket</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Assignee</th>
-                <th className="py-2 pr-3">App version</th>
-                <th className="py-2 pr-3">Device</th>
-                <th className="py-2 pr-3">Created</th>
+                <th className="py-2 pr-3">{tx("Ticket", "工单")}</th>
+                <th className="py-2 pr-3">{tx("Status", "状态")}</th>
+                <th className="py-2 pr-3">{tx("Assignee", "负责人")}</th>
+                <th className="py-2 pr-3">{tx("App version", "应用版本")}</th>
+                <th className="py-2 pr-3">{tx("Device", "设备")}</th>
+                <th className="py-2 pr-3">{tx("Created", "创建时间")}</th>
                 <th className="py-2 pr-3">📎</th>
                 <th className="py-2 pr-3">💬</th>
               </tr>
@@ -268,20 +291,20 @@ export function AppFeedback({ appId }: { appId: string }) {
                 >
                   <td className="py-2 pr-3 max-w-md">
                     <Badge variant={KIND_VARIANTS[t.kind] ?? "muted"} className="mr-2">
-                      {t.kind}
+                      {localizedValue(t.kind, locale, KIND_ZH)}
                     </Badge>
                     {t.crash_type === "anr" && (
                       <Badge variant="warning" className="mr-2">
                         ANR
                       </Badge>
                     )}
-                    {t.build_origin === "external" && <Badge variant="warning" className="mr-2">External</Badge>}
-                    {t.build_origin === "unknown" && <Badge variant="muted" className="mr-2">Origin unknown</Badge>}
+                    {t.build_origin === "external" && <Badge variant="warning" className="mr-2">{tx("External", "外部构建")}</Badge>}
+                    {t.build_origin === "unknown" && <Badge variant="muted" className="mr-2">{tx("Origin unknown", "来源未知")}</Badge>}
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>
                   </td>
                   <td className="py-2 pr-3">
                     <Badge variant={STATUS_VARIANTS[t.status] ?? "muted"}>
-                      {t.status}
+                      {localizedValue(t.status, locale, STATUS_ZH)}
                     </Badge>
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground">{t.assignee ?? "—"}</td>
@@ -292,7 +315,7 @@ export function AppFeedback({ appId }: { appId: string }) {
                     {[t.device_model, t.os_version].filter(Boolean).join(" · ") || "—"}
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground">
-                    {new Date(t.created_at).toLocaleString()}
+                    {new Date(t.created_at).toLocaleString(locale)}
                   </td>
                   <td className="py-2 pr-3 text-xs">{t.attachment_count || ""}</td>
                   <td className="py-2 pr-3 text-xs">{t.comment_count || ""}</td>
@@ -350,6 +373,8 @@ function CrashLogView({
   attachmentId: string;
   deobfuscated?: string | undefined;
 }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const log = useQuery({
     queryKey: ["crash-log", appId, ticketId, attachmentId],
     queryFn: () => getFeedbackAttachmentText(appId, ticketId, attachmentId),
@@ -364,7 +389,7 @@ function CrashLogView({
   return (
     <section className="border-t border-line-hairline pt-5">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-foreground-strong">Crash detail</h4>
+        <h4 className="text-sm font-medium text-foreground-strong">{tx("Crash detail", "崩溃详情")}</h4>
         {deobfuscated && (active === "stack" || (activeSection?.key === "stack")) && (
           <div className="flex overflow-hidden rounded-md bg-fill-muted text-xs">
             <Button
@@ -372,21 +397,21 @@ function CrashLogView({
               variant={showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(true)}
             >
-              Deobfuscated
+              {tx("Deobfuscated", "已还原")}
             </Button>
             <Button
               size="sm"
               variant={!showDeobf ? "default" : "ghost"}
               onClick={() => setShowDeobf(false)}
             >
-              Raw
+              {tx("Raw", "原始")}
             </Button>
           </div>
         )}
       </div>
 
-      {log.isLoading && <p className="text-xs text-foreground-muted">Loading…</p>}
-      {log.error && <p className="text-xs text-danger">Could not load crash log.</p>}
+      {log.isLoading && <p className="text-xs text-foreground-muted">{tx("Loading…", "加载中…")}</p>}
+      {log.error && <p className="text-xs text-danger">{tx("Could not load crash log.", "无法加载崩溃日志。")}</p>}
 
       {sections.length > 0 && (
         <>
@@ -398,7 +423,7 @@ function CrashLogView({
                 variant={(activeSection?.key ?? "") === sec.key ? "default" : "ghost"}
                 onClick={() => setActive(sec.key)}
               >
-                {sec.label}
+                {localizedValue(sec.key, locale, CRASH_SECTION_ZH) === sec.key ? sec.label : localizedValue(sec.key, locale, CRASH_SECTION_ZH)}
               </Button>
             ))}
           </div>
@@ -422,6 +447,8 @@ function DeviceScopeBanner({
   deviceId: string;
   onClear: () => void;
 }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const detail = useQuery({
     queryKey: ["device-detail", appId, deviceId],
     queryFn: () => getDeviceDetail(appId, deviceId),
@@ -431,34 +458,34 @@ function DeviceScopeBanner({
     <div className="rounded-md bg-fill-muted p-3">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-semibold">
-          Device <span className="font-mono text-xs">{deviceId}</span>
+          {tx("Device", "设备")} <span className="font-mono text-xs">{deviceId}</span>
         </h4>
         <Button variant="link" size="sm" className="text-xs" onClick={onClear}>
-          clear
+          {tx("clear", "清除")}
         </Button>
       </div>
       {d ? (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <div>
-            <dt className="text-foreground-muted">Latest version</dt>
+            <dt className="text-foreground-muted">{tx("Latest version", "最新版本")}</dt>
             <dd>{d.version_name ?? "—"}{d.version_code ? ` (${d.version_code})` : ""}</dd>
           </div>
           <div>
-            <dt className="text-foreground-muted">Model</dt>
+            <dt className="text-foreground-muted">{tx("Model", "型号")}</dt>
             <dd>{d.device_model ?? "—"}</dd>
           </div>
           <div>
-            <dt className="text-foreground-muted">Platform / OS</dt>
+            <dt className="text-foreground-muted">{tx("Platform / OS", "平台 / 系统")}</dt>
             <dd>{[d.platform, d.os_version].filter(Boolean).join(" · ") || "—"}</dd>
           </div>
           <div>
-            <dt className="text-foreground-muted">Last seen</dt>
-            <dd>{new Date(d.last_seen).toLocaleString()}</dd>
+            <dt className="text-foreground-muted">{tx("Last seen", "最后活动时间")}</dt>
+            <dd>{new Date(d.last_seen).toLocaleString(locale)}</dd>
           </div>
         </dl>
       ) : (
         <p className="mt-1 text-xs text-foreground-muted">
-          No analytics ping from this device yet — showing its tickets below.
+          {tx("No analytics ping from this device yet — showing its tickets below.", "尚未收到此设备的统计数据；下方显示其工单。")}
         </p>
       )}
     </div>
@@ -480,13 +507,14 @@ function AttachmentList({
   ticketId: string;
   attachments: Array<{ id: string; filename: string; content_type: string | null; size_bytes: number }>;
 }) {
+  const tx = useText();
   const [lightbox, setLightbox] = useState<string | null>(null);
   const images = attachments.filter(isImageAttachment);
   const others = attachments.filter((a) => !isImageAttachment(a));
 
   return (
     <section className="border-t border-line-hairline pt-5">
-      <h4 className="mb-3 text-sm font-medium text-foreground-strong">Attachments</h4>
+      <h4 className="mb-3 text-sm font-medium text-foreground-strong">{tx("Attachments", "附件")}</h4>
 
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
@@ -540,7 +568,7 @@ function AttachmentList({
             size="icon-sm"
             className="absolute right-5 top-5 text-2xl leading-none text-white/90 hover:text-white"
             onClick={() => setLightbox(null)}
-            aria-label="Close"
+            aria-label={tx("Close", "关闭")}
           >
             ×
           </Button>
@@ -609,6 +637,8 @@ export function FeedbackTicketPage({
   appId: string;
   ticketId: string;
 }) {
+  const tx = useText();
+  const { locale } = useLocale();
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -642,7 +672,7 @@ export function FeedbackTicketPage({
       invalidate();
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Update failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: tx("Update failed", "更新失败"), description: errorMessage(e) }),
   });
 
   const addComment = useMutation({
@@ -653,7 +683,7 @@ export function FeedbackTicketPage({
       invalidate();
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Comment failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: tx("Comment failed", "评论发送失败"), description: errorMessage(e) }),
   });
 
   const resymbolicate = useMutation({
@@ -662,11 +692,11 @@ export function FeedbackTicketPage({
       invalidate();
       toast.show({
         kind: r.symbolication_status === "symbolicated" ? "success" : "info",
-        title: `Symbolication: ${r.symbolication_status ?? "done"}`,
+        title: `${tx("Symbolication", "符号化")}: ${localizedValue(r.symbolication_status ?? "done", locale, SYMBOLICATION_ZH)}`,
       });
     },
     onError: (e) =>
-      toast.show({ kind: "error", title: "Symbolicate failed", description: (e as Error).message }),
+      toast.show({ kind: "error", title: tx("Symbolicate failed", "符号化失败"), description: errorMessage(e) }),
   });
 
   const t = detail.data?.ticket;
@@ -696,30 +726,30 @@ export function FeedbackTicketPage({
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center gap-2 text-sm">
         <Link to={`/apps/${appId}/feedback`} className="text-info-strong hover:underline">
-          ← Feedback
+          ← {tx("Feedback", "反馈")}
         </Link>
       </div>
 
-      {detail.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
+      {detail.isLoading && <p className="text-sm text-foreground-muted">{tx("Loading…", "加载中…")}</p>}
       {detail.error && (
-        <p className="text-sm text-danger">{(detail.error as Error).message}</p>
+        <p className="text-sm text-danger">{errorMessage(detail.error)}</p>
       )}
       {t && (
         <>
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
               <div className="flex items-center gap-2">
-                <Badge variant={KIND_VARIANTS[t.kind] ?? "muted"}>{t.kind}</Badge>
-                <Badge variant={STATUS_VARIANTS[t.status] ?? "muted"}>{t.status}</Badge>
+                <Badge variant={KIND_VARIANTS[t.kind] ?? "muted"}>{localizedValue(t.kind, locale, KIND_ZH)}</Badge>
+                <Badge variant={STATUS_VARIANTS[t.status] ?? "muted"}>{localizedValue(t.status, locale, STATUS_ZH)}</Badge>
                 {t.assignee && (
                   <span className="rounded-sm bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent-strong">
                     {t.assignee}
                   </span>
                 )}
               </div>
-              <h2 className="mt-2 text-lg font-semibold">Ticket {t.id.slice(0, 8)}</h2>
+              <h2 className="mt-2 text-lg font-semibold">{tx("Ticket", "工单")} {t.id.slice(0, 8)}</h2>
               <p className="text-xs text-foreground-muted">
-                {new Date(t.created_at).toLocaleString()}
+                {new Date(t.created_at).toLocaleString(locale)}
                 {t.contact ? ` · ${t.contact}` : ""}
               </p>
             </div>
@@ -732,7 +762,7 @@ export function FeedbackTicketPage({
                   disabled={update.isPending || s === t.status}
                   onClick={() => update.mutate({ status: s })}
                 >
-                  {s}
+                  {localizedValue(s, locale, STATUS_ZH)}
                 </Button>
               ))}
               {t.status !== "closed" && (
@@ -744,7 +774,7 @@ export function FeedbackTicketPage({
                     disabled={update.isPending}
                     onClick={() => setPendingClosureReason("completed")}
                   >
-                    Completed
+                    {tx("Completed", "已完成")}
                   </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger
@@ -755,7 +785,7 @@ export function FeedbackTicketPage({
                           variant="primary"
                           className="min-w-11 rounded-l-none border-l-0 px-3"
                           disabled={update.isPending}
-                          aria-label="Choose a close reason"
+                          aria-label={tx("Choose a close reason", "选择关闭原因")}
                         />
                       }
                     >
@@ -774,9 +804,9 @@ export function FeedbackTicketPage({
                             <span aria-hidden="true" className="size-4 shrink-0" />
                           )}
                           <span>
-                            <strong className="block">{item.label}</strong>
+                            <strong className="block">{locale === "zh-CN" ? CLOSURE_ZH[item.reason]!.label : item.label}</strong>
                             <span className="mt-0.5 block text-xs text-foreground-muted">
-                              {item.description}
+                              {locale === "zh-CN" ? CLOSURE_ZH[item.reason]!.description : item.description}
                             </span>
                           </span>
                         </DropdownMenuItem>
@@ -790,13 +820,13 @@ export function FeedbackTicketPage({
 
           {t.status === "closed" && t.closure_reason && (
             <div className="rounded-md bg-fill-muted p-3 text-sm">
-              <div className="font-medium text-foreground-strong">Closed as {closureReasonLabel(t.closure_reason)}</div>
+              <div className="font-medium text-foreground-strong">{tx("Closed as", "关闭原因：")} {closureReasonLabel(t.closure_reason, locale)}</div>
               {t.duplicate_of_ticket_id && (
                 <Link
                   to={`/apps/${appId}/feedback/${t.duplicate_of_ticket_id}`}
                   className="mt-1 inline-block font-mono text-xs text-info-strong hover:underline"
                 >
-                  Original ticket {t.duplicate_of_ticket_id}
+                  {tx("Original ticket", "原工单")} {t.duplicate_of_ticket_id}
                 </Link>
               )}
             </div>
@@ -805,11 +835,11 @@ export function FeedbackTicketPage({
           <MarkdownText source={t.message} className="text-sm leading-relaxed" />
 
           <section className="border-t border-line-hairline pt-5">
-            <h4 className="mb-2 text-sm font-medium text-foreground-strong">Assignee</h4>
+            <h4 className="mb-2 text-sm font-medium text-foreground-strong">{tx("Assignee", "负责人")}</h4>
             <div className="flex items-center gap-2 text-sm flex-wrap">
               {assigneeDraft === null ? (
                 <>
-                  <span>{t.assignee ?? "Unassigned"}</span>
+                  <span>{t.assignee ?? tx("Unassigned", "未分配")}</span>
                   {myName && t.assignee !== myName && (
                     <Button
                       variant="link"
@@ -818,7 +848,7 @@ export function FeedbackTicketPage({
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: myName })}
                     >
-                      Assign to me
+                      {tx("Assign to me", "分配给我")}
                     </Button>
                   )}
                   <Button
@@ -827,7 +857,7 @@ export function FeedbackTicketPage({
                     className="text-xs"
                     onClick={() => setAssigneeDraft(t.assignee ?? "")}
                   >
-                    Edit
+                    {tx("Edit", "编辑")}
                   </Button>
                   {t.assignee && (
                     <Button
@@ -837,7 +867,7 @@ export function FeedbackTicketPage({
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
-                      Unassign
+                      {tx("Unassign", "取消分配")}
                     </Button>
                   )}
                 </>
@@ -848,7 +878,7 @@ export function FeedbackTicketPage({
                     value={assigneeDraft}
                     autoFocus
                     onChange={(e) => setAssigneeDraft(e.target.value)}
-                    placeholder="Name of the person handling this"
+                    placeholder={tx("Name of the person handling this", "负责人的姓名")}
                   />
                   <Button
                     variant="primary"
@@ -856,10 +886,10 @@ export function FeedbackTicketPage({
                     disabled={update.isPending}
                     onClick={() => update.mutate({ assignee: assigneeDraft.trim() || null })}
                   >
-                    Save
+                    {tx("Save", "保存")}
                   </Button>
                   <Button variant="outline" className="text-xs" onClick={() => setAssigneeDraft(null)}>
-                    Cancel
+                    {tx("Cancel", "取消")}
                   </Button>
                 </>
               )}
@@ -867,7 +897,7 @@ export function FeedbackTicketPage({
           </section>
 
           <section className="border-t border-line-hairline pt-5">
-            <h4 className="mb-2 text-sm font-medium text-foreground-strong">Environment</h4>
+            <h4 className="mb-2 text-sm font-medium text-foreground-strong">{tx("Environment", "环境")}</h4>
             {(() => {
               // Generic render of every reported environment field (task #105):
               // no hardcoded property allowlist — parse the ticket metadata and
@@ -902,12 +932,12 @@ export function FeedbackTicketPage({
               if (entries.length === 0) {
                 return (
                   <p className="text-xs text-foreground-muted">
-                    No environment data reported.
+                    {tx("No environment data reported.", "未报告环境信息。")}
                   </p>
                 );
               }
               const label = (k: string) =>
-                k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+                locale === "zh-CN" ? (ENVIRONMENT_ZH[k] ?? k) : k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
               const format = (v: unknown) =>
                 typeof v === "object" ? JSON.stringify(v) : String(v);
               const mono = (k: string) =>
@@ -935,7 +965,7 @@ export function FeedbackTicketPage({
                                 </Button>
                               }
                             />
-                            <TooltipContent>All feedback on this version</TooltipContent>
+                            <TooltipContent>{tx("All feedback on this version", "此版本的全部反馈")}</TooltipContent>
                           </Tooltip>
                         ) : k === "device_id" ? (
                           <Tooltip>
@@ -955,7 +985,7 @@ export function FeedbackTicketPage({
                                 </Button>
                               }
                             />
-                            <TooltipContent>This device's history</TooltipContent>
+                            <TooltipContent>{tx("This device's history", "此设备的历史记录")}</TooltipContent>
                           </Tooltip>
                         ) : (
                           format(v)
@@ -980,7 +1010,7 @@ export function FeedbackTicketPage({
             if (!stacktrace && !excClass) return null;
             return (
               <section className="border-t border-line-hairline pt-5">
-                <h4 className="mb-2 text-sm font-medium text-foreground-strong">Exception</h4>
+                <h4 className="mb-2 text-sm font-medium text-foreground-strong">{tx("Exception", "异常")}</h4>
                 {excClass && (
                   <p className="text-sm font-mono text-danger mb-2 break-all">
                     {excClass}{excMsg ? `: ${excMsg}` : ""}
@@ -1011,14 +1041,14 @@ export function FeedbackTicketPage({
               l === "error" ? "text-danger" : l === "warning" ? "text-warning" : "text-foreground";
             return (
               <section className="border-t border-line-hairline pt-5">
-                <h4 className="mb-2 text-sm font-medium text-foreground-strong">Breadcrumbs ({crumbs.length})</h4>
+                <h4 className="mb-2 text-sm font-medium text-foreground-strong">{tx("Breadcrumbs", "操作轨迹")} ({crumbs.length})</h4>
                 <ol className="space-y-1 text-xs max-h-60 overflow-y-auto">
                   {crumbs.map((bc, i) => (
                     <li key={i} className="flex gap-2 items-baseline">
                       <span className="text-foreground-hint tabular-nums shrink-0">
-                        {bc.timestamp ? new Date(bc.timestamp).toLocaleTimeString() : "—"}
+                        {bc.timestamp ? new Date(bc.timestamp).toLocaleTimeString(locale) : "—"}
                       </span>
-                      <span className="font-medium text-foreground-strong shrink-0">{bc.category ?? "general"}</span>
+                      <span className="font-medium text-foreground-strong shrink-0">{bc.category ?? tx("general", "常规")}</span>
                       <span className={`break-all ${levelColor(bc.level)}`}>{bc.message ?? ""}</span>
                     </li>
                   ))}
@@ -1045,9 +1075,9 @@ export function FeedbackTicketPage({
               return (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm">
-                    <span className="font-medium">Symbolication</span>
+                    <span className="font-medium">{tx("Symbolication", "符号化")}</span>
                     <Badge variant={badgeVariant}>
-                      {symStatus ?? "not run"}
+                      {symStatus ? localizedValue(symStatus, locale, SYMBOLICATION_ZH) : tx("not run", "尚未运行")}
                     </Badge>
                     <Button
                       variant="outline"
@@ -1055,7 +1085,7 @@ export function FeedbackTicketPage({
                       disabled={resymbolicate.isPending}
                       onClick={() => resymbolicate.mutate()}
                     >
-                      {resymbolicate.isPending ? "Symbolicating…" : "Re-run"}
+                      {resymbolicate.isPending ? tx("Symbolicating…", "正在符号化…") : tx("Re-run", "重新运行")}
                     </Button>
                   </div>
                   {log ? (
@@ -1084,7 +1114,7 @@ export function FeedbackTicketPage({
 
           <section className="border-t border-line-hairline pt-5">
             <h4 className="mb-3 text-sm font-medium text-foreground-strong">
-              Comments ({detail.data!.comments.length})
+              {tx("Comments", "评论")} ({detail.data!.comments.length})
             </h4>
             <ul className="space-y-4 text-sm">
               {detail.data!.comments.map((cm, index) => (
@@ -1095,12 +1125,12 @@ export function FeedbackTicketPage({
                   <div className="flex items-center justify-between gap-2 text-xs text-foreground-muted">
                     <span>
                       <span className="font-medium text-foreground-strong">{cm.author_actor}</span> ·{" "}
-                      {new Date(cm.created_at).toLocaleString()}
+                      {new Date(cm.created_at).toLocaleString(locale)}
                     </span>
                     {cm.internal ? (
-                      <Badge variant="warning">{feedbackMessage("internalNote")}</Badge>
+                      <Badge variant="warning">{feedbackMessage("internalNote", [locale])}</Badge>
                     ) : (
-                      <Badge variant="muted">{feedbackMessage("visibleToReporter")}</Badge>
+                      <Badge variant="muted">{feedbackMessage("visibleToReporter", [locale])}</Badge>
                     )}
                   </div>
                   <MarkdownText source={cm.body} className="mt-1.5 leading-relaxed" />
@@ -1111,7 +1141,7 @@ export function FeedbackTicketPage({
               <textarea
                 rows={3}
                 className="w-full resize-y rounded-md border border-line-muted bg-layer-panel px-2 py-1.5 text-sm"
-                placeholder="Add a comment…"
+                placeholder={tx("Add a comment…", "添加评论…")}
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => {
@@ -1126,7 +1156,7 @@ export function FeedbackTicketPage({
                   disabled={addComment.isPending || !comment.trim()}
                   onClick={() => addComment.mutate(true)}
                 >
-                  {feedbackMessage("addInternalNote")}
+                  {feedbackMessage("addInternalNote", [locale])}
                 </Button>
                 <Button
                   variant="primary"
@@ -1134,7 +1164,7 @@ export function FeedbackTicketPage({
                   disabled={addComment.isPending || !comment.trim()}
                   onClick={() => addComment.mutate(false)}
                 >
-                  {feedbackMessage("sendToReporter")}
+                  {feedbackMessage("sendToReporter", [locale])}
                 </Button>
               </div>
             </div>
@@ -1152,27 +1182,27 @@ export function FeedbackTicketPage({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Close this ticket?</AlertDialogTitle>
+            <AlertDialogTitle>{tx("Close this ticket?", "关闭此工单？")}</AlertDialogTitle>
           </AlertDialogHeader>
           <AlertDialogBody className="space-y-3">
             <AlertDialogDescription>
-              {pendingClosure?.description}
+              {pendingClosure && (locale === "zh-CN" ? CLOSURE_ZH[pendingClosure.reason]!.description : pendingClosure.description)}
             </AlertDialogDescription>
             {pendingClosureReason === "duplicate" && (
               <label className="block text-sm font-medium">
-                Original ticket ID
+                {tx("Original ticket ID", "原工单 ID")}
                 <Input
                   className="mt-1"
                   value={duplicateOfTicketId}
                   onChange={(event) => setDuplicateOfTicketId(event.target.value)}
-                  placeholder="Full ID or a unique prefix"
+                  placeholder={tx("Full ID or a unique prefix", "完整 ID 或唯一前缀")}
                   autoFocus
                 />
               </label>
             )}
           </AlertDialogBody>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={update.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={update.isPending}>{tx("Cancel", "取消")}</AlertDialogCancel>
             <AlertDialogAction
               variant="primary"
               loading={update.isPending}
@@ -1182,7 +1212,7 @@ export function FeedbackTicketPage({
               }
               onClick={submitClosure}
             >
-              Close ticket
+              {tx("Close ticket", "关闭工单")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

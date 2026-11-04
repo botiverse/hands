@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * OrgSwitcher — sidebar dropdown for switching the active organization.
  *
@@ -15,6 +16,7 @@ import {
   DropdownMenuSeparator,
 } from "raft-ui";
 import { getAuthMe, listOrgs, setActiveOrgId, type Org } from "../lib/api";
+import { useText } from "../lib/locale";
 
 /**
  * OrgSwitcher — renders the org-switch rows as raft-ui DropdownMenu children.
@@ -30,17 +32,18 @@ export function OrgSwitcher({
   buttonLabel: string;
   onSwitch?: (org: Org) => void;
 }) {
+  const t = useText();
   const orgs = useQuery({ queryKey: ["orgs"], queryFn: () => listOrgs() });
 
   return (
     <>
       <DropdownMenuLabel>{buttonLabel}</DropdownMenuLabel>
       {orgs.isLoading && (
-        <p className="text-xs text-foreground-hint px-3 py-2">Loading…</p>
+        <p className="text-xs text-foreground-hint px-3 py-2">{t("Loading…", "加载中…")}</p>
       )}
       {orgs.error && (
         <p className="text-xs text-danger px-3 py-2">
-          Failed: {(orgs.error as Error).message}
+          {t("Failed:", "操作失败：")} {errorMessage(orgs.error)}
         </p>
       )}
       {orgs.data?.orgs.map((o: Org) => {
@@ -70,7 +73,7 @@ export function OrgSwitcher({
           <DropdownMenuSeparator />
           <DropdownMenuItem render={<Link to={`/orgs/${currentOrgId}`} />}>
             <Settings className="h-4 w-4" aria-hidden="true" />
-            Organization settings
+            {t("Organization settings", "组织设置")}
           </DropdownMenuItem>
         </>
       )}

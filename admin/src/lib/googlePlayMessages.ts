@@ -1,3 +1,5 @@
+import { currentLocale, preferredLocale } from "./locale";
+
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
   "loadingTracks", "noTracks", "tracksHelp", "reloadTracks", "chooseTrack", "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled",
   "oauthErrMissingCode", "oauthErrServerConfig", "oauthErrTokenExchange", "oauthErrOfflineAccess", "oauthErrGooglePermissions", "oauthErrAccountIdentity", "oauthErrPlayPermissions", "oauthErrAccessChanged", "oauthErrConnectionChanged", "oauthErrCredentialStorage", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
@@ -118,8 +120,8 @@ export function googlePlayOAuthFailureMessage(
 
 export function googlePlayMessage(
   key: GooglePlayMessageKey,
-  languages: readonly string[] = typeof navigator === "undefined" ? ["en"] : navigator.languages,
+  languages?: readonly string[],
 ) {
-  const locale = languages.some((language) => language.toLowerCase().startsWith("zh")) ? "zh-CN" : "en";
+  const locale = languages ? preferredLocale(languages) : currentLocale();
   return GOOGLE_PLAY_MESSAGES[locale][key] ?? GOOGLE_PLAY_MESSAGES.en[key];
 }

@@ -149,6 +149,8 @@ reporter's ticket returns `404`. Reply submissions also use a stable
 pagination, and limits. Internal staff comments are excluded from the
 reporter's conversation.
 
+<a id="notify-the-products-user-or-agent"></a>
+
 ## Notify the product's user or agent
 
 Hands does not automatically send a Raft message to the submitter. You can poll
@@ -173,8 +175,8 @@ Content-Type: application/json
 
 A successful `201` returns the webhook `id`, app scope, and `secret_set: true`,
 but never the signing secret. The app is selected by the path's full UUID;
-there is no need for an `app_id` body field. The manifest action is
-`create-app-webhook`; metadata discovery uses `list-app-webhooks`.
+there is no need for an `app_id` body field. The Hands CLI also supports app
+webhook creation and listing.
 
 With the same app-admin session, bind the returned id using
 `PUT /api/apps/:appId/reporter-integrations/:integrationId/webhooks/:webhookId`.
@@ -183,7 +185,6 @@ These subscriptions are separate from a generic new-ticket staff alert.
 
 The organization path `/api/orgs/:orgId/webhooks` is a separate management
 surface that requires **org admin**, even if its body includes `app_id`.
-The manifest's legacy `create-webhook` action uses that organization path.
 Use the app path above for this integration instead of requesting broader
 organization privileges.
 

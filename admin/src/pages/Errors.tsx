@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 /**
  * Dedicated error triage page (/apps/:appId/errors): captured exceptions
  * (kind=error) grouped by signature. Clicking a group jumps to the Feedback
@@ -9,8 +10,11 @@ import { getFeedbackBuildFilter, listCrashGroups } from "../lib/api";
 import { EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
 import { AlertTriangle } from "lucide-react";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
+import { useLocale, useText } from "../lib/locale";
 
 export function AppErrors({ appId }: { appId: string }) {
+  const t = useText();
+  const { locale } = useLocale();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const buildScope = feedbackBuildScope(searchParams.get("build_scope"));
@@ -25,11 +29,9 @@ export function AppErrors({ appId }: { appId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h2 className="text-lg font-semibold">Errors</h2>
+          <h2 className="text-lg font-semibold">{t("Errors", "错误")}</h2>
           <p className="text-sm text-foreground-muted">
-            Errors reported by this app, grouped by signature so recurring
-            problems are easier to identify. A signature combines the type of
-            error with where it happened in your code.
+            {t("Errors reported by this app, grouped by signature so recurring problems are easier to identify. A signature combines the type of error with where it happened in your code.", "应用报告的错误按特征分组，便于识别反复出现的问题。特征结合了错误类型和代码中发生错误的位置。")}
           </p>
         </div>
       </div>
@@ -42,10 +44,10 @@ export function AppErrors({ appId }: { appId: string }) {
         }} />
       )}
       <div className="overflow-x-auto">
-        {groups.isLoading && <p className="text-sm text-foreground-muted">Loading…</p>}
+        {groups.isLoading && <p className="text-sm text-foreground-muted">{t("Loading…", "加载中…")}</p>}
         {groups.error && (
           <p className="text-sm text-danger">
-            Failed to load error groups: {(groups.error as Error).message}
+            {t("Failed to load error groups:", "加载错误分组失败：")} {errorMessage(groups.error)}
           </p>
         )}
         {!groups.isLoading && rows.length === 0 && (
@@ -54,7 +56,7 @@ export function AppErrors({ appId }: { appId: string }) {
               <EmptyStateIcon>
                 <AlertTriangle aria-hidden="true" />
               </EmptyStateIcon>
-              <EmptyStateTitle>No captured errors yet</EmptyStateTitle>
+              <EmptyStateTitle>{t("No captured errors yet", "尚未捕获到错误")}</EmptyStateTitle>
             </EmptyStateContent>
           </EmptyState>
         )}
@@ -62,13 +64,13 @@ export function AppErrors({ appId }: { appId: string }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
-                <th className="py-2 pr-3">Signature</th>
-                <th className="py-2 pr-3">Count</th>
-                <th className="py-2 pr-3">Devices</th>
-                <th className="py-2 pr-3">Open</th>
-                <th className="py-2 pr-3">Versions</th>
-                <th className="py-2 pr-3">First seen</th>
-                <th className="py-2 pr-3">Last seen</th>
+                <th className="py-2 pr-3">{t("Signature", "特征")}</th>
+                <th className="py-2 pr-3">{t("Count", "次数")}</th>
+                <th className="py-2 pr-3">{t("Devices", "设备")}</th>
+                <th className="py-2 pr-3">{t("Open", "未关闭")}</th>
+                <th className="py-2 pr-3">{t("Versions", "版本")}</th>
+                <th className="py-2 pr-3">{t("First seen", "首次出现")}</th>
+                <th className="py-2 pr-3">{t("Last seen", "最近出现")}</th>
               </tr>
             </thead>
             <tbody>
@@ -92,10 +94,10 @@ export function AppErrors({ appId }: { appId: string }) {
                     {g.versions ?? "—"}
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground">
-                    {new Date(g.first_seen).toLocaleDateString()}
+                    {new Date(g.first_seen).toLocaleDateString(locale)}
                   </td>
                   <td className="py-2 pr-3 text-xs text-foreground">
-                    {new Date(g.last_seen).toLocaleString()}
+                    {new Date(g.last_seen).toLocaleString(locale)}
                   </td>
                 </tr>
               ))}

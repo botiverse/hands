@@ -1,3 +1,4 @@
+import { errorMessage } from "../lib/errorMessage";
 import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
@@ -19,6 +20,7 @@ import {
   Textarea,
 } from "raft-ui";
 import { createApp } from "../lib/api";
+import { useText } from "../lib/locale";
 import { useToast } from "./Toast";
 
 /**
@@ -41,39 +43,57 @@ const DEFAULT_PRODUCT_TYPES: Array<{
   name: string;
   display_name: string;
   description: string;
+  display_name_zh: string;
+  description_zh: string;
   artifact_note: string;
+  artifact_note_zh: string;
 }> = [
   {
     name: "android-apk",
     display_name: "Android APK",
+    display_name_zh: "Android APK",
     description: "Android application package — direct install",
+    description_zh: "Android 应用安装包，可直接安装",
     artifact_note: "APK assets are selected later when creating builds/releases.",
+    artifact_note_zh: "创建构建或版本时再选择 APK 文件。",
   },
   {
     name: "ios-ipa",
     display_name: "iOS IPA",
+    display_name_zh: "iOS IPA",
     description: "Signed iOS application and dSYM archive",
+    description_zh: "已签名的 iOS 应用和 dSYM 符号压缩包",
     artifact_note: "Signed IPA and dSYM assets are uploaded from macOS CI.",
+    artifact_note_zh: "从 macOS CI 上传已签名的 IPA 和 dSYM 文件。",
   },
   {
     name: "ohos-app",
     display_name: "OHOS app",
+    display_name_zh: "OHOS 应用",
     description: "Signed App Pack and HAP artifacts",
+    description_zh: "已签名的 App Pack 和 HAP 文件",
     artifact_note: "AppGallery and sideload artifacts are uploaded from OHOS CI.",
+    artifact_note_zh: "从 OHOS CI 上传 AppGallery 和侧载文件。",
   },
   {
     name: "electron-installer",
     display_name: "Electron desktop app",
+    display_name_zh: "Electron 桌面应用",
     description: "Cross-platform desktop (darwin / linux / win32)",
+    description_zh: "跨平台桌面应用（darwin / linux / win32）",
     artifact_note:
       "Platform-specific installers such as dmg, exe, AppImage, and arch variants are chosen at artifact upload time.",
+    artifact_note_zh: "上传文件时选择对应平台的安装包，例如 dmg、exe、AppImage 及不同架构的版本。",
   },
   {
     name: "cli-binary",
     display_name: "Node / CLI binary",
+    display_name_zh: "Node / 命令行程序",
     description: "Externally hosted Node SEA or CLI binary",
+    description_zh: "由外部托管的 Node SEA 或命令行程序",
     artifact_note:
       "Hands records immutable target URLs, hashes, sizes, and runtime metadata without copying external bytes into Hands storage.",
+    artifact_note_zh: "Hands 记录不可变的目标地址、哈希、大小和运行时元数据，不会将外部文件复制到 Hands 存储。",
   },
 ];
 
@@ -97,18 +117,21 @@ const DEFAULT_CHANNELS = [
     slug: "main",
     name: "Main",
     description: "Primary stable lane for normal users",
+    description_zh: "面向普通用户的主要稳定渠道",
     enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
   {
     slug: "preview",
     name: "Preview",
     description: "Pre-release lane for QA and selected testers",
+    description_zh: "供质量验证和受邀测试者使用的预发布渠道",
     enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
   {
     slug: "nightly",
     name: "Nightly",
     description: "Fast-moving lane for internal daily validation",
+    description_zh: "供内部日常验证快速迭代的渠道",
     enabled_product_types: DEFAULT_CHANNEL_PRODUCT_TYPES,
   },
 ];
@@ -129,6 +152,7 @@ export function AppCreationWizard({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const t = useText();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
@@ -150,15 +174,15 @@ export function AppCreationWizard({
     onMutate: () => {
       createToastId.current = toast.show({
         kind: "loading",
-        title: `Creating app '${name}'...`,
+        title: t(`Creating app '${name}'...`, `正在创建应用“${name}”…`),
         ttlMs: 0,
       });
     },
     onSuccess: () => {
       const patch = {
         kind: "success",
-        title: `App '${slug || slugify(name)}' created`,
-        description: `Seeded ${DEFAULT_PRODUCT_TYPES.length} product types and ${DEFAULT_CHANNELS.length} channels`,
+        title: t(`App '${slug || slugify(name)}' created`, `应用“${slug || slugify(name)}”已创建`),
+        description: t(`Seeded ${DEFAULT_PRODUCT_TYPES.length} product types and ${DEFAULT_CHANNELS.length} channels`, `已创建 ${DEFAULT_PRODUCT_TYPES.length} 种产品类型和 ${DEFAULT_CHANNELS.length} 个渠道`),
       } as const;
       if (createToastId.current !== null) toast.update(createToastId.current, patch);
       else toast.show(patch);
@@ -168,8 +192,8 @@ export function AppCreationWizard({
     onError: (e) => {
       const patch = {
         kind: "error",
-        title: "Failed to create app",
-        description: (e as Error).message,
+        title: t("Failed to create app", "创建应用失败"),
+        description: errorMessage(e),
       } as const;
       if (createToastId.current !== null) toast.update(createToastId.current, patch);
       else toast.show(patch);
@@ -204,7 +228,7 @@ export function AppCreationWizard({
                 {n < step ? "✓" : n}
               </div>
               <span className={n === step ? "font-medium text-foreground-strong" : ""}>
-                {n === 1 ? "Basics" : n === 2 ? "Product types" : "Channels"}
+                {n === 1 ? t("Basics", "基本信息") : n === 2 ? t("Product types", "产品类型") : t("Channels", "渠道")}
               </span>
               {n < 3 && <span className="text-foreground-hint mx-2">→</span>}
             </div>
@@ -213,22 +237,22 @@ export function AppCreationWizard({
 
         {step === 1 && (
           <div>
-            <h2 className="text-lg font-bold mb-4">Create app — Basics</h2>
+            <h2 className="text-lg font-bold mb-4">{t("Create app — Basics", "创建应用 — 基本信息")}</h2>
             <div className="space-y-3">
               <div>
-                <Label>Name *</Label>
+                <Label>{t("Name *", "名称 *")}</Label>
                 <Input
                   value={name}
                   onChange={(e) => {
                     setName(e.target.value);
                     if (slugAuto) setSlug(slugify(e.target.value));
                   }}
-                  placeholder="My App"
+                  placeholder={t("My App", "我的应用")}
                   autoFocus
                 />
               </div>
               <div>
-                <Label>Slug (kebab-case, auto-generated from name)</Label>
+                <Label>{t("Slug (kebab-case, auto-generated from name)", "标识（小写字母和连字符，根据名称自动生成）")}</Label>
                 <Input
                   className="font-mono text-xs"
                   value={slug}
@@ -240,8 +264,9 @@ export function AppCreationWizard({
                 />
               </div>
               <div>
-                <Label>Platform *</Label>
+                <Label>{t("Platform *", "平台 *")}</Label>
                 <Select
+                  items={{ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") }}
                   value={platform}
                   onValueChange={(value) => setPlatform(value as AppPlatform)}
                 >
@@ -253,7 +278,7 @@ export function AppCreationWizard({
                     <SelectList>
                     {APP_PLATFORMS.map((value) => (
                       <SelectItem key={value} value={value}>
-                        {value}
+                        {({ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") })[value]}
                       </SelectItem>
                     ))}
                   </SelectList>
@@ -261,12 +286,12 @@ export function AppCreationWizard({
                 </Select>
               </div>
               <div>
-                <Label>Description (optional)</Label>
+                <Label>{t("Description (optional)", "描述（可选）")}</Label>
                 <Textarea
                   className="min-h-[60px]"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="What does this app do?"
+                  placeholder={t("What does this app do?", "这个应用有什么用途？")}
                 />
               </div>
             </div>
@@ -275,11 +300,9 @@ export function AppCreationWizard({
 
         {step === 2 && (
           <div>
-            <h2 className="text-lg font-bold mb-4">Create app — Product types</h2>
+            <h2 className="text-lg font-bold mb-4">{t("Create app — Product types", "创建应用 — 产品类型")}</h2>
             <p className="text-sm text-foreground-muted mb-4">
-              These product families will be seeded for the app. They define parsers
-              and release flows; concrete platform artifacts are picked later when
-              you upload assets for a release.
+              {t("These product families will be seeded for the app. They define parsers and release flows; concrete platform artifacts are picked later when you upload assets for a release.", "将为此应用创建以下产品类型，用于确定解析方式和发布流程；上传版本文件时再选择具体的平台文件。")}
             </p>
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {DEFAULT_PRODUCT_TYPES.map((pt) => (
@@ -289,11 +312,11 @@ export function AppCreationWizard({
                       ✓
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium">{pt.display_name}</div>
+                      <div className="font-medium">{t(pt.display_name, pt.display_name_zh)}</div>
                       <div className="text-xs font-mono text-foreground-muted">{pt.name}</div>
-                      <div className="text-xs text-foreground mt-1">{pt.description}</div>
+                      <div className="text-xs text-foreground mt-1">{t(pt.description, pt.description_zh)}</div>
                       <div className="text-xs text-foreground-muted mt-2">
-                        {pt.artifact_note}
+                        {t(pt.artifact_note, pt.artifact_note_zh)}
                       </div>
                     </div>
                   </div>
@@ -305,16 +328,14 @@ export function AppCreationWizard({
 
         {step === 3 && (
           <div>
-            <h2 className="text-lg font-bold mb-4">Create app — Channels</h2>
+            <h2 className="text-lg font-bold mb-4">{t("Create app — Channels", "创建应用 — 渠道")}</h2>
             <p className="text-sm text-foreground-muted mb-4">
-              Channels are the delivery lanes clients use to fetch updates.
-              Hands keeps maturity simple: publish to main for stable users,
-              preview for validation, and nightly for fast internal iteration.
+              {t("Channels are the delivery lanes clients use to fetch updates. Hands keeps maturity simple: publish to main for stable users, preview for validation, and nightly for fast internal iteration.", "客户端通过渠道获取更新。可以发布到 main 供稳定用户使用，发布到 preview 进行验证，或发布到 nightly 供内部快速迭代。")}
             </p>
 
             <div className="pt-1">
               <div className="text-xs font-medium text-foreground-strong mb-2">
-                Default distribution channels (will be seeded):
+                {t("Default distribution channels (will be seeded):", "将创建以下默认分发渠道：")}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {DEFAULT_CHANNELS.map((c) => (
@@ -325,7 +346,7 @@ export function AppCreationWizard({
                     <div className="font-medium text-sm">{c.name}</div>
                     <div className="text-xs font-mono text-foreground-muted">{c.slug}</div>
                     <div className="text-xs text-foreground mt-1">
-                      {c.description}
+                      {t(c.description, c.description_zh)}
                     </div>
                   </div>
                 ))}
@@ -341,7 +362,7 @@ export function AppCreationWizard({
             variant="outline"
             onClick={() => (step === 1 ? onClose() : setStep((step - 1) as 1 | 2 | 3))}
           >
-            {step === 1 ? "Cancel" : "← Back"}
+            {step === 1 ? t("Cancel", "取消") : t("← Back", "← 返回")}
           </Button>
           {step < 3 ? (
             <Button
@@ -350,7 +371,7 @@ export function AppCreationWizard({
               onClick={() => setStep((step + 1) as 1 | 2 | 3)}
               disabled={!canAdvance}
             >
-              Next →
+              {t("Next →", "下一步 →")}
             </Button>
           ) : (
             <Button
@@ -362,7 +383,7 @@ export function AppCreationWizard({
                 !name.trim()
               }
             >
-              {create.isPending ? "Creating…" : "Create app + seed defaults"}
+              {create.isPending ? t("Creating…", "创建中…") : t("Create app + seed defaults", "创建应用和默认配置")}
             </Button>
           )}
         </DialogFooter>

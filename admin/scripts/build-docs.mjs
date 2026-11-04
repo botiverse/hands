@@ -16,7 +16,8 @@
  * migration). Output paths are unchanged from the old pipeline.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,11 +63,41 @@ if (existsSync(chunksDir)) {
 }
 
 // 3. Agent artifacts (page twins + machine indexes) via the docs-kit.
-run([
-  join("node_modules/@botiverse/docs-kit/src/scripts/generate-agent-artifacts.mjs"),
-  "--config",
-  "docs.config.mjs",
-]);
+// The kit maps zh/index.md to zh.md, which is also the established Chinese
+// machine index URL. Exclude only that locale home from its artifact input;
+// VitePress still builds the real HTML home, and zh.md remains the index.
+const contentRoot = join(repoRoot, "docs/public");
+const artifactContent = mkdtempSync(join(tmpdir(), "hands-doc-artifacts-"));
+try {
+  cpSync(contentRoot, artifactContent, {
+    recursive: true,
+    // The draft tree is deliberately not part of the published site.
+    filter: (source) => source !== join(contentRoot, "agc-market-packages"),
+  });
+  run([
+    join("node_modules/@botiverse/docs-kit/src/scripts/check-i18n-coverage.mjs"),
+    "--config",
+    "docs.config.mjs",
+    "--content",
+    artifactContent,
+    "--check",
+  ]);
+  rmSync(join(artifactContent, "zh/index.md"));
+  run([
+    join("node_modules/@botiverse/docs-kit/src/scripts/generate-agent-artifacts.mjs"),
+    "--config",
+    "docs.config.mjs",
+    "--content",
+    artifactContent,
+  ]);
+  // Keep the locale homepage's own Markdown twin distinct from /docs/zh.md,
+  // which is the machine-readable index for the entire Chinese documentation.
+  cpSync(join(contentRoot, "zh/index.md"), join(outRoot, "zh/index.md"));
+} finally {
+  rmSync(artifactContent, { recursive: true, force: true });
+}
+
+run([join("admin/scripts/check-doc-output.mjs")]);
 
 console.log(
   `Built Hands docs with the docs-kit pipeline in ${relative(repoRoot, outRoot)} ` +

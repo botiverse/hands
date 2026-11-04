@@ -24,10 +24,11 @@ export default defineDocsConfig({
     {
       key: 'zh',
       dir: 'zh',
-      label: '中文',
+      label: '简体中文',
       htmlLang: 'zh-CN',
       chrome: {
         openRaft: '登录',
+        markdownLink: '查看 Markdown 源文',
         language: '语言',
         languageAria: '切换语言',
         markdownIndexTitle: '# Hands 文档',
@@ -35,9 +36,10 @@ export default defineDocsConfig({
           '机器可读索引。下列每个页面都有对应的纯 Markdown 孪生文件（`/docs/zh/<slug>.md`；本索引为 `/docs/zh.md`），可直接抓取，无 HTML 或 JavaScript。',
         categories: {
           'Start here': '从这里开始',
-          'For agents': '面向 Agent',
+          'For agents': '面向智能体',
           Console: '控制台',
           'SDKs & API': 'SDK 与 API',
+          Release: '发布',
         },
       },
     },
@@ -70,7 +72,7 @@ export default defineDocsConfig({
     ],
   },
   search: true,
-  coverage: { mode: 'report' },
+  coverage: { mode: 'enforce' },
   artifacts: { llms: false, headers: false },
   output: { contentDir: 'docs/public', outDir: 'admin/public/docs', contentExclude: ['agc-market-packages'] },
 })
