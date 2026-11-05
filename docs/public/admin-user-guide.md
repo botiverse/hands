@@ -63,8 +63,11 @@ If the destination cannot accept a first card, Hands uses text. You can switch
 back to text even while a card request is unresolved; the request is retained
 and may still complete. If a later event arrives before it is reconciled,
 Hands sends that event as text with a warning that the earlier card may be out
-of date. An earlier update that finishes late can still change that card; use
-the newer channel message as the status. For an unresolved first message,
+of date. When a retry confirms the earlier update, Hands also tries to bring
+the card up to the latest event with an unambiguous timestamp, provided cards
+are still enabled and the update window remains open. Until then, or if events
+cannot be ordered, use the newer channel message as the status. Exhausted
+delivery retries require the administrator retry described below. For an unresolved first message,
 Hands attempts text with the original send key so that only one of the card or
 text can win. A later event may be delayed while the first message is resolved.
 

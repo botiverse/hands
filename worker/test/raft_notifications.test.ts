@@ -1390,6 +1390,251 @@ describe("Hands-managed Raft notifications", () => {
     expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
   });
 
+  it("catches up a card to the newest warned text once its earlier uncertain update is recovered", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const updates: Array<Record<string, unknown>> = [];
+    const texts = new Map<string, { content: string; messageId: string }>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (String(input).endsWith("/card")) {
+        updates.push(data);
+        if (updates.length < 3) throw new Error("earlier update result unknown");
+        return Response.json({ ok: true, messageId: "parent-message-1", revision: Number(data.expectedRevision) + 1 });
+      }
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      const key = String(data.idempotencyKey);
+      const previous = texts.get(key);
+      if (previous) return previous.content === data.content
+        ? Response.json({ state: "committed", messageId: previous.messageId })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      const message = { content: String(data.content), messageId: `channel-${texts.size + 1}` };
+      texts.set(key, message);
+      return Response.json({ state: "sent", messageId: message.messageId });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    const uncertain = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const later = stateBody("APPROVED", "2026-11-04T07:02:00Z");
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(uncertain, "b")).status).toBe(503);
+    expect((await request(later, "c")).status).toBe(200);
+    expect([...texts.values()][0]?.content).toContain("previous status card may be out of date");
+    expect((await request(uncertain, "b-retry")).status).toBe(200);
+    expect(updates[2]).toEqual(updates[0]);
+    expect(updates[3]).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    expect(sqlite.prepare("SELECT state,revision,pending_json FROM raft_notification_cards").get())
+      .toEqual({ state: "active", revision: 3, pending_json: null });
+    expect([...texts.values()].filter((message) => message.content.includes("APPROVED"))).toHaveLength(1);
+    expect([...texts.values()].some((message) => message.content.includes("Review rejected"))).toBe(false);
+    expect(texts.size).toBe(1);
+  });
+
+  async function pendingUpdateHarness() {
+    const h = await harness();
+    await h.updateConfig({ card_updates: true });
+    const controls = { oldBlocked: true, loseCatchupResponse: false, loseNoticeAt: 0, noticeReplays: 0 };
+    const updates: Array<Record<string, unknown>> = [];
+    const committedUpdates = new Map<string, number>();
+    const texts = new Map<string, { content: string; messageId: string }>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (String(input).endsWith("/card")) {
+        updates.push(data);
+        if (data.expectedRevision === 1 && controls.oldBlocked) throw new Error("earlier update result unknown");
+        const key = String(data.idempotencyKey);
+        const revision = committedUpdates.get(key) ?? Number(data.expectedRevision) + 1;
+        if (!committedUpdates.has(key)) {
+          committedUpdates.set(key, revision);
+          if (data.expectedRevision === 2 && controls.loseCatchupResponse) {
+            controls.loseCatchupResponse = false;
+            throw new Error("catch-up committed but response lost");
+          }
+        }
+        return Response.json({ ok: true, messageId: "parent-message-1", revision });
+      }
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      const key = String(data.idempotencyKey);
+      const old = texts.get(key);
+      if (old) {
+        if (old.content !== data.content) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        if (old.content.includes("APPROVED")) {
+          controls.noticeReplays++;
+          if (controls.loseNoticeAt === controls.noticeReplays) throw new Error("notice replay response lost");
+        }
+        return Response.json({ state: "committed", messageId: old.messageId });
+      }
+      const message = { content: String(data.content), messageId: `channel-${texts.size + 1}` };
+      texts.set(key, message);
+      return Response.json({ state: "sent", messageId: message.messageId });
+    });
+    const initial = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    const old = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await h.request(initial, "a")).status).toBe(200);
+    expect((await h.request(old, "b")).status).toBe(503);
+    return { ...h, old, controls, updates, committedUpdates, texts };
+  }
+
+  it("keeps the newest ordered state when later text events arrive out of order", async () => {
+    const h = await pendingUpdateHarness();
+    const newest = stateBody("APPROVED", "2026-11-04T07:03:00Z");
+    const older = stateBody("WAITING_FOR_REVIEW", "2026-11-04T07:02:00Z");
+    expect((await h.request(newest, "newest")).status).toBe(200);
+    expect((await h.request(older, "older")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    expect((await h.request(h.old, "b-retry")).status).toBe(200);
+    expect(h.updates.at(-1)).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    expect(h.sqlite.prepare("SELECT revision,state FROM raft_notification_cards").get()).toEqual({ revision: 3, state: "active" });
+  });
+
+  it("does not guess the order when warned text events have the same timestamp", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new-1")).status).toBe(200);
+    expect((await h.request(stateBody("WAITING_FOR_REVIEW", "2026-11-04T07:02:00Z"), "new-2")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    expect((await h.request(h.old, "b-retry")).status).toBe(200);
+    expect(h.updates.every((update) => update.expectedRevision === 1)).toBe(true);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, state: "retired", pending_json: null });
+  });
+
+  it("does not catch up after the destination is switched back to text", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    expect((await h.updateConfig({ card_updates: false })).status).toBe(200);
+    h.controls.oldBlocked = false;
+    expect((await h.request(h.old, "b-retry")).status).toBe(200);
+    expect(h.updates.every((update) => update.expectedRevision === 1)).toBe(true);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, state: "retired", pending_json: null });
+  });
+
+  it("continues on text if a pre-upgrade worker cleared the pending update during rollout", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    // An older Worker does not understand deferred state and can clear it
+    // while finishing the original request. Do not reactivate that object.
+    h.sqlite.prepare("UPDATE raft_notification_cards SET pending_json=NULL,pending_uncertain=0,revision=2,state='retired'").run();
+    expect((await h.request(stateBody("WAITING_FOR_REVIEW", "2026-11-04T07:03:00Z"), "later")).status).toBe(200);
+    expect(h.updates.every((update) => update.expectedRevision === 1)).toBe(true);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, state: "retired", pending_json: null });
+  });
+
+  it("does not queue a catch-up update outside the card update window", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    h.sqlite.prepare("UPDATE raft_notification_cards SET message_created_at=?").run(Date.now() - 15 * 24 * 60 * 60_000);
+    h.controls.oldBlocked = false;
+    expect((await h.request(h.old, "b-retry")).status).toBe(200);
+    expect(h.updates.every((update) => update.expectedRevision === 1)).toBe(true);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, state: "retired", pending_json: null });
+  });
+
+  it("leaves the card on text when a later event lacks an orderable timestamp", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    expect((await h.request(body("WAITING_FOR_REVIEW"), "unknown-time")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    expect((await h.request(h.old, "b-retry")).status).toBe(200);
+    expect(h.updates.every((update) => update.expectedRevision === 1)).toBe(true);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, state: "retired", pending_json: null });
+  });
+
+  it("replays a committed catch-up with its original key after its response is lost", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    h.controls.loseCatchupResponse = true;
+    expect((await h.request(h.old, "b-retry-1")).status).toBe(503);
+    expect(h.sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+    expect((await h.request(h.old, "b-retry-2")).status).toBe(200);
+    const catchups = h.updates.filter((update) => update.expectedRevision === 2);
+    expect(catchups).toHaveLength(2);
+    expect(catchups[1]).toEqual(catchups[0]);
+    expect(h.committedUpdates.size).toBe(2);
+    expect([...h.texts.values()].filter((message) => message.content.includes("APPROVED"))).toHaveLength(1);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 3, state: "active", pending_json: null });
+  });
+
+  it("keeps the older update pending if the newer channel notice cannot be confirmed", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    h.controls.loseNoticeAt = 1;
+    expect((await h.request(h.old, "b-retry-1")).status).toBe(503);
+    expect(h.updates.filter((update) => update.expectedRevision === 2)).toHaveLength(0);
+    expect(h.sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+    expect((await h.request(h.old, "b-retry-2")).status).toBe(200);
+    expect(h.updates.filter((update) => update.expectedRevision === 2)).toHaveLength(1);
+    expect([...h.texts.values()].filter((message) => message.content.includes("APPROVED"))).toHaveLength(1);
+  });
+
+  it("retains the catch-up until the existing channel notice is confirmed", async () => {
+    const h = await pendingUpdateHarness();
+    expect((await h.request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "new")).status).toBe(200);
+    h.controls.oldBlocked = false;
+    h.controls.loseNoticeAt = 2;
+    expect((await h.request(h.old, "b-retry-1")).status).toBe(503);
+    expect(h.sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+    expect((await h.request(h.old, "b-retry-2")).status).toBe(200);
+    const catchups = h.updates.filter((update) => update.expectedRevision === 2);
+    expect(catchups).toHaveLength(2);
+    expect(catchups[1]).toEqual(catchups[0]);
+    expect([...h.texts.values()].filter((message) => message.content.includes("APPROVED"))).toHaveLength(1);
+    expect(h.sqlite.prepare("SELECT revision,state,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 3, state: "active", pending_json: null });
+  });
+
+  it("posts one newer channel notice when its fallback is still in flight during recovery", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const texts = new Map<string, { content: string; messageId: string }>();
+    const updates: Array<Record<string, unknown>> = [];
+    let releaseFallback: (() => void) | undefined;
+    let fallbackStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { fallbackStarted = resolve; });
+    const held = new Promise<void>((resolve) => { releaseFallback = resolve; });
+    let heldOnce = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (String(input).endsWith("/card")) {
+        updates.push(data);
+        if (updates.length < 3) throw new Error("older update uncertain");
+        return Response.json({ ok: true, messageId: "parent-message-1", revision: Number(data.expectedRevision) + 1 });
+      }
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      if (String(data.content).includes("APPROVED") && !heldOnce) {
+        heldOnce = true;
+        fallbackStarted?.();
+        await held;
+      }
+      const key = String(data.idempotencyKey);
+      const old = texts.get(key);
+      if (old) return old.content === data.content ? Response.json({ state: "committed", messageId: old.messageId })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      const message = { content: String(data.content), messageId: `channel-${texts.size + 1}` };
+      texts.set(key, message);
+      return Response.json({ state: "sent", messageId: message.messageId });
+    });
+    const old = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    expect((await request(old, "b")).status).toBe(503);
+    const later = request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "c");
+    await started;
+    let recoveryStatus: number;
+    try { recoveryStatus = (await request(old, "b-retry")).status; }
+    finally { releaseFallback?.(); }
+    expect(recoveryStatus).toBe(200);
+    expect((await later).status).toBe(200);
+    expect(texts.size).toBe(1);
+    expect([...texts.values()][0]?.content).toContain("APPROVED");
+    expect(updates.at(-1)).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    expect(sqlite.prepare("SELECT revision,state FROM raft_notification_cards").get()).toEqual({ revision: 3, state: "active" });
+  });
+
   it("fences an uncertain root with same-key text before posting later events", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
