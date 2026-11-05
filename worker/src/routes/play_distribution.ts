@@ -6,6 +6,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { currentDeployToken } from "../lib/permissions";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
+import { playFailureNotificationFields } from "../lib/play_failure_notification";
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -722,7 +723,7 @@ async function failedPromotionReceipt(
   await insertReceipt(c.env.DB, {
     id, appId: c.req.param("appId") ?? "", releaseId: artifact.release_id,
     kind: "play-promotion", verdict: "failed-closed", artifact,
-    action, track, notification: options.notification, payload: {
+    action, track, notification: { ...options.notification, ...playFailureNotificationFields(details) }, payload: {
       schema_version: 1,
       kind: "play-promotion",
       receipt_id: id,
@@ -1384,7 +1385,7 @@ async function failedUploadSymbolsReceipt(
     id, appId: c.req.param("appId") ?? "", releaseId: artifact.release_id,
     kind: "play-promotion", verdict: "failed-closed", artifact,
     action: "upload-symbols", track: null,
-    notification: { action: "upload-symbols" },
+    notification: { action: "upload-symbols", ...playFailureNotificationFields(details) },
     payload: {
       schema_version: 1,
       kind: "play-promotion",

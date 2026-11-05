@@ -16,7 +16,7 @@ import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
-import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
+import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -655,6 +655,15 @@ function fallbackWarning(content: string, thread: boolean): string {
     : "\n⚠️ A previous status card may be out of date; check newer channel messages.");
 }
 
+// Previous workers did not render these fixed diagnostic lines. Derive the
+// old text from the persisted request itself, including when it is recovered
+// while another delivery is being handled.
+function legacyPlayFailureText(content: string): string {
+  return content.split("\n").filter((line) => !line.startsWith("Reason: ")
+    && !line.startsWith("Possible reason (inferred): ") && !line.startsWith("Possible reason (source unconfirmed): ")
+    && !line.startsWith("Play reason code: ")).join("\n");
+}
+
 async function cardRequest(env: Env, bot: BotInstallationRow, path: string, method: "GET" | "POST" | "PUT", body?: Record<string, unknown>) {
   const key = await readBotKey(env, bot);
   let response: Response;
@@ -822,6 +831,23 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     return c.json({ error: "invalid event" }, 400);
   }
   let objectKey = await notificationObjectKey(eventBody);
+  const legacyObjectKey = objectKey;
+  const failureCardKey = playFailureCardObjectKey(eventBody);
+  let legacyFailureTarget: string | undefined;
+  if (failureCardKey) {
+    const legacy = await c.env.DB.prepare(`SELECT parent_message_id FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, legacyObjectKey)
+      .first<{ parent_message_id: string }>();
+    if (legacy?.parent_message_id && legacy.parent_message_id !== "pending") {
+      legacyFailureTarget = `${row.channel_target}:${legacy.parent_message_id.slice(0, 8)}`;
+    }
+    // A failure receipt is a distinct attempt even if older failures for this
+    // release already used a text thread. Retain its key to reconcile a pending
+    // send after cards are switched off.
+    const prior = await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, failureCardKey).first();
+    if (row.card_updates === 1 || prior) objectKey = failureCardKey;
+  }
   const specificAgcKey = appGalleryCardObjectKey(eventBody);
   if (specificAgcKey && specificAgcKey !== objectKey) {
     const specific = await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
@@ -903,6 +929,11 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   // a replay. Derive the provider idempotency key only from the signed payload
   // so the same event cannot be sent again with a substituted delivery id.
   const idempotencyKey = `hands-raft:${subscriptionId}:${eventHash}`.slice(0, 240);
+  // A pre-deploy worker can send the same event without its new diagnostic
+  // fields. Keep that exact old rendering available for same-key replay.
+  const app = { id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null };
+  const legacyFailureContent = event === "google_play:submission_failed"
+    ? legacyPlayFailureText(formatRaftNotificationMessage(eventBody, app)) : undefined;
   let cardFallbackReason: string | undefined;
   let cardTextFallback = false;
   if (supportsRaftNotificationCards(event)) {
@@ -917,7 +948,8 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     // An AppGallery event without its submission/package ID cannot safely
     // identify a card: use text instead of grouping unrelated objects.
     const appGalleryEvent = event === "appgallery:invitation_state_changed" || event === "appgallery:package_state_changed";
-    const hasCardIdentity = !appGalleryEvent || specificAgcKey !== null;
+    const hasCardIdentity = (!appGalleryEvent || specificAgcKey !== null)
+      && (event !== "google_play:submission_failed" || failureCardKey !== null);
     if (priorCard || (row.card_updates === 1 && createdParentClaim && hasCardIdentity)) {
       const result = await deliverRaftNotificationCard({
         db: c.env.DB, subscriptionId, objectKey, target, channelTarget: row.channel_target,
@@ -925,8 +957,13 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
         app: { id: row.app_id, slug: row.app_slug, name: row.app_name },
         transport: {
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
-          replayCompatibleText: (request) => sendKnownBotText(c.env, bot, request.target,
-            [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)], request.idempotencyKey),
+          replayCompatibleText: (request) => legacyFailureContent === undefined
+            ? sendKnownBotText(c.env, bot, request.target,
+              [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)], request.idempotencyKey)
+            : sendChannelText(c.env, bot, request.target, legacyFailureTarget ?? request.target, request.content,
+              [legacyPlayFailureText(request.content), fallbackWarning(legacyPlayFailureText(request.content), false),
+                fallbackWarning(legacyPlayFailureText(request.content), true)],
+              request.idempotencyKey, request.idempotencyKey.replace(/^hands-raft:/, "hands-raft-channel:").slice(0, 240)),
           announce: (request) => sendChannelText(c.env, bot, request.target, request.previousTarget,
             request.preferWarning ? fallbackWarning(request.content, false) : request.content,
             [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)],
@@ -942,7 +979,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
       if (result.kind === "delivered") return c.json({ ok: true, message_id: result.messageId, card: result.card,
         ...(!result.card ? { card_fallback: "card_not_supported" } : {}) });
       cardFallbackReason = result.reason;
-      cardTextFallback = true;
+      // Each failure is its own immutable receipt, so there is no prior
+      // status card to warn about when its first card falls back to text.
+      cardTextFallback = event !== "google_play:submission_failed";
       // Recovery may have filled the root while processing an earlier event.
       if (ownsParentClaim) {
         const current = await c.env.DB.prepare(`SELECT parent_message_id FROM raft_notification_threads
@@ -956,15 +995,14 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   }
   try {
     const channelText = isReleaseChannelEvent(event);
-    const baseContent = formatRaftNotificationMessage(eventBody, {
-      id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null,
-    });
+    const baseContent = formatRaftNotificationMessage(eventBody, app);
     const previousContent = cardTextFallback ? fallbackWarning(baseContent, true) : baseContent;
     const content = channelText && cardTextFallback
       ? fallbackWarning(baseContent, false)
       : previousContent;
     const sent = channelText
-      ? await sendChannelText(c.env, bot, row.channel_target, target, content, [previousContent, baseContent], idempotencyKey,
+      ? await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? target, content,
+        [previousContent, baseContent, ...(legacyFailureContent ? [legacyFailureContent] : [])], idempotencyKey,
         `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240))
       : await sendBotMessage(c.env, bot, target, content, idempotencyKey);
     const now = Date.now();

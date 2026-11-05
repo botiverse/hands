@@ -1,5 +1,6 @@
 /** Safe presentation of Hands events for Raft. Transport and retries live in the route. */
 import { isFeedbackThreadEvent } from "./raft_notification_identity";
+import { playFailureNotificationLines } from "./play_failure_notification";
 
 type Payload = Record<string, unknown>;
 interface Presentation {
@@ -257,6 +258,7 @@ const MARKET_EVENTS = new Set([
 ]);
 
 function marketStateLabel(event: string, state: string): string | null {
+  if (event === "google_play:submission_failed" && state === "SUBMISSION_FAILED") return "Failed";
   if (event === "google_play:release_state_changed") return PLAY_STATES[state] ?? null;
   if (event === "testflight:external_state_changed" || event === "testflight:internal_distribution_ready") return TESTFLIGHT_STATES[state] ?? null;
   if (event === "app_store:version_state_changed") return APP_STORE_STATES[state] ?? null;
@@ -334,6 +336,7 @@ function marketMessage(event: string, payload: Payload, build: Payload, app: str
   if (isReceipt && event === "google_play:submission_failed") {
     const reason = safeValue(payload.reason) ?? safeValue(payload.failure_code);
     if (reason && /^[a-z0-9_]{1,80}$/i.test(reason)) lines.push(`Reason code: ${safePreview(reason, 80)}`);
+    lines.push(...playFailureNotificationLines(payload));
   }
   if (isPlay && typeof payload.rollout_percent === "number" && Number.isFinite(payload.rollout_percent)
       && payload.rollout_percent >= 0 && payload.rollout_percent <= 100) {
