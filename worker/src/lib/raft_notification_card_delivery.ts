@@ -3,8 +3,18 @@ import { formatRaftNotificationCard, type RaftMessageCard } from "./raft_notific
 type Payload = Record<string, unknown>;
 type App = { id: string; slug: string | null; name: string | null };
 
-// Each family has its own object identity; unrelated release and build
-// observations must not overwrite each other. Other events remain text.
+// One-shot events are independent receipts, not mutable states of one object.
+export const RAFT_NOTIFICATION_STANDALONE_CARD_EVENTS = [
+  "testflight:upload_processing", "testflight:internal_distribution_ready",
+  "app_store:build_upload_state_changed", "google_play:submission_succeeded",
+  "release:new", "release:draft_created", "release:superseded", "release:rolled_back",
+  "release:channel_emptied", "release:cancelled", "release:published",
+  "build:succeeded", "build:failed",
+] as const;
+const STANDALONE_CARD_EVENTS = new Set<string>(RAFT_NOTIFICATION_STANDALONE_CARD_EVENTS);
+
+// Stateful families have their own object identity; unrelated release and
+// build observations must not overwrite each other.
 export const RAFT_NOTIFICATION_CARD_EVENTS = [
   "app_store:version_state_changed",
   "testflight:external_state_changed",
@@ -12,6 +22,7 @@ export const RAFT_NOTIFICATION_CARD_EVENTS = [
   "google_play:submission_failed",
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
+  ...RAFT_NOTIFICATION_STANDALONE_CARD_EVENTS,
 ] as const;
 const CARD_EVENTS = new Set<string>(RAFT_NOTIFICATION_CARD_EVENTS);
 const LEASE_MS = 30_000;
@@ -57,7 +68,7 @@ interface CardRow {
 export interface CardTransport {
   send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
   replayCompatibleText(request: { target: string; content: string; idempotencyKey: string }): Promise<{ messageId: string }>;
-  announce(request: { target: string; previousTarget: string; content: string; eventHash: string; preferWarning?: boolean }): Promise<{ messageId: string }>;
+  announce(request: { target: string; previousTarget: string; content: string; card: RaftMessageCard; eventHash: string; preferWarning?: boolean }): Promise<{ messageId: string }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;
   update(request: { messageId: string; content: string; card: RaftMessageCard; expectedRevision: number; idempotencyKey: string }): Promise<{ messageId: string; revision: number }>;
@@ -71,6 +82,10 @@ export type CardDeliveryResult =
 
 export function supportsRaftNotificationCards(event: unknown): boolean {
   return typeof event === "string" && CARD_EVENTS.has(event);
+}
+
+export function isStandaloneRaftNotificationCard(event: unknown): boolean {
+  return typeof event === "string" && STANDALONE_CARD_EVENTS.has(event);
 }
 
 function eventTime(body: Payload): number | null {
@@ -174,7 +189,12 @@ export async function deliverRaftNotificationCard(input: {
           mayHaveCommitted = true;
         } else if (pending.kind === "send") {
           try {
-            const found = wasUncertain ? await transport.reconcile(pending) : { state: "not_found" as const };
+            // A shared legacy text key can also belong to an old threaded
+            // message. Reconciliation identifies the key's winner but does
+            // not prove its target or payload. Replay the exact card instead;
+            // a conflict is resolved through the known-text path below.
+            const found = wasUncertain && !pending.compatibleTextKey
+              ? await transport.reconcile(pending) : { state: "not_found" as const };
             // A not_found read is only a point-in-time observation: the old
             // request may still be running. Retry the exact same key and body.
             const sent = found.state === "committed" ? found : await transport.send(pending);
@@ -239,6 +259,7 @@ export async function deliverRaftNotificationCard(input: {
             target: input.channelTarget,
             previousTarget: pending.target,
             content: newer?.content ?? pending.content,
+            card: newer?.card ?? pending.card,
             eventHash: newer?.eventHash ?? pending.eventHash,
             ...(newer ? { preferWarning: true } : {}),
           });
@@ -380,7 +401,10 @@ export async function deliverRaftNotificationCard(input: {
       return { kind: "text" };
     }
     if (row.state === "retired") return { kind: "text" };
-    const when = eventTime(input.body);
+    // One-shot events get an event-hash object of their own, so there is no
+    // cross-event ordering to infer when a producer omits occurred_at.
+    const standalone = isStandaloneRaftNotificationCard(input.body.event);
+    const when = eventTime(input.body) ?? (standalone ? 0 : null);
     if (when === null || (row.last_event_ms === when && row.last_event_hash !== input.eventHash)) {
       // A later state cannot safely be ordered against an event whose time is
       // missing or ambiguous. Keep that object on text for its remaining life.
@@ -396,7 +420,7 @@ export async function deliverRaftNotificationCard(input: {
     const rendered = formatRaftNotificationCard(input.body, input.app);
     const compatibleTextKey = newCard && (input.body.event === "appgallery:invitation_state_changed"
       || input.body.event === "appgallery:package_state_changed"
-      || input.body.event === "google_play:submission_failed");
+      || input.body.event === "google_play:submission_failed" || standalone);
     const pending: Pending = {
       kind: newCard ? "send" : "update", eventHash: input.eventHash, eventMs: when,
       idempotencyKey: (compatibleTextKey ? `hands-raft:${subscriptionId}:${input.eventHash}`

@@ -52,16 +52,19 @@ each destination can be enabled, disabled, tested, or removed.
 
 **Use status cards** opts a destination into cards for App Store version,
 external TestFlight build, Google Play release, and AppGallery package and
-invitation test status changes. Later
-changes for the same object update its card and post a separate channel
-message, so members can see the change without following a thread. Objects already using text keep that history; cards begin with new
-objects first seen after opting in. AppGallery builds with an existing text
-thread continue to use text. A failed Google Play submission is a separate
+invitation test status changes. Later changes for the same object update its
+card and post a separate card to the channel, so members see the change
+without following a thread. Upload, internal TestFlight distribution, Play
+submission, release and build notifications each get their own card. Existing
+state objects using text keep that history; cards begin with new state objects
+first seen after opting in. AppGallery builds with an existing text thread
+continue to use text. A failed Google Play submission is a separate
 card for each receipt; recognized failure causes appear on the card and its
 text fallback, while causes inferred from provider wording are labeled as
 possible. Google Play cards include a link to the Play Console home in both the
 card and accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
-text even if cards are turned on again. Other events still use text. A card older than Raft's update window
+text even if cards are turned on again. Feedback and crash events still use
+text. A card older than Raft's update window
 is replaced by a new message. Older Raft clients see the accompanying text.
 If the destination cannot accept a first card, Hands uses text. You can switch
 back to text even while a card request is unresolved; the request is retained
@@ -79,9 +82,9 @@ The destination shows up to 25 failed release-status notifications. **Retry**
 schedules the selected event for delivery, using its
 original contents and idempotency key; it does not discard an uncertain card
 request. Retries are recorded in the app's audit history. Resolve outstanding
-requests before turning cards back on. An event without a reliable event time,
-or with the same time as another change, is sent as text instead of guessing
-their order.
+requests before turning cards back on. A status change without a reliable
+event time, or with the same time as another change, is sent as text instead
+of guessing their order.
 
 For new feedback and bug reports, a notification includes a short excerpt of
 the user's message. Choose channels whose members may read that feedback; the
