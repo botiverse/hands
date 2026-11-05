@@ -17,6 +17,14 @@ const LEASE_MS = 30_000;
 // Retire slightly before Raft's 14-day update deadline.
 const MAX_CARD_AGE_MS = 14 * 24 * 60 * 60_000 - 5 * 60_000;
 
+interface DeferredUpdate {
+  eventHash: string;
+  eventMs: number | null;
+  content: string;
+  card: RaftMessageCard;
+  unordered?: boolean;
+}
+
 interface Pending {
   kind: "send" | "update";
   eventHash: string;
@@ -31,6 +39,7 @@ interface Pending {
   createdAt: number;
   sendAsText?: boolean;
   compatibleTextKey?: boolean;
+  deferred?: DeferredUpdate;
 }
 
 interface CardRow {
@@ -47,7 +56,7 @@ interface CardRow {
 export interface CardTransport {
   send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
   replayCompatibleText(request: { target: string; content: string; idempotencyKey: string }): Promise<{ messageId: string }>;
-  announce(request: { target: string; previousTarget: string; content: string; eventHash: string }): Promise<{ messageId: string }>;
+  announce(request: { target: string; previousTarget: string; content: string; eventHash: string; preferWarning?: boolean }): Promise<{ messageId: string }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;
   update(request: { messageId: string; content: string; card: RaftMessageCard; expectedRevision: number; idempotencyKey: string }): Promise<{ messageId: string; revision: number }>;
@@ -221,11 +230,16 @@ export async function deliverRaftNotificationCard(input: {
             now() + LEASE_MS, now(), subscriptionId, objectKey, token, JSON.stringify(pending));
           if (!stillOwned) return { kind: "retry", code: "card_delivery_lease_lost" };
           mayHaveCommitted = true;
+          // If a newer event already fell back to text, announcing the older
+          // update now would put a stale state after it in the channel. Make
+          // sure the newer warning exists instead, with the same event key.
+          const newer = pending.kind === "update" ? pending.deferred : undefined;
           await transport.announce({
             target: input.channelTarget,
             previousTarget: pending.target,
-            content: pending.content,
-            eventHash: pending.eventHash,
+            content: newer?.content ?? pending.content,
+            eventHash: newer?.eventHash ?? pending.eventHash,
+            ...(newer ? { preferWarning: true } : {}),
           });
         }
       } catch (error) {
@@ -237,6 +251,31 @@ export async function deliverRaftNotificationCard(input: {
           return retired ? { kind: "text", reason: code } : { kind: "retry", code: "card_delivery_lease_lost" };
         }
         return { kind: "retry", code: code ? "card_delivery_uncertain" : "card_delivery_failed" };
+      }
+      // A later event may already have been posted as warned channel text
+      // while this update was uncertain. Once this exact update and its
+      // notice are confirmed, atomically replace it with the latest ordered
+      // event, fenced by the just-confirmed revision. This leaves recovery
+      // durable even if the Worker stops before starting the next request.
+      const deferred = pending.deferred;
+      const cardCreatedAt = row?.message_created_at;
+      if (pending.kind === "update" && deferred && !deferred.unordered && deferred.eventMs !== null
+        && cardCreatedAt != null && now() - cardCreatedAt < MAX_CARD_AGE_MS) {
+        const next: Pending = {
+          kind: "update", eventHash: deferred.eventHash, eventMs: deferred.eventMs,
+          idempotencyKey: `hands-card:update:${subscriptionId}:${deferred.eventHash}`.slice(0, 240),
+          content: deferred.content, card: deferred.card, target: pending.target,
+          messageId: result.messageId, expectedRevision: result.revision,
+          createsRoot: false, createdAt: now(),
+        };
+        const queued = await ownUpdate(`UPDATE raft_notification_cards SET message_id=?1,revision=?2,
+          last_event_ms=?3,last_event_hash=?4,pending_json=?5,pending_uncertain=0,updated_at=?6,state='active'
+          WHERE subscription_id=?7 AND object_key=?8 AND lease_token=?9 AND pending_json=?10
+            AND EXISTS (SELECT 1 FROM raft_notification_subscriptions
+              WHERE id=?7 AND enabled=1 AND card_updates=1 AND archived_at IS NULL)`,
+          result.messageId, result.revision, pending.eventMs, pending.eventHash, JSON.stringify(next), now(),
+          subscriptionId, objectKey, token, JSON.stringify(pending));
+        if (queued) return await replay(next, false);
       }
       const saved = await ownUpdate(`UPDATE raft_notification_cards SET message_id=?1,revision=?2,
         message_created_at=CASE WHEN ?3='send' THEN ?4 ELSE message_created_at END,
@@ -286,9 +325,25 @@ export async function deliverRaftNotificationCard(input: {
         // If the original root is still unknown, do not create another root;
         // its same-key text fence above must first obtain a definite result.
         if (pending.createsRoot && input.createsRoot) return recovered;
-        const retired = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',updated_at=?1
-          WHERE subscription_id=?2 AND object_key=?3 AND lease_token=?4 AND pending_json=?5`,
-          now(), subscriptionId, objectKey, token, JSON.stringify(pending));
+        let changed = pending;
+        if (pending.kind === "update" && settings?.card_updates === 1
+          && (row.state === "active" || pending.deferred !== undefined)) {
+          const when = eventTime(input.body);
+          const prior = pending.deferred;
+          let deferred: DeferredUpdate | undefined = prior;
+          if (!prior?.unordered) {
+            const unordered = when === null || (when === pending.eventMs && input.eventHash !== pending.eventHash)
+              || (prior && when === prior.eventMs && input.eventHash !== prior.eventHash);
+            if (unordered || (when !== null && when > pending.eventMs && (!prior || prior.eventMs === null || when > prior.eventMs))) {
+              const rendered = formatRaftNotificationCard(input.body, input.app);
+              deferred = { eventHash: input.eventHash, eventMs: when, ...rendered, ...(unordered ? { unordered: true } : {}) };
+            }
+          }
+          if (deferred) changed = { ...pending, deferred };
+        }
+        const retired = await ownUpdate(`UPDATE raft_notification_cards SET state='retired',pending_json=?1,updated_at=?2
+          WHERE subscription_id=?3 AND object_key=?4 AND lease_token=?5 AND pending_json=?6`,
+          JSON.stringify(changed), now(), subscriptionId, objectKey, token, JSON.stringify(pending));
         return retired ? { kind: "text", reason: "card_pending" } : { kind: "retry", code: "card_delivery_lease_lost" };
       }
       if (recovered.kind !== "delivered" || pending.eventHash === input.eventHash) return recovered;
