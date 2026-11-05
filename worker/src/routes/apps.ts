@@ -9,7 +9,7 @@ import type { Context } from "hono";
 import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
 import { FEEDBACK_BUILD_ORIGIN_FLAG } from "../lib/feedback_build_origin";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
-import { currentAccount, currentDeployToken, getOrgMemberRole, isOrgAtLeast } from "../lib/permissions";
+import { currentAccount, currentDeployToken } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -269,10 +269,8 @@ export async function handleCreateApp(c: AdminContext) {
 }
 
 /** POST /api/apps/:appId/transfer — move an app identity between orgs.
- *
- * This is deliberately owner-only on both sides and uses an expected source
- * org plus idempotency key so a stale UI cannot move a concurrently changed
- * app. The app id and all child resources remain unchanged.
+ * The route requires app admin; the target requires the same principal to be
+ * an org member. Recheck both grants inside the atomic write batch.
  */
 export async function handleTransferApp(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -281,7 +279,9 @@ export async function handleTransferApp(c: AdminContext) {
     expected_source_org_id?: string;
     idempotency_key?: string;
   };
-  if (!body.target_org_id || !body.expected_source_org_id || !body.idempotency_key) {
+  if (typeof body.target_org_id !== "string" || !body.target_org_id
+    || typeof body.expected_source_org_id !== "string" || !body.expected_source_org_id
+    || typeof body.idempotency_key !== "string" || !body.idempotency_key) {
     return c.json({ error: "target_org_id, expected_source_org_id, and idempotency_key are required" }, 400);
   }
   if (body.target_org_id === body.expected_source_org_id) {
@@ -289,45 +289,105 @@ export async function handleTransferApp(c: AdminContext) {
   }
   const account = currentAccount(c);
   if (!account) return c.json({ error: "authenticated account required" }, 403);
-  const [app, targetOrg, sourceRole, targetRole] = await Promise.all([
+  const [app, targetOrg] = await Promise.all([
     c.env.DB.prepare("SELECT id, org_id, slug, name FROM apps WHERE id = ?1 LIMIT 1").bind(appId)
       .first<{ id: string; org_id: string | null; slug: string; name: string }>(),
     c.env.DB.prepare("SELECT id, archived FROM organizations WHERE id = ?1 LIMIT 1").bind(body.target_org_id)
       .first<{ id: string; archived: number }>(),
-    getOrgMemberRole(c.env.DB, body.expected_source_org_id, account.id),
-    getOrgMemberRole(c.env.DB, body.target_org_id, account.id),
   ]);
   if (!app) return c.json({ error: "not found" }, 404);
-  const prior = await c.env.DB.prepare(
-    "SELECT payload FROM audit_logs WHERE app_id = ?1 AND action = 'app.transfer' ORDER BY created_at DESC LIMIT 20",
-  ).bind(appId).all<{ payload: string }>();
-  for (const row of prior.results) {
+  const priorTransfer = async () => {
+    const row = await c.env.DB.prepare(
+      `SELECT payload FROM audit_logs
+       WHERE app_id = ?1 AND action = 'app.transfer'
+         AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.idempotency_key') END = ?2
+       ORDER BY created_at DESC LIMIT 1`,
+    ).bind(appId, body.idempotency_key).first<{ payload: string }>();
+    if (!row) return null;
     try {
       const p = JSON.parse(row.payload) as { idempotency_key?: string; target_org_id?: string; from_org_id?: string };
-      if (p.idempotency_key === body.idempotency_key && p.target_org_id === body.target_org_id) {
+      if (p.target_org_id === body.target_org_id && p.from_org_id === body.expected_source_org_id) {
         return c.json({ ok: true, idempotent: true, app_id: appId, from_org_id: p.from_org_id ?? body.expected_source_org_id, target_org_id: p.target_org_id });
       }
-      if (p.idempotency_key === body.idempotency_key) return c.json({ error: "idempotency key is bound to a different target organization", code: "IDEMPOTENCY_CONFLICT" }, 409);
-    } catch { /* ignore malformed historical payloads */ }
-  }
+      return c.json({ error: "idempotency key is bound to a different transfer", code: "IDEMPOTENCY_CONFLICT" }, 409);
+    } catch { return null; }
+  };
+  const existing = await priorTransfer();
+  if (existing) return existing;
   if (app.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
   if (!targetOrg || targetOrg.archived) return c.json({ error: "target organization not found or archived" }, 400);
-  if (!isOrgAtLeast(sourceRole, "owner") || !isOrgAtLeast(targetRole, "owner")) return c.json({ error: "source and target organization owner role required" }, 403);
   const now = Date.now();
   const payload = { idempotency_key: body.idempotency_key, from_org_id: app.org_id, target_org_id: body.target_org_id, slug: app.slug };
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE apps SET org_id = ?1 WHERE id = ?2 AND org_id = ?3")
-      .bind(body.target_org_id, appId, body.expected_source_org_id),
-    c.env.DB.prepare("UPDATE webhooks SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3")
-      .bind(body.target_org_id, appId, body.expected_source_org_id),
-    c.env.DB.prepare("UPDATE invites SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3")
-      .bind(body.target_org_id, appId, body.expected_source_org_id),
-    c.env.DB.prepare("INSERT INTO audit_logs (id, app_id, action, actor, actor_id, actor_type, payload, created_at) SELECT ?1, ?2, 'app.transfer', ?3, ?4, ?5, ?6, ?7 FROM apps WHERE id = ?2 AND org_id = ?8")
-      .bind(crypto.randomUUID(), appId, currentActorInfo(c).display_name, account.id, account.principal_type, JSON.stringify(payload), now, body.target_org_id),
+  const auditId = crypto.randomUUID();
+  // This mirrors getEffectiveRole/ensureAppRole("admin"): an app admin, an
+  // owning-org admin, or an eligible additional-server grant can authorize the
+  // source. The linked identity check matches the org switcher, including
+  // provider AND subject AND principal type, so a different account cannot
+  // borrow the target's membership. The audit row gates every subsequent write.
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(`WITH source AS (
+      SELECT a.id, a.org_id,
+        (SELECT om.org_role FROM org_members om WHERE om.org_id = a.org_id AND om.account_id = ?4 LIMIT 1) AS direct_org_role,
+        (SELECT am.app_role FROM app_members am WHERE am.app_id = a.id AND am.account_id = ?4 LIMIT 1) AS direct_app_role,
+        (SELECT CASE WHEN g.access_model = 'owner_server' THEN om.org_role END
+         FROM raft_accounts actor
+         JOIN organizations o ON o.external_provider = 'raft' AND o.external_id = actor.server_id
+         JOIN org_members om ON om.org_id = o.id AND om.account_id = actor.id
+         JOIN app_server_grants g ON g.app_id = a.id AND
+           ((g.server_id IS NOT NULL AND g.server_id = actor.server_id)
+             OR (g.server_slug IS NOT NULL AND g.server_slug = actor.server_slug))
+         WHERE actor.id = ?4 LIMIT 1) AS owner_server_org_role,
+        (SELECT CASE WHEN g.access_model = 'legacy_role' THEN g.app_role END
+         FROM raft_accounts actor
+         JOIN organizations o ON o.external_provider = 'raft' AND o.external_id = actor.server_id
+         JOIN org_members om ON om.org_id = o.id AND om.account_id = actor.id
+         JOIN app_server_grants g ON g.app_id = a.id AND
+           ((g.server_id IS NOT NULL AND g.server_id = actor.server_id)
+             OR (g.server_slug IS NOT NULL AND g.server_slug = actor.server_slug))
+         WHERE actor.id = ?4 LIMIT 1) AS legacy_server_app_role
+      FROM apps a WHERE a.id = ?2 AND a.org_id = ?8
+    )
+    INSERT INTO audit_logs (id, app_id, action, actor, actor_id, actor_type, payload, created_at)
+    SELECT ?1, source.id, 'app.transfer', ?3, ?4, ?5, ?6, ?7 FROM source
+    WHERE (COALESCE(source.direct_org_role, source.owner_server_org_role) IN ('owner', 'admin')
+           OR source.direct_app_role = 'admin' OR source.legacy_server_app_role = 'admin')
+      AND EXISTS (SELECT 1 FROM organizations target WHERE target.id = ?9 AND target.archived = 0)
+      AND EXISTS (
+        SELECT 1 FROM raft_accounts actor
+        JOIN raft_accounts linked ON linked.provider = actor.provider
+          AND linked.provider_subject = actor.provider_subject AND linked.principal_type = actor.principal_type
+        JOIN org_members member ON member.account_id = linked.id
+        WHERE actor.id = ?4 AND actor.provider = ?11 AND actor.provider_subject = ?12 AND actor.principal_type = ?13
+          AND member.org_id = ?9 AND member.org_role IN ('member', 'admin', 'owner')
+      )
+      AND NOT EXISTS (SELECT 1 FROM audit_logs previous
+        WHERE previous.app_id = source.id AND previous.action = 'app.transfer'
+          AND CASE WHEN json_valid(previous.payload) THEN json_extract(previous.payload, '$.idempotency_key') END = ?10)`)
+      .bind(auditId, appId, currentActorInfo(c).display_name, account.id, account.principal_type,
+        JSON.stringify(payload), now, body.expected_source_org_id, body.target_org_id, body.idempotency_key,
+        account.provider, account.provider_subject, account.principal_type),
+    c.env.DB.prepare(`UPDATE apps SET org_id = ?1 WHERE id = ?2 AND org_id = ?3
+      AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`)
+      .bind(body.target_org_id, appId, body.expected_source_org_id, auditId),
+    c.env.DB.prepare(`UPDATE webhooks SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3
+      AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`)
+      .bind(body.target_org_id, appId, body.expected_source_org_id, auditId),
+    c.env.DB.prepare(`UPDATE invites SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3
+      AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`)
+      .bind(body.target_org_id, appId, body.expected_source_org_id, auditId),
   ]);
-  const moved = await c.env.DB.prepare("SELECT org_id FROM apps WHERE id = ?1").bind(appId).first<{ org_id: string }>();
-  if (moved?.org_id !== body.target_org_id) return c.json({ error: "transfer commit could not be verified", code: "TRANSFER_UNVERIFIED" }, 500);
-  return c.json({ ok: true, idempotent: false, app_id: appId, from_org_id: app.org_id, target_org_id: moved.org_id });
+  if (results[0]?.meta.changes !== 1) {
+    // Another transfer with this key can have committed after our first read.
+    const replay = await priorTransfer();
+    if (replay) return replay;
+    const current = await c.env.DB.prepare("SELECT org_id FROM apps WHERE id = ?1").bind(appId).first<{ org_id: string | null }>();
+    if (current?.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
+    const target = await c.env.DB.prepare("SELECT archived FROM organizations WHERE id = ?1").bind(body.target_org_id).first<{ archived: number }>();
+    if (!target || target.archived) return c.json({ error: "target organization not found or archived" }, 400);
+    return c.json({ error: "source app admin and target organization member role required" }, 403);
+  }
+  if (results[1]?.meta.changes !== 1) return c.json({ error: "transfer commit could not be verified", code: "TRANSFER_UNVERIFIED" }, 500);
+  return c.json({ ok: true, idempotent: false, app_id: appId, from_org_id: app.org_id, target_org_id: body.target_org_id });
 }
 
 export async function handleArchiveApp(c: Context<{ Bindings: Env }>) {
