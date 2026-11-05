@@ -5,7 +5,6 @@ type Payload = Record<string, unknown>;
 type FieldRenderer = (payload: Payload) => string[];
 interface Presentation {
   icon: string;
-  leading?: FieldRenderer;
   details?: FieldRenderer;
   footer?: FieldRenderer;
 }
@@ -51,7 +50,7 @@ function safePreview(value: unknown, limit: number): string | null {
 function feedbackPreview(payload: Payload): string[] {
   if (payload.kind !== "feedback" && payload.kind !== "bug") return [];
   const preview = safePreview(payload.message, MAX_FEEDBACK_PREVIEW_LENGTH);
-  return preview ? [`Feedback: ${preview}`] : [];
+  return preview ? [preview] : [];
 }
 
 function testflightDetails(payload: Payload): string[] {
@@ -73,9 +72,6 @@ function appleReviewFooter(payload: Payload): string[] {
 // Event-specific presentation is registered here; the common safe field and
 // footer rules below apply consistently to every event.
 const PRESENTATIONS = new Map<string, Presentation>([
-  ["feedback:new", { icon: "📮", leading: feedbackPreview }],
-  ["feedback:comment_created", { icon: "💬" }],
-  ["feedback:status_changed", { icon: "🔄" }],
   ["app_store:version_state_changed", { icon: "🍎", footer: appleReviewFooter }],
   ["app_store:build_upload_state_changed", { icon: "📦" }],
   ["testflight:upload_processing", { icon: "📦" }],
@@ -137,6 +133,45 @@ interface NotificationApp {
   name: string | null;
 }
 
+function feedbackMessage(
+  event: string, payload: Payload, build: Payload, appName: string | null,
+  appId: string | null, cliApp: string | null, ticketId: string | null, occurred: string | null,
+): string {
+  const kind = safeValue(payload.kind);
+  const names = new Map<string, string>([
+    ["feedback", "New feedback"], ["bug", "New bug report"],
+    ["crash", "New crash report"], ["error", "New error report"],
+  ]);
+  const title = event === "feedback:comment_created" ? "New comment"
+    : event === "feedback:status_changed" ? "Feedback status changed"
+    : names.get(kind ?? "") ?? "New feedback report";
+  const icon = event === "feedback:comment_created" ? "💬" : event === "feedback:status_changed" ? "🔄" : "📮";
+  const app = appName ?? safePreview(appId, 160);
+  const lines = [`${icon} **${title}${app ? ` · ${app}` : ""}**`];
+  if (event === "feedback:new") {
+    lines.push(...feedbackPreview(payload));
+    const version = safePreview(safeValue(payload.version_name) ?? safeValue(payload.version_string)
+      ?? safeValue(payload.version) ?? safeValue(build.version), 160);
+    const code = safePreview(safeValue(payload.version_code) ?? safeValue(build.version_code), 160);
+    if (version || code) lines.push(`Version: ${version ?? code}${version && code && code !== version ? ` (${code})` : ""}`);
+  }
+  const status = safePreview(safeValue(payload.status), 160);
+  const previous = safePreview(safeValue(payload.previous_status), 160);
+  if (status) lines.push(`Status: ${previous && previous !== status ? `${previous} → ` : ""}${status}`);
+  else if (previous) lines.push(`Previous status: ${previous}`);
+  const footer: string[] = [];
+  if (occurred) footer.push(`occurred: ${occurred}`);
+  if (ticketId && cliApp) footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
+  else {
+    const displayTicket = safePreview(safeValue(payload.ticket_id), 160);
+    if (displayTicket) footer.push(`ticket: ${displayTicket}`);
+  }
+  const content = lines.join("\n");
+  if (footer.length === 0) return truncateMessage(content, MAX_MESSAGE_LENGTH);
+  const tail = footer.join("\n");
+  return `${truncateMessage(content, MAX_MESSAGE_LENGTH - tail.length - 1)}\n${tail}`;
+}
+
 export function formatRaftNotificationMessage(body: Payload, knownApp?: NotificationApp): string {
   const event = safeValue(body.event) ?? "hands:event";
   const payload = record(body.payload);
@@ -149,9 +184,21 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
   const appName = safePreview(knownApp?.name, 160) ?? safePreview(app.name, 160) ?? safePreview(appSlug, 160);
   const appIdDisplay = safePreview(appId, 160);
+  const deliveredAt = typeof body.delivered_at === "number"
+    && Number.isFinite(body.delivered_at) && Math.abs(body.delivered_at) <= 8.64e15
+    ? new Date(body.delivered_at).toISOString()
+    : safeValue(body.delivered_at);
+  const occurred = safePreview(safeValue(payload.occurred_at) ?? deliveredAt, MAX_FIELD_LENGTH);
+  const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
+  // The CLI treats a 36-character, five-part slug as an app id.
+  const slugLooksLikeId = appSlug?.length === 36 && appSlug.split("-").length === 5;
+  const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
+    ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
+  if (isFeedbackThreadEvent(event)) {
+    return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred);
+  }
   if (appName && appIdDisplay) lines.push(`App: ${appName} (${appIdDisplay})`);
   else if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
-  lines.push(...(presentation?.leading?.(payload) ?? []));
   lines.push(...standardFields(payload, build));
 
   const observation = safePreview(payload.observation_display, MAX_FIELD_LENGTH);
@@ -162,20 +209,7 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   footer.push(...(presentation?.footer?.(payload) ?? []));
 
   // Hands delivery timestamps are milliseconds; preserve provider timestamps.
-  const deliveredAt = typeof body.delivered_at === "number"
-    && Number.isFinite(body.delivered_at) && Math.abs(body.delivered_at) <= 8.64e15
-    ? new Date(body.delivered_at).toISOString()
-    : safeValue(body.delivered_at);
-  const occurred = safePreview(safeValue(payload.occurred_at) ?? deliveredAt, MAX_FIELD_LENGTH);
   if (occurred) footer.push(`occurred: ${occurred}`);
-  const ticketId = typeof payload.ticket_id === "string" && UUID_RE.test(payload.ticket_id) ? payload.ticket_id : null;
-  // The CLI treats a 36-character, five-part slug as an app id.
-  const slugLooksLikeId = appSlug?.length === 36 && appSlug.split("-").length === 5;
-  const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
-    ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
-  if (isFeedbackThreadEvent(event) && ticketId && cliApp) {
-    footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
-  }
   const content = lines.join("\n");
   if (footer.length === 0) return truncateMessage(content, MAX_MESSAGE_LENGTH);
   const tail = footer.join("\n");

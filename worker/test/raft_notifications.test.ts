@@ -212,13 +212,13 @@ describe("Hands-managed Raft notifications", () => {
   });
 
   it("adds clear icons to feedback events and the details command", () => {
-    for (const [event, emoji] of [
-      ["feedback:new", "📮"],
-      ["feedback:comment_created", "💬"],
-      ["feedback:status_changed", "🔄"],
+    for (const [event, heading] of [
+      ["feedback:new", "📮 **New feedback report · sample-app**"],
+      ["feedback:comment_created", "💬 **New comment · sample-app**"],
+      ["feedback:status_changed", "🔄 **Feedback status changed · sample-app**"],
     ] as const) {
       const message = formatRaftNotificationMessage(feedbackBody(event, { app_slug: "sample-app" }));
-      expect(message.startsWith(`${emoji} **Hands · ${event}**`)).toBe(true);
+      expect(message.startsWith(heading)).toBe(true);
       expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     }
     expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **Hands · app_store:version_state_changed**")).toBe(true);
@@ -308,8 +308,9 @@ describe("Hands-managed Raft notifications", () => {
     const message = formatRaftNotificationMessage(feedbackBody("feedback:new", {
       app_slug: "sample-app", kind: "feedback", message: `${"Hello ".repeat(40)}@admin https://example.test/signed?secret=abc`,
     }));
-    expect(message).toContain("App: sample-app (abad63e9-e760-42e9-92df-f418735f32ea)");
-    expect(message).toContain("Feedback: Hello ");
+    expect(message).toContain("📮 **New feedback · sample-app**\nHello ");
+    expect(message).not.toContain("abad63e9-e760-42e9-92df-f418735f32ea");
+    expect(message.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
     expect(message).toContain("…");
     expect(message).toContain(`View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     expect(message).not.toContain("@admin");
@@ -325,8 +326,27 @@ describe("Hands-managed Raft notifications", () => {
     expect(feedback).not.toContain("@admin");
     expect(feedback).not.toContain("#release");
     expect(feedback).not.toContain("https://example.test");
-    expect(feedback).toContain("Feedback: Hi @\u200badmin #\u200brelease");
+    expect(feedback).toContain("📮 **New bug report · sample-app**\nHi @\u200badmin #\u200brelease");
     expect(feedback).toContain("\\[link\\]");
+  });
+
+  it("combines feedback identity, version, and status without repeating identifiers", () => {
+    const report = formatRaftNotificationMessage(feedbackBody("feedback:new", {
+      app_slug: "sample-app", kind: "bug", message: "Cannot save", version_name: "1.19.2", version_code: 11902002,
+    }));
+    expect(report).toContain("📮 **New bug report · sample-app**\nCannot save\nVersion: 1.19.2 (11902002)");
+    expect(report).not.toContain("kind:");
+    expect(report).not.toContain("ticket:");
+    expect(report.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
+    const status = formatRaftNotificationMessage(feedbackBody("feedback:status_changed", {
+      app_slug: "sample-app", previous_status: "open", status: "resolved",
+    }));
+    expect(status).toContain("🔄 **Feedback status changed · sample-app**\nStatus: open → resolved");
+    expect(status).not.toContain("previous status:");
+    const fallback = formatRaftNotificationMessage({ event: "feedback:new", payload: { ticket_id: "bad;echo", kind: "crash" } });
+    expect(fallback).toContain("📮 **New crash report**");
+    expect(fallback).toContain("ticket: bad;echo");
+    expect(fallback).not.toContain("hands feedback show");
   });
 
   it("keeps the View more command when many fields would otherwise exceed the message limit", () => {
@@ -1056,10 +1076,9 @@ describe("Hands-managed Raft notifications", () => {
       expect(response.status).toBe(200);
     }
     expect(sent.map((item) => item.target)).toEqual(["#releases", "#releases:parent-m", "#releases:parent-m"]);
-    expect(sent[0]!.content).toContain("App: Sample App (app-1)");
+    expect(sent[0]!.content).toContain("📮 **New feedback · Sample App**");
     expect(sent[1]!.content).not.toContain("Private comment");
-    expect(sent[2]!.content).toContain("previous status: open");
-    expect(sent[2]!.content).toContain("status: resolved");
+    expect(sent[2]!.content).toContain("Status: open → resolved");
     expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_threads WHERE subscription_id = ?").pluck().get(SUBSCRIPTION_ID)).toBe(1);
   });
 
