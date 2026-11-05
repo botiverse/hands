@@ -14,9 +14,9 @@ import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
-import { deliverRaftNotificationCard, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
+import { deliverRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
-import { isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
+import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -310,12 +310,12 @@ export async function handleListRaftNotificationFailures(c: AdminContext) {
     `SELECT d.id,d.event_type,d.created_at,d.last_attempt_at,d.last_response_status
      FROM webhook_deliveries d
      WHERE d.webhook_id=?1 AND d.status='failed'
-       AND d.event_type IN ('app_store:version_state_changed','testflight:external_state_changed','google_play:release_state_changed')
+       AND d.event_type IN (${RAFT_NOTIFICATION_CARD_EVENTS.map((_, index) => `?${index + 2}`).join(",")})
        AND NOT EXISTS (SELECT 1 FROM webhook_deliveries newer
          WHERE newer.webhook_id=d.webhook_id AND newer.payload_json=d.payload_json
            AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.id>d.id)))
      ORDER BY d.created_at DESC,d.id DESC LIMIT 25`,
-  ).bind(subscription.webhook_id).all<{
+  ).bind(subscription.webhook_id, ...RAFT_NOTIFICATION_CARD_EVENTS).all<{
     id: string; event_type: string; created_at: number;
     last_attempt_at: number | null; last_response_status: number | null;
   }>();
@@ -613,6 +613,18 @@ async function sendBotMessage(
   return { messageId, ...(revision === undefined ? {} : { cardRevision: revision }) };
 }
 
+async function sendKnownBotText(env: Env, bot: BotInstallationRow, target: string, contents: string[], key: string) {
+  let conflict: unknown;
+  for (const candidate of new Set(contents)) {
+    try { return await sendBotMessage(env, bot, target, candidate, key); }
+    catch (error) {
+      if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
+      conflict = error;
+    }
+  }
+  throw conflict;
+}
+
 /**
  * A request started before the channel-routing change may already have sent
  * this signed event to its old thread while its response was lost. Raft binds
@@ -623,18 +635,8 @@ async function sendChannelText(
   env: Env, bot: BotInstallationRow, channel: string, previousTarget: string,
   content: string, previousContents: string[], idempotencyKey: string, channelKey: string,
 ): Promise<{ messageId: string }> {
-  const contents = [...new Set([content, ...previousContents])];
-  const sendKnownContent = async (target: string, key: string) => {
-    let conflict: unknown;
-    for (const candidate of contents) {
-      try { return await sendBotMessage(env, bot, target, candidate, key); }
-      catch (error) {
-        if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
-        conflict = error;
-      }
-    }
-    throw conflict;
-  };
+  const contents = [content, ...previousContents];
+  const sendKnownContent = (target: string, key: string) => sendKnownBotText(env, bot, target, contents, key);
   try {
     return await sendKnownContent(channel, idempotencyKey);
   } catch (error) {
@@ -819,7 +821,17 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   if (typeof event !== "string" || !WEBHOOK_EVENT_TYPES.includes(event as NotificationEvent)) {
     return c.json({ error: "invalid event" }, 400);
   }
-  const objectKey = await notificationObjectKey(eventBody);
+  let objectKey = await notificationObjectKey(eventBody);
+  const specificAgcKey = appGalleryCardObjectKey(eventBody);
+  if (specificAgcKey && specificAgcKey !== objectKey) {
+    const specific = await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, specificAgcKey).first();
+    const legacy = specific ? null : await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, objectKey).first();
+    // Existing build-grouped text retains its thread; new submissions and
+    // packages use their own identity so unrelated states cannot overwrite.
+    if (specific || !legacy) objectKey = specificAgcKey;
+  }
   const eventHash = await sha256Hex(body);
   const events = parseStoredEvents(row.events_json);
   if (events.length > 0 && !events.includes(event) && !events.includes("*")) {
@@ -902,13 +914,19 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     // Existing text threads keep their text history. A newly inserted parent
     // claim may start a card; a reclaimed legacy claim may have an uncertain
     // send in flight, so it cannot safely start another one.
-    if (priorCard || (row.card_updates === 1 && createdParentClaim)) {
+    // An AppGallery event without its submission/package ID cannot safely
+    // identify a card: use text instead of grouping unrelated objects.
+    const appGalleryEvent = event === "appgallery:invitation_state_changed" || event === "appgallery:package_state_changed";
+    const hasCardIdentity = !appGalleryEvent || specificAgcKey !== null;
+    if (priorCard || (row.card_updates === 1 && createdParentClaim && hasCardIdentity)) {
       const result = await deliverRaftNotificationCard({
         db: c.env.DB, subscriptionId, objectKey, target, channelTarget: row.channel_target,
         createsRoot: ownsParentClaim, eventHash, body: eventBody,
         app: { id: row.app_id, slug: row.app_slug, name: row.app_name },
         transport: {
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
+          replayCompatibleText: (request) => sendKnownBotText(c.env, bot, request.target,
+            [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)], request.idempotencyKey),
           announce: (request) => sendChannelText(c.env, bot, request.target, request.previousTarget,
             request.content, [fallbackWarning(request.content, false), fallbackWarning(request.content, true)],
             `hands-raft:${subscriptionId}:${request.eventHash}`.slice(0, 240),

@@ -28,6 +28,16 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Separate AppGallery submissions/packages even when they share a build. */
+export function appGalleryCardObjectKey(body: Record<string, unknown>): string | null {
+  const event = body.event;
+  const payload = record(body.payload);
+  const kind = event === "appgallery:invitation_state_changed" ? "submission"
+    : event === "appgallery:package_state_changed" ? "package" : null;
+  const id = kind === "submission" ? payload.submission_id : kind === "package" ? payload.package_id : null;
+  return kind && typeof id === "string" && id.length > 0 && id.length <= 160 ? `${event}:${kind}:${id}` : null;
+}
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
