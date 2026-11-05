@@ -52,8 +52,8 @@ each destination can be enabled, disabled, tested, or removed.
 
 **Use status cards** opts a destination into cards for App Store version,
 external TestFlight build, and Google Play release status changes. Later
-changes for the same object update its card without sending another push or
-mention. Objects already using text keep that history; cards begin with new
+changes for the same object update its card and post a separate channel
+message, so members can see the change without following a thread. Objects already using text keep that history; cards begin with new
 objects first seen after opting in. If an object returns to text, it stays on
 text even if cards are turned on again. Other events still use text. A card older than Raft's update window
 is replaced by a new message. Older Raft clients see the accompanying text.
@@ -95,8 +95,8 @@ server reuses the installation credential instead of rotating it. Existing
 webhook producers use the same delivery queue and retry policy. In text mode,
 release, build and store status events each appear as a channel message, so
 members need not follow a thread to see later changes. Feedback updates for the
-same ticket remain in its thread. A status card update itself is silent and
-does not create a new channel message. Provider credentials, crash attachments, and
+same ticket remain in its thread. A status card update itself is silent;
+Hands sends the channel message separately. Provider credentials, crash attachments, and
 untrusted provider prose are not included in these messages. Apple's review
 rejection notification includes the version, state, time, and App Store Connect
 link; the rejection text itself still has to be read in App Store Connect.

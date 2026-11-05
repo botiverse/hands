@@ -621,30 +621,36 @@ async function sendBotMessage(
  */
 async function sendChannelText(
   env: Env, bot: BotInstallationRow, channel: string, previousTarget: string,
-  content: string, previousContent: string, idempotencyKey: string, channelKey: string,
+  content: string, previousContents: string[], idempotencyKey: string, channelKey: string,
 ): Promise<{ messageId: string }> {
-  try {
-    return await sendBotMessage(env, bot, channel, content, idempotencyKey);
-  } catch (error) {
-    if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
-    // Same target but older fallback wording: an existing channel message is
-    // already visible and must not be duplicated.
-    if (previousContent !== content) {
-      try { return await sendBotMessage(env, bot, channel, previousContent, idempotencyKey); }
-      catch (replayError) {
-        if (!(replayError instanceof RaftBotApiError) || replayError.status !== 409 || replayError.code !== "idempotency_key_reused") throw replayError;
+  const contents = [...new Set([content, ...previousContents])];
+  const sendKnownContent = async (target: string, key: string) => {
+    let conflict: unknown;
+    for (const candidate of contents) {
+      try { return await sendBotMessage(env, bot, target, candidate, key); }
+      catch (error) {
+        if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
+        conflict = error;
       }
     }
+    throw conflict;
+  };
+  try {
+    return await sendKnownContent(channel, idempotencyKey);
+  } catch (error) {
+    if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
     if (previousTarget === channel) throw error;
-    try {
-      await sendBotMessage(env, bot, previousTarget, content, idempotencyKey);
-    } catch (replayError) {
-      if (previousContent === content || !(replayError instanceof RaftBotApiError)
-          || replayError.status !== 409 || replayError.code !== "idempotency_key_reused") throw replayError;
-      await sendBotMessage(env, bot, previousTarget, previousContent, idempotencyKey);
-    }
-    return await sendBotMessage(env, bot, channel, content, channelKey);
+    await sendKnownContent(previousTarget, idempotencyKey);
+    // The channel copy may already have committed with an older warning. A
+    // same-key replay of each known variant is safe; never use another key.
+    return await sendKnownContent(channel, channelKey);
   }
+}
+
+function fallbackWarning(content: string, thread: boolean): string {
+  return content + (thread
+    ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates."
+    : "\n⚠️ A previous status card may be out of date; check newer channel messages.");
 }
 
 async function cardRequest(env: Env, bot: BotInstallationRow, path: string, method: "GET" | "POST" | "PUT", body?: Record<string, unknown>) {
@@ -898,10 +904,15 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     // send in flight, so it cannot safely start another one.
     if (priorCard || (row.card_updates === 1 && createdParentClaim)) {
       const result = await deliverRaftNotificationCard({
-        db: c.env.DB, subscriptionId, objectKey, target, createsRoot: ownsParentClaim, eventHash, body: eventBody,
+        db: c.env.DB, subscriptionId, objectKey, target, channelTarget: row.channel_target,
+        createsRoot: ownsParentClaim, eventHash, body: eventBody,
         app: { id: row.app_id, slug: row.app_slug, name: row.app_name },
         transport: {
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
+          announce: (request) => sendChannelText(c.env, bot, request.target, request.previousTarget,
+            request.content, [fallbackWarning(request.content, false), fallbackWarning(request.content, true)],
+            `hands-raft:${subscriptionId}:${request.eventHash}`.slice(0, 240),
+            `hands-raft-channel:${subscriptionId}:${request.eventHash}`.slice(0, 240)),
           reconcile: (request) => reconcileBotMessage(c.env, bot, request.target, request.idempotencyKey),
           resolve: (messageId) => resolveBotMessageCard(c.env, bot, messageId),
           update: (request) => updateBotCard(c.env, bot, request),
@@ -929,12 +940,12 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     const baseContent = formatRaftNotificationMessage(eventBody, {
       id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null,
     });
-    const previousContent = baseContent + (cardTextFallback ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates." : "");
+    const previousContent = cardTextFallback ? fallbackWarning(baseContent, true) : baseContent;
     const content = channelText && cardTextFallback
-      ? baseContent + "\n⚠️ A previous status card may be out of date; check newer channel messages."
+      ? fallbackWarning(baseContent, false)
       : previousContent;
     const sent = channelText
-      ? await sendChannelText(c.env, bot, row.channel_target, target, content, previousContent, idempotencyKey,
+      ? await sendChannelText(c.env, bot, row.channel_target, target, content, [previousContent, baseContent], idempotencyKey,
         `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240))
       : await sendBotMessage(c.env, bot, target, content, idempotencyKey);
     const now = Date.now();
