@@ -15,7 +15,7 @@ import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
-import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
+import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
 import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
@@ -655,6 +655,15 @@ function fallbackWarning(content: string, thread: boolean): string {
     : "\n⚠️ A previous status card may be out of date; check newer channel messages.");
 }
 
+function compatibleCardText(content: string): string[] {
+  // The Play Console link was added to card fallbacks after older Workers
+  // could have sent a channel notice with the same event key. Prove either
+  // exact body before making a separate channel copy.
+  const old = withoutPlayConsoleFooter(content);
+  return [content, old, fallbackWarning(content, false), fallbackWarning(old, false),
+    fallbackWarning(content, true), fallbackWarning(old, true)];
+}
+
 // Previous workers did not render these fixed diagnostic lines. Derive the
 // old text from the persisted request itself, including when it is recovered
 // while another delivery is being handled.
@@ -959,14 +968,13 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
           replayCompatibleText: (request) => legacyFailureContent === undefined
             ? sendKnownBotText(c.env, bot, request.target,
-              [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)], request.idempotencyKey)
+              compatibleCardText(request.content), request.idempotencyKey)
             : sendChannelText(c.env, bot, request.target, legacyFailureTarget ?? request.target, request.content,
-              [legacyPlayFailureText(request.content), fallbackWarning(legacyPlayFailureText(request.content), false),
-                fallbackWarning(legacyPlayFailureText(request.content), true)],
+              [...compatibleCardText(request.content), ...compatibleCardText(legacyPlayFailureText(withoutPlayConsoleFooter(request.content)))],
               request.idempotencyKey, request.idempotencyKey.replace(/^hands-raft:/, "hands-raft-channel:").slice(0, 240)),
           announce: (request) => sendChannelText(c.env, bot, request.target, request.previousTarget,
             request.preferWarning ? fallbackWarning(request.content, false) : request.content,
-            [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)],
+            compatibleCardText(request.content),
             `hands-raft:${subscriptionId}:${request.eventHash}`.slice(0, 240),
             `hands-raft-channel:${subscriptionId}:${request.eventHash}`.slice(0, 240)),
           reconcile: (request) => reconcileBotMessage(c.env, bot, request.target, request.idempotencyKey),

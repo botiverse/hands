@@ -224,6 +224,7 @@ describe("Hands-managed Raft notifications", () => {
     for (const call of calls) {
       expect(call).toMatchObject({ target: "#releases", card: { version: 1 },
         content: expect.stringContaining("Google Play has changes in review") });
+      expect(call.content).toContain("[Open Play Console](https://play.google.com/console/)");
       expect(JSON.stringify(call.card)).toContain("CHANGES_ALREADY_IN_REVIEW");
     }
     expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_cards").pluck().get()).toBe(2);
@@ -311,9 +312,45 @@ describe("Hands-managed Raft notifications", () => {
     expect(result.status).toBe(200);
     expect(await result.json()).toMatchObject({ message_id: "legacy-message", card: false });
     expect(calls.every((c) => c.idempotencyKey === calls[0]?.idempotencyKey)).toBe(true);
+    const attempts = calls.length;
     expect((await request(event, "retry")).status).toBe(200);
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(attempts);
   });
+
+  it.each(["#releases", "#releases:old-pare"])(
+    "reconciles a previously sent Play failure without the new link at %s",
+    async (oldTarget) => {
+      const { request, sqlite, updateConfig } = await harness();
+      await updateConfig({ events: ["google_play:submission_failed"] });
+      await updateConfig({ card_updates: true });
+      sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+        .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
+      const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+      const oldContent = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+      const calls: Array<Record<string, unknown>> = [];
+      mockRaftFetch(async (_input, init) => {
+        const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        calls.push(sent);
+        if (sent.target === oldTarget && !sent.card && sent.content === oldContent) {
+          return Response.json({ state: "committed", messageId: "old-message" });
+        }
+        if (String(sent.idempotencyKey).startsWith("hands-raft-channel:")) {
+          return Response.json({ state: "sent", messageId: "channel-copy" });
+        }
+        return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      });
+      const result = await request(event, "a");
+      expect(result.status).toBe(200);
+      expect(await result.json()).toMatchObject({ message_id: oldTarget === "#releases" ? "old-message" : "channel-copy", card: false });
+      expect(calls.some((sent) => sent.target === oldTarget && sent.content === oldContent)).toBe(true);
+      const copies = calls.filter((sent) => String(sent.idempotencyKey).startsWith("hands-raft-channel:"));
+      expect(copies).toHaveLength(oldTarget === "#releases" ? 0 : 1);
+      if (copies.length) expect(copies[0]?.content).toContain("[Open Play Console](https://play.google.com/console/)");
+      const attempts = calls.length;
+      expect((await request(event, "retry")).status).toBe(200);
+      expect(calls).toHaveLength(attempts);
+    },
+  );
 
   it("proves a legacy threaded text before sending one enriched channel copy", async () => {
     const { request, sqlite, updateConfig } = await harness();
@@ -1051,6 +1088,36 @@ describe("Hands-managed Raft notifications", () => {
     expect(sent[2]!.body).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
     expect(sent[2]!.body).not.toHaveProperty("card");
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
+  });
+
+  it("recognizes a pre-deploy Play channel notice without the new console link", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:release_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const make = (state: string, occurred_at: string) => ({ event: "google_play:release_state_changed", payload: {
+      package_name: "build.raft.app", track: "production", version_code: 12000003, state, occurred_at,
+    } });
+    const first = make("RELEASE_LIFECYCLE_STATE_IN_REVIEW", "2026-11-05T10:00:00Z");
+    const next = make("RELEASE_LIFECYCLE_STATE_PUBLISHED", "2026-11-05T10:01:00Z");
+    const oldNotice = formatRaftNotificationMessage(next, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+    const notices: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      if (sent.card) return Response.json({ state: "sent", messageId: "card-1", messageCard: { revision: 1 } });
+      notices.push(sent);
+      return sent.content === oldNotice
+        ? Response.json({ state: "committed", messageId: "old-notice" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(next, "b")).status).toBe(200);
+    expect(notices[0]?.content).toContain("[Open Play Console](https://play.google.com/console/)");
+    expect(notices.at(-1)?.content).toBe(oldNotice);
+    expect(new Set(notices.map((notice) => notice.idempotencyKey)).size).toBe(1);
+    const count = notices.length;
+    expect((await request(next, "retry")).status).toBe(200);
+    expect(notices).toHaveLength(count);
   });
 
   it("cards AppGallery states and updates each submission independently", async () => {

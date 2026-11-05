@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
+import { formatRaftNotificationCard, withoutPlayConsoleFooter } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
 import { playFailureNotificationFields } from "../src/lib/play_failure_notification";
 
 describe("Raft release notification cards", () => {
+  it("recovers the original fallback even when its content already contains the console link", () => {
+    const footer = "\n[Open Play Console](https://play.google.com/console/)";
+    const original = `Status details${footer}\nOther details`;
+    expect(withoutPlayConsoleFooter(original + footer)).toBe(original);
+    expect(withoutPlayConsoleFooter(original)).toBe(original);
+  });
   it("does not expose unknown provider identifiers or free-form error data", () => {
     expect(playFailureNotificationFields({ cause: { provider_cause: "secretToken", cause_source: "structured",
       provider_identifiers: { details: [{ reason: "secretToken" }], metadata: "private-token" },
@@ -15,6 +21,7 @@ describe("Raft release notification cards", () => {
   it("shows safe Play failure details in both the card and fallback, while labeling inferred causes", () => {
     const body = { event: "google_play:submission_failed", delivered_at: 100, payload: {
       state: "SUBMISSION_FAILED", version: "1.20.0", version_code: 12000003, track: "production",
+      package_name: "build.raft.app", occurred_at: "2026-11-05T13:35:09.102Z",
       reason: "play_api_error", play_failure_cause: "EDIT_IN_REVIEW", play_failure_cause_source: "structured",
       play_failure_reason: "CHANGES_ALREADY_IN_REVIEW", provider_message: "secret https://example.test @admin",
     } };
@@ -23,17 +30,37 @@ describe("Raft release notification cards", () => {
     expect(content).toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
     expect(JSON.stringify(card)).toContain("Google Play has changes in review");
     expect(card.elements.state).toEqual({ type: "Badge", props: { text: "Failed", tone: "neutral" } });
+    expect(card.elements.reason0).toEqual({ type: "Text", props: {
+      text: "Google Play has changes in review. Wait for review to finish before submitting again.", tone: "warning",
+    } });
+    expect(card.elements.metadata0).toEqual({ type: "Text", props: {
+      text: "Version code: 12000003\nPackage: build.raft.app\nReason code: play_api_error\nPlay reason code: CHANGES_ALREADY_IN_REVIEW",
+      tone: "muted", mono: true,
+    } });
+    expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "2026-11-05T13:35:09.102Z" } });
+    expect(card.elements.review).toEqual({ type: "Button", props: { label: "Open Play Console",
+      action: { kind: "navigate", url: "https://play.google.com/console/" } } });
+    const root = card.elements.root;
+    if (!root || root.type !== "Stack") throw new Error("missing root stack");
+    expect(root.children.indexOf("reason0")).toBeLessThan(root.children.indexOf("detail0"));
+    expect(root.children.indexOf("detail0")).toBeLessThan(root.children.indexOf("metadata0"));
+    expect(content).toBe(formatRaftNotificationMessage(body) + "\n[Open Play Console](https://play.google.com/console/)");
     expect(JSON.stringify(card)).not.toContain("secret https://example.test");
     expect(content).not.toContain("@admin");
     const inferred = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause_source: "message" } });
     expect(inferred).toContain("Possible reason (inferred):");
     expect(inferred).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
+    const inferredCard = formatRaftNotificationCard({ ...body, payload: { ...body.payload, play_failure_cause_source: "message" } }).card;
+    expect(inferredCard.elements.reason0).toMatchObject({ props: { text: expect.stringMatching(/^Possible reason \(inferred\):/), tone: "warning" } });
     const unknownSource = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause_source: null } });
     expect(unknownSource).toContain("Possible reason (source unconfirmed):");
     expect(unknownSource).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
     const unknown = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause: "secret_unknown" } });
     expect(unknown).not.toContain("secret_unknown");
     expect(unknown).toContain("Reason code: play\\_api\\_error");
+    const unknownCard = formatRaftNotificationCard({ ...body, payload: { ...body.payload, play_failure_cause: "secret_unknown" } }).card;
+    expect(unknownCard.elements.reason0).toBeUndefined();
+    expect(JSON.stringify(unknownCard)).not.toContain("secret_unknown");
   });
   it("shows release state and preserves the complete existing text for older clients", () => {
     const body = {
@@ -80,7 +107,7 @@ describe("Raft release notification cards", () => {
       },
     };
     const { card, content } = formatRaftNotificationCard(body);
-    expect(content).toBe(formatRaftNotificationMessage(body));
+    expect(content).toBe(formatRaftNotificationMessage(body) + "\n[Open Play Console](https://play.google.com/console/)");
     expect(new TextEncoder().encode(JSON.stringify(card)).length).toBeLessThanOrEqual(8192);
     const root = card.elements.root;
     expect(root?.type).toBe("Stack");
@@ -94,7 +121,7 @@ describe("Raft release notification cards", () => {
     }
     const displayed = Object.values(card.elements).filter((element) => element.type === "Text").map((element) => element.props.text).join("");
     expect(displayed).toContain("First observation, not a new change");
-    expect(displayed).toContain("At: 2024-10-27 03:33:20.000 UTC");
+    expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "2024-10-27T03:33:20.000Z" } });
     expect(displayed).toContain("…");
   });
 
@@ -119,7 +146,7 @@ describe("Raft release notification cards", () => {
     expect(content.match(/^```/gm)).toHaveLength(2);
     const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("\n");
     expect(text).toContain("At: not a timestamp");
-    expect(text).toContain("At: 1970-01-01 00:00:00.100 UTC");
+    expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "1970-01-01T00:00:00.100Z" } });
     expect(text).toContain("@\u200badmin");
     expect(text).not.toContain("```text");
   });
@@ -132,6 +159,30 @@ describe("Raft release notification cards", () => {
     expect(content).toContain("…\n```");
     expect(new TextEncoder().encode(JSON.stringify(card)).length).toBeLessThanOrEqual(8192);
     const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("\n");
-    expect(text).toContain("At: 1970-01-01 00:00:00.100 UTC");
+    expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "1970-01-01T00:00:00.100Z" } });
+  });
+
+  it("retains long test notes when the card has room alongside metadata, time and a button", () => {
+    const { card } = formatRaftNotificationCard({ event: "testflight:external_state_changed", delivered_at: 100,
+      payload: { state: "READY_FOR_BETA_TESTING", version: "v".repeat(150), groups_display: "g".repeat(480),
+        source_commit: "a1b2c3", app_store_connect_url: "https://appstoreconnect.apple.com/apps/123",
+        what_to_test: { en: `${"n".repeat(850)} END-OF-NOTES` } },
+    });
+    const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("");
+    expect(text).toContain("END-OF-NOTES");
+    expect(card.elements.time?.type).toBe("RelativeTime");
+    expect(card.elements.review?.type).toBe("Button");
+    expect(new TextEncoder().encode(JSON.stringify(card)).length).toBeLessThanOrEqual(8192);
+    const root = card.elements.root;
+    if (!root || root.type !== "Stack") throw new Error("missing root stack");
+    expect(root.children.length).toBeLessThanOrEqual(12);
+  });
+
+  it("keeps an invalid provider time as text rather than showing a different relative date", () => {
+    const { card, content } = formatRaftNotificationCard({ event: "google_play:release_state_changed", delivered_at: 100,
+      payload: { occurred_at: "2026-02-30T12:00:00Z", state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" } });
+    expect(card.elements.time).toBeUndefined();
+    expect(card.elements.footer0).toMatchObject({ props: { text: "At: 2026-02-30 12:00:00 UTC", tone: "muted" } });
+    expect(content).toContain("At: 2026-02-30 12:00:00 UTC");
   });
 });
