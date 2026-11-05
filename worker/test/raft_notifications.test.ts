@@ -936,6 +936,62 @@ describe("Hands-managed Raft notifications", () => {
     expect(sqlite.prepare("SELECT state,revision FROM raft_notification_cards").get()).toEqual({ state: "retired", revision: 0 });
   });
 
+  it.each([false, true])("recognizes existing AppGallery text with the warning variant (thread=%s)", async (thread) => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:invitation_state_changed", payload: {
+      submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const base = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+    const warning = base + (thread
+      ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates."
+      : "\n⚠️ A previous status card may be out of date; check newer channel messages.");
+    const expectedKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      expect(data.idempotencyKey).toBe(expectedKey);
+      expect(data.target).toBe("#releases");
+      return !data.card && data.content === warning
+        ? Response.json({ state: "committed", messageId: "old-warning" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    const response = await request(event, "a");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ message_id: "old-warning", card: false });
+    expect(calls.at(-1)?.content).toBe(warning);
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
+  it("recovers an existing warning when an uncertain AppGallery send is switched to text", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:package_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:package_state_changed", payload: {
+      package_id: "package-a", build_id: "same-build", state: "processing", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const base = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+    const warning = base + "\n⚠️ A previous status card may be out of date; check newer channel messages.";
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (data.card) throw new Error("card response lost");
+      return data.content === warning ? Response.json({ state: "committed", messageId: "old-warning" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    expect((await request(event, "a")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const recovered = await request(event, "b");
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toMatchObject({ message_id: "old-warning", card: false });
+    expect(new Set(calls.map((call) => call.idempotencyKey)).size).toBe(1);
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
   it("keeps AppGallery events without an object ID on text", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["appgallery:package_state_changed"] });
@@ -998,7 +1054,7 @@ describe("Hands-managed Raft notifications", () => {
       return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
     });
     expect((await request(event, "a")).status).toBe(503);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
     expect(new Set(calls.map((call) => call.idempotencyKey))).toEqual(new Set([
       `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`,
     ]));

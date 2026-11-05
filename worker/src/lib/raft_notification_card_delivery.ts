@@ -46,6 +46,7 @@ interface CardRow {
 
 export interface CardTransport {
   send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
+  replayCompatibleText(request: { target: string; content: string; idempotencyKey: string }): Promise<{ messageId: string }>;
   announce(request: { target: string; previousTarget: string; content: string; eventHash: string }): Promise<{ messageId: string }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;
@@ -134,12 +135,15 @@ export async function deliverRaftNotificationCard(input: {
       let result: { messageId: string; revision: number };
       let sentAsText = false;
       let mayHaveCommitted = wasUncertain;
+      const sendText = () => pending.compatibleTextKey
+        ? transport.replayCompatibleText(pending)
+        : transport.send({ target: pending.target, content: pending.content, idempotencyKey: pending.idempotencyKey });
       try {
         if (pending.kind === "send" && pending.sendAsText) {
           // A text send competes with the original card send under the *same*
           // Raft key. The sender+key unique constraint lets only one win.
           try {
-            const text = await transport.send({ target: pending.target, content: pending.content, idempotencyKey: pending.idempotencyKey });
+            const text = await sendText();
             result = { messageId: text.messageId, revision: 0 };
             sentAsText = true;
           } catch (error) {
@@ -192,7 +196,7 @@ export async function deliverRaftNotificationCard(input: {
             // a card winner instead returns 409 and remains pending.
             const conflict = error && typeof error === "object" ? error as { status?: unknown; code?: unknown } : null;
             if (!pending.compatibleTextKey || conflict?.status !== 409 || conflict.code !== "idempotency_key_reused") throw error;
-            const text = await transport.send({ target: pending.target, content: pending.content, idempotencyKey: pending.idempotencyKey });
+            const text = await sendText();
             result = { messageId: text.messageId, revision: 0 };
             sentAsText = true;
             mayHaveCommitted = true;

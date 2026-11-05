@@ -613,6 +613,18 @@ async function sendBotMessage(
   return { messageId, ...(revision === undefined ? {} : { cardRevision: revision }) };
 }
 
+async function sendKnownBotText(env: Env, bot: BotInstallationRow, target: string, contents: string[], key: string) {
+  let conflict: unknown;
+  for (const candidate of new Set(contents)) {
+    try { return await sendBotMessage(env, bot, target, candidate, key); }
+    catch (error) {
+      if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
+      conflict = error;
+    }
+  }
+  throw conflict;
+}
+
 /**
  * A request started before the channel-routing change may already have sent
  * this signed event to its old thread while its response was lost. Raft binds
@@ -623,18 +635,8 @@ async function sendChannelText(
   env: Env, bot: BotInstallationRow, channel: string, previousTarget: string,
   content: string, previousContents: string[], idempotencyKey: string, channelKey: string,
 ): Promise<{ messageId: string }> {
-  const contents = [...new Set([content, ...previousContents])];
-  const sendKnownContent = async (target: string, key: string) => {
-    let conflict: unknown;
-    for (const candidate of contents) {
-      try { return await sendBotMessage(env, bot, target, candidate, key); }
-      catch (error) {
-        if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
-        conflict = error;
-      }
-    }
-    throw conflict;
-  };
+  const contents = [content, ...previousContents];
+  const sendKnownContent = (target: string, key: string) => sendKnownBotText(env, bot, target, contents, key);
   try {
     return await sendKnownContent(channel, idempotencyKey);
   } catch (error) {
@@ -923,6 +925,8 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
         app: { id: row.app_id, slug: row.app_slug, name: row.app_name },
         transport: {
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
+          replayCompatibleText: (request) => sendKnownBotText(c.env, bot, request.target,
+            [request.content, fallbackWarning(request.content, false), fallbackWarning(request.content, true)], request.idempotencyKey),
           announce: (request) => sendChannelText(c.env, bot, request.target, request.previousTarget,
             request.content, [fallbackWarning(request.content, false), fallbackWarning(request.content, true)],
             `hands-raft:${subscriptionId}:${request.eventHash}`.slice(0, 240),
