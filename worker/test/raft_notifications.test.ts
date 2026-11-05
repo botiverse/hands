@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
+import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
 import { isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
 import {
@@ -770,6 +771,42 @@ describe("Hands-managed Raft notifications", () => {
     expect(new Set(attempts.map((attempt) => attempt.idempotencyKey)).size).toBe(1);
   });
 
+  it("replays the original channel copy if the fallback warning changes between attempts", async () => {
+    const { request, sqlite } = await harness();
+    const event = body("REJECTED");
+    const objectKey = await notificationObjectKey(event);
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, objectKey, "legacy-parent-1", 1, 1);
+    const originalKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const content = formatRaftNotificationMessage(event, {
+      id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test",
+    });
+    const messages = new Map<string, { target: string; content: string; messageId: string }>([
+      [originalKey, { target: "#releases:legacy-p", content, messageId: "legacy-reply" }],
+    ]);
+    let lostResponse = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as { target: string; content: string; idempotencyKey: string };
+      const found = messages.get(data.idempotencyKey);
+      if (found) {
+        if (found.target !== data.target || found.content !== data.content) {
+          return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        }
+        return Response.json({ state: "committed", messageId: found.messageId });
+      }
+      messages.set(data.idempotencyKey, { target: data.target, content: data.content, messageId: "channel-copy" });
+      if (!lostResponse) { lostResponse = true; throw new Error("response lost after commit"); }
+      return Response.json({ state: "sent", messageId: "channel-copy" });
+    });
+    expect((await request(event, "delivery-1")).status).toBe(503);
+    sqlite.prepare("INSERT INTO raft_notification_cards (subscription_id, object_key, state, updated_at) VALUES (?, ?, 'retired', 1)")
+      .run(SUBSCRIPTION_ID, objectKey);
+    const retried = await request(event, "delivery-2");
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ message_id: "channel-copy", threaded: false });
+    expect([...messages.values()].filter((message) => message.target === "#releases")).toHaveLength(1);
+  });
+
   it("posts successive Play and AppGallery status changes to the channel", async () => {
     const { request, updateConfig } = await harness();
     expect((await updateConfig({ events: ["google_play:release_state_changed", "appgallery:package_state_changed"] })).status).toBe(200);
@@ -795,19 +832,92 @@ describe("Hands-managed Raft notifications", () => {
     const sent: Array<{ url: string; body: Record<string, unknown> }> = [];
     mockRaftFetch(async (input, init) => {
       sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
-      return sent.length === 1 ? Response.json({ state: "sent", messageId: "parent-message-1" })
-        : Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      if (sent.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
+      return init?.method === "PUT" ? Response.json({ ok: true, messageId: "parent-message-1", revision: 2 })
+        : Response.json({ state: "sent", messageId: "channel-notice-1" });
     });
     const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
     const second = stateBody("REJECTED", "2026-11-04T07:01:00Z");
     expect((await request(first, "a")).status).toBe(200);
     expect((await request(second, "b")).status).toBe(200);
     expect((await request(first, "c")).status).toBe(200);
-    expect(sent).toHaveLength(2);
+    expect(sent).toHaveLength(3);
     expect(sent[0]!.body).toMatchObject({ target: "#releases", card: { version: 1 }, content: expect.stringContaining("In review") });
     expect(sent[1]!.url).toContain("/messages/parent-message-1/card");
     expect(sent[1]!.body).toMatchObject({ expectedRevision: 1, card: { version: 1 }, content: expect.stringContaining("Review rejected") });
+    expect(sent[2]!.body).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(sent[2]!.body).not.toHaveProperty("card");
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
+  });
+
+  it("retries a lost channel notice with the same content and key before acknowledging the card update", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const updates: Array<Record<string, unknown>> = [];
+    const notices: Array<Record<string, unknown>> = [];
+    const delivered = new Map<string, string>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (init?.method === "PUT") {
+        updates.push(data);
+        return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      }
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      notices.push(data);
+      const key = String(data.idempotencyKey);
+      if (!delivered.has(key)) {
+        delivered.set(key, String(data.content));
+        throw new Error("notice committed but response was lost");
+      }
+      expect(data.content).toBe(delivered.get(key));
+      return Response.json({ state: "committed", messageId: "channel-notice-1" });
+    });
+    const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
+    const next = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(next, "b")).status).toBe(503);
+    expect(sqlite.prepare("SELECT revision,pending_uncertain FROM raft_notification_cards").get())
+      .toEqual({ revision: 1, pending_uncertain: 1 });
+    expect((await request(next, "b-retry")).status).toBe(200);
+    expect((await request(next, "b-duplicate")).status).toBe(200);
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toEqual(updates[0]);
+    expect(notices).toHaveLength(2);
+    expect(notices[1]).toEqual(notices[0]);
+    expect(notices[0]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(delivered.size).toBe(1);
+    expect(sqlite.prepare("SELECT revision,pending_json FROM raft_notification_cards").get())
+      .toEqual({ revision: 2, pending_json: null });
+  });
+
+  it("announces an older pending card send that was committed to a thread", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "legacy-card", messageCard: { revision: 1 } });
+      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      return Response.json({ state: "sent", messageId: "channel-notice-1" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const rendered = formatRaftNotificationCard(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+    const hash = await sha256Hex(JSON.stringify(event));
+    const pending = {
+      kind: "send", eventHash: hash, eventMs: Date.parse(event.payload.occurred_at),
+      idempotencyKey: `hands-card:send:${SUBSCRIPTION_ID}:${hash}`,
+      content: rendered.content, card: rendered.card, target: "#releases:parent-m",
+      messageId: null, expectedRevision: 1, createsRoot: false, createdAt: Date.now(),
+    };
+    sqlite.prepare("UPDATE raft_notification_cards SET pending_json=?,pending_uncertain=1").run(JSON.stringify(pending));
+    expect((await request(event, "b")).status).toBe(200);
+    expect(calls[1]).toMatchObject({ target: "#releases:parent-m", idempotencyKey: pending.idempotencyKey, reconcileOnly: true });
+    expect(calls[2]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(calls[2]).not.toHaveProperty("card");
+    expect(sqlite.prepare("SELECT message_id,pending_json FROM raft_notification_cards").get())
+      .toEqual({ message_id: "legacy-card", pending_json: null });
   });
 
   it("uses Raft's explicit card receipt without relying on joint message readback", async () => {
@@ -965,14 +1075,16 @@ describe("Hands-managed Raft notifications", () => {
       requests.push(JSON.parse(String(init?.body)));
       if (requests.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
       if (requests.length === 2) throw new Error("response lost after update committed");
-      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      return init?.method === "PUT" ? Response.json({ ok: true, messageId: "parent-message-1", revision: 2 })
+        : Response.json({ state: "sent", messageId: "channel-notice-1" });
     });
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
     const next = stateBody("REJECTED", "2026-11-04T07:01:00Z");
     expect((await request(next, "b")).status).toBe(503);
     expect((await request(next, "b-retry")).status).toBe(200);
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(4);
     expect(requests[2]).toEqual(requests[1]);
+    expect(requests[3]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
   });
 
   it("holds an uncertain update when a changed flag refuses its replay", async () => {
@@ -984,7 +1096,8 @@ describe("Hands-managed Raft notifications", () => {
       if (requests.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
       if (requests.length === 2) throw new Error("response lost after update committed");
       if (requests.length === 3) return Response.json({ code: "message_cards_disabled" }, { status: 400 });
-      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      return init?.method === "PUT" ? Response.json({ ok: true, messageId: "parent-message-1", revision: 2 })
+        : Response.json({ state: "sent", messageId: "channel-notice-1" });
     });
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
     const next = stateBody("REJECTED", "2026-11-04T07:01:00Z");
@@ -1027,7 +1140,8 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(uncertain, "b-retry")).status).toBe(200);
     expect(updates[2]).toEqual(updates[0]);
     expect((await request(later, "c-retry")).status).toBe(200);
-    expect(texts[1]).toEqual(texts[0]);
+    expect(texts[1]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(texts[2]).toEqual(texts[0]);
     expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
   });
 
@@ -1217,14 +1331,16 @@ describe("Hands-managed Raft notifications", () => {
       requests.push(parsed);
       if (requests.length === 1) throw new Error("response lost");
       if (parsed.reconcileOnly) return Response.json({ state: "committed", messageId: "parent-message-1" });
-      return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      return init?.method === "PUT" ? Response.json({ ok: true, messageId: "parent-message-1", revision: 2 })
+        : Response.json({ state: "sent", messageId: "channel-notice-1" });
     });
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(503);
     sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
     expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(4);
     expect(requests[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: requests[0]!.idempotencyKey });
     expect(requests[2]).toMatchObject({ expectedRevision: 1, content: expect.stringContaining("Review rejected") });
+    expect(requests[3]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
   });
 
@@ -1259,14 +1375,15 @@ describe("Hands-managed Raft notifications", () => {
     const started = new Promise<void>((resolve) => { signalStarted = resolve; });
     const calls: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
-      calls.push(JSON.parse(String(init?.body)));
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
       if (calls.length === 1) return Response.json({ state: "sent", messageId: "parent-message-1" });
       if (calls.length === 2) {
         signalStarted?.();
         return new Promise<Response>((resolve) => { releaseOld = resolve; });
       }
-      if (calls.length === 3) return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
-      return Response.json({ ok: true, messageId: "parent-message-1", revision: 3 });
+      if (init?.method !== "PUT") return Response.json({ state: "sent", messageId: `notice-${calls.length}` });
+      return Response.json({ ok: true, messageId: "parent-message-1", revision: Number(data.expectedRevision) + 1 });
     });
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
     const old = request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b");
@@ -1274,7 +1391,9 @@ describe("Hands-managed Raft notifications", () => {
     now += 31_000;
     expect((await request(stateBody("APPROVED", "2026-11-04T07:02:00Z"), "c")).status).toBe(200);
     expect(calls[2]).toEqual(calls[1]);
-    expect(calls[3]).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    expect(calls[3]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(calls[4]).toMatchObject({ expectedRevision: 2, content: expect.stringContaining("APPROVED") });
+    expect(calls[5]).toMatchObject({ target: "#releases", content: expect.stringContaining("APPROVED") });
     if (!releaseOld) throw new Error("old update did not start");
     releaseOld(Response.json({ ok: true, messageId: "parent-message-1", revision: 2 }));
     expect((await old).status).toBe(503);
@@ -1343,7 +1462,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(calls[1]).not.toHaveProperty("card");
   });
 
-  it("sends a new card in the thread after the update window", async () => {
+  it("sends a new card to the channel after the update window", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
     const calls: Array<Record<string, unknown>> = [];
@@ -1354,7 +1473,7 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
     sqlite.prepare("UPDATE raft_notification_cards SET message_created_at=?").run(Date.now() - 15 * 24 * 60 * 60_000);
     expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
-    expect(calls[1]).toMatchObject({ target: "#releases:parent-m", card: { version: 1 } });
+    expect(calls[1]).toMatchObject({ target: "#releases", card: { version: 1 } });
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "next-card-1", revision: 1 });
   });
 

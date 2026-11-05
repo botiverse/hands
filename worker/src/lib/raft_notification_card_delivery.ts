@@ -42,6 +42,7 @@ interface CardRow {
 
 export interface CardTransport {
   send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
+  announce(request: { target: string; previousTarget: string; content: string; eventHash: string }): Promise<{ messageId: string }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;
   update(request: { messageId: string; content: string; card: RaftMessageCard; expectedRevision: number; idempotencyKey: string }): Promise<{ messageId: string; revision: number }>;
@@ -91,6 +92,7 @@ export async function deliverRaftNotificationCard(input: {
   subscriptionId: string;
   objectKey: string;
   target: string;
+  channelTarget: string;
   createsRoot: boolean;
   eventHash: string;
   body: Payload;
@@ -185,6 +187,26 @@ export async function deliverRaftNotificationCard(input: {
           if (result.messageId !== pending.messageId || result.revision !== pending.expectedRevision + 1) {
             return { kind: "retry", code: "card_delivery_incomplete" };
           }
+          mayHaveCommitted = true;
+        }
+        // Updating a card does not create an unread message. Keep the exact
+        // card request pending until a channel notice is confirmed as well;
+        // its content and event hash are frozen in pending_json, so a lost
+        // notice response can be replayed without another channel message.
+        // Pending sends from an older worker may have targeted a thread and
+        // similarly need a channel notice after their outcome is known.
+        if (pending.kind === "update" || pending.target !== input.channelTarget) {
+          const stillOwned = await ownUpdate(`UPDATE raft_notification_cards SET lease_expires_at=?1,updated_at=?2
+            WHERE subscription_id=?3 AND object_key=?4 AND lease_token=?5 AND pending_json=?6`,
+            now() + LEASE_MS, now(), subscriptionId, objectKey, token, JSON.stringify(pending));
+          if (!stillOwned) return { kind: "retry", code: "card_delivery_lease_lost" };
+          mayHaveCommitted = true;
+          await transport.announce({
+            target: input.channelTarget,
+            previousTarget: pending.target,
+            content: pending.content,
+            eventHash: pending.eventHash,
+          });
         }
       } catch (error) {
         const code = refusal(error);
@@ -299,7 +321,7 @@ export async function deliverRaftNotificationCard(input: {
     const pending: Pending = {
       kind: newCard ? "send" : "update", eventHash: input.eventHash, eventMs: when,
       idempotencyKey: `hands-card:${newCard ? "send" : "update"}:${subscriptionId}:${input.eventHash}`.slice(0, 240),
-      content: rendered.content, card: rendered.card, target: input.target,
+      content: rendered.content, card: rendered.card, target: newCard ? input.channelTarget : input.target,
       messageId: newCard ? null : row.message_id, expectedRevision: row.revision,
       createsRoot: newCard && input.createsRoot, createdAt: now(),
     };
