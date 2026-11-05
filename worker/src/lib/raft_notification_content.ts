@@ -5,6 +5,7 @@ type Payload = Record<string, unknown>;
 type FieldRenderer = (payload: Payload) => string[];
 interface Presentation {
   icon: string;
+  title: string;
   details?: FieldRenderer;
   footer?: FieldRenderer;
 }
@@ -16,10 +17,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CLI_APP_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,99}$/i;
 
 const SAFE_PAYLOAD_FIELDS: ReadonlyArray<readonly [string, string]> = [
-  ["kind", "kind"], ["status", "status"], ["previous status", "previous_status"],
-  ["state", "state"], ["previous state", "previous_state"],
-  ["version", "version_string"], ["version", "version"], ["version name", "version_name"],
-  ["build", "build_number"], ["version code", "version_code"], ["track", "track"],
+  ["kind", "kind"], ["track", "track"],
   ["channel", "channel"], ["distribution", "distribution"], ["platform", "platform"],
   ["failure code", "failure_code"], ["reason code", "reason_code"], ["ticket", "ticket_id"],
   ["release", "release_id"], ["build id", "build_id"], ["package", "package_name"],
@@ -47,6 +45,19 @@ function safePreview(value: unknown, limit: number): string | null {
   return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
 }
 
+function safeNotes(value: unknown, limit: number): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/https?:\/\/[^\s]+/gi, "[link]")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, " ")
+    .split("\n").map((line) => line.replace(/[^\S\n]+/gu, " ").trim()).join("\n")
+    .replace(/\n{3,}/g, "\n\n").trim();
+  if (!cleaned) return null;
+  const chars = Array.from(cleaned);
+  const shortened = chars.length > limit ? `${chars.slice(0, limit).join("")}…` : cleaned;
+  return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
+}
+
 function feedbackPreview(payload: Payload): string[] {
   if (payload.kind !== "feedback" && payload.kind !== "bug") return [];
   const preview = safePreview(payload.message, MAX_FEEDBACK_PREVIEW_LENGTH);
@@ -58,8 +69,12 @@ function testflightDetails(payload: Payload): string[] {
   const notes = record(payload.what_to_test);
   const locales = Object.keys(notes).filter((locale) => /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale)).sort();
   const locale = locales.includes("zh-Hans") ? "zh-Hans" : locales[0];
-  const note = locale ? safePreview(notes[locale], MAX_FIELD_LENGTH) : null;
-  if (locale && note) lines.push(`Test notes (${locale}): ${note}`);
+  const note = locale ? safeNotes(notes[locale], MAX_FIELD_LENGTH) : null;
+  if (locale && note) {
+    lines.push(note.includes("\n")
+      ? `Test notes (${locale}):\n  ${note.replace(/\n/g, "\n  ")}`
+      : `Test notes (${locale}): ${note}`);
+  }
   const commit = safeValue(payload.source_commit);
   if (commit && /^[0-9a-f]{7,64}$/i.test(commit)) lines.push(`source commit: ${commit}`);
   return lines;
@@ -72,19 +87,30 @@ function appleReviewFooter(payload: Payload): string[] {
 // Event-specific presentation is registered here; the common safe field and
 // footer rules below apply consistently to every event.
 const PRESENTATIONS = new Map<string, Presentation>([
-  ["app_store:version_state_changed", { icon: "🍎", footer: appleReviewFooter }],
-  ["app_store:build_upload_state_changed", { icon: "📦" }],
-  ["testflight:upload_processing", { icon: "📦" }],
-  ["testflight:internal_distribution_ready", { icon: "✈️", details: testflightDetails }],
-  ["testflight:external_state_changed", { icon: "✈️", details: testflightDetails }],
-  ["google_play:release_state_changed", { icon: "▶️" }],
-  ["google_play:submission_succeeded", { icon: "✅" }],
-  ["google_play:submission_failed", { icon: "⚠️" }],
-  ["appgallery:invitation_state_changed", { icon: "📱" }],
-  ["appgallery:package_state_changed", { icon: "📦" }],
-  ["release:published", { icon: "🚀" }],
-  ["release:rolled_back", { icon: "↩️" }],
-  ["release:channel_emptied", { icon: "🛑" }],
+  ["app_store:version_state_changed", { icon: "🍎", title: "App Store version status changed", footer: appleReviewFooter }],
+  ["app_store:build_upload_state_changed", { icon: "📦", title: "App Store build upload status changed" }],
+  ["testflight:upload_processing", { icon: "📦", title: "TestFlight upload processing" }],
+  ["testflight:internal_distribution_ready", { icon: "✈️", title: "TestFlight ready for internal testing", details: testflightDetails }],
+  ["testflight:external_state_changed", { icon: "✈️", title: "TestFlight external testing status changed", details: testflightDetails }],
+  ["testflight:crash_submission_created", { icon: "💥", title: "TestFlight crash report received" }],
+  ["crash:new_group", { icon: "💥", title: "New crash group" }],
+  ["crash:spike", { icon: "📈", title: "Crash spike" }],
+  ["error:new_group", { icon: "⚠️", title: "New error group" }],
+  ["error:spike", { icon: "📈", title: "Error spike" }],
+  ["google_play:release_state_changed", { icon: "▶️", title: "Google Play release status changed" }],
+  ["google_play:submission_succeeded", { icon: "✅", title: "Google Play submission succeeded" }],
+  ["google_play:submission_failed", { icon: "⚠️", title: "Google Play submission failed" }],
+  ["appgallery:invitation_state_changed", { icon: "📱", title: "AppGallery test status changed" }],
+  ["appgallery:package_state_changed", { icon: "📦", title: "AppGallery package status changed" }],
+  ["release:new", { icon: "📦", title: "Release created" }],
+  ["release:draft_created", { icon: "📝", title: "Release draft created" }],
+  ["release:superseded", { icon: "🔄", title: "Release superseded" }],
+  ["release:published", { icon: "🚀", title: "Release published" }],
+  ["release:rolled_back", { icon: "↩️", title: "Release rolled back" }],
+  ["release:channel_emptied", { icon: "🛑", title: "Release channel has no active release" }],
+  ["release:cancelled", { icon: "🛑", title: "Release cancelled" }],
+  ["build:succeeded", { icon: "✅", title: "Build succeeded" }],
+  ["build:failed", { icon: "⚠️", title: "Build failed" }],
 ]);
 
 const ROLLOUT_FIELDS = new Map<string, string>([
@@ -92,15 +118,31 @@ const ROLLOUT_FIELDS = new Map<string, string>([
   ["google_play", "rollout_percent"],
 ]);
 
-function standardFields(payload: Payload, build: Payload): string[] {
+function standardFields(payload: Payload, build: Payload, omitTicket = false): string[] {
   const lines: string[] = [];
+  const value = (key: string) => safePreview(safeValue(payload[key]) ?? safeValue(build[key]), MAX_FIELD_LENGTH);
+  for (const label of ["status", "state"] as const) {
+    const current = value(label);
+    const previous = value(`previous_${label}`);
+    if (current) lines.push(`${label}: ${previous && previous !== current ? `${previous} → ` : ""}${current}`);
+    else if (previous) lines.push(`previous ${label}: ${previous}`);
+  }
+  const version = value("version_string") ?? value("version");
+  const versionName = value("version_name");
+  const buildNumber = value("build_number");
+  const versionCode = value("version_code");
+  if (version || versionName) lines.push(`version: ${version ?? versionName}`);
+  if (version && versionName && version !== versionName) lines.push(`version name: ${versionName}`);
+  if (buildNumber) lines.push(`build: ${buildNumber}`);
+  if (versionCode && versionCode !== buildNumber) lines.push(`version code: ${versionCode}`);
   const seen = new Set<string>();
   for (const [label, key] of SAFE_PAYLOAD_FIELDS) {
+    if (label === "ticket" && omitTicket) continue;
     if (seen.has(label)) continue;
-    const value = safePreview(safeValue(payload[key]) ?? safeValue(build[key]), MAX_FIELD_LENGTH);
-    if (!value) continue;
+    const rendered = value(key);
+    if (!rendered) continue;
     seen.add(label);
-    lines.push(`${label}: ${value}`);
+    lines.push(`${label}: ${rendered}`);
   }
   for (const [label, value] of [
     ["description", payload.state_label],
@@ -112,6 +154,14 @@ function standardFields(payload: Payload, build: Payload): string[] {
     if (text) lines.push(`${label}: ${text}`);
   }
   return lines;
+}
+
+/** Current state for the card badge, independent of the formatted transition. */
+export function raftNotificationCurrentState(body: Payload): string | null {
+  const payload = record(body.payload);
+  const build = record(payload.build);
+  return safePreview(safeValue(payload.status) ?? safeValue(build.status)
+    ?? safeValue(payload.state) ?? safeValue(build.state), MAX_FIELD_LENGTH);
 }
 
 function rolloutField(event: string, payload: Payload): string[] {
@@ -131,11 +181,24 @@ interface NotificationApp {
   id: string;
   slug: string | null;
   name: string | null;
+  dashboardOrigin?: string | null;
+}
+
+function feedbackLink(origin: string | null | undefined, appId: string | null, ticketId: string | null): string | null {
+  if (!origin || !appId || !ticketId || !UUID_RE.test(appId)) return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" || url.pathname !== "/" || url.search || url.hash || url.username || url.password) return null;
+    return `${url.origin}/apps/${appId}/feedback/${ticketId}`;
+  } catch {
+    return null;
+  }
 }
 
 function feedbackMessage(
   event: string, payload: Payload, build: Payload, appName: string | null,
   appId: string | null, cliApp: string | null, ticketId: string | null, occurred: string | null,
+  dashboardOrigin: string | null | undefined,
 ): string {
   const kind = safeValue(payload.kind);
   const names = new Map<string, string>([
@@ -147,7 +210,11 @@ function feedbackMessage(
     : names.get(kind ?? "") ?? "New feedback report";
   const icon = event === "feedback:comment_created" ? "💬" : event === "feedback:status_changed" ? "🔄" : "📮";
   const app = appName ?? safePreview(appId, 160);
-  const lines = [`${icon} **${title}${app ? ` · ${app}` : ""}**`];
+  // Keep comment/status notifications compact even when they are the first
+  // event for a subscription. A validated dashboard link is also useful when
+  // there is no earlier parent message containing the CLI command.
+  const link = event !== "feedback:new" ? feedbackLink(dashboardOrigin, appId, ticketId) : null;
+  const lines = [`${icon} **${title}${app ? ` · ${app}` : ""}**${link ? ` · [View feedback](${link})` : ""}`];
   if (event === "feedback:new") {
     lines.push(...feedbackPreview(payload));
     const version = safePreview(safeValue(payload.version_name) ?? safeValue(payload.version_string)
@@ -161,8 +228,8 @@ function feedbackMessage(
   else if (previous) lines.push(`Previous status: ${previous}`);
   const footer: string[] = [];
   if (occurred) footer.push(`occurred: ${occurred}`);
-  if (ticketId && cliApp) footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
-  else {
+  if (!link && ticketId && cliApp) footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
+  else if (!link) {
     const displayTicket = safePreview(safeValue(payload.ticket_id), 160);
     if (displayTicket) footer.push(`ticket: ${displayTicket}`);
   }
@@ -178,7 +245,7 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   const app = record(payload.app);
   const build = record(payload.build);
   const presentation = PRESENTATIONS.get(event);
-  const lines = [`${presentation ? `${presentation.icon} ` : ""}**Hands · ${event}**`];
+  const lines = [presentation ? `${presentation.icon} **${presentation.title}**` : `**Hands · ${event}**`];
   const footer: string[] = [];
   const appId = safeValue(knownApp?.id) ?? safeValue(body.app_id) ?? safeValue(app.id);
   const appSlug = safeValue(knownApp?.slug) ?? safeValue(payload.app_slug) ?? safeValue(app.slug);
@@ -195,11 +262,17 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
     ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
   if (isFeedbackThreadEvent(event)) {
-    return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred);
+    return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred, knownApp?.dashboardOrigin);
   }
-  if (appName && appIdDisplay) lines.push(`App: ${appName} (${appIdDisplay})`);
-  else if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
-  lines.push(...standardFields(payload, build));
+  const isIssueAlert = /^(crash|error):(new_group|spike)$/.test(event);
+  const issueCommand = isIssueAlert && ticketId && cliApp
+    ? `📖 View more: \`hands feedback show ${cliApp} ${ticketId}\`` : null;
+  if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
+  lines.push(...standardFields(payload, build, !!issueCommand));
+  if (isIssueAlert && typeof payload.count_last_hour === "number"
+    && Number.isSafeInteger(payload.count_last_hour) && payload.count_last_hour >= 0) {
+    lines.push(`reports in the last hour: ${payload.count_last_hour}`);
+  }
 
   const observation = safePreview(payload.observation_display, MAX_FIELD_LENGTH);
   if (observation) footer.push(`observation: ${observation}`);
@@ -210,6 +283,7 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
 
   // Hands delivery timestamps are milliseconds; preserve provider timestamps.
   if (occurred) footer.push(`occurred: ${occurred}`);
+  if (issueCommand) footer.push(issueCommand);
   const content = lines.join("\n");
   if (footer.length === 0) return truncateMessage(content, MAX_MESSAGE_LENGTH);
   const tail = footer.join("\n");

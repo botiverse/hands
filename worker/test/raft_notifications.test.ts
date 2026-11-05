@@ -15,7 +15,7 @@ import {
   handleTestRaftNotification,
   handleUpdateRaftNotification,
 } from "../src/routes/raft_notifications";
-import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex, reapWebhookDeliveries } from "../src/routes/webhooks";
+import { handleDeleteAppWebhook, handleUpdateAppWebhook, hmacSha256Hex, reapWebhookDeliveries, WEBHOOK_EVENT_TYPES } from "../src/routes/webhooks";
 
 function d1(sqlite: Database.Database): D1Database {
   const prepare = (sql: string) => {
@@ -46,7 +46,7 @@ function d1(sqlite: Database.Database): D1Database {
   return { prepare, batch } as unknown as D1Database;
 }
 
-const APP_ID = "app-1";
+const APP_ID = "abad63e9-e760-42e9-92df-f418735f32ea";
 const SUBSCRIPTION_ID = "sub-1";
 const SECRET = "webhook-secret";
 const BOT_KEY = "sk_agent_test-key";
@@ -112,6 +112,7 @@ async function harness() {
   const env = {
     DB: d1(sqlite),
     RAFT_API_ORIGIN: "https://api.raft.test",
+    DASHBOARD_ORIGIN: "https://hands.test",
     RAFT_CLIENT_ID: "hands-client",
     RAFT_CLIENT_SECRET: "client-secret",
     RAFT_BOT_ENC_KEY: "enc-secret",
@@ -199,7 +200,7 @@ function mockRaftFetch(implementation: typeof fetch) {
 describe("Hands-managed Raft notifications", () => {
   it("renders a safe review card and omits provider prose", () => {
     const message = formatRaftNotificationMessage(body("REJECTED"));
-    expect(message).toContain("app_store:version_state_changed");
+    expect(message).toContain("App Store version status changed");
     expect(message).toContain("1.17.0");
     expect(message).toContain("App Store Connect");
     expect(message).not.toContain("provider prose must never be forwarded");
@@ -221,7 +222,7 @@ describe("Hands-managed Raft notifications", () => {
       expect(message.startsWith(heading)).toBe(true);
       expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     }
-    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **Hands · app_store:version_state_changed**")).toBe(true);
+    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **App Store version status changed**")).toBe(true);
   });
 
   it("keeps release context and identifies a first Play observation", () => {
@@ -233,7 +234,7 @@ describe("Hands-managed Raft notifications", () => {
         rollout_percent: 20,
       },
     });
-    expect(message.startsWith("▶️ **Hands · google_play:release_state_changed**")).toBe(true);
+    expect(message.startsWith("▶️ **Google Play release status changed**")).toBe(true);
     expect(message).toContain("observation: First observation, not a new change");
     expect(message).toContain("description: Track available");
     expect(message).toContain("track: alpha");
@@ -241,7 +242,7 @@ describe("Hands-managed Raft notifications", () => {
     const release = formatRaftNotificationMessage({
       event: "release:published", payload: { rollout: 100, version_transition: "1.0 → 1.1", version_code_transition: "1 → 2" },
     });
-    expect(release).toContain("🚀 **Hands · release:published**");
+    expect(release).toContain("🚀 **Release published**");
     expect(release).toContain("version transition: 1.0 → 1.1");
     expect(release).toContain("version code transition: 1 → 2");
     expect(release).toContain("rollout: 100%");
@@ -249,10 +250,10 @@ describe("Hands-managed Raft notifications", () => {
 
   it("uses common safe fields for events without a custom presentation", () => {
     const message = formatRaftNotificationMessage({
-      event: "release:draft_created",
+      event: "release:future_event",
       payload: { version: "1.2.3", rollout: 25, state: "draft", message: "private text" },
     });
-    expect(message.startsWith("**Hands · release:draft_created**")).toBe(true);
+    expect(message.startsWith("**Hands · release:future_event**")).toBe(true);
     expect(message).toContain("version: 1.2.3");
     expect(message).toContain("rollout: 25%");
     expect(message).not.toContain("private text");
@@ -267,7 +268,7 @@ describe("Hands-managed Raft notifications", () => {
       source_commit: "a1b2c3d4",
     };
     const message = formatRaftNotificationMessage({ event: "testflight:internal_distribution_ready", payload });
-    expect(message.startsWith("✈️ **Hands · testflight:internal_distribution_ready**")).toBe(true);
+    expect(message.startsWith("✈️ **TestFlight ready for internal testing**")).toBe(true);
     expect(message).toContain("groups: Test group: internal");
     expect(message).toContain("Test notes (zh-Hans): Check @\u200badmin #\u200brelease \\[link\\]");
     expect(message).toContain("source commit: a1b2c3d4");
@@ -276,6 +277,48 @@ describe("Hands-managed Raft notifications", () => {
     expect(message).toContain("…");
     expect(message).not.toContain("https://example.test");
     expect(formatRaftNotificationMessage({ event: "release:published", payload })).not.toContain("Test notes");
+  });
+
+  it("renders a descriptive heading for every supported webhook event", () => {
+    for (const event of WEBHOOK_EVENT_TYPES) {
+      const message = formatRaftNotificationMessage({ event, payload: { kind: "feedback" } });
+      expect(message.split("\n")[0], event).not.toContain(event);
+      expect(message.split("\n")[0], event).toMatch(/\*\*.+\*\*/);
+    }
+  });
+
+  it("combines state transitions and avoids repeating identical build values", () => {
+    const message = formatRaftNotificationMessage({
+      event: "app_store:build_upload_state_changed", app_id: "app-id",
+      payload: { app: { name: "Raft App" }, state: "COMPLETE", previous_state: "PROCESSING",
+        version: "1.19.2", version_name: "1.19.2", build_number: "11902002", version_code: 11902002 },
+    });
+    expect(message).toContain("App: Raft App\nstate: PROCESSING → COMPLETE\nversion: 1.19.2\nbuild: 11902002");
+    expect(message).not.toContain("app-id");
+    expect(message).not.toContain("previous state:");
+    expect(message).not.toContain("version name:");
+    expect(message).not.toContain("version code:");
+    const distinct = formatRaftNotificationMessage({ event: "build:succeeded", payload: {
+      version: "1.0", version_name: "1.0-beta", build_number: "12", version_code: 13,
+    } });
+    expect(distinct).toContain("version: 1.0");
+    expect(distinct).toContain("version name: 1.0-beta");
+    expect(distinct).toContain("build: 12");
+    expect(distinct).toContain("version code: 13");
+  });
+
+  it("makes crash spikes actionable without including crash content", () => {
+    const message = formatRaftNotificationMessage({
+      event: "crash:spike", app_id: "abad63e9-e760-42e9-92df-f418735f32ea",
+      payload: { app_slug: "sample-app", ticket_id: TICKET_ID, count_last_hour: 50,
+        version_name: "1.19.2", message: "PRIVATE STACK", signature: "PRIVATE SIGNATURE" },
+    });
+    expect(message).toContain("📈 **Crash spike**");
+    expect(message).toContain("reports in the last hour: 50");
+    expect(message).toContain(`hands feedback show sample-app ${TICKET_ID}`);
+    expect(message.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
+    expect(message).not.toContain("PRIVATE STACK");
+    expect(message).not.toContain("PRIVATE SIGNATURE");
   });
 
   it("does not show internal event source metadata in release notifications", () => {
@@ -328,6 +371,36 @@ describe("Hands-managed Raft notifications", () => {
     expect(feedback).not.toContain("https://example.test");
     expect(feedback).toContain("📮 **New bug report · sample-app**\nHi @\u200badmin #\u200brelease");
     expect(feedback).toContain("\\[link\\]");
+  });
+
+  it("renders compact comment and status notifications with a safe details link", () => {
+    const known = { id: APP_ID, name: "Sample App", slug: "sample-app", dashboardOrigin: "https://hands.test" };
+    const comment = formatRaftNotificationMessage(feedbackBody("feedback:comment_created", {
+      comment: { body: "PRIVATE COMMENT" },
+    }), known);
+    expect(comment).toContain(`💬 **New comment · Sample App** · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    expect(comment).not.toContain("hands feedback show");
+    expect(comment).not.toContain("PRIVATE COMMENT");
+    const status = formatRaftNotificationMessage(feedbackBody("feedback:status_changed", {
+      previous_status: "open", status: "resolved",
+    }), known);
+    expect(status).toContain("Status: open → resolved");
+    expect(status).toContain(`[View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    for (const badOrigin of ["https://hands.test/path", "https://user:password@hands.test", "javascript:alert(1)"]) {
+      const fallback = formatRaftNotificationMessage(feedbackBody("feedback:comment_created"), { ...known, dashboardOrigin: badOrigin });
+      expect(fallback).not.toContain("[View feedback]");
+      expect(fallback).toContain(`hands feedback show sample-app ${TICKET_ID}`);
+    }
+  });
+
+  it("keeps test-note line breaks without creating mentions, links or fake footer lines", () => {
+    const message = formatRaftNotificationMessage({
+      event: "testflight:internal_distribution_ready", delivered_at: 100,
+      payload: { what_to_test: { "zh-Hans": "First check\noccurred: not a timestamp\n@admin https://example.test/secret" } },
+    });
+    expect(message).toContain("Test notes (zh-Hans):\n  First check\n  occurred: not a timestamp\n  @\u200badmin \\[link\\]");
+    expect(message).not.toContain("https://example.test/secret");
+    expect(message).toContain("\noccurred: 1970-01-01T00:00:00.100Z");
   });
 
   it("combines feedback identity, version, and status without repeating identifiers", () => {
@@ -1077,8 +1150,11 @@ describe("Hands-managed Raft notifications", () => {
     }
     expect(sent.map((item) => item.target)).toEqual(["#releases", "#releases:parent-m", "#releases:parent-m"]);
     expect(sent[0]!.content).toContain("📮 **New feedback · Sample App**");
+    expect(sent[1]!.content).toContain(`[View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    expect(sent[1]!.content).not.toContain("hands feedback show");
     expect(sent[1]!.content).not.toContain("Private comment");
     expect(sent[2]!.content).toContain("Status: open → resolved");
+    expect(sent[2]!.content).toContain("[View feedback]");
     expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_threads WHERE subscription_id = ?").pluck().get(SUBSCRIPTION_ID)).toBe(1);
   });
 

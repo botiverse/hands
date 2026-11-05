@@ -892,7 +892,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   }
   try {
     const content = formatRaftNotificationMessage(eventBody, {
-      id: row.app_id, slug: row.app_slug, name: row.app_name,
+      id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null,
     }) + (cardTextFallback ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates." : "");
     const sent = await sendBotMessage(c.env, bot, target, content, idempotencyKey);
     const now = Date.now();

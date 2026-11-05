@@ -7,7 +7,7 @@ describe("Raft release notification cards", () => {
     const body = {
       event: "testflight:external_state_changed", delivered_at: 1730000000000,
       payload: {
-        app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING",
+        app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING", previous_state: "IN_REVIEW",
         build: { version: "1.19.0", version_code: "11900001" },
         groups_display: "Internal and external testers",
         what_to_test: { "zh-Hans": "Check @people and https://example.test/private" },
@@ -19,6 +19,7 @@ describe("Raft release notification cards", () => {
     const result = formatRaftNotificationCard(body);
     expect(result.content).toBe(formatRaftNotificationMessage(body));
     expect(result.card.elements.state).toEqual({ type: "Badge", props: { text: "READY_FOR_BETA_TESTING", tone: "neutral" } });
+    expect(result.content).toContain("state: IN\\_REVIEW → READY\\_FOR\\_BETA\\_TESTING");
     expect(result.card.elements.review).toEqual({
       type: "Button", props: { label: "Open in App Store Connect", action: { kind: "navigate", url: "https://appstoreconnect.apple.com/apps/6789091965" } },
     });

@@ -1,6 +1,6 @@
 /** Build the display-only Raft card and the independently readable fallback.
  * Delivery and revision ordering are deliberately kept outside this renderer. */
-import { formatRaftNotificationMessage } from "./raft_notification_content";
+import { formatRaftNotificationMessage, raftNotificationCurrentState } from "./raft_notification_content";
 
 type Payload = Record<string, unknown>;
 type App = { id: string; slug: string | null; name: string | null };
@@ -63,8 +63,8 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const [heading = "Hands", ...lines] = content.split("\n");
   const title = shorten(plain(heading.replace(/\*\*/g, "")), 160);
   const url = reviewUrl(record(body.payload));
-  const stateLine = lines.find((line) => /^(state|status): /.test(line));
-  const state = stateLine ? shorten(plain(stateLine.replace(/^(state|status): /, "")), 60) : null;
+  const currentState = raftNotificationCurrentState(body);
+  const state = currentState ? shorten(plain(currentState), 60) : null;
   const footerLines = lines.filter((line) => line.startsWith("observation: ") || line.startsWith("occurred: ")
     || line.startsWith("Review: ") || line.startsWith("📖 View more: ")
     || line === "Apple's review message is available in App Store Connect.");
