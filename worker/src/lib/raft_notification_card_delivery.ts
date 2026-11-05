@@ -9,6 +9,7 @@ export const RAFT_NOTIFICATION_CARD_EVENTS = [
   "app_store:version_state_changed",
   "testflight:external_state_changed",
   "google_play:release_state_changed",
+  "google_play:submission_failed",
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
 ] as const;
@@ -394,7 +395,8 @@ export async function deliverRaftNotificationCard(input: {
     const newCard = !row.message_id || !row.message_created_at || now() - row.message_created_at >= MAX_CARD_AGE_MS;
     const rendered = formatRaftNotificationCard(input.body, input.app);
     const compatibleTextKey = newCard && (input.body.event === "appgallery:invitation_state_changed"
-      || input.body.event === "appgallery:package_state_changed");
+      || input.body.event === "appgallery:package_state_changed"
+      || input.body.event === "google_play:submission_failed");
     const pending: Pending = {
       kind: newCard ? "send" : "update", eventHash: input.eventHash, eventMs: when,
       idempotencyKey: (compatibleTextKey ? `hands-raft:${subscriptionId}:${input.eventHash}`

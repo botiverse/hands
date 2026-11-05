@@ -176,6 +176,13 @@ const body = (state: string) => ({
 const stateBody = (state: string, occurredAt: string) => ({
   ...body(state), payload: { ...body(state).payload, occurred_at: occurredAt },
 });
+const playFailureBody = (receiptId: string) => ({
+  event: "google_play:submission_failed", delivered_at: 100,
+  payload: { receipt_id: receiptId, release_id: "release-1", version: "1.20.0", version_code: 12000003,
+    track: "production", state: "SUBMISSION_FAILED", reason: "play_api_error",
+    play_failure_cause: "EDIT_IN_REVIEW", play_failure_cause_source: "structured",
+    play_failure_reason: "CHANGES_ALREADY_IN_REVIEW", occurred_at: "2026-11-05T12:35:08.416Z" },
+});
 
 const TICKET_ID = "38d49b32-9499-40d2-ad45-3a23dd8c37f7";
 const feedbackBody = (event: string, extra: Record<string, unknown> = {}) => ({
@@ -199,6 +206,191 @@ function mockRaftFetch(implementation: typeof fetch) {
 }
 
 describe("Hands-managed Raft notifications", () => {
+  it("sends each Play failure receipt as a separate channel card and deduplicates its replay", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: `card-${calls.length}` });
+    });
+    const first = playFailureBody("11111111-1111-4111-8111-111111111111");
+    const second = playFailureBody("22222222-2222-4222-8222-222222222222");
+    expect((await request(first, "a")).status).toBe(200);
+    expect((await request(first, "a-retry")).status).toBe(200);
+    expect((await request(second, "b")).status).toBe(200);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call).toMatchObject({ target: "#releases", card: { version: 1 },
+        content: expect.stringContaining("Google Play has changes in review") });
+      expect(JSON.stringify(call.card)).toContain("CHANGES_ALREADY_IN_REVIEW");
+    }
+    expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_cards").pluck().get()).toBe(2);
+  });
+
+  it("keeps a failure without a valid receipt ID on text", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: "text-1" });
+    });
+    expect((await request(playFailureBody("invalid"), "a")).status).toBe(200);
+    expect(calls[0]).not.toHaveProperty("card");
+    expect(calls[0]).toMatchObject({ content: expect.stringContaining("Google Play has changes in review") });
+  });
+
+  it("reconciles a failure card whose send response was lost without posting it again", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(sent);
+      if (sent.card) throw new Error("card committed, response lost");
+      if (sent.reconcileOnly) return Response.json({ state: "committed", messageId: "card-1", messageCard: { revision: 1 } });
+      throw new Error("unexpected extra send");
+    });
+    const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+    expect((await request(event, "first")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const retry = await request(event, "retry");
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ message_id: "card-1", card: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: calls[0]?.idempotencyKey });
+  });
+
+  it("uses the original failure-card key when cards are disabled during an uncertain send", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(sent);
+      if (sent.card) throw new Error("response lost");
+      return Response.json({ state: "sent", messageId: "text-1" });
+    });
+    const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+    expect((await request(event, "first")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const retry = await request(event, "retry");
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ message_id: "text-1", card: false });
+    expect(calls[1]).toMatchObject({ idempotencyKey: calls[0]?.idempotencyKey,
+      target: "#releases", content: expect.stringContaining("Google Play has changes in review") });
+    expect(calls[1]).not.toHaveProperty("card");
+    expect(String(calls[1]?.content)).not.toContain("card may be out of date");
+    expect((await request(event, "third")).status).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("recognizes a legacy channel text that won the same event key without sending a duplicate", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+      .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(sent);
+      if (!sent.card && sent.target === "#releases" && !String(sent.content).includes("Google Play has changes in review")) {
+        return Response.json({ state: "committed", messageId: "legacy-message" });
+      }
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+    const result = await request(event, "a");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "legacy-message", card: false });
+    expect(calls.every((c) => c.idempotencyKey === calls[0]?.idempotencyKey)).toBe(true);
+    expect((await request(event, "retry")).status).toBe(200);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("proves a legacy threaded text before sending one enriched channel copy", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+      .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(sent);
+      if (sent.target === "#releases:old-pare" && !sent.card
+          && !String(sent.content).includes("Google Play has changes in review")) {
+        return Response.json({ state: "committed", messageId: "legacy-thread-message" });
+      }
+      if (String(sent.idempotencyKey).startsWith("hands-raft-channel:")) {
+        return Response.json({ state: "sent", messageId: "channel-copy" });
+      }
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+    const result = await request(event, "a");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "channel-copy", card: false });
+    const copies = calls.filter((c) => String(c.idempotencyKey).startsWith("hands-raft-channel:"));
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ target: "#releases", content: expect.stringContaining("Google Play has changes in review") });
+    expect((await request(event, "retry")).status).toBe(200);
+    expect(calls.filter((c) => String(c.idempotencyKey).startsWith("hands-raft-channel:"))).toHaveLength(1);
+  });
+
+  it("does not use a new channel key if a legacy failure cannot be proven", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+      .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    expect((await request(playFailureBody("11111111-1111-4111-8111-111111111111"), "a")).status).toBe(503);
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.every((call) => call.idempotencyKey === calls[0]?.idempotencyKey)).toBe(true);
+  });
+
+  it("replays a lost response for the proven legacy thread's channel copy using the same key and body", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_failed"] });
+    await updateConfig({ card_updates: true });
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+      .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
+    const copies: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (sent.reconcileOnly) return Response.json({ state: "not_found" });
+      if (sent.target === "#releases:old-pare" && !sent.card
+          && !String(sent.content).includes("Google Play has changes in review")) {
+        return Response.json({ state: "committed", messageId: "legacy-thread-message" });
+      }
+      if (String(sent.idempotencyKey).startsWith("hands-raft-channel:")) {
+        copies.push(sent);
+        if (copies.length === 1) throw new Error("channel copy committed, response lost");
+        return Response.json({ state: "committed", messageId: "channel-copy" });
+      }
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    const event = playFailureBody("11111111-1111-4111-8111-111111111111");
+    expect((await request(event, "first")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1 WHERE object_key LIKE '%:receipt:%'").run();
+    const retry = await request(event, "retry");
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ message_id: "channel-copy", card: false });
+    expect(copies).toHaveLength(2);
+    expect(copies[1]).toEqual(copies[0]);
+  });
   it("renders a safe review card and omits provider prose", () => {
     const message = formatRaftNotificationMessage(body("REJECTED"));
     expect(message).toContain("App Store · Review rejected");

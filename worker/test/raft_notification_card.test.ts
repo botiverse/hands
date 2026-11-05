@@ -1,8 +1,40 @@
 import { describe, expect, it } from "vitest";
 import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
+import { playFailureNotificationFields } from "../src/lib/play_failure_notification";
 
 describe("Raft release notification cards", () => {
+  it("does not expose unknown provider identifiers or free-form error data", () => {
+    expect(playFailureNotificationFields({ cause: { provider_cause: "secretToken", cause_source: "structured",
+      provider_identifiers: { details: [{ reason: "secretToken" }], metadata: "private-token" },
+      message: "private provider text" } })).toEqual({});
+    expect(playFailureNotificationFields({ cause: { provider_cause: "EDIT_IN_REVIEW", cause_source: "message",
+      provider_identifiers: { details: [{ reason: "CHANGES_ALREADY_IN_REVIEW" }] }, message: "private provider text" } }))
+      .toEqual({ play_failure_cause: "EDIT_IN_REVIEW", play_failure_cause_source: "message" });
+  });
+  it("shows safe Play failure details in both the card and fallback, while labeling inferred causes", () => {
+    const body = { event: "google_play:submission_failed", delivered_at: 100, payload: {
+      state: "SUBMISSION_FAILED", version: "1.20.0", version_code: 12000003, track: "production",
+      reason: "play_api_error", play_failure_cause: "EDIT_IN_REVIEW", play_failure_cause_source: "structured",
+      play_failure_reason: "CHANGES_ALREADY_IN_REVIEW", provider_message: "secret https://example.test @admin",
+    } };
+    const { card, content } = formatRaftNotificationCard(body);
+    expect(content).toContain("Google Play has changes in review");
+    expect(content).toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
+    expect(JSON.stringify(card)).toContain("Google Play has changes in review");
+    expect(card.elements.state).toEqual({ type: "Badge", props: { text: "Failed", tone: "neutral" } });
+    expect(JSON.stringify(card)).not.toContain("secret https://example.test");
+    expect(content).not.toContain("@admin");
+    const inferred = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause_source: "message" } });
+    expect(inferred).toContain("Possible reason (inferred):");
+    expect(inferred).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
+    const unknownSource = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause_source: null } });
+    expect(unknownSource).toContain("Possible reason (source unconfirmed):");
+    expect(unknownSource).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
+    const unknown = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause: "secret_unknown" } });
+    expect(unknown).not.toContain("secret_unknown");
+    expect(unknown).toContain("Reason code: play\\_api\\_error");
+  });
   it("shows release state and preserves the complete existing text for older clients", () => {
     const body = {
       event: "testflight:external_state_changed", delivered_at: 1730000000000,

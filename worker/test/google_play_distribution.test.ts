@@ -2101,6 +2101,30 @@ function notificationSubscriptions(sql: Database.Database) {
 }
 const stateSummary = { releaseName: "1.2.3", track: "qa", activeArtifacts: [{ versionCode: 42 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" };
 describe("durable Google Play notifications", () => {
+  it("carries only whitelisted Play failure diagnostics from the receipt to the outbox", async () => {
+    const h = await readyRelease(); notificationSubscriptions(h.sqlite);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ promote: async (_input, stream) => {
+      await new Response(stream).arrayBuffer();
+      return { ok: false, error: { code: "play_api_rejected", status: 502, message: "secret provider text",
+        cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW", cause_source: "structured",
+          provider_identifiers: { http_code: 400, details: [
+            { reason: "CHANGES_ALREADY_IN_REVIEW", domain: "googleapis.com", metadata: "secret metadata" },
+            { reason: "secret_unknown_identifier" },
+          ] }, raw_message: "secret provider text" } } };
+    } });
+    const response = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ track: "internal", expected_revision: 1, approval: { note: "test" } }),
+    });
+    expect(response.status).toBe(502);
+    const row = h.sqlite.prepare("SELECT payload_json FROM webhook_deliveries WHERE webhook_id='match'").get() as { payload_json: string };
+    const payload = JSON.parse(row.payload_json).payload;
+    expect(payload).toMatchObject({ reason: "play_api_error", play_failure_cause: "EDIT_IN_REVIEW",
+      play_failure_cause_source: "structured", play_failure_reason: "CHANGES_ALREADY_IN_REVIEW" });
+    expect(row.payload_json).not.toContain("secret provider text");
+    expect(row.payload_json).not.toContain("secret metadata");
+    expect(row.payload_json).not.toContain("secret_unknown_identifier");
+  });
   it.each([true, false])("atomically records actual submission (%s) and isolates subscribers", async success => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite);
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ promote: async (_input, stream) => {

@@ -38,6 +38,14 @@ export function appGalleryCardObjectKey(body: Record<string, unknown>): string |
   return kind && typeof id === "string" && id.length > 0 && id.length <= 160 ? `${event}:${kind}:${id}` : null;
 }
 
+/** Submission failures are separate attempts, not state changes to a release. */
+export function playFailureCardObjectKey(body: Record<string, unknown>): string | null {
+  const receiptId = record(body.payload).receipt_id;
+  return body.event === "google_play:submission_failed" && typeof receiptId === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receiptId)
+    ? `google_play:submission_failed:receipt:${receiptId.toLowerCase()}` : null;
+}
+
 export async function sha256Hex(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
