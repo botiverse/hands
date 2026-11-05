@@ -61,7 +61,7 @@ function safeNotes(value: unknown, limit: number): string | null {
 function feedbackPreview(payload: Payload): string[] {
   if (payload.kind !== "feedback" && payload.kind !== "bug") return [];
   const preview = safePreview(payload.message, MAX_FEEDBACK_PREVIEW_LENGTH);
-  return preview ? [preview] : [];
+  return preview ? [`Feedback: ${preview}`] : [];
 }
 
 function testflightDetails(payload: Payload): string[] {
@@ -203,7 +203,7 @@ function feedbackLink(origin: string | null | undefined, appId: string | null, t
 
 const PLAY_STATES: Readonly<Record<string, string>> = {
   RELEASE_LIFECYCLE_STATE_DRAFT: "Draft",
-  RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW: "Ready to submit for review",
+  RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW: "Not sent for review",
   RELEASE_LIFECYCLE_STATE_IN_REVIEW: "In review",
   RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED: "Approved; waiting for release",
   RELEASE_LIFECYCLE_STATE_NOT_APPROVED: "Review rejected",
@@ -247,7 +247,7 @@ const AGC_TEST_STATES: Readonly<Record<string, string>> = {
 };
 const AGC_PACKAGE_STATES: Readonly<Record<string, string>> = {
   uploading: "Uploading market package", processing: "Market package uploaded; processing",
-  ready: "Market package processed (not submitted for review)", failed: "Market package upload or processing failed",
+  ready: "Market package processed", failed: "Market package upload or processing failed",
 };
 const MARKET_EVENTS = new Set([
   "testflight:upload_processing", "testflight:internal_distribution_ready", "testflight:external_state_changed",

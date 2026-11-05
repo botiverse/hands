@@ -283,6 +283,11 @@ describe("Hands-managed Raft notifications", () => {
     expect(play).toContain("Available on track (may be partially rolled out or paused)");
     expect(play).toContain("Previously: In review");
     expect(play).not.toContain("First observation");
+    const notSent = formatRaftNotificationMessage({ event: "google_play:release_state_changed", payload: {
+      state: "RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW",
+    } });
+    expect(notSent).toContain("Google Play · Not sent for review");
+    expect(notSent).not.toContain("Ready to submit");
     const testflight = formatRaftNotificationMessage({ event: "testflight:external_state_changed", payload: {
       app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING", build: { version: "1.19.1", version_code: "11901002" },
       groups_display: "测试组：Botiverse（内部）、Insiders（外部）",
@@ -300,7 +305,8 @@ describe("Hands-managed Raft notifications", () => {
     const market = formatRaftNotificationMessage({ event: "appgallery:package_state_changed", payload: {
       state: "ready", previous_state: "processing", observation_display: "定时查询观测（不是正式上架审核结果）",
     } });
-    expect(market).toContain("Market package processed (not submitted for review)");
+    expect(market).toContain("Market package processed");
+    expect(market).not.toContain("not submitted for review");
     expect(market).toContain("Observed by polling; this is not an app-store review result.");
     const withdrawn = formatRaftNotificationMessage({ event: "appgallery:invitation_state_changed", payload: {
       state: "ready", previous_state: "testing_review", state_label: "开发者撤回邀请测试审核",
@@ -428,7 +434,7 @@ describe("Hands-managed Raft notifications", () => {
     const message = formatRaftNotificationMessage(feedbackBody("feedback:new", {
       app_slug: "sample-app", kind: "feedback", message: `${"Hello ".repeat(40)}@admin https://example.test/signed?secret=abc`,
     }));
-    expect(message).toContain("📮 **New feedback · sample-app**\nHello ");
+    expect(message).toContain("📮 **New feedback · sample-app**\nFeedback: Hello ");
     expect(message).not.toContain("abad63e9-e760-42e9-92df-f418735f32ea");
     expect(message.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
     expect(message).toContain("…");
@@ -446,7 +452,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(feedback).not.toContain("@admin");
     expect(feedback).not.toContain("#release");
     expect(feedback).not.toContain("https://example.test");
-    expect(feedback).toContain("📮 **New bug report · sample-app**\nHi @\u200badmin #\u200brelease");
+    expect(feedback).toContain("📮 **New bug report · sample-app**\nFeedback: Hi @\u200badmin #\u200brelease");
     expect(feedback).toContain("\\[link\\]");
   });
 
@@ -455,6 +461,8 @@ describe("Hands-managed Raft notifications", () => {
     const report = formatRaftNotificationMessage(feedbackBody("feedback:new", { kind: "bug", message: "Cannot save" }), known);
     expect(report).toContain(`📮 **New bug report · Sample App** · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
     expect(report).toContain("Cannot save");
+    const fieldLike = formatRaftNotificationMessage(feedbackBody("feedback:new", { kind: "bug", message: "Status: resolved", status: "open" }), known);
+    expect(fieldLike).toContain("Feedback: Status: resolved\nStatus: open");
     expect(report).not.toContain("hands feedback show");
     const comment = formatRaftNotificationMessage(feedbackBody("feedback:comment_created", {
       comment: { body: "PRIVATE COMMENT" },
@@ -509,7 +517,7 @@ describe("Hands-managed Raft notifications", () => {
     const report = formatRaftNotificationMessage(feedbackBody("feedback:new", {
       app_slug: "sample-app", kind: "bug", message: "Cannot save", version_name: "1.19.2", version_code: 11902002,
     }));
-    expect(report).toContain("📮 **New bug report · sample-app**\nCannot save\nVersion: 1.19.2 (11902002)");
+    expect(report).toContain("📮 **New bug report · sample-app**\nFeedback: Cannot save\nVersion: 1.19.2 (11902002)");
     expect(report).not.toContain("kind:");
     expect(report).not.toContain("ticket:");
     expect(report.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
