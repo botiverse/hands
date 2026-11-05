@@ -14,7 +14,7 @@ import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
-import { deliverRaftNotificationCard, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
+import { deliverRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
 import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
@@ -310,12 +310,12 @@ export async function handleListRaftNotificationFailures(c: AdminContext) {
     `SELECT d.id,d.event_type,d.created_at,d.last_attempt_at,d.last_response_status
      FROM webhook_deliveries d
      WHERE d.webhook_id=?1 AND d.status='failed'
-       AND d.event_type IN ('app_store:version_state_changed','testflight:external_state_changed','google_play:release_state_changed')
+       AND d.event_type IN (${RAFT_NOTIFICATION_CARD_EVENTS.map((_, index) => `?${index + 2}`).join(",")})
        AND NOT EXISTS (SELECT 1 FROM webhook_deliveries newer
          WHERE newer.webhook_id=d.webhook_id AND newer.payload_json=d.payload_json
            AND (newer.created_at>d.created_at OR (newer.created_at=d.created_at AND newer.id>d.id)))
      ORDER BY d.created_at DESC,d.id DESC LIMIT 25`,
-  ).bind(subscription.webhook_id).all<{
+  ).bind(subscription.webhook_id, ...RAFT_NOTIFICATION_CARD_EVENTS).all<{
     id: string; event_type: string; created_at: number;
     last_attempt_at: number | null; last_response_status: number | null;
   }>();

@@ -1473,6 +1473,25 @@ describe("Hands-managed Raft notifications", () => {
     expect(await (await failures()).json()).toEqual({ failures: [] });
   });
 
+  it.each(["appgallery:invitation_state_changed", "appgallery:package_state_changed"])(
+    "lists and schedules an audited retry for a failed %s delivery", async (eventType) => {
+      const { sqlite, failures, retryFailure } = await harness();
+      const payload = JSON.stringify({ event: eventType, payload: { state: "processing" } });
+      sqlite.prepare(`INSERT INTO webhook_deliveries
+        (id,webhook_id,event_type,payload_json,signing_secret,status,attempts,max_attempts,created_at,updated_at)
+        VALUES ('failed-agc','webhook-1',?,?,'old-secret','failed',3,3,1,1)`).run(eventType, payload);
+      expect(await (await failures()).json()).toEqual({ failures: [{ id: "failed-agc", event_type: eventType,
+        created_at: 1, last_attempt_at: null, last_response_status: null }] });
+      const response = await retryFailure("failed-agc");
+      expect(response.status).toBe(202);
+      const { delivery_id: retryId } = await response.json() as { delivery_id: string };
+      expect(sqlite.prepare("SELECT event_type,payload_json,signing_secret,status FROM webhook_deliveries WHERE id=?").get(retryId))
+        .toEqual({ event_type: eventType, payload_json: payload, signing_secret: SECRET, status: "pending" });
+      expect(sqlite.prepare("SELECT COUNT(*) FROM audit_logs WHERE action='raft_notification.retry'").pluck().get()).toBe(1);
+      expect((await retryFailure("failed-agc")).status).toBe(409);
+    },
+  );
+
   it("does not queue a retry without its audit record or for a disabled destination", async () => {
     const { sqlite, retryFailure } = await harness();
     const event = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");

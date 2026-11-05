@@ -5,13 +5,14 @@ type App = { id: string; slug: string | null; name: string | null };
 
 // Each family has its own object identity; unrelated release and build
 // observations must not overwrite each other. Other events remain text.
-const CARD_EVENTS = new Set([
+export const RAFT_NOTIFICATION_CARD_EVENTS = [
   "app_store:version_state_changed",
   "testflight:external_state_changed",
   "google_play:release_state_changed",
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
-]);
+] as const;
+const CARD_EVENTS = new Set<string>(RAFT_NOTIFICATION_CARD_EVENTS);
 const LEASE_MS = 30_000;
 // Retire slightly before Raft's 14-day update deadline.
 const MAX_CARD_AGE_MS = 14 * 24 * 60 * 60_000 - 5 * 60_000;
