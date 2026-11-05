@@ -5,8 +5,8 @@
  * choose Raft channel/event subscriptions.  A subscription owns a hidden
  * generic webhook row, so all existing Hands event producers keep the same
  * D1-backed retry/queue behavior.  The internal callback verifies the generic
- * webhook signature before sending through the bot and keeps one thread per
- * logical object.
+ * webhook signature before sending through the bot. Feedback conversations
+ * keep one thread per logical object; release text is visible in the channel.
  */
 
 import type { Context } from "hono";
@@ -16,7 +16,7 @@ import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
-import { isFeedbackThreadEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
+import { isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -613,6 +613,40 @@ async function sendBotMessage(
   return { messageId, ...(revision === undefined ? {} : { cardRevision: revision }) };
 }
 
+/**
+ * A request started before the channel-routing change may already have sent
+ * this signed event to its old thread while its response was lost. Raft binds
+ * an idempotency key to both content and target: prove that old request by
+ * replaying it before using a separate, stable key for the channel copy.
+ */
+async function sendChannelText(
+  env: Env, bot: BotInstallationRow, channel: string, previousTarget: string,
+  content: string, previousContent: string, idempotencyKey: string, channelKey: string,
+): Promise<{ messageId: string }> {
+  try {
+    return await sendBotMessage(env, bot, channel, content, idempotencyKey);
+  } catch (error) {
+    if (!(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
+    // Same target but older fallback wording: an existing channel message is
+    // already visible and must not be duplicated.
+    if (previousContent !== content) {
+      try { return await sendBotMessage(env, bot, channel, previousContent, idempotencyKey); }
+      catch (replayError) {
+        if (!(replayError instanceof RaftBotApiError) || replayError.status !== 409 || replayError.code !== "idempotency_key_reused") throw replayError;
+      }
+    }
+    if (previousTarget === channel) throw error;
+    try {
+      await sendBotMessage(env, bot, previousTarget, content, idempotencyKey);
+    } catch (replayError) {
+      if (previousContent === content || !(replayError instanceof RaftBotApiError)
+          || replayError.status !== 409 || replayError.code !== "idempotency_key_reused") throw replayError;
+      await sendBotMessage(env, bot, previousTarget, previousContent, idempotencyKey);
+    }
+    return await sendBotMessage(env, bot, channel, content, channelKey);
+  }
+}
+
 async function cardRequest(env: Env, bot: BotInstallationRow, path: string, method: "GET" | "POST" | "PUT", body?: Record<string, unknown>) {
   const key = await readBotKey(env, bot);
   let response: Response;
@@ -891,10 +925,18 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     }
   }
   try {
-    const content = formatRaftNotificationMessage(eventBody, {
+    const channelText = isReleaseChannelEvent(event);
+    const baseContent = formatRaftNotificationMessage(eventBody, {
       id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null,
-    }) + (cardTextFallback ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates." : "");
-    const sent = await sendBotMessage(c.env, bot, target, content, idempotencyKey);
+    });
+    const previousContent = baseContent + (cardTextFallback ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates." : "");
+    const content = channelText && cardTextFallback
+      ? baseContent + "\n⚠️ A previous status card may be out of date; check newer channel messages."
+      : previousContent;
+    const sent = channelText
+      ? await sendChannelText(c.env, bot, row.channel_target, target, content, previousContent, idempotencyKey,
+        `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240))
+      : await sendBotMessage(c.env, bot, target, content, idempotencyKey);
     const now = Date.now();
     if (ownsParentClaim) {
       await c.env.DB.prepare(
@@ -907,7 +949,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
          WHERE subscription_id = ?2 AND object_key = ?3`,
       ).bind(now, subscriptionId, objectKey).run();
     }
-    return c.json({ ok: true, message_id: sent.messageId, threaded: Boolean(thread),
+    return c.json({ ok: true, message_id: sent.messageId, threaded: !channelText && target !== row.channel_target,
       ...(cardFallbackReason ? { card_fallback: cardFallbackReason } : {}) });
   } catch (error) {
     if (ownsParentClaim) {
