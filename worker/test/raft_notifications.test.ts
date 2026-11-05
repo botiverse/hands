@@ -263,6 +263,7 @@ describe("Hands-managed Raft notifications", () => {
     const payload = {
       groups_display: "Test group: internal",
       what_to_test: { "zh-Hans": `Check @admin #release https://example.test/private ${"x".repeat(600)}` },
+      source: "hands_operation_receipt",
       source_commit: "a1b2c3d4",
     };
     const message = formatRaftNotificationMessage({ event: "testflight:internal_distribution_ready", payload });
@@ -270,9 +271,28 @@ describe("Hands-managed Raft notifications", () => {
     expect(message).toContain("groups: Test group: internal");
     expect(message).toContain("Test notes (zh-Hans): Check @\u200badmin #\u200brelease \\[link\\]");
     expect(message).toContain("source commit: a1b2c3d4");
+    expect(message).not.toContain("hands_operation_receipt");
+    expect(payload.source).toBe("hands_operation_receipt");
     expect(message).toContain("…");
     expect(message).not.toContain("https://example.test");
     expect(formatRaftNotificationMessage({ event: "release:published", payload })).not.toContain("Test notes");
+  });
+
+  it("does not show internal event source metadata in release notifications", () => {
+    for (const [event, source] of [
+      ["testflight:upload_processing", "hands_operation_receipt"],
+      ["google_play:release_state_changed", "google_play_release_lifecycle"],
+      ["appgallery:package_state_changed", "hands_appgallery_market_package"],
+    ] as const) {
+      const payload = { source, state: "READY", version: "1.19.2", build: { source: "build-source" } };
+      const message = formatRaftNotificationMessage({ event, payload });
+      expect(message).toContain("state: READY");
+      expect(message).toContain("version: 1.19.2");
+      expect(message).not.toContain("\nsource:");
+      expect(message).not.toContain(source);
+      expect(message).not.toContain("build-source");
+      expect(payload.source).toBe(source);
+    }
   });
 
   it("separates Play state threads by package, track and version", async () => {

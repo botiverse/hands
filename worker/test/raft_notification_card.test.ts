@@ -11,6 +11,7 @@ describe("Raft release notification cards", () => {
         build: { version: "1.19.0", version_code: "11900001" },
         groups_display: "Internal and external testers",
         what_to_test: { "zh-Hans": "Check @people and https://example.test/private" },
+        source: "hands_operation_receipt", source_commit: "a1b2c3d4",
         app_store_connect_url: "https://appstoreconnect.apple.com/apps/6789091965",
         review_message: "private provider message",
       },
@@ -25,6 +26,10 @@ describe("Raft release notification cards", () => {
     expect(serialized).toContain("1.19.0");
     expect(serialized).toContain("11900001");
     expect(serialized).toContain("Internal and external testers");
+    expect(serialized).toContain("source commit: a1b2c3d4");
+    expect(serialized).not.toContain("hands_operation_receipt");
+    expect(result.content).not.toContain("hands_operation_receipt");
+    expect(body.payload.source).toBe("hands_operation_receipt");
     expect(serialized).toContain("Check @\u200bpeople and [link]");
     expect(serialized).not.toContain("private provider message");
     expect(serialized).not.toContain("https://example.test/private");

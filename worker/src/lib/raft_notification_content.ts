@@ -23,7 +23,7 @@ const SAFE_PAYLOAD_FIELDS: ReadonlyArray<readonly [string, string]> = [
   ["build", "build_number"], ["version code", "version_code"], ["track", "track"],
   ["channel", "channel"], ["distribution", "distribution"], ["platform", "platform"],
   ["failure code", "failure_code"], ["reason code", "reason_code"], ["ticket", "ticket_id"],
-  ["release", "release_id"], ["build id", "build_id"], ["package", "package_name"], ["source", "source"],
+  ["release", "release_id"], ["build id", "build_id"], ["package", "package_name"],
 ];
 
 function record(value: unknown): Payload {
