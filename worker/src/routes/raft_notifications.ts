@@ -16,7 +16,7 @@ import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, type RaftMessageCard } from "../lib/raft_notification_card";
-import { isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
+import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -819,7 +819,17 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   if (typeof event !== "string" || !WEBHOOK_EVENT_TYPES.includes(event as NotificationEvent)) {
     return c.json({ error: "invalid event" }, 400);
   }
-  const objectKey = await notificationObjectKey(eventBody);
+  let objectKey = await notificationObjectKey(eventBody);
+  const specificAgcKey = appGalleryCardObjectKey(eventBody);
+  if (specificAgcKey && specificAgcKey !== objectKey) {
+    const specific = await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, specificAgcKey).first();
+    const legacy = specific ? null : await c.env.DB.prepare(`SELECT 1 FROM raft_notification_threads
+      WHERE subscription_id=?1 AND object_key=?2 LIMIT 1`).bind(subscriptionId, objectKey).first();
+    // Existing build-grouped text retains its thread; new submissions and
+    // packages use their own identity so unrelated states cannot overwrite.
+    if (specific || !legacy) objectKey = specificAgcKey;
+  }
   const eventHash = await sha256Hex(body);
   const events = parseStoredEvents(row.events_json);
   if (events.length > 0 && !events.includes(event) && !events.includes("*")) {
@@ -902,7 +912,11 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     // Existing text threads keep their text history. A newly inserted parent
     // claim may start a card; a reclaimed legacy claim may have an uncertain
     // send in flight, so it cannot safely start another one.
-    if (priorCard || (row.card_updates === 1 && createdParentClaim)) {
+    // An AppGallery event without its submission/package ID cannot safely
+    // identify a card: use text instead of grouping unrelated objects.
+    const appGalleryEvent = event === "appgallery:invitation_state_changed" || event === "appgallery:package_state_changed";
+    const hasCardIdentity = !appGalleryEvent || specificAgcKey !== null;
+    if (priorCard || (row.card_updates === 1 && createdParentClaim && hasCardIdentity)) {
       const result = await deliverRaftNotificationCard({
         db: c.env.DB, subscriptionId, objectKey, target, channelTarget: row.channel_target,
         createsRoot: ownsParentClaim, eventHash, body: eventBody,

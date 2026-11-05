@@ -9,6 +9,8 @@ const CARD_EVENTS = new Set([
   "app_store:version_state_changed",
   "testflight:external_state_changed",
   "google_play:release_state_changed",
+  "appgallery:invitation_state_changed",
+  "appgallery:package_state_changed",
 ]);
 const LEASE_MS = 30_000;
 // Retire slightly before Raft's 14-day update deadline.
@@ -27,6 +29,7 @@ interface Pending {
   createsRoot: boolean;
   createdAt: number;
   sendAsText?: boolean;
+  compatibleTextKey?: boolean;
 }
 
 interface CardRow {
@@ -155,32 +158,44 @@ export async function deliverRaftNotificationCard(input: {
           }
           mayHaveCommitted = true;
         } else if (pending.kind === "send") {
-          const found = wasUncertain ? await transport.reconcile(pending) : { state: "not_found" as const };
-          // A not_found read is only a point-in-time observation: the old
-          // request may still be running. Retry the exact same key and body.
-          const sent = found.state === "committed" ? found : await transport.send(pending);
-          mayHaveCommitted = true;
-          const messageId = sent.messageId;
-          // Older servers accept unknown fields and can silently post only the
-          // fallback. Newer send receipts identify cards; older ones need a
-          // readback. Joint readback can be unavailable, so a committed send
-          // may instead replay the exact request to obtain its richer receipt.
-          let readback: { kind: "card"; revision: number } | { kind: "text" };
-          if (sent.cardRevision !== undefined) readback = { kind: "card", revision: sent.cardRevision };
-          else {
-            try { readback = await transport.resolve(messageId); }
-            catch (error) {
-              if (found.state !== "committed") throw error;
-              const replayed = await transport.send(pending);
-              if (replayed.messageId !== messageId || replayed.cardRevision === undefined) throw error;
-              readback = { kind: "card", revision: replayed.cardRevision };
+          try {
+            const found = wasUncertain ? await transport.reconcile(pending) : { state: "not_found" as const };
+            // A not_found read is only a point-in-time observation: the old
+            // request may still be running. Retry the exact same key and body.
+            const sent = found.state === "committed" ? found : await transport.send(pending);
+            mayHaveCommitted = true;
+            const messageId = sent.messageId;
+            // Older servers accept unknown fields and can silently post only the
+            // fallback. Newer send receipts identify cards; older ones need a
+            // readback. Joint readback can be unavailable, so a committed send
+            // may instead replay the exact request to obtain its richer receipt.
+            let readback: { kind: "card"; revision: number } | { kind: "text" };
+            if (sent.cardRevision !== undefined) readback = { kind: "card", revision: sent.cardRevision };
+            else {
+              try { readback = await transport.resolve(messageId); }
+              catch (error) {
+                if (found.state !== "committed") throw error;
+                const replayed = await transport.send(pending);
+                if (replayed.messageId !== messageId || replayed.cardRevision === undefined) throw error;
+                readback = { kind: "card", revision: replayed.cardRevision };
+              }
             }
+            if (readback.kind === "card" && readback.revision !== 1) {
+              return { kind: "retry", code: "card_delivery_unexpected_revision" };
+            }
+            sentAsText = readback.kind === "text";
+            result = { messageId, revision: sentAsText ? 0 : 1 };
+          } catch (error) {
+            // AppGallery cards use the old text key during rollout. If an old
+            // worker's text won, prove it by replaying the exact text request;
+            // a card winner instead returns 409 and remains pending.
+            const conflict = error && typeof error === "object" ? error as { status?: unknown; code?: unknown } : null;
+            if (!pending.compatibleTextKey || conflict?.status !== 409 || conflict.code !== "idempotency_key_reused") throw error;
+            const text = await transport.send({ target: pending.target, content: pending.content, idempotencyKey: pending.idempotencyKey });
+            result = { messageId: text.messageId, revision: 0 };
+            sentAsText = true;
+            mayHaveCommitted = true;
           }
-          if (readback.kind === "card" && readback.revision !== 1) {
-            return { kind: "retry", code: "card_delivery_unexpected_revision" };
-          }
-          sentAsText = readback.kind === "text";
-          result = { messageId, revision: sentAsText ? 0 : 1 };
         } else {
           if (!pending.messageId) return { kind: "retry", code: "card_delivery_invalid_pending" };
           result = await transport.update({ ...pending, messageId: pending.messageId });
@@ -318,12 +333,16 @@ export async function deliverRaftNotificationCard(input: {
 
     const newCard = !row.message_id || !row.message_created_at || now() - row.message_created_at >= MAX_CARD_AGE_MS;
     const rendered = formatRaftNotificationCard(input.body, input.app);
+    const compatibleTextKey = newCard && (input.body.event === "appgallery:invitation_state_changed"
+      || input.body.event === "appgallery:package_state_changed");
     const pending: Pending = {
       kind: newCard ? "send" : "update", eventHash: input.eventHash, eventMs: when,
-      idempotencyKey: `hands-card:${newCard ? "send" : "update"}:${subscriptionId}:${input.eventHash}`.slice(0, 240),
+      idempotencyKey: (compatibleTextKey ? `hands-raft:${subscriptionId}:${input.eventHash}`
+        : `hands-card:${newCard ? "send" : "update"}:${subscriptionId}:${input.eventHash}`).slice(0, 240),
       content: rendered.content, card: rendered.card, target: newCard ? input.channelTarget : input.target,
       messageId: newCard ? null : row.message_id, expectedRevision: row.revision,
       createsRoot: newCard && input.createsRoot, createdAt: now(),
+      ...(compatibleTextKey ? { compatibleTextKey: true } : {}),
     };
     const reserved = await ownUpdate(`UPDATE raft_notification_cards SET pending_json=?1,pending_uncertain=0,updated_at=?2
       WHERE subscription_id=?3 AND object_key=?4 AND lease_token=?5 AND pending_json IS NULL`,

@@ -6,7 +6,7 @@ import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
 import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
-import { isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
+import { appGalleryCardObjectKey, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
 import {
   handleConnectRaftBot,
   handleGetRaftNotifications,
@@ -211,6 +211,17 @@ describe("Hands-managed Raft notifications", () => {
     expect(await notificationObjectKey(body("IN_REVIEW"))).toBe(
       await notificationObjectKey(body("REJECTED")),
     );
+  });
+
+  it("gives AppGallery submissions and packages distinct card identities even when they share a build", () => {
+    const make = (event: string, id: string) => ({ event, payload: {
+      build_id: "same-build", ...(event === "appgallery:invitation_state_changed" ? { submission_id: id } : { package_id: id }),
+    } });
+    expect(appGalleryCardObjectKey(make("appgallery:invitation_state_changed", "submission-a")))
+      .not.toBe(appGalleryCardObjectKey(make("appgallery:invitation_state_changed", "submission-b")));
+    expect(appGalleryCardObjectKey(make("appgallery:package_state_changed", "package-a")))
+      .not.toBe(appGalleryCardObjectKey(make("appgallery:package_state_changed", "package-b")));
+    expect(appGalleryCardObjectKey(make("appgallery:package_state_changed", "x".repeat(161)))).toBeNull();
   });
 
   it("adds clear icons to feedback events and the details command", () => {
@@ -848,6 +859,184 @@ describe("Hands-managed Raft notifications", () => {
     expect(sent[2]!.body).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
     expect(sent[2]!.body).not.toHaveProperty("card");
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
+  });
+
+  it("cards AppGallery states and updates each submission independently", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed", "appgallery:package_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<{ method: string; body: Record<string, unknown>; url: string }> = [];
+    let cards = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push({ method: String(init?.method), body: data, url: String(input) });
+      if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      if (data.card) return Response.json({ state: "sent", messageId: `card-${++cards}`, messageCard: { revision: 1 } });
+      return Response.json({ state: "sent", messageId: "channel-notice" });
+    });
+    const invite = (id: string, state: string, time: string) => ({ event: "appgallery:invitation_state_changed",
+      payload: { submission_id: id, build_id: "same-build", state, occurred_at: time } });
+    const packageEvent = { event: "appgallery:package_state_changed", payload: {
+      package_id: "package-a", build_id: "same-build", state: "processing", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    expect((await request(invite("submission-a", "testing_review", "2026-11-05T11:00:00Z"), "a")).status).toBe(200);
+    expect((await request(invite("submission-a", "testing_active", "2026-11-05T11:01:00Z"), "b")).status).toBe(200);
+    expect((await request(invite("submission-b", "testing_review", "2026-11-05T11:02:00Z"), "c")).status).toBe(200);
+    expect((await request(packageEvent, "d")).status).toBe(200);
+    expect(calls.filter((call) => call.body.card && call.method === "POST")).toHaveLength(3);
+    expect(calls.find((call) => call.method === "PUT")?.url).toContain("/messages/card-1/card");
+    expect(calls.filter((call) => call.method === "POST" && !call.body.card))
+      .toEqual([expect.objectContaining({ body: expect.objectContaining({ target: "#releases" }) })]);
+  });
+
+  it("keeps AppGallery objects with a legacy text thread on text", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:invitation_state_changed", payload: {
+      submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "old-parent", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: "channel-text" });
+    });
+    expect((await request(event, "a")).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ target: "#releases" });
+    expect(calls[0]).not.toHaveProperty("card");
+    expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_cards").pluck().get()).toBe(0);
+  });
+
+  it("recognizes an old worker's AppGallery text winning the same-key card race", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:invitation_state_changed", payload: {
+      submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const text = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
+    const expectedKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      expect(data.idempotencyKey).toBe(expectedKey);
+      expect(data.target).toBe("#releases");
+      expect(data.content).toBe(text);
+      return data.card ? Response.json({ code: "idempotency_key_reused" }, { status: 409 })
+        : Response.json({ state: "committed", messageId: "old-text" });
+    });
+    const result = await request(event, "a");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "old-text", card: false });
+    expect(calls).toHaveLength(2);
+    expect(sqlite.prepare("SELECT state,revision FROM raft_notification_cards").get()).toEqual({ state: "retired", revision: 0 });
+  });
+
+  it("keeps AppGallery events without an object ID on text", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:package_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: `text-${calls.length}` });
+    });
+    for (const state of ["processing", "ready"]) {
+      expect((await request({ event: "appgallery:package_state_changed", payload: {
+        build_id: "same-build", state, occurred_at: "2026-11-05T11:00:00Z",
+      } }, state)).status).toBe(200);
+    }
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => !call.card)).toBe(true);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_cards").pluck().get()).toBe(0);
+  });
+
+  it("recovers a committed old text after the initial card response is lost and joint readback is unavailable", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:invitation_state_changed", payload: {
+      submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const expectedKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const calls: Array<Record<string, unknown>> = [];
+    let lostResponse = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      if (init?.method === "GET") return Response.json({ code: "message_not_found" }, { status: 404 });
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      expect(data.idempotencyKey).toBe(expectedKey);
+      expect(data.target).toBe("#releases");
+      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "old-text" });
+      if (!lostResponse) { lostResponse = true; throw new Error("response lost"); }
+      return data.card ? Response.json({ code: "idempotency_key_reused" }, { status: 409 })
+        : Response.json({ state: "committed", messageId: "old-text" });
+    });
+    expect((await request(event, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const retried = await request(event, "b");
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ message_id: "old-text", card: false });
+    expect(calls).toHaveLength(4);
+    expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
+  });
+
+  it("keeps an unverifiable AppGallery conflict pending without trying a new key", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:package_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:package_state_changed", payload: {
+      package_id: "package-a", build_id: "same-build", state: "processing", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    expect((await request(event, "a")).status).toBe(503);
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls.map((call) => call.idempotencyKey))).toEqual(new Set([
+      `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`,
+    ]));
+    expect(sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+  });
+
+  it("recovers an AppGallery card that won the same-key race when its response was lost", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["appgallery:invitation_state_changed"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "appgallery:invitation_state_changed", payload: {
+      submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
+    } };
+    const expectedKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const calls: Array<Record<string, unknown>> = [];
+    const messages = new Map<string, Record<string, unknown>>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      expect(data.idempotencyKey).toBe(expectedKey);
+      expect(data.target).toBe("#releases");
+      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "new-card", messageCard: { revision: 1 } });
+      if (messages.has(expectedKey)) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      messages.set(expectedKey, data);
+      throw new Error("card committed but response lost");
+    });
+    expect((await request(event, "a")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    const retried = await request(event, "b");
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ message_id: "new-card", card: true });
+    const oldText = await fetch("https://api.raft.test/internal/agent-api/v2/send", {
+      method: "POST", body: JSON.stringify({ target: "#releases", idempotencyKey: expectedKey, content: calls[0]!.content }),
+    });
+    expect(oldText.status).toBe(409);
+    expect(messages.size).toBe(1);
+    expect(sqlite.prepare("SELECT state,revision,pending_json FROM raft_notification_cards").get())
+      .toEqual({ state: "active", revision: 1, pending_json: null });
   });
 
   it("retries a lost channel notice with the same content and key before acknowledging the card update", async () => {
