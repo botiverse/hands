@@ -5,7 +5,7 @@ const FEEDBACK_THREAD_EVENTS = new Set([
   "feedback:status_changed",
 ]);
 
-export function isFeedbackThreadEvent(event: unknown): event is string {
+export function isFeedbackThreadEvent(event: unknown): event is "feedback:new" | "feedback:comment_created" | "feedback:status_changed" {
   return typeof event === "string" && FEEDBACK_THREAD_EVENTS.has(event);
 }
 

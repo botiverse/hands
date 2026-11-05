@@ -7,7 +7,7 @@ describe("Raft release notification cards", () => {
     const body = {
       event: "testflight:external_state_changed", delivered_at: 1730000000000,
       payload: {
-        app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING", previous_state: "IN_REVIEW",
+        app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING", previous_state: "WAITING_FOR_BETA_REVIEW",
         build: { version: "1.19.0", version_code: "11900001" },
         groups_display: "Internal and external testers",
         what_to_test: { "zh-Hans": "Check @people and https://example.test/private" },
@@ -18,8 +18,8 @@ describe("Raft release notification cards", () => {
     };
     const result = formatRaftNotificationCard(body);
     expect(result.content).toBe(formatRaftNotificationMessage(body));
-    expect(result.card.elements.state).toEqual({ type: "Badge", props: { text: "READY_FOR_BETA_TESTING", tone: "neutral" } });
-    expect(result.content).toContain("state: IN\\_REVIEW → READY\\_FOR\\_BETA\\_TESTING");
+    expect(result.card.elements.state).toEqual({ type: "Badge", props: { text: "Ready for beta testing", tone: "neutral" } });
+    expect(result.content).toContain("Previously: Waiting for beta review");
     expect(result.card.elements.review).toEqual({
       type: "Button", props: { label: "Open in App Store Connect", action: { kind: "navigate", url: "https://appstoreconnect.apple.com/apps/6789091965" } },
     });
@@ -27,21 +27,23 @@ describe("Raft release notification cards", () => {
     expect(serialized).toContain("1.19.0");
     expect(serialized).toContain("11900001");
     expect(serialized).toContain("Internal and external testers");
-    expect(serialized).toContain("source commit: a1b2c3d4");
+    expect(serialized).toContain("Commit: a1b2c3d4");
     expect(serialized).not.toContain("hands_operation_receipt");
     expect(result.content).not.toContain("hands_operation_receipt");
     expect(body.payload.source).toBe("hands_operation_receipt");
     expect(serialized).toContain("Check @\u200bpeople and [link]");
+    expect(serialized).not.toContain("```text");
     expect(serialized).not.toContain("private provider message");
     expect(serialized).not.toContain("https://example.test/private");
+    expect(serialized).not.toContain("[Open App Store Connect]");
   });
 
   it("fits long multibyte content within the card limits while keeping its timestamp and fallback", () => {
     const body = {
       event: "google_play:release_state_changed", delivered_at: 1730000000000,
       payload: {
-        state: "PUBLISHED", package_name: "build.example.app", track: "production", version_code: 11900002,
-        state_label: "发布😀".repeat(250), groups_display: "组🧪".repeat(250),
+        state: "RELEASE_LIFECYCLE_STATE_PUBLISHED", package_name: "build.example.app", track: "production", version_code: 11900002,
+        state_label: "发布😀".repeat(250), groups_display: "组🧪".repeat(350),
         observation_display: "First observation, not a new change",
       },
     };
@@ -60,7 +62,7 @@ describe("Raft release notification cards", () => {
     }
     const displayed = Object.values(card.elements).filter((element) => element.type === "Text").map((element) => element.props.text).join("");
     expect(displayed).toContain("First observation, not a new change");
-    expect(displayed).toContain("occurred: 2024-10-27T03:33:20.000Z");
+    expect(displayed).toContain("At: 2024-10-27 03:33:20.000 UTC");
     expect(displayed).toContain("…");
   });
 
@@ -75,5 +77,29 @@ describe("Raft release notification cards", () => {
       const { card } = formatRaftNotificationCard({ event: "app_store:version_state_changed", payload: { app_store_connect_url: link } });
       expect(Object.values(card.elements).some((element) => element.type === "Button")).toBe(false);
     }
+  });
+
+  it("keeps fenced test notes as plain card text without confusing them with the event footer", () => {
+    const { card, content } = formatRaftNotificationCard({ event: "testflight:external_state_changed", delivered_at: 100,
+      payload: { state: "READY_FOR_BETA_TESTING", what_to_test: { en: "At: not a timestamp\n```\nCheck @admin" } },
+    });
+    expect(content).toContain("What to test:\n```text\n  At: not a timestamp");
+    expect(content.match(/^```/gm)).toHaveLength(2);
+    const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("\n");
+    expect(text).toContain("At: not a timestamp");
+    expect(text).toContain("At: 1970-01-01 00:00:00.100 UTC");
+    expect(text).toContain("@\u200badmin");
+    expect(text).not.toContain("```text");
+  });
+
+  it("fits lengthy multibyte test notes while keeping the event time", () => {
+    const { card, content } = formatRaftNotificationCard({ event: "testflight:external_state_changed", delivered_at: 100,
+      payload: { state: "READY_FOR_BETA_TESTING", what_to_test: { en: "🧪".repeat(1200) } },
+    });
+    expect(content).toContain("What to test:\n```text");
+    expect(content).toContain("…\n```");
+    expect(new TextEncoder().encode(JSON.stringify(card)).length).toBeLessThanOrEqual(8192);
+    const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("\n");
+    expect(text).toContain("At: 1970-01-01 00:00:00.100 UTC");
   });
 });

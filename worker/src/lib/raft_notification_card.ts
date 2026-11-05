@@ -65,16 +65,20 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const url = reviewUrl(record(body.payload));
   const currentState = raftNotificationCurrentState(body);
   const state = currentState ? shorten(plain(currentState), 60) : null;
-  const footerLines = lines.filter((line) => line.startsWith("observation: ") || line.startsWith("occurred: ")
+  const footerLines = lines.filter((line) => line.startsWith("observation: ") || line.startsWith("occurred: ") || line.startsWith("At: ")
+    || line.startsWith("Observation: ") || line.startsWith("First observation;") || line.startsWith("Observed by polling;")
     || line.startsWith("Review: ") || line.startsWith("📖 View more: ")
+    || line.startsWith("[Open App Store Connect](")
     || line === "Apple's review message is available in App Store Connect.");
-  const detailLines = lines.filter((line) => !footerLines.includes(line));
+  // The fallback uses a Markdown code fence for What to test. Card Text is
+  // already plain text, so retain the content without showing fence markers.
+  const detailLines = lines.filter((line) => !footerLines.includes(line) && line !== "```text" && line !== "```");
   // A canonical Apple URL is rendered as a navigate-only button. Never turn
   // another URL into a button or a raw link on the card. Bound each remaining
   // item so a long observation cannot displace the event time.
-  const footer = shorten(footerLines.filter((line) => !line.startsWith("Review: "))
-    .map((line) => shorten(plain(line), line.startsWith("observation: ") ? 250
-      : line.startsWith("occurred: ") ? 120 : 256)).join("\n"), FOOTER_LIMIT);
+  const footer = shorten(footerLines.filter((line) => !line.startsWith("Review: ") && !line.startsWith("[Open App Store Connect]("))
+    .map((line) => shorten(plain(line), line.startsWith("observation: ") || line.startsWith("Observation: ") ? 250
+      : line.startsWith("occurred: ") || line.startsWith("At: ") ? 120 : 256)).join("\n"), FOOTER_LIMIT);
   const detail = plain(detailLines.join("\n"));
 
   const build = (limit: number): RaftMessageCard => {

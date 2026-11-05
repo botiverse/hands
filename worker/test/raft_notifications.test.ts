@@ -200,7 +200,7 @@ function mockRaftFetch(implementation: typeof fetch) {
 describe("Hands-managed Raft notifications", () => {
   it("renders a safe review card and omits provider prose", () => {
     const message = formatRaftNotificationMessage(body("REJECTED"));
-    expect(message).toContain("App Store version status changed");
+    expect(message).toContain("App Store · Review rejected");
     expect(message).toContain("1.17.0");
     expect(message).toContain("App Store Connect");
     expect(message).not.toContain("provider prose must never be forwarded");
@@ -222,7 +222,7 @@ describe("Hands-managed Raft notifications", () => {
       expect(message.startsWith(heading)).toBe(true);
       expect(message).toContain(`📖 View more: \`hands feedback show sample-app ${TICKET_ID}\``);
     }
-    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **App Store version status changed**")).toBe(true);
+    expect(formatRaftNotificationMessage(body("REJECTED")).startsWith("🍎 **Raft App · App Store · Review rejected**")).toBe(true);
   });
 
   it("keeps release context and identifies a first Play observation", () => {
@@ -230,22 +230,100 @@ describe("Hands-managed Raft notifications", () => {
       event: "google_play:release_state_changed", app_id: "abad63e9-e760-42e9-92df-f418735f32ea",
       payload: {
         package_name: "build.example.app", track: "alpha", version_code: 11800003,
-        state: "PUBLISHED", state_label: "Track available", observation_display: "First observation, not a new change",
+        state: "RELEASE_LIFECYCLE_STATE_PUBLISHED", state_label: "Track available", observation: "initial_snapshot",
         rollout_percent: 20,
       },
     });
-    expect(message.startsWith("▶️ **Google Play release status changed**")).toBe(true);
-    expect(message).toContain("observation: First observation, not a new change");
-    expect(message).toContain("description: Track available");
+    expect(message).toContain("Google Play · Available on track (may be partially rolled out or paused)");
+    expect(message).toContain("First observation; this may not be a recent change.");
     expect(message).toContain("track: alpha");
-    expect(message).toContain("rollout: 20%");
+    expect(message).toContain("Reported rollout: 20%");
     const release = formatRaftNotificationMessage({
       event: "release:published", payload: { rollout: 100, version_transition: "1.0 → 1.1", version_code_transition: "1 → 2" },
     });
     expect(release).toContain("🚀 **Release published**");
-    expect(release).toContain("version transition: 1.0 → 1.1");
-    expect(release).toContain("version code transition: 1 → 2");
-    expect(release).toContain("rollout: 100%");
+    expect(release).toContain("Version change: 1.0 → 1.1");
+    expect(release).toContain("Build change: 1 → 2");
+    expect(release).toContain("Rollout: 100%");
+  });
+
+  it("distinguishes Play promotion, saved edits, review requests and symbol uploads", () => {
+    const make = (event: string, extra: Record<string, unknown> = {}) => formatRaftNotificationMessage({
+      event, payload: { app: { name: "Raft Android" }, version: "1.19.0", version_code: 11900002, ...extra },
+    });
+    const submitted = make("google_play:submission_succeeded", { track: "production", rollout_percent: 20 });
+    expect(submitted).toContain("Google Play · Release submitted");
+    expect(submitted).toContain("Review status is not yet confirmed");
+    expect(submitted).toContain("1.19.0 · version code 11900002 · track: production");
+    expect(submitted).toContain("Requested rollout: 20%");
+    const distinct = make("google_play:submission_succeeded", { build_number: "ci-12", version_code: 11900002 });
+    expect(distinct).toContain("version code 11900002");
+    expect(distinct).toContain("Build: ci-12");
+    const saved = make("google_play:submission_succeeded", { action: "promote", review_requested: false });
+    expect(saved).toContain("Release saved; not sent for review");
+    expect(saved).not.toContain("Review status is not yet confirmed");
+    const request = make("google_play:submission_succeeded", { action: "send-for-review", review_requested: true });
+    expect(request).toContain("Review request sent");
+    expect(request).toContain("Review status is not yet confirmed");
+    const symbols = make("google_play:submission_succeeded", { action: "upload-symbols" });
+    expect(symbols).toContain("Symbols uploaded");
+    expect(symbols).not.toContain("Release submitted");
+    expect(symbols).not.toContain("Review status is not yet confirmed");
+    const failedSymbols = make("google_play:submission_failed", { action: "upload-symbols", reason: "play_api_rejected" });
+    expect(failedSymbols).toContain("Symbols upload failed or was blocked");
+    expect(failedSymbols).toContain("Reason code: play\\_api\\_rejected");
+    expect(failedSymbols).not.toContain("Release submission failed");
+  });
+
+  it("renders known review states without overstating Play availability or TestFlight invitations", () => {
+    const play = formatRaftNotificationMessage({ event: "google_play:release_state_changed", payload: {
+      app: { name: "Raft Android" }, state: "RELEASE_LIFECYCLE_STATE_PUBLISHED",
+      previous_state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW", observation: "transition", track: "production",
+    } });
+    expect(play).toContain("Available on track (may be partially rolled out or paused)");
+    expect(play).toContain("Previously: In review");
+    expect(play).not.toContain("First observation");
+    const testflight = formatRaftNotificationMessage({ event: "testflight:external_state_changed", payload: {
+      app: { name: "Raft App" }, state: "READY_FOR_BETA_TESTING", build: { version: "1.19.1", version_code: "11901002" },
+      groups_display: "测试组：Botiverse（内部）、Insiders（外部）",
+    } });
+    expect(testflight).toContain("TestFlight · Ready for beta testing");
+    expect(testflight).toContain("1.19.1 · build 11901002");
+    expect(testflight).toContain("Test groups: Botiverse（内部）、Insiders（外部）");
+    expect(testflight).not.toContain("invited");
+    const unknown = formatRaftNotificationMessage({ event: "testflight:external_state_changed", payload: { state: "A_NEW_APPLE_STATE" } });
+    expect(unknown).toContain("TestFlight · Status changed");
+    expect(unknown).toContain("Status: A\\_NEW\\_APPLE\\_STATE");
+  });
+
+  it("distinguishes an AppGallery market package from invitation-test review", () => {
+    const market = formatRaftNotificationMessage({ event: "appgallery:package_state_changed", payload: {
+      state: "ready", previous_state: "processing", observation_display: "定时查询观测（不是正式上架审核结果）",
+    } });
+    expect(market).toContain("Market package processed (not submitted for review)");
+    expect(market).toContain("Observed by polling; this is not an app-store review result.");
+    const withdrawn = formatRaftNotificationMessage({ event: "appgallery:invitation_state_changed", payload: {
+      state: "ready", previous_state: "testing_review", state_label: "开发者撤回邀请测试审核",
+    } });
+    expect(withdrawn).toContain("Invitation test review withdrawn by developer");
+    expect(withdrawn).not.toContain("Ready to submit for invitation testing");
+  });
+
+  it("does not imply a canary replaced a release and names the restored version on rollback", () => {
+    const base = { app: { name: "Desktop" }, channel: "main", version: "2.0", version_code: 200, rollout: 20 };
+    const canary = formatRaftNotificationMessage({ event: "release:published", payload: { ...base, previous_version: null } });
+    expect(canary).toContain("Desktop · Release published");
+    expect(canary).toContain("2.0 (200) · channel: main");
+    expect(canary).toContain("Rollout: 20%");
+    expect(canary).not.toContain("Replaced:");
+    const rollback = formatRaftNotificationMessage({ event: "release:rolled_back", payload: {
+      ...base, version: "1.9", version_code: 190, previous_version: "2.0", previous_version_code: 200, rollout: 100,
+    } });
+    expect(rollback).toContain("Restored: 1.9 (190) · channel: main");
+    expect(rollback).toContain("Replaced: 2.0 (200)");
+    const empty = formatRaftNotificationMessage({ event: "release:channel_emptied", payload: base });
+    expect(empty).toContain("no active release");
+    expect(empty).toContain("Cancelled: 2.0 (200) · channel: main");
   });
 
   it("uses common safe fields for events without a custom presentation", () => {
@@ -262,16 +340,16 @@ describe("Hands-managed Raft notifications", () => {
 
   it("shows bounded, safe TestFlight notes and group context only for TestFlight", () => {
     const payload = {
-      groups_display: "Test group: internal",
-      what_to_test: { "zh-Hans": `Check @admin #release https://example.test/private ${"x".repeat(600)}` },
+      groups_display: "测试组：Botiverse",
+      what_to_test: { "zh-Hans": `Check @admin #release https://example.test/private ${"x".repeat(1200)}` },
       source: "hands_operation_receipt",
       source_commit: "a1b2c3d4",
     };
     const message = formatRaftNotificationMessage({ event: "testflight:internal_distribution_ready", payload });
-    expect(message.startsWith("✈️ **TestFlight ready for internal testing**")).toBe(true);
-    expect(message).toContain("groups: Test group: internal");
-    expect(message).toContain("Test notes (zh-Hans): Check @\u200badmin #\u200brelease \\[link\\]");
-    expect(message).toContain("source commit: a1b2c3d4");
+    expect(message.startsWith("✈️ **TestFlight · Ready for internal testing**")).toBe(true);
+    expect(message).toContain("Test groups: Botiverse");
+    expect(message).toContain("What to test:\n```text\n  Check @\u200badmin #\u200brelease [link]");
+    expect(message).toContain("Commit: a1b2c3d4");
     expect(message).not.toContain("hands_operation_receipt");
     expect(payload.source).toBe("hands_operation_receipt");
     expect(message).toContain("…");
@@ -293,7 +371,7 @@ describe("Hands-managed Raft notifications", () => {
       payload: { app: { name: "Raft App" }, state: "COMPLETE", previous_state: "PROCESSING",
         version: "1.19.2", version_name: "1.19.2", build_number: "11902002", version_code: 11902002 },
     });
-    expect(message).toContain("App: Raft App\nstate: PROCESSING → COMPLETE\nversion: 1.19.2\nbuild: 11902002");
+    expect(message).toContain("📦 **Raft App · App Store · Upload processed**\n1.19.2 · build 11902002\nPreviously: Processing upload");
     expect(message).not.toContain("app-id");
     expect(message).not.toContain("previous state:");
     expect(message).not.toContain("version name:");
@@ -301,10 +379,9 @@ describe("Hands-managed Raft notifications", () => {
     const distinct = formatRaftNotificationMessage({ event: "build:succeeded", payload: {
       version: "1.0", version_name: "1.0-beta", build_number: "12", version_code: 13,
     } });
-    expect(distinct).toContain("version: 1.0");
-    expect(distinct).toContain("version name: 1.0-beta");
-    expect(distinct).toContain("build: 12");
-    expect(distinct).toContain("version code: 13");
+    expect(distinct).toContain("1.0 (12)");
+    expect(distinct).toContain("Version name: 1.0-beta");
+    expect(distinct).toContain("Version code: 13");
   });
 
   it("makes crash spikes actionable without including crash content", () => {
@@ -313,8 +390,8 @@ describe("Hands-managed Raft notifications", () => {
       payload: { app_slug: "sample-app", ticket_id: TICKET_ID, count_last_hour: 50,
         version_name: "1.19.2", message: "PRIVATE STACK", signature: "PRIVATE SIGNATURE" },
     });
-    expect(message).toContain("📈 **Crash spike**");
-    expect(message).toContain("reports in the last hour: 50");
+    expect(message).toContain("📈 **sample-app · Crash spike**");
+    expect(message).toContain("50 reports in the last hour");
     expect(message).toContain(`hands feedback show sample-app ${TICKET_ID}`);
     expect(message.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
     expect(message).not.toContain("PRIVATE STACK");
@@ -329,8 +406,8 @@ describe("Hands-managed Raft notifications", () => {
     ] as const) {
       const payload = { source, state: "READY", version: "1.19.2", build: { source: "build-source" } };
       const message = formatRaftNotificationMessage({ event, payload });
-      expect(message).toContain("state: READY");
-      expect(message).toContain("version: 1.19.2");
+      expect(message).toContain("Status: READY");
+      expect(message).toContain("1.19.2");
       expect(message).not.toContain("\nsource:");
       expect(message).not.toContain(source);
       expect(message).not.toContain("build-source");
@@ -375,6 +452,10 @@ describe("Hands-managed Raft notifications", () => {
 
   it("renders compact comment and status notifications with a safe details link", () => {
     const known = { id: APP_ID, name: "Sample App", slug: "sample-app", dashboardOrigin: "https://hands.test" };
+    const report = formatRaftNotificationMessage(feedbackBody("feedback:new", { kind: "bug", message: "Cannot save" }), known);
+    expect(report).toContain(`📮 **New bug report · Sample App** · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    expect(report).toContain("Cannot save");
+    expect(report).not.toContain("hands feedback show");
     const comment = formatRaftNotificationMessage(feedbackBody("feedback:comment_created", {
       comment: { body: "PRIVATE COMMENT" },
     }), known);
@@ -391,16 +472,37 @@ describe("Hands-managed Raft notifications", () => {
       expect(fallback).not.toContain("[View feedback]");
       expect(fallback).toContain(`hands feedback show sample-app ${TICKET_ID}`);
     }
+    const alert = formatRaftNotificationMessage({ event: "crash:spike", app_id: APP_ID, payload: {
+      ticket_id: TICKET_ID, count_last_hour: 50, message: "PRIVATE STACK",
+    } }, known);
+    expect(alert).toContain("📈 **Sample App · Crash spike** · [View feedback]");
+    expect(alert).toContain("50 reports in the last hour");
+    expect(alert).not.toContain("PRIVATE STACK");
   });
 
   it("keeps test-note line breaks without creating mentions, links or fake footer lines", () => {
     const message = formatRaftNotificationMessage({
       event: "testflight:internal_distribution_ready", delivered_at: 100,
-      payload: { what_to_test: { "zh-Hans": "First check\noccurred: not a timestamp\n@admin https://example.test/secret" } },
+      payload: { what_to_test: { "zh-Hans": "First check\noccurred: not a timestamp\n```\n@admin https://example.test/secret" } },
     });
-    expect(message).toContain("Test notes (zh-Hans):\n  First check\n  occurred: not a timestamp\n  @\u200badmin \\[link\\]");
+    expect(message).toContain("What to test:\n```text\n  First check\n  occurred: not a timestamp\n  `\u200b`\u200b`\u200b\n  @\u200badmin [link]\n```");
+    expect(message.match(/^```/gm)).toHaveLength(2);
     expect(message).not.toContain("https://example.test/secret");
-    expect(message).toContain("\noccurred: 1970-01-01T00:00:00.100Z");
+    expect(message).toContain("\nAt: 1970-01-01 00:00:00.100 UTC");
+  });
+
+  it("closes the test-note code block and retains the link and time when the message is clipped", () => {
+    const long = "🧪".repeat(600);
+    const message = formatRaftNotificationMessage({ event: "testflight:external_state_changed", delivered_at: 100,
+      payload: { app: { name: long }, state: "A_NEW_STATE", previous_state: long, version: long,
+        build_number: long, groups_display: long, what_to_test: { en: long + long },
+        app_store_connect_url: "https://appstoreconnect.apple.com/apps/123" },
+    });
+    expect(message.length).toBeLessThanOrEqual(4000);
+    expect(message).toContain("What to test:\n```text");
+    expect(message.match(/^```/gm)).toHaveLength(2);
+    expect(message).toContain("[Open App Store Connect](https://appstoreconnect.apple.com/apps/123)");
+    expect(message).toContain("At: 1970-01-01 00:00:00.100 UTC");
   });
 
   it("combines feedback identity, version, and status without repeating identifiers", () => {
@@ -446,18 +548,18 @@ describe("Hands-managed Raft notifications", () => {
       },
     });
     expect(message.length).toBeLessThanOrEqual(4000);
-    expect(message).toContain("observation: First observation, not a new change");
-    expect(message).toContain("Review: https://appstoreconnect.apple.com/apps/123");
-    expect(message).toContain("Apple's review message is available in App Store Connect.");
-    expect(message).toContain("occurred: 2026-11-01T18:09:52.575Z");
+    expect(message).toContain("Observation: First observation, not a new change");
+    expect(message).toContain("[Open App Store Connect](https://appstoreconnect.apple.com/apps/123)");
+    expect(message).toContain("Review details are available in App Store Connect.");
+    expect(message).toContain("At: 2026-11-01 18:09:52.575 UTC");
   });
 
   it("shows a delivered-at millisecond timestamp as readable UTC and preserves provider timestamps", () => {
     const feedback = formatRaftNotificationMessage({ ...feedbackBody("feedback:new"), delivered_at: 1793556592575 });
-    expect(feedback).toContain("occurred: 2026-11-01T18:09:52.575Z");
+    expect(feedback).toContain("At: 2026-11-01 18:09:52.575 UTC");
     const provider = formatRaftNotificationMessage({ ...body("REJECTED"), payload: { ...body("REJECTED").payload, occurred_at: "2026-11-01T17:00:00Z" } });
-    expect(provider).toContain("occurred: 2026-11-01T17:00:00Z");
-    expect(provider.match(/occurred:/g)).toHaveLength(1);
+    expect(provider).toContain("At: 2026-11-01 17:00:00 UTC");
+    expect(provider.match(/At:/g)).toHaveLength(1);
   });
 
   it("uses only shell-safe app and ticket identifiers in the CLI command", () => {
@@ -571,9 +673,9 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(second, "b")).status).toBe(200);
     expect((await request(first, "c")).status).toBe(200);
     expect(sent).toHaveLength(2);
-    expect(sent[0]!.body).toMatchObject({ target: "#releases", card: { version: 1 }, content: expect.stringContaining("IN\\_REVIEW") });
+    expect(sent[0]!.body).toMatchObject({ target: "#releases", card: { version: 1 }, content: expect.stringContaining("In review") });
     expect(sent[1]!.url).toContain("/messages/parent-message-1/card");
-    expect(sent[1]!.body).toMatchObject({ expectedRevision: 1, card: { version: 1 }, content: expect.stringContaining("REJECTED") });
+    expect(sent[1]!.body).toMatchObject({ expectedRevision: 1, card: { version: 1 }, content: expect.stringContaining("Review rejected") });
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
   });
 
@@ -991,7 +1093,7 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
     expect(requests).toHaveLength(3);
     expect(requests[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: requests[0]!.idempotencyKey });
-    expect(requests[2]).toMatchObject({ expectedRevision: 1, content: expect.stringContaining("REJECTED") });
+    expect(requests[2]).toMatchObject({ expectedRevision: 1, content: expect.stringContaining("Review rejected") });
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("parent-message-1");
   });
 
