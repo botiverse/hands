@@ -43,13 +43,22 @@ export function consumeAuthTokenFromUrl(): string | null {
   } catch {
     return null;
   }
+  const query = new URLSearchParams(window.location.search);
+  const connectedServer = query.get("hands_connect_server") === "1";
+  if (connectedServer) {
+    // The new session belongs to the server just selected at Raft. Do not let
+    // a previously selected organization override that identity on return.
+    clearActiveOrgId();
+    query.delete("hands_connect_server");
+  }
   params.delete("access_token");
   params.delete("expires_at");
   const remainingHash = params.toString();
+  const remainingQuery = query.toString();
   window.history.replaceState(
     null,
     "",
-    `${window.location.pathname}${window.location.search}${remainingHash ? `#${remainingHash}` : ""}`,
+    `${window.location.pathname}${connectedServer ? (remainingQuery ? `?${remainingQuery}` : "") : window.location.search}${remainingHash ? `#${remainingHash}` : ""}`,
   );
   return token;
 }

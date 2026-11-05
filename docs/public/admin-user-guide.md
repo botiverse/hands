@@ -34,6 +34,12 @@ Each app has a left sidebar with its sections; the app switcher at the top of th
 
 Create one Hands app per product distribution target. For example, an Android app should have its own Hands app and release channels.
 
+To connect another Raft server you already belong to, open the organization
+switcher and choose **Add Raft server**. Select the server and authorize Hands
+in Raft; Hands returns to that server's organization. This does not create a
+Raft server or grant membership. Previously connected organizations remain in
+the switcher when they belong to the same Raft identity.
+
 ### Raft notifications
 
 App administrators can open **Settings → Raft notifications** to have Hands

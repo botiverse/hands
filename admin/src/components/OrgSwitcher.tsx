@@ -8,14 +8,14 @@ import { errorMessage } from "../lib/errorMessage";
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Settings } from "lucide-react";
+import { Check, Plus, Settings } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   DropdownMenuLabel,
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "raft-ui";
-import { getAuthMe, listOrgs, setActiveOrgId, type Org } from "../lib/api";
+import { getAuthMe, listOrgs, loginUrl, setActiveOrgId, type Org } from "../lib/api";
 import { useText } from "../lib/locale";
 
 /**
@@ -68,14 +68,16 @@ export function OrgSwitcher({
           </DropdownMenuItem>
         );
       })}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem render={<a href={loginUrl("/apps?hands_connect_server=1")} />}>
+        <Plus className="h-4 w-4" aria-hidden="true" />
+        {t("Add Raft server", "添加 Raft 服务器")}
+      </DropdownMenuItem>
       {currentOrgId && (
-        <>
-          <DropdownMenuSeparator />
           <DropdownMenuItem render={<Link to={`/orgs/${currentOrgId}`} />}>
             <Settings className="h-4 w-4" aria-hidden="true" />
             {t("Organization settings", "组织设置")}
           </DropdownMenuItem>
-        </>
       )}
     </>
   );
