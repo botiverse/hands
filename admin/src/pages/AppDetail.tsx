@@ -1488,7 +1488,7 @@ function RaftNotificationRow({
   );
 }
 
-function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs: Array<{ id: string; name: string; slug: string; archived: number }> }) {
+function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs: Array<{ id: string; name: string; slug: string; archived: number; org_role?: "owner" | "admin" | "member" | "viewer" }> }) {
   const t = useText();
   const toast = useToast(); const qc = useQueryClient();
   const [target, setTarget] = useState(""); const [confirm, setConfirm] = useState("");
@@ -1498,8 +1498,8 @@ function AppTransferPanel({ appId, app, orgs }: { appId: string; app: App; orgs:
     onSuccess: () => { toast.show({ kind: "success", title: t("App transferred", "应用已转移") }); setConfirm(""); setIdempotencyKey(crypto.randomUUID()); void qc.invalidateQueries({ queryKey: ["apps"] }); },
     onError: (e) => toast.show({ kind: "error", title: t("Transfer failed", "转移失败"), description: errorMessage(e) }),
   });
-  const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id);
-  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">{t("Transfer app", "转移应用")}</h3><p className="text-xs text-foreground-muted mb-2">{t("Preserves this app ID and all releases, builds, channels, and history. Owners of both organizations must authorize.", "保留应用 ID 及所有版本、构建、渠道和历史记录。两个组织的所有者都必须授权。")}</p><div className="flex flex-wrap items-center gap-2"><Select items={{ none: t("Select target organization…", "选择目标组织…"), ...Object.fromEntries(eligible.map((o) => [o.id, `${o.name} (${o.slug})`])) }} value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label={t("Select target organization", "选择目标组织")} disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent>
+  const eligible = orgs.filter((o) => !o.archived && o.id !== app.org_id && o.org_role !== "viewer");
+  return <div className="border-t border-line-hairline pt-3"><h3 className="text-sm font-medium text-foreground-strong mb-1">{t("Transfer app", "转移应用")}</h3><p className="text-xs text-foreground-muted mb-2">{t("Preserves this app ID and all releases, builds, channels, and history. You need app admin access and membership in the target organization; its admins can access the app after transfer.", "保留应用 ID 及所有版本、构建、渠道和历史记录。你需要此应用的管理员权限和目标组织的成员权限；转移后目标组织的管理员可以访问此应用。")}</p><div className="flex flex-wrap items-center gap-2"><Select items={{ none: t("Select target organization…", "选择目标组织…"), ...Object.fromEntries(eligible.map((o) => [o.id, `${o.name} (${o.slug})`])) }} value={target || "none"} onValueChange={(value) => setTarget(value === "none" ? "" : String(value))}><SelectTrigger className="w-full sm:w-64" aria-label={t("Select target organization", "选择目标组织")} disabled={transfer.isPending}><SelectValue /><SelectIcon /></SelectTrigger><SelectContent>
     <SelectList><SelectItem value="none">{t("Select target organization…", "选择目标组织…")}</SelectItem>{eligible.map((o) => <SelectItem key={o.id} value={o.id}>{o.name} ({o.slug})</SelectItem>)}</SelectList>
   </SelectContent></Select><Input className="w-full sm:w-56" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={t(`Type ${app.slug} to confirm`, `输入 ${app.slug} 以确认`)} disabled={!target || transfer.isPending} /><Button variant="outline" size="xs" disabled={!target || confirm !== app.slug || !app.org_id || transfer.isPending} onClick={() => transfer.mutate()}>{transfer.isPending ? t("Transferring…", "转移中…") : t("Transfer", "转移")}</Button></div></div>;
 }

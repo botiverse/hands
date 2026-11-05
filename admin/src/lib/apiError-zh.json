@@ -179,6 +179,8 @@
   "source org changed": "来源组织已更改",
   "target organization not found or archived": "目标组织未找到或已归档",
   "source and target organization owner role required": "需要来源和目标组织的所有者角色",
+  "source app admin and target organization member role required": "需要来源应用的管理员权限和目标组织的成员权限",
+  "idempotency key is bound to a different transfer": "此幂等键已用于其他转移操作",
   "transfer commit could not be verified": "无法验证转移提交",
   "archive the app before purging it": "永久删除前请先归档应用",
   "confirm_slug must match the app slug": "confirm_slug 必须匹配应用标识",
