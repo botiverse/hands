@@ -59,7 +59,8 @@ objects first seen after opting in. AppGallery builds with an existing text
 thread continue to use text. A failed Google Play submission is a separate
 card for each receipt; recognized failure causes appear on the card and its
 text fallback, while causes inferred from provider wording are labeled as
-possible. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
+possible. Google Play cards include a link to the Play Console home in both the
+card and accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
 text even if cards are turned on again. Other events still use text. A card older than Raft's update window
 is replaced by a new message. Older Raft clients see the accompanying text.
 If the destination cannot accept a first card, Hands uses text. You can switch
