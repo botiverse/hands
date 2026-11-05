@@ -4,7 +4,7 @@ type Payload = Record<string, unknown>;
 type App = { id: string; slug: string | null; name: string | null };
 
 // Each family has its own object identity; unrelated release and build
-// observations must not overwrite each other. Other events remain threaded text.
+// observations must not overwrite each other. Other events remain text.
 const CARD_EVENTS = new Set([
   "app_store:version_state_changed",
   "testflight:external_state_changed",

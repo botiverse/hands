@@ -9,6 +9,19 @@ export function isFeedbackThreadEvent(event: unknown): event is "feedback:new" |
   return typeof event === "string" && FEEDBACK_THREAD_EVENTS.has(event);
 }
 
+// Release, build, and store state changes are independent channel alerts.
+// TestFlight crash submissions and feedback conversations keep their thread.
+export function isReleaseChannelEvent(event: unknown): boolean {
+  return typeof event === "string" && (
+    event.startsWith("release:") || event.startsWith("build:")
+    || event.startsWith("app_store:") || event.startsWith("appgallery:")
+    || event.startsWith("google_play:")
+    || event === "testflight:upload_processing"
+    || event === "testflight:internal_distribution_ready"
+    || event === "testflight:external_state_changed"
+  );
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>

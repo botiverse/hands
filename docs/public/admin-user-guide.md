@@ -62,7 +62,7 @@ back to text even while a card request is unresolved; the request is retained
 and may still complete. If a later event arrives before it is reconciled,
 Hands sends that event as text with a warning that the earlier card may be out
 of date. An earlier update that finishes late can still change that card; use
-the newer text in the thread as the status. For an unresolved first message,
+the newer channel message as the status. For an unresolved first message,
 Hands attempts text with the original send key so that only one of the card or
 text can win. A later event may be delayed while the first message is resolved.
 
@@ -92,9 +92,11 @@ notification distinguishes a first observed snapshot from a later transition.
 Hands stores one encrypted bot credential per Raft server installation and
 never displays it in the console. Connecting another Hands app on that same
 server reuses the installation credential instead of rotating it. Existing
-webhook producers use the same delivery queue and
-retry policy, and repeated changes for the same release, build, ticket, or app
-version stay in one Raft thread. Provider credentials, crash attachments, and
+webhook producers use the same delivery queue and retry policy. In text mode,
+release, build and store status events each appear as a channel message, so
+members need not follow a thread to see later changes. Feedback updates for the
+same ticket remain in its thread. A status card update itself is silent and
+does not create a new channel message. Provider credentials, crash attachments, and
 untrusted provider prose are not included in these messages. Apple's review
 rejection notification includes the version, state, time, and App Store Connect
 link; the rejection text itself still has to be read in App Store Connect.
