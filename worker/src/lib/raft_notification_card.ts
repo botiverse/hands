@@ -8,10 +8,14 @@ type CardElement =
   | { type: "Stack"; props: { direction: "column" }; children: string[] }
   | { type: "Text"; props: { text: string; tone?: "default" | "muted" | "warning"; mono?: boolean } }
   | { type: "Badge"; props: { text: string; tone: "neutral" } }
+  | { type: "Markdown"; props: { content: string } }
+  | { type: "Fields"; props: { items: Array<{ label: string; value: string; mono?: boolean }> } }
+  | { type: "Divider"; props: Record<string, never> }
   | { type: "RelativeTime"; props: { at: string } }
   | { type: "Button"; props: { label: string; action: { kind: "navigate"; url: string } } };
 export interface RaftMessageCard {
   version: 1;
+  header?: { title: string; subtitle?: string; tags?: Array<{ text: string; tone: "neutral" | "info" | "success" | "warning" | "danger" }> };
   root: string;
   elements: Record<string, CardElement>;
 }
@@ -45,6 +49,29 @@ function shorten(value: string, limit: number): string {
 // plain text, so remove those escapes while retaining its mention protection.
 function plain(value: string): string {
   return value.replace(/\\([\\`*_{}\[\]()<>!|])/g, "$1");
+}
+
+// Keep the event label visible even if an application has a very long name.
+function headerTitle(value: string): string {
+  if (Array.from(value).length <= 100) return value;
+  const split = value.lastIndexOf(" · ");
+  if (split < 0) return shorten(value, 100);
+  const suffix = value.slice(split + 3);
+  const remaining = 100 - Array.from(suffix).length - 3;
+  return remaining > 0 ? `${shorten(value.slice(0, split), remaining)} · ${suffix}` : shorten(suffix, 100);
+}
+
+function statusTone(event: string, payload: Payload): "neutral" | "info" | "success" | "warning" | "danger" {
+  const build = record(payload.build);
+  const state = String(payload.status ?? build.status ?? payload.state ?? build.state ?? "");
+  if (event === "google_play:submission_failed" || event === "build:failed"
+    || ["SUBMISSION_FAILED", "FAILED", "PROCESSING_EXCEPTION", "BETA_REJECTED", "REJECTED", "METADATA_REJECTED",
+      "INVALID_BINARY", "RELEASE_LIFECYCLE_STATE_NOT_APPROVED", "failed", "rejected"].includes(state)) return "danger";
+  if (["EXPIRED", "MISSING_EXPORT_COMPLIANCE", "NOT_APPLICABLE", "DEVELOPER_REJECTED", "stopped"].includes(state)) return "warning";
+  if (["READY_FOR_SALE", "READY_FOR_BETA_TESTING", "IN_BETA_TESTING", "BETA_APPROVED", "COMPLETE", "ready", "testing_active"].includes(state)) return "success";
+  if (["IN_REVIEW", "WAITING_FOR_REVIEW", "IN_BETA_REVIEW", "WAITING_FOR_BETA_REVIEW", "PROCESSING",
+    "RELEASE_LIFECYCLE_STATE_IN_REVIEW", "processing", "testing_review"].includes(state)) return "info";
+  return "neutral";
 }
 
 function reviewUrl(payload: Payload): string | null {
@@ -93,7 +120,7 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const [heading = "Hands", ...lines] = baseContent.split("\n");
   const payload = record(body.payload);
   const event = typeof body.event === "string" ? body.event : "";
-  const title = shorten(plain(heading.replace(/\*\*/g, "").replace(/ failed or was blocked$/, " failed")), 160);
+  const title = headerTitle(plain(heading.replace(/\*\*/g, "").replace(/ failed or was blocked$/, " failed")));
   const isPlay = event.startsWith("google_play:");
   const appleUrl = isPlay ? null : reviewUrl(payload);
   const url = appleUrl ?? (isPlay ? PLAY_CONSOLE_URL : null);
@@ -117,9 +144,12 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
       : line.startsWith("occurred: ") || line.startsWith("At: ") ? 120 : 256)).join("\n"), FOOTER_LIMIT);
   const reasonIndex = event === "google_play:submission_failed"
     ? detailLines.findIndex((line) => /^(?:Reason|Possible reason \(inferred\)|Possible reason \(source unconfirmed\)): /.test(line)) : -1;
-  // Only the already-whitelisted reason is promoted. Preserve the tentative
-  // label when the provider's wording rather than structured data was used.
-  const reason = reasonIndex < 0 ? null : shorten(plain(detailLines.splice(reasonIndex, 1)[0]!.replace(/^Reason: /, "")), 200);
+  // These labels and descriptions are the allowlisted Play diagnoses. Never
+  // pass arbitrary provider prose through the Markdown element.
+  const reasonLine = reasonIndex < 0 ? null : plain(detailLines.splice(reasonIndex, 1)[0]!);
+  const reasonSeparator = reasonLine?.indexOf(": ") ?? -1;
+  const reasonLabel = reasonLine && reasonSeparator >= 0 ? reasonLine.slice(0, reasonSeparator) : null;
+  const reason = reasonLine && reasonSeparator >= 0 ? shorten(reasonLine.slice(reasonSeparator + 2), 200) : null;
   const technical: string[] = [];
   const ordinary: string[] = [];
   for (const line of detailLines) {
@@ -131,24 +161,42 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
     } else if (isTechnicalLine(line)) technical.push(line);
     else ordinary.push(line);
   }
-  const detail = plain(ordinary.join("\n"));
   const metadata = shorten(plain(technical.join("\n")), METADATA_LIMIT);
-  // Each reserved item uses one child; fit the body into the remaining
-  // children as well as the JSON byte limit, rather than discarding notes
-  // just because another kind of event needs more header elements.
-  const reservedChildren = 1 + Number(!!state) + Number(!!reason) + Number(!!metadata)
-    + Number(!!footer) + Number(!!at) + Number(!!url);
-  const bodyLimit = Math.min(BODY_LIMIT, (12 - reservedChildren) * TEXT_LIMIT);
+  const fields: Array<{ label: string; value: string; mono: true }> = [];
+  const extraMetadata: string[] = [];
+  for (const line of metadata.split("\n").filter(Boolean)) {
+    const separator = line.indexOf(": ");
+    const label = separator > 0 ? line.slice(0, separator) : "";
+    const value = separator > 0 ? line.slice(separator + 2) : "";
+    if (label && value && Array.from(label).length <= 40 && Array.from(value).length <= 200 && fields.length < 8) {
+      fields.push({ label, value, mono: true });
+    } else extraMetadata.push(line);
+  }
+  // A short identity line works as the card subtitle; longer or multi-line
+  // content stays in the body rather than being silently cut.
+  const first = ordinary[0] ? plain(ordinary[0]) : "";
+  const subtitle = first && Array.from(first).length <= 100
+    && !/[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]/.test(first)
+    && !/^(?:Previously|Status|Reason|What to test|Test groups|Requested rollout|Reported rollout|Observation):/.test(first)
+    ? first : null;
+  if (subtitle) ordinary.shift();
+  const detail = plain(ordinary.join("\n"));
+  const tag = state && Array.from(state).length <= 24 ? { text: state, tone: statusTone(event, payload) } : null;
+  const badge = state && !tag ? state : null;
+  // Reserve each non-body child before fitting text to the root's 12-child
+  // bound. A title and tag live in the header, outside the element tree.
+  const reservedChildren = Number(!!badge) + 2 * Number(!!reason) + Number(fields.length > 0)
+    + Number(fields.length > 0) + Number(extraMetadata.length > 0) + Number(!!footer) + Number(!!at) + Number(!!url);
+  const bodyLimit = Math.min(BODY_LIMIT, Math.max(0, 12 - reservedChildren) * TEXT_LIMIT);
 
   const build = (limit: number): RaftMessageCard => {
-    const children = ["title"];
+    const children: string[] = [];
     const elements: Record<string, CardElement> = {
       root: { type: "Stack", props: { direction: "column" }, children },
-      title: { type: "Text", props: { text: title } },
     };
-    if (state) {
+    if (badge) {
       children.push("state");
-      elements.state = { type: "Badge", props: { text: state, tone: "neutral" } };
+      elements.state = { type: "Badge", props: { text: badge, tone: "neutral" } };
     }
     const addText = (prefix: string, value: string, style: { tone?: "default" | "muted" | "warning"; mono?: boolean } = {}) => {
       for (const [index, text] of pieces(value).entries()) {
@@ -157,9 +205,18 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
         elements[id] = { type: "Text", props: { text, ...style } };
       }
     };
-    if (reason) addText("reason", reason, { tone: "warning" });
+    if (reason && reasonLabel) {
+      children.push("reasonLabel");
+      elements.reasonLabel = { type: "Markdown", props: { content: `**${reasonLabel}:**` } };
+      addText("reason", reason, { tone: "warning" });
+    }
     if (limit > 0) addText("detail", shorten(detail, limit));
-    if (metadata) addText("metadata", metadata, { tone: "muted", mono: true });
+    if (fields.length) {
+      children.push("divider", "fields");
+      elements.divider = { type: "Divider", props: {} };
+      elements.fields = { type: "Fields", props: { items: fields } };
+    }
+    if (extraMetadata.length) addText("metadata", extraMetadata.join("\n"), { tone: "muted", mono: true });
     if (footer) addText("footer", footer, { tone: "muted" });
     if (at) {
       children.push("time");
@@ -169,7 +226,7 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
       children.push("review");
       elements.review = { type: "Button", props: { label: appleUrl ? "Open in App Store Connect" : "Open Play Console", action: { kind: "navigate", url } } };
     }
-    return { version: 1, root: "root", elements };
+    return { version: 1, header: { title, ...(subtitle ? { subtitle } : {}), ...(tag ? { tags: [tag] } : {}) }, root: "root", elements };
   };
 
   // JSON escaping and multibyte text make a character limit insufficient for
