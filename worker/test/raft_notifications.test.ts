@@ -244,7 +244,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(calls[0]).toMatchObject({ content: expect.stringContaining("Google Play has changes in review") });
   });
 
-  it("reconciles a failure card whose send response was lost without posting it again", async () => {
+  it("replays a failure card whose send response was lost without posting it again", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
     await updateConfig({ card_updates: true });
@@ -252,8 +252,8 @@ describe("Hands-managed Raft notifications", () => {
     mockRaftFetch(async (_input, init) => {
       const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
       calls.push(sent);
-      if (sent.card) throw new Error("card committed, response lost");
-      if (sent.reconcileOnly) return Response.json({ state: "committed", messageId: "card-1", messageCard: { revision: 1 } });
+      if (calls.length === 1 && sent.card) throw new Error("card committed, response lost");
+      if (sent.card && JSON.stringify(sent) === JSON.stringify(calls[0])) return Response.json({ state: "committed", messageId: "card-1", messageCard: { revision: 1 } });
       throw new Error("unexpected extra send");
     });
     const event = playFailureBody("11111111-1111-4111-8111-111111111111");
@@ -263,7 +263,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(retry.status).toBe(200);
     expect(await retry.json()).toMatchObject({ message_id: "card-1", card: true });
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatchObject({ reconcileOnly: true, idempotencyKey: calls[0]?.idempotencyKey });
+    expect(calls[1]).toEqual(calls[0]);
   });
 
   it("uses the original failure-card key when cards are disabled during an uncertain send", async () => {
@@ -1066,6 +1066,258 @@ describe("Hands-managed Raft notifications", () => {
     expect(targets).toEqual(["#releases", "#releases", "#releases", "#releases"]);
   });
 
+  it.each([
+    "testflight:upload_processing", "testflight:internal_distribution_ready",
+    "app_store:build_upload_state_changed", "google_play:submission_succeeded",
+    "release:new", "release:draft_created", "release:superseded", "release:rolled_back",
+    "release:channel_emptied", "release:cancelled", "release:published",
+    "build:succeeded", "build:failed",
+  ])("sends each %s receipt as a separate channel card and deduplicates retries", async (eventName) => {
+    const { request, sqlite, updateConfig } = await harness();
+    expect((await updateConfig({ events: [eventName] })).status).toBe(200);
+    expect((await updateConfig({ card_updates: true })).status).toBe(200);
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      expect(init?.method).toBe("POST");
+      return Response.json({ state: "sent", messageId: `card-${calls.length}`, messageCard: { revision: 1 } });
+    });
+    // A timestamp is not needed to order standalone receipts.
+    const first = { event: eventName, delivered_at: 100, payload: {
+      release_id: "release-1", build_id: "build-1", version: "1.20.0", version_code: 12000003,
+      track: "production", state: "PROCESSING",
+    } };
+    const second = { ...first, payload: { ...first.payload, version_code: 12000004 } };
+    expect((await request(first, "one")).status).toBe(200);
+    expect((await request(first, "retry")).status).toBe(200);
+    expect((await request(second, "two")).status).toBe(200);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call).toMatchObject({ target: "#releases", card: { version: 1 }, content: expect.any(String) });
+    expect(calls[0]!.idempotencyKey).not.toBe(calls[1]!.idempotencyKey);
+    expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_cards").pluck().get()).toBe(2);
+  });
+
+  it("does not resend a standalone text receipt when cards are enabled before a retry", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ events: ["testflight:upload_processing"] });
+    const event = { event: "testflight:upload_processing", payload: { build_id: "build-1", version: "1.20.0" } };
+    const messages = new Map<string, Record<string, unknown>>();
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      const key = String(data.idempotencyKey);
+      const prior = messages.get(key);
+      if (prior) return JSON.stringify(prior) === JSON.stringify(data)
+        ? Response.json({ state: "committed", messageId: "original" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      messages.set(key, data);
+      return Response.json({ state: "sent", messageId: "original" });
+    });
+    expect((await request(event, "text")).status).toBe(200);
+    expect(calls[0]).not.toHaveProperty("card");
+    expect((await updateConfig({ card_updates: true })).status).toBe(200);
+    const retried = await request(event, "retry");
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ message_id: "original", card: false });
+    expect(messages.size).toBe(1);
+    expect(calls.some((call) => !!call.card)).toBe(true);
+    expect(new Set(calls.map((call) => call.idempotencyKey)).size).toBe(1);
+  });
+
+  it("falls back to one channel text notice if Raft refuses an update notice card", async () => {
+    const { request, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const notices: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      if (String(data.idempotencyKey).startsWith("hands-card:send:")) return Response.json({ state: "sent", messageId: "card-1", messageCard: { revision: 1 } });
+      notices.push(data);
+      return data.card ? Response.json({ code: "message_cards_disabled" }, { status: 400 })
+        : Response.json({ state: "sent", messageId: "text-notice" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toHaveProperty("card");
+    expect(notices[1]).not.toHaveProperty("card");
+    expect(notices[1]).toMatchObject({ target: "#releases", idempotencyKey: notices[0]?.idempotencyKey, content: notices[0]?.content });
+  });
+
+  it("recognizes a standalone event already delivered as old threaded text before creating one channel copy", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["google_play:submission_succeeded"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "google_play:submission_succeeded", delivered_at: 100, payload: {
+      release_id: "release-1", version: "1.20.0", version_code: 12000003, track: "production",
+    } };
+    const oldText = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
+    const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
+    const messages = new Map<string, { target: string; content: string; card?: unknown; messageId: string }>([
+      [key, { target: "#releases:legacy-p", content: oldText, messageId: "old-thread-message" }],
+    ]);
+    const attempts: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      attempts.push(data);
+      const prior = messages.get(String(data.idempotencyKey));
+      if (prior) {
+        if (prior.target !== data.target || prior.content !== data.content || JSON.stringify(prior.card ?? null) !== JSON.stringify(data.card ?? null))
+          return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        return Response.json({ state: "committed", messageId: prior.messageId });
+      }
+      const message = { target: String(data.target), content: String(data.content), card: data.card, messageId: "channel-copy" };
+      messages.set(String(data.idempotencyKey), message);
+      return Response.json({ state: "sent", messageId: message.messageId });
+    });
+    expect((await request(event, "old-worker-race")).status).toBe(200);
+    expect(attempts[0]).toMatchObject({ target: "#releases", idempotencyKey: key, card: { version: 1 } });
+    expect(attempts.some((attempt) => attempt.target === "#releases:legacy-p" && attempt.idempotencyKey === key && attempt.content === oldText)).toBe(true);
+    expect([...messages.values()].filter((message) => message.target === "#releases")).toHaveLength(1);
+    const count = attempts.length;
+    expect((await request(event, "retry")).status).toBe(200);
+    expect(attempts).toHaveLength(count);
+  });
+
+  it("proves an old threaded standalone winner after a lost card response instead of treating key reconciliation as channel delivery", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["testflight:upload_processing"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "testflight:upload_processing", payload: { build_id: "build-1", version: "1.20.0" } };
+    const oldText = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
+    const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    const messages = new Map<string, { target: string; content: string; messageId: string }>([
+      [key, { target: "#releases:legacy-p", content: oldText, messageId: "old-thread-message" }],
+    ]);
+    let lost = false;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (!lost) { lost = true; throw new Error("response lost"); }
+      // Reconciliation can return the old thread's message regardless of target.
+      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "old-thread-message" });
+      const previous = messages.get(String(data.idempotencyKey));
+      if (previous) return !data.card && data.target === previous.target && data.content === previous.content
+        ? Response.json({ state: "committed", messageId: previous.messageId })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      const next = { target: String(data.target), content: String(data.content), messageId: "channel-copy" };
+      messages.set(String(data.idempotencyKey), next);
+      return Response.json({ state: "sent", messageId: next.messageId });
+    });
+    expect((await request(event, "first")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1 WHERE parent_message_id='pending'").run();
+    expect((await request(event, "retry")).status).toBe(200);
+    expect(calls.some((call) => call.reconcileOnly)).toBe(false);
+    expect(calls.some((call) => call.target === "#releases:legacy-p" && call.content === oldText)).toBe(true);
+    expect([...messages.values()].filter((message) => message.target === "#releases")).toHaveLength(1);
+    expect(sqlite.prepare("SELECT message_id,pending_json FROM raft_notification_cards").get())
+      .toEqual({ message_id: "channel-copy", pending_json: null });
+  });
+
+  it("falls back to the proven old threaded text after a standalone card is refused", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["testflight:internal_distribution_ready"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "testflight:internal_distribution_ready", payload: { build_id: "build-1" } };
+    const text = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
+    const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
+    const calls: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (data.card) return Response.json({ code: "message_cards_disabled" }, { status: 400 });
+      if (data.idempotencyKey === key) return data.target === "#releases:legacy-p" && data.content === text
+        ? Response.json({ state: "committed", messageId: "old-thread-message" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      return Response.json({ state: "sent", messageId: "channel-copy" });
+    });
+    const result = await request(event, "refused");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "channel-copy", card_fallback: "message_cards_disabled" });
+    expect(calls.some((call) => call.target === "#releases:legacy-p" && call.idempotencyKey === key)).toBe(true);
+    expect(calls.at(-1)).toMatchObject({ target: "#releases", idempotencyKey: key.replace("hands-raft:", "hands-raft-channel:"), content: text });
+  });
+
+  it("keeps an unknown standalone-key conflict pending without emitting a new key", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ events: ["testflight:upload_processing"] });
+    await updateConfig({ card_updates: true });
+    const event = { event: "testflight:upload_processing", payload: { build_id: "build-1" } };
+    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
+    const attempts: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      attempts.push(JSON.parse(String(init?.body)));
+      return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    expect((await request(event, "conflict")).status).toBe(503);
+    expect(new Set(attempts.map((attempt) => attempt.idempotencyKey)).size).toBe(1);
+    expect(sqlite.prepare("SELECT pending_uncertain FROM raft_notification_cards").pluck().get()).toBe(1);
+  });
+
+  it("uses text for an update notice if cards were disabled while the update was in flight", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (init?.method === "PUT") {
+        sqlite.prepare("UPDATE raft_notification_subscriptions SET card_updates=0").run();
+        return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      }
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "card-1" : "notice", ...(data.card ? { messageCard: { revision: 1 } } : {}) });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "b")).status).toBe(200);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(calls[2]).not.toHaveProperty("card");
+  });
+
+  it("confirms an already-committed card notice after cards are disabled without sending another notice", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<Record<string, unknown>> = [];
+    const committed = new Map<string, Record<string, unknown>>();
+    let lost = false;
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push(data);
+      if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      if (String(data.idempotencyKey).startsWith("hands-card:send:"))
+        return Response.json({ state: "sent", messageId: "card-1", messageCard: { revision: 1 } });
+      const key = String(data.idempotencyKey);
+      const previous = committed.get(key);
+      if (previous) {
+        if (JSON.stringify(previous) !== JSON.stringify(data)) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        return Response.json({ state: "committed", messageId: "notice", messageCard: { revision: 1 } });
+      }
+      committed.set(key, data);
+      if (!lost) { lost = true; throw new Error("notice committed but response was lost"); }
+      return Response.json({ state: "sent", messageId: "notice" });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const changed = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    expect((await request(changed, "b")).status).toBe(503);
+    expect((await updateConfig({ card_updates: false })).status).toBe(200);
+    expect((await request(changed, "retry")).status).toBe(200);
+    expect(committed.size).toBe(1);
+    const notices = calls.filter((call) => String(call.idempotencyKey).startsWith("hands-raft:"));
+    expect(notices[0]).toHaveProperty("card");
+    expect(notices.at(-1)).toEqual(notices[0]);
+    expect(notices.slice(1, -1).every((call) => !call.card && call.idempotencyKey === notices[0]!.idempotencyKey)).toBe(true);
+    expect(sqlite.prepare("SELECT pending_json FROM raft_notification_cards").pluck().get()).toBeNull();
+  });
+
   it("sends a card, updates the same message and ignores an older event", async () => {
     const { request, sqlite, updateConfig } = await harness();
     expect((await updateConfig({ card_updates: true })).status).toBe(200);
@@ -1086,7 +1338,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(sent[1]!.url).toContain("/messages/parent-message-1/card");
     expect(sent[1]!.body).toMatchObject({ expectedRevision: 1, card: { version: 1 }, content: expect.stringContaining("Review rejected") });
     expect(sent[2]!.body).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
-    expect(sent[2]!.body).not.toHaveProperty("card");
+    expect(sent[2]!.body.card).toEqual(sent[1]!.body.card);
     expect(sqlite.prepare("SELECT message_id,revision FROM raft_notification_cards").get()).toEqual({ message_id: "parent-message-1", revision: 2 });
   });
 
@@ -1104,15 +1356,16 @@ describe("Hands-managed Raft notifications", () => {
     mockRaftFetch(async (_input, init) => {
       const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
       if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
-      if (sent.card) return Response.json({ state: "sent", messageId: "card-1", messageCard: { revision: 1 } });
+      if (String(sent.idempotencyKey).startsWith("hands-card:send:")) return Response.json({ state: "sent", messageId: "card-1", messageCard: { revision: 1 } });
       notices.push(sent);
-      return sent.content === oldNotice
+      return !sent.card && sent.content === oldNotice
         ? Response.json({ state: "committed", messageId: "old-notice" })
         : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
     });
     expect((await request(first, "a")).status).toBe(200);
     expect((await request(next, "b")).status).toBe(200);
     expect(notices[0]?.content).toContain("[Open Play Console](https://play.google.com/console/)");
+    expect(notices[0]?.card).toMatchObject({ version: 1 });
     expect(notices.at(-1)?.content).toBe(oldNotice);
     expect(new Set(notices.map((notice) => notice.idempotencyKey)).size).toBe(1);
     const count = notices.length;
@@ -1130,8 +1383,9 @@ describe("Hands-managed Raft notifications", () => {
       const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
       calls.push({ method: String(init?.method), body: data, url: String(input) });
       if (init?.method === "PUT") return Response.json({ ok: true, messageId: "card-1", revision: 2 });
+      if (calls.at(-2)?.method === "PUT") return Response.json({ state: "sent", messageId: "channel-notice", messageCard: { revision: 1 } });
       if (data.card) return Response.json({ state: "sent", messageId: `card-${++cards}`, messageCard: { revision: 1 } });
-      return Response.json({ state: "sent", messageId: "channel-notice" });
+      return Response.json({ state: "sent", messageId: "channel-text" });
     });
     const invite = (id: string, state: string, time: string) => ({ event: "appgallery:invitation_state_changed",
       payload: { submission_id: id, build_id: "same-build", state, occurred_at: time } });
@@ -1142,10 +1396,10 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(invite("submission-a", "testing_active", "2026-11-05T11:01:00Z"), "b")).status).toBe(200);
     expect((await request(invite("submission-b", "testing_review", "2026-11-05T11:02:00Z"), "c")).status).toBe(200);
     expect((await request(packageEvent, "d")).status).toBe(200);
-    expect(calls.filter((call) => call.body.card && call.method === "POST")).toHaveLength(3);
+    expect(cards).toBe(3);
+    expect(calls.filter((call) => call.body.card && call.method === "POST")).toHaveLength(4);
     expect(calls.find((call) => call.method === "PUT")?.url).toContain("/messages/card-1/card");
-    expect(calls.filter((call) => call.method === "POST" && !call.body.card))
-      .toEqual([expect.objectContaining({ body: expect.objectContaining({ target: "#releases" }) })]);
+    expect(calls[2]).toMatchObject({ method: "POST", body: { target: "#releases", card: { version: 1 } } });
   });
 
   it("keeps AppGallery objects with a legacy text thread on text", async () => {
@@ -1296,7 +1550,8 @@ describe("Hands-managed Raft notifications", () => {
     const retried = await request(event, "b");
     expect(retried.status).toBe(200);
     expect(await retried.json()).toMatchObject({ message_id: "old-text", card: false });
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(3);
+    expect(calls.some((call) => call.reconcileOnly)).toBe(false);
     expect(sqlite.prepare("SELECT state,pending_json FROM raft_notification_cards").get()).toEqual({ state: "retired", pending_json: null });
   });
 
@@ -1335,8 +1590,9 @@ describe("Hands-managed Raft notifications", () => {
       calls.push(data);
       expect(data.idempotencyKey).toBe(expectedKey);
       expect(data.target).toBe("#releases");
-      if (data.reconcileOnly) return Response.json({ state: "committed", messageId: "new-card", messageCard: { revision: 1 } });
-      if (messages.has(expectedKey)) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      if (messages.has(expectedKey)) return JSON.stringify(messages.get(expectedKey)) === JSON.stringify(data)
+        ? Response.json({ state: "committed", messageId: "new-card", messageCard: { revision: 1 } })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
       messages.set(expectedKey, data);
       throw new Error("card committed but response lost");
     });
@@ -1366,14 +1622,14 @@ describe("Hands-managed Raft notifications", () => {
         updates.push(data);
         return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
       }
-      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      if (String(data.idempotencyKey).startsWith("hands-card:send:")) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
       notices.push(data);
       const key = String(data.idempotencyKey);
       if (!delivered.has(key)) {
-        delivered.set(key, String(data.content));
+        delivered.set(key, JSON.stringify({ target: data.target, content: data.content, card: data.card }));
         throw new Error("notice committed but response was lost");
       }
-      expect(data.content).toBe(delivered.get(key));
+      expect(JSON.stringify({ target: data.target, content: data.content, card: data.card })).toBe(delivered.get(key));
       return Response.json({ state: "committed", messageId: "channel-notice-1" });
     });
     const first = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
@@ -1388,7 +1644,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(updates[1]).toEqual(updates[0]);
     expect(notices).toHaveLength(2);
     expect(notices[1]).toEqual(notices[0]);
-    expect(notices[0]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
+    expect(notices[0]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected"), card: { version: 1 } });
     expect(delivered.size).toBe(1);
     expect(sqlite.prepare("SELECT revision,pending_json FROM raft_notification_cards").get())
       .toEqual({ revision: 2, pending_json: null });
@@ -1419,7 +1675,7 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(event, "b")).status).toBe(200);
     expect(calls[1]).toMatchObject({ target: "#releases:parent-m", idempotencyKey: pending.idempotencyKey, reconcileOnly: true });
     expect(calls[2]).toMatchObject({ target: "#releases", content: expect.stringContaining("Review rejected") });
-    expect(calls[2]).not.toHaveProperty("card");
+    expect(calls[2]).toHaveProperty("card");
     expect(sqlite.prepare("SELECT message_id,pending_json FROM raft_notification_cards").get())
       .toEqual({ message_id: "legacy-card", pending_json: null });
   });
@@ -1694,7 +1950,7 @@ describe("Hands-managed Raft notifications", () => {
     const controls = { oldBlocked: true, loseCatchupResponse: false, loseNoticeAt: 0, noticeReplays: 0 };
     const updates: Array<Record<string, unknown>> = [];
     const committedUpdates = new Map<string, number>();
-    const texts = new Map<string, { content: string; messageId: string }>();
+    const texts = new Map<string, { content: string; messageId: string; card: unknown }>();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
       if (String(input).endsWith("/card")) {
@@ -1711,20 +1967,20 @@ describe("Hands-managed Raft notifications", () => {
         }
         return Response.json({ ok: true, messageId: "parent-message-1", revision });
       }
-      if (data.card) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
+      if (String(data.idempotencyKey).startsWith("hands-card:send:")) return Response.json({ state: "sent", messageId: "parent-message-1", messageCard: { revision: 1 } });
       const key = String(data.idempotencyKey);
       const old = texts.get(key);
       if (old) {
-        if (old.content !== data.content) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        if (old.content !== data.content || JSON.stringify(old.card ?? null) !== JSON.stringify(data.card ?? null)) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
         if (old.content.includes("APPROVED")) {
           controls.noticeReplays++;
           if (controls.loseNoticeAt === controls.noticeReplays) throw new Error("notice replay response lost");
         }
         return Response.json({ state: "committed", messageId: old.messageId });
       }
-      const message = { content: String(data.content), messageId: `channel-${texts.size + 1}` };
+      const message = { content: String(data.content), messageId: `channel-${texts.size + 1}`, card: data.card };
       texts.set(key, message);
-      return Response.json({ state: "sent", messageId: message.messageId });
+      return Response.json({ state: "sent", messageId: message.messageId, ...(data.card ? { messageCard: { revision: 1 } } : {}) });
     });
     const initial = stateBody("IN_REVIEW", "2026-11-04T07:00:00Z");
     const old = stateBody("REJECTED", "2026-11-04T07:01:00Z");
