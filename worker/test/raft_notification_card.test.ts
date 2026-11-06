@@ -4,6 +4,49 @@ import { formatRaftNotificationMessage } from "../src/lib/raft_notification_cont
 import { playFailureNotificationFields } from "../src/lib/play_failure_notification";
 
 describe("Raft release notification cards", () => {
+  it("keeps long app names bounded without hiding the event label", () => {
+    const body = { event: "google_play:submission_failed", payload: { state: "SUBMISSION_FAILED", version: "1.20.0" } };
+    const { card, content } = formatRaftNotificationCard(body, { id: "app", slug: "x", name: "测试😀".repeat(100) });
+    expect(Array.from(card.header!.title)).toHaveLength(100);
+    expect(card.header!.title).toContain("Release submission failed");
+    expect(card.header!.title).toContain("…");
+    expect(content).toContain("Release submission failed or was blocked");
+  });
+
+  it("only colors known statuses and preserves a long state without truncating its qualification", () => {
+    for (const [state, tone] of [["IN_REVIEW", "info"], ["REJECTED", "danger"], ["READY_FOR_SALE", "success"], ["UNRECOGNIZED", "neutral"]] as const) {
+      const { card } = formatRaftNotificationCard({ event: "app_store:version_state_changed", payload: { state } });
+      expect(card.header?.tags?.[0]?.tone).toBe(tone);
+    }
+    const { card } = formatRaftNotificationCard({ event: "google_play:release_state_changed", payload: { state: "RELEASE_LIFECYCLE_STATE_PUBLISHED" } });
+    expect(card.header?.tags).toBeUndefined();
+    expect(card.elements.state).toMatchObject({ type: "Badge", props: { text: "Available on track (may be partially rolled out or paused)" } });
+  });
+
+  it("never copies user-provided text into Markdown and retains the complete fallback", () => {
+    const body = { event: "testflight:external_state_changed", payload: { state: "READY_FOR_BETA_TESTING",
+      version: "1.20.0", groups_display: "# heading **bold** <script> @everyone https://bad.test",
+      what_to_test: { en: "- [x] task\n**fake emphasis**\n<script> @admin https://bad.test" },
+    } };
+    const { card, content } = formatRaftNotificationCard(body);
+    expect(content).toBe(formatRaftNotificationMessage(body));
+    expect(Object.values(card.elements).filter((element) => element.type === "Markdown")).toEqual([]);
+    expect(JSON.stringify(card)).not.toContain("https://bad.test");
+    expect(JSON.stringify(card)).toContain("@\u200beveryone");
+    expect(content).toContain("- [x] task");
+  });
+
+  it("keeps long identity and test notes in the body rather than cutting a subtitle", () => {
+    const body = { event: "testflight:external_state_changed", payload: { state: "READY_FOR_BETA_TESTING",
+      version: "version-" + "x".repeat(140), what_to_test: { en: "test notes" },
+    } };
+    const { card } = formatRaftNotificationCard(body);
+    expect(card.header?.subtitle).toBeUndefined();
+    const bodyText = Object.values(card.elements).filter((element) => element.type === "Text").map((element) => element.props.text).join("");
+    expect(bodyText).toContain("version-" + "x".repeat(140));
+    expect(bodyText).toContain("test notes");
+  });
+
   it("recovers the original fallback even when its content already contains the console link", () => {
     const footer = "\n[Open Play Console](https://play.google.com/console/)";
     const original = `Status details${footer}\nOther details`;
@@ -29,21 +72,25 @@ describe("Raft release notification cards", () => {
     expect(content).toContain("Google Play has changes in review");
     expect(content).toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
     expect(JSON.stringify(card)).toContain("Google Play has changes in review");
-    expect(card.elements.state).toEqual({ type: "Badge", props: { text: "Failed", tone: "neutral" } });
+    expect(card.header).toMatchObject({ tags: [{ text: "Failed", tone: "danger" }], subtitle: "1.20.0 · track: production" });
+    expect(card.elements.reasonLabel).toEqual({ type: "Markdown", props: { content: "**Reason:**" } });
     expect(card.elements.reason0).toEqual({ type: "Text", props: {
       text: "Google Play has changes in review. Wait for review to finish before submitting again.", tone: "warning",
     } });
-    expect(card.elements.metadata0).toEqual({ type: "Text", props: {
-      text: "Version code: 12000003\nPackage: build.raft.app\nReason code: play_api_error\nPlay reason code: CHANGES_ALREADY_IN_REVIEW",
-      tone: "muted", mono: true,
-    } });
+    expect(card.elements.fields).toEqual({ type: "Fields", props: { items: [
+      { label: "Version code", value: "12000003", mono: true },
+      { label: "Package", value: "build.raft.app", mono: true },
+      { label: "Reason code", value: "play_api_error", mono: true },
+      { label: "Play reason code", value: "CHANGES_ALREADY_IN_REVIEW", mono: true },
+    ] } });
+    expect(card.elements.divider).toEqual({ type: "Divider", props: {} });
     expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "2026-11-05T13:35:09.102Z" } });
     expect(card.elements.review).toEqual({ type: "Button", props: { label: "Open Play Console",
       action: { kind: "navigate", url: "https://play.google.com/console/" } } });
     const root = card.elements.root;
     if (!root || root.type !== "Stack") throw new Error("missing root stack");
-    expect(root.children.indexOf("reason0")).toBeLessThan(root.children.indexOf("detail0"));
-    expect(root.children.indexOf("detail0")).toBeLessThan(root.children.indexOf("metadata0"));
+    expect(root.children.indexOf("reasonLabel")).toBeLessThan(root.children.indexOf("reason0"));
+    expect(root.children.indexOf("reason0")).toBeLessThan(root.children.indexOf("fields"));
     expect(content).toBe(formatRaftNotificationMessage(body) + "\n[Open Play Console](https://play.google.com/console/)");
     expect(JSON.stringify(card)).not.toContain("secret https://example.test");
     expect(content).not.toContain("@admin");
@@ -51,7 +98,8 @@ describe("Raft release notification cards", () => {
     expect(inferred).toContain("Possible reason (inferred):");
     expect(inferred).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
     const inferredCard = formatRaftNotificationCard({ ...body, payload: { ...body.payload, play_failure_cause_source: "message" } }).card;
-    expect(inferredCard.elements.reason0).toMatchObject({ props: { text: expect.stringMatching(/^Possible reason \(inferred\):/), tone: "warning" } });
+    expect(inferredCard.elements.reasonLabel).toEqual({ type: "Markdown", props: { content: "**Possible reason (inferred):**" } });
+    expect(inferredCard.elements.reason0).toMatchObject({ props: { text: expect.stringContaining("Google Play"), tone: "warning" } });
     const unknownSource = formatRaftNotificationMessage({ ...body, payload: { ...body.payload, play_failure_cause_source: null } });
     expect(unknownSource).toContain("Possible reason (source unconfirmed):");
     expect(unknownSource).not.toContain("Play reason code: CHANGES_ALREADY_IN_REVIEW");
@@ -77,7 +125,7 @@ describe("Raft release notification cards", () => {
     };
     const result = formatRaftNotificationCard(body);
     expect(result.content).toBe(formatRaftNotificationMessage(body));
-    expect(result.card.elements.state).toEqual({ type: "Badge", props: { text: "Ready for beta testing", tone: "neutral" } });
+    expect(result.card.header?.tags).toEqual([{ text: "Ready for beta testing", tone: "success" }]);
     expect(result.content).toContain("Previously: Waiting for beta review");
     expect(result.card.elements.review).toEqual({
       type: "Button", props: { label: "Open in App Store Connect", action: { kind: "navigate", url: "https://appstoreconnect.apple.com/apps/6789091965" } },
@@ -86,7 +134,7 @@ describe("Raft release notification cards", () => {
     expect(serialized).toContain("1.19.0");
     expect(serialized).toContain("11900001");
     expect(serialized).toContain("Internal and external testers");
-    expect(serialized).toContain("Commit: a1b2c3d4");
+    expect(result.card.elements.fields).toMatchObject({ props: { items: expect.arrayContaining([{ label: "Commit", value: "a1b2c3d4", mono: true }]) } });
     expect(serialized).not.toContain("hands_operation_receipt");
     expect(result.content).not.toContain("hands_operation_receipt");
     expect(body.payload.source).toBe("hands_operation_receipt");
