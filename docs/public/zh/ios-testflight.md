@@ -244,6 +244,8 @@ Apple 每个平台只允许一个尚未发布的 App Store 版本。已撤回版
 
 | `display_type` | 尺寸（纵向） |
 | --- | --- |
+| `HANDS_IPHONE_DUO_OUTER`（Hands 选择器；只读） | 1398x2034 |
+| `HANDS_IPHONE_DUO_INNER`（Hands 选择器；只读） | 2007x2853 |
 | `APP_IPHONE_67`（6.9 和 6.7 英寸） | 1320x2868、1290x2796、1260x2736 |
 | `APP_IPHONE_65` | 1242x2688、1284x2778 |
 | `APP_IPHONE_61`（6.3 和 6.1 英寸） | 1206x2622、1179x2556、1170x2532、1125x2436、1080x2340 |
@@ -252,7 +254,17 @@ Apple 每个平台只允许一个尚未发布的 App Store 版本。已撤回版
 | `APP_IPAD_PRO_3GEN_11` | 1488x2266、1668x2420、1668x2388、1640x2360 |
 | `APP_IPAD_PRO_129` | 2048x2732 |
 
-`display_type` 必须是 Apple 的 `ScreenshotDisplayType` 值之一；尚不支持的其他 Apple 值会被拒绝。Apple 没有专供双屏设备的类型。
+`display_type` 通常使用 Apple 的 `ScreenshotDisplayType`；没有尺寸表的其他 Apple 值会被拒绝。上面的两个 Duo 名称是 **Hands 选择器，不是 Apple 类型名**。Apple 公布的 API 枚举没有说明 Duo 的对应关系。Duo 选择器根据 Apple 返回的尺寸查找已有截图组；同一语言中任何截图组为空或有尺寸缺失时，都无法确认唯一匹配。可根据校验和报告候选组未变化，但尺寸匹配不能证明其显示类型：Apple 未说明 `imageAsset` 尺寸是否为原图尺寸或是否总会返回。在验证 Apple 的写入行为之前，不能创建、重新排序或替换 Duo 截图组；这些变更请继续通过 App Store Connect 操作。
+
+对于普通 Apple 显示类型，如果已有截图组为空、组内图片尺寸缺失或为 Duo 尺寸，修改该截图组的计划也会被阻止。同一语言中若有截图组未返回 Apple 显示类型，该语言的计划也会被阻止。这只能防止已知风险，不保证能检测所有碰撞，也可能阻止以前可以执行的更新；遇到阻止时可检查截图组或使用 App Store Connect。
+
+只读检查已有版本的截图组：
+
+```bash
+hands app-store screenshots inspect raft-ios --version-name 1.17.0 --locale en-US
+```
+
+检查结果原样报告 Apple 返回的显示类型和图片尺寸；缺失值显示为不可用。该操作只读取数据，不能证明后续 API 上传会被 Apple 接受。
 
 每个截图组要求版本已经具有相应语言，请先在商店详情文本步骤创建。已有截图按 MD5 比较，这是 Apple 在 `sourceFileChecksum` 中保存的值：
 

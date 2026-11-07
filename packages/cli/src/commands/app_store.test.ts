@@ -168,6 +168,25 @@ describe("hands app-store", () => {
     });
   });
 
+  it("screenshots inspect only reads the selected version and locale, preserving Apple's metadata", async () => {
+    const inspection = { version_id: "ver-117", localizations: [{ locale: "en-US", sets: [
+      { id: "set-1", display_type: "FAKE_APPLE_TYPE", screenshots: [{ id: "s1", file_name: "one.png", width: 1398, height: 2034, state: "COMPLETE" }] },
+      { id: "set-2", display_type: null, screenshots: [{ id: "s2", file_name: null, width: null, height: null, state: null }] },
+    ] }] };
+    const path = `/api/apps/${APP_ID}/app-store/versions/ver-117/screenshots`;
+    const got = await run(["app-store", "screenshots", "inspect", APP_ID, "--version-name", "1.17.0", "--locale", "en-US"], () => inspection);
+    expect(got.calls).toEqual([
+      { method: "GET", path: `/api/apps/${APP_ID}/app-store/status`, body: undefined, query: { version_string: "1.17.0" } },
+      { method: "GET", path, body: undefined, query: { locale: "en-US" } },
+    ]);
+    expect(got.out.join("\n")).toContain("FAKE_APPLE_TYPE (set-1)");
+    expect(got.out.join("\n")).toContain("one.png: 1398x2034, COMPLETE");
+    expect(got.out.join("\n")).toContain("s2: dimensions unavailable, state unavailable");
+    const json = await run(["app-store", "screenshots", "inspect", APP_ID, "--version-id", "ver-117", "--json"], () => inspection);
+    expect(json.calls).toEqual([{ method: "GET", path, body: undefined, query: {} }]);
+    expect(JSON.parse(json.out.join("\n"))).toEqual(inspection);
+  });
+
   it("screenshots push reads <dir>/<locale>/<display_type>/ in numeric order and posts multipart", async () => {
     const root = await mkdtemp(join(tmpdir(), "hands-shots-"));
     const folder = join(root, "en-US", "APP_IPHONE_67");

@@ -9,7 +9,7 @@ import {
   type RouteConfigDef,
   type RouteConfigList,
 } from "./common";
-import { SCREENSHOT_DISPLAY_TYPES } from "../lib/app_store_screenshots";
+import { SCREENSHOT_REQUEST_TYPES } from "../lib/app_store_screenshots";
 
 const VersionIdParam = z.object({
   versionId: z.string().openapi({
@@ -70,7 +70,7 @@ const ScreenshotsRequest = z.object({
   mode: Mode,
   sets: z.array(z.object({
     locale: z.string().openapi({ example: "en-US" }),
-    display_type: z.enum(SCREENSHOT_DISPLAY_TYPES).openapi({ description: "Apple ScreenshotDisplayType. Types without a Hands size table are refused (SCREENSHOT_DISPLAY_TYPE_NOT_SUPPORTED)." }),
+    display_type: z.enum(SCREENSHOT_REQUEST_TYPES).openapi({ description: "Apple ScreenshotDisplayType, or a Hands Duo selector (not an Apple enum). Duo writes are blocked until verified; only identical existing sets can be confirmed. Types without a Hands size table are refused." }),
     images: z.array(z.object({
       part: z.string().openapi({ description: "Name of the multipart file part." }),
       sha256: z.string().regex(/^[0-9a-f]{64}$/),
@@ -152,12 +152,28 @@ export function registerAppStoreRoutes(): RouteConfigList {
     },
   });
   routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/app-store/versions/{versionId}/screenshots",
+    tags: ["App Store"],
+    summary: "Inspect App Store screenshot sets (read-only)",
+    description: "Lists Apple's returned screenshot display type, image dimensions and state, optionally for one locale. Missing attributes are null; this is not evidence of upload support. All Apple requests are GETs and the version must belong to this app.",
+    security: auth,
+    request: { params: AppVersionParams, query: z.object({ locale: z.string().optional() }) },
+    responses: {
+      200: success("Version localizations and screenshot sets as returned by Apple.", GenericObject),
+      400: error("Invalid locale."),
+      403: error("App viewer role is required."),
+      404: error("Version does not belong to this app or the locale does not exist."),
+      502: error("Apple refused the read or returned incomplete metadata."),
+    },
+  });
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/app-store/versions/{versionId}/screenshots",
     tags: ["App Store"],
     summary: "Replace App Store screenshot sets (dry run or commit)",
     description:
-      "multipart/form-data: a `request` JSON part plus one file part per declared image (at most 24 MiB of images per push, 15 MiB per image). Each image is checked before any Apple call: sha256 integrity, PNG or JPEG, no transparency, exact pixel size for the display type, 1-10 per set. Per (locale, display_type): the version localization must exist (else 409 SCREENSHOT_PLAN_BLOCKED; create it with the localizations endpoint); the screenshot set is created if missing. Existing screenshots are compared by MD5 (Apple's sourceFileChecksum): identical files in identical order, all COMPLETE, are left alone (unchanged); identical files in another order are only reordered; anything else is replaced (delete existing, reserve, upload operations, commit with MD5, poll assetDeliveryState to COMPLETE, set order), then read back. mode is required; dry_run reads and returns the plan with no writes. Commit runs each set independently; only a global error (auth 401/403, 404, 429, 5xx, malformed Apple response, a 409 that names a state/version/lock, or anything not clearly set-local) stops the run and reports later sets not_attempted. Per-set status: ok, failed (Apple FAILED, refused request, read-back mismatch), uploaded_pending (every image uploaded and committed, none rejected, at least one still UPLOAD_COMPLETE when the poll budget ran out; order and read-back not done yet), not_attempted. Responses carry failed_sets and pending_sets. Any failed or not_attempted set makes the response 502 SCREENSHOTS_FAILED (takes precedence); otherwise any uploaded_pending set makes it 202 SCREENSHOTS_PENDING with ok: false and next_action: run the dry run again later; every set `unchanged` confirms files and order, `reorder` or `replace` means run commit again. Nothing is retried automatically.",
+      "Duo selectors can report an unchanged candidate based on returned dimensions and checksum, not verify the Apple type. Empty sets or missing dimensions prevent unique matching. All Duo creation, reorder and replacement is blocked until Apple API write behavior is verified. For normal types, a changed existing set is blocked if empty, or if any image has absent or Duo dimensions; an untyped set blocks planning for that locale. This may block formerly accepted writes and does not prove other overlaps are impossible. multipart/form-data: a `request` JSON part plus one file part per declared image (at most 24 MiB of images per push, 15 MiB per image). Each image is checked before any Apple call: sha256 integrity, PNG or JPEG, no transparency, exact pixel size for the display type, 1-10 per set. Per (locale, display_type): the version localization must exist (else 409 SCREENSHOT_PLAN_BLOCKED; create it with the localizations endpoint); the screenshot set is created if missing. Existing screenshots are compared by MD5 (Apple's sourceFileChecksum): identical files in identical order, all COMPLETE, are left alone (unchanged); identical files in another order are only reordered; anything else is replaced (delete existing, reserve, upload operations, commit with MD5, poll assetDeliveryState to COMPLETE, set order), then read back. mode is required; dry_run reads and returns the plan with no writes. Commit runs each set independently; only a global error (auth 401/403, 404, 429, 5xx, malformed Apple response, a 409 that names a state/version/lock, or anything not clearly set-local) stops the run and reports later sets not_attempted. Per-set status: ok, failed (Apple FAILED, refused request, read-back mismatch), uploaded_pending (every image uploaded and committed, none rejected, at least one still UPLOAD_COMPLETE when the poll budget ran out; order and read-back not done yet), not_attempted. Responses carry failed_sets and pending_sets. Any failed or not_attempted set makes the response 502 SCREENSHOTS_FAILED (takes precedence); otherwise any uploaded_pending set makes it 202 SCREENSHOTS_PENDING with ok: false and next_action: run the dry run again later; every set `unchanged` confirms files and order, `reorder` or `replace` means run commit again. Nothing is retried automatically.",
     security: auth,
     request: { params: AppVersionParams, body: { content: { "multipart/form-data": { schema: ScreenshotsMultipart } }, required: true } },
     responses: {
@@ -166,7 +182,7 @@ export function registerAppStoreRoutes(): RouteConfigList {
       400: error("Request or image validation failed; no Apple call."),
       403: error("App publisher role is required."),
       404: error("Version does not belong to this app."),
-      409: error("SCREENSHOT_PLAN_BLOCKED (version not editable or localization missing); nothing written."),
+      409: error("SCREENSHOT_PLAN_BLOCKED (version not editable, localization missing, ambiguous/incomplete screenshot metadata, or unverified Duo writes); nothing written."),
       502: error("SCREENSHOTS_FAILED with per-set and per-image state, failed_sets and pending_sets, or Apple rejected a read."),
     },
   });
