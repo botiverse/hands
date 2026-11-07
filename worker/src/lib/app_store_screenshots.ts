@@ -1,10 +1,11 @@
 /**
  * App Store screenshot validation, before any App Store Connect call.
  *
- * Display types are Apple's ScreenshotDisplayType enum (App Store Connect API,
- * `appScreenshotSets.screenshotDisplayType`), copied verbatim. Apple has no
- * dedicated type for a dual-screen / "Duo" device; the 6.9" iPhone shares
- * APP_IPHONE_67 with the 6.7" one.
+ * Most display types are Apple's published ScreenshotDisplayType enum (App Store
+ * Connect API, `appScreenshotSets.screenshotDisplayType`). The 6.9" iPhone
+ * shares APP_IPHONE_67 with the 6.7" one. APP_IPHONE_DUO has been observed
+ * in a read-only ASC response; write support has not been verified. Legacy
+ * Hands aliases remain valid but cannot represent a mixed Duo screenshot set.
  *
  * Pixel sizes come from Apple's "Screenshot specifications" page (App Store Connect
  * Help). Only types with a size table here are accepted; an enum value without one
@@ -54,10 +55,21 @@ export const SCREENSHOT_DISPLAY_TYPES = [
   "IMESSAGE_APP_IPAD_105",
   "IMESSAGE_APP_IPAD_97",
 ] as const;
-export type ScreenshotDisplayType = typeof SCREENSHOT_DISPLAY_TYPES[number];
+/** Apple type observed from readback; the two Hands selectors are legacy aliases. */
+export const ASC_IPHONE_DUO_TYPE = "APP_IPHONE_DUO";
+export const DUO_SCREENSHOT_SELECTORS = [ASC_IPHONE_DUO_TYPE, "HANDS_IPHONE_DUO_OUTER", "HANDS_IPHONE_DUO_INNER"] as const;
+export const SCREENSHOT_REQUEST_TYPES = [...SCREENSHOT_DISPLAY_TYPES, ...DUO_SCREENSHOT_SELECTORS] as const;
+export type DuoScreenshotSelector = typeof DUO_SCREENSHOT_SELECTORS[number];
+export type ScreenshotDisplayType = typeof SCREENSHOT_REQUEST_TYPES[number];
+export function isDuoScreenshotSelector(value: string): value is DuoScreenshotSelector {
+  return (DUO_SCREENSHOT_SELECTORS as readonly string[]).includes(value);
+}
 
 /** Portrait sizes; the landscape (swapped) size is accepted too. */
 const PORTRAIT_SIZES: Partial<Record<ScreenshotDisplayType, Array<[number, number]>>> = {
+  APP_IPHONE_DUO: [[1398, 2034], [2007, 2853]],
+  HANDS_IPHONE_DUO_OUTER: [[1398, 2034]],
+  HANDS_IPHONE_DUO_INNER: [[2007, 2853]],
   // 6.9" (1320x2868, 1290x2796, 1260x2736) and 6.7" (1290x2796) share this type.
   APP_IPHONE_67: [[1320, 2868], [1290, 2796], [1260, 2736]],
   APP_IPHONE_65: [[1242, 2688], [1284, 2778]],
@@ -95,7 +107,7 @@ export class ScreenshotInputError extends Error {
 }
 
 export function isScreenshotDisplayType(value: unknown): value is ScreenshotDisplayType {
-  return typeof value === "string" && (SCREENSHOT_DISPLAY_TYPES as readonly string[]).includes(value);
+  return typeof value === "string" && (SCREENSHOT_REQUEST_TYPES as readonly string[]).includes(value);
 }
 
 export interface ScreenshotImage {
@@ -185,14 +197,14 @@ export function normalizeScreenshotPush(body: unknown, parts: Map<string, Uint8A
     }
     if (!isScreenshotDisplayType(row.display_type)) {
       throw new ScreenshotInputError("INVALID_DISPLAY_TYPE",
-        `display_type ${JSON.stringify(row.display_type)} is not an Apple ScreenshotDisplayType`,
-        { allowed: SCREENSHOT_DISPLAY_TYPES });
+        `display_type ${JSON.stringify(row.display_type)} is not a supported screenshot type`,
+        { allowed: SCREENSHOT_REQUEST_TYPES });
     }
     const displayType = row.display_type;
     if (!allowedSizes(displayType)) {
       throw new ScreenshotInputError("SCREENSHOT_DISPLAY_TYPE_NOT_SUPPORTED",
         `${displayType} is an Apple display type Hands has no size table for yet`,
-        { display_type: displayType, supported: SCREENSHOT_DISPLAY_TYPES.filter((t) => allowedSizes(t)) });
+        { display_type: displayType, supported: SCREENSHOT_REQUEST_TYPES.filter((t) => allowedSizes(t)) });
     }
     const label = `${locale} ${displayType}`;
     if (seen.has(label)) throw new ScreenshotInputError("INVALID_REQUEST", `${label} appears more than once`);

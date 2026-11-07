@@ -403,6 +403,9 @@ it), 1-10 images per set, and an exact pixel size for the display type
 
 | `display_type` | Sizes (portrait) |
 | --- | --- |
+| `APP_IPHONE_DUO` (read-only) | 1398x2034, 2007x2853 |
+| `HANDS_IPHONE_DUO_OUTER` (legacy Hands selector; read-only) | 1398x2034 |
+| `HANDS_IPHONE_DUO_INNER` (legacy Hands selector; read-only) | 2007x2853 |
 | `APP_IPHONE_67` (6.9" and 6.7") | 1320x2868, 1290x2796, 1260x2736 |
 | `APP_IPHONE_65` | 1242x2688, 1284x2778 |
 | `APP_IPHONE_61` (6.3" and 6.1") | 1206x2622, 1179x2556, 1170x2532, 1125x2436, 1080x2340 |
@@ -411,9 +414,37 @@ it), 1-10 images per set, and an exact pixel size for the display type
 | `APP_IPAD_PRO_3GEN_11` | 1488x2266, 1668x2420, 1668x2388, 1640x2360 |
 | `APP_IPAD_PRO_129` | 2048x2732 |
 
-`display_type` must be one of Apple's `ScreenshotDisplayType` values; other
-Apple values are refused as not supported yet. Apple has no separate type for
-dual-screen devices.
+`display_type` normally uses an Apple `ScreenshotDisplayType`; other Apple
+values without a size table are refused. Apple has returned `APP_IPHONE_DUO`
+for one set containing both inner and outer screenshots. Use this one type for
+a mixed set; portrait and landscape dimensions may be combined. A complete
+existing set with identical checksums and order can be reported unchanged.
+Empty, untyped, duplicate or incomplete metadata blocks this check. Returned
+`imageAsset` dimensions may be missing, including while images are processing;
+their availability and interpretation are not guaranteed.
+
+The earlier `HANDS_IPHONE_DUO_OUTER` and `HANDS_IPHONE_DUO_INNER` Hands-only
+selectors remain for compatibility but cannot represent mixed sets. Creating,
+reordering or replacing Duo sets is blocked even in a dry run: seeing a type in
+an Apple response does not verify API writes. Continue using App Store Connect
+for Duo changes until write behavior is verified.
+
+For an ordinary Apple display type, an existing empty set, an image with missing
+dimensions or a Duo size blocks changes. A set whose Apple display type is
+missing also blocks planning for that locale. This protects against known
+hazards without assuming all collisions are detectable; it may prevent an
+update that previously worked. Inspect the set or use App Store Connect when
+blocked.
+
+To inspect an existing version without changing screenshots:
+
+```bash
+hands app-store screenshots inspect raft-ios --version-name 1.17.0 --locale en-US
+```
+
+The inspection reports Apple's returned display type and image dimensions as-is;
+missing values are shown as unavailable. It uses only read operations and does
+not establish that Apple will accept a subsequent API upload.
 
 Per set, the version must already have that locale (create it with the
 listing text step first). Existing screenshots are compared by MD5, which is

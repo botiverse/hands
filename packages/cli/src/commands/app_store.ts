@@ -205,6 +205,31 @@ async function withDetail<T>(json: boolean, format: (body: any) => string, run: 
   }
 }
 
+export interface ScreenshotInspection {
+  version_id: string;
+  localizations: Array<{ locale: string; sets: Array<{ id: string; display_type: string | null; screenshots: Array<{
+    id: string; file_name: string | null; width: number | null; height: number | null; state: string | null;
+  }> }> }>;
+}
+
+export function formatScreenshotInspection(body: ScreenshotInspection): string {
+  const lines = [`Version ${body.version_id}`];
+  if (!body.localizations.length) lines.push("  No localizations returned.");
+  for (const localization of body.localizations) {
+    lines.push(`  ${localization.locale}:`);
+    if (!localization.sets.length) lines.push("    No screenshot sets.");
+    for (const set of localization.sets) {
+      lines.push(`    ${set.display_type ?? "(type not returned)"} (${set.id})`);
+      if (!set.screenshots.length) lines.push("      No screenshots.");
+      for (const shot of set.screenshots) {
+        const dimensions = shot.width != null && shot.height != null ? `${shot.width}x${shot.height}` : "dimensions unavailable";
+        lines.push(`      ${shot.file_name ?? shot.id}: ${dimensions}, ${shot.state ?? "state unavailable"}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
 export function formatScreenshotResult(body: any): string {
   const lines: string[] = [];
   const v = body.version;
@@ -347,8 +372,24 @@ export function registerAppStoreCommands(program: Command): void {
 
   const screenshots = group.command("screenshots").description("App Store screenshot sets.");
   screenshots
+    .command("inspect <appIdOrSlug>")
+    .description("Read screenshot sets, Apple's returned display types, dimensions and states. Makes no store writes.")
+    .option("--version-name <version>", "Marketing version (resolved to its ASC id).")
+    .option("--version-id <id>", "ASC appStoreVersions id.")
+    .option("--platform <platform>", "Platform for --version-name lookup.")
+    .option("--locale <locale>", "Only this locale, for example en-US.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { versionName?: string; versionId?: string; platform?: string; locale?: string; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const versionId = await resolveVersionId(appId, opts);
+      const report = await apiRequest<ScreenshotInspection>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/screenshots`, {
+        query: opts.locale ? { locale: opts.locale } : {},
+      });
+      console.log(jsonRequested(program, opts.json) ? JSON.stringify(report, null, 2) : formatScreenshotInspection(report));
+    });
+  screenshots
     .command("push <appIdOrSlug>")
-    .description("Replace screenshot sets from <dir>/<locale>/<display_type>/NN.png. Identical sets are skipped. Dry run by default; --commit writes (deletes and re-uploads changed sets).")
+    .description("Replace screenshot sets from <dir>/<locale>/<display_type>/NN.png. Identical sets are skipped. Dry run by default; --commit writes (deletes and re-uploads changed sets). Duo selectors are read-only until Apple writes are verified.")
     .requiredOption("--dir <dir>", "Screenshots directory, e.g. shots/en-US/APP_IPHONE_67/01.png.")
     .option("--version-name <version>", "Marketing version (resolved to its ASC id).")
     .option("--version-id <id>", "ASC appStoreVersions id.")

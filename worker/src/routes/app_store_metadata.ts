@@ -19,6 +19,7 @@ import {
   AscApiError,
   type AscApiCredentials,
   type AscScreenshot,
+  type AscScreenshotSet,
   type AscVersionLocalization,
   type VersionLocalizationField,
   VERSION_LOCALIZATION_FIELDS,
@@ -38,7 +39,10 @@ import {
 } from "../lib/asc_api";
 import {
   ASC_LOCALE_RE,
+  ASC_IPHONE_DUO_TYPE,
   ScreenshotInputError,
+  allowedSizes,
+  isDuoScreenshotSelector,
   normalizeScreenshotPush,
   readScreenshotMultipart,
   type ScreenshotPush,
@@ -78,6 +82,8 @@ interface SetPlan {
   input: ScreenshotSetInput;
   localizationId: string | null;
   setId: string | null;
+  /** Actual Apple type, never a Hands alias. Null until an existing set resolves. */
+  appleDisplayType: string | null;
   existing: AscScreenshot[];
   action: SetAction | null;
   blocker: string | null;
@@ -120,28 +126,104 @@ function desiredView(input: ScreenshotSetInput) {
 async function buildScreenshotPlan(creds: AscApiCredentials, versionId: string, push: ScreenshotPush, editable: boolean) {
   const localizations = await listVersionLocalizations(creds, versionId);
   const byLocale = new Map(localizations.map((l) => [l.locale, l]));
-  const setsByLocalization = new Map<string, Awaited<ReturnType<typeof listScreenshotSets>>>();
+  const setsByLocalization = new Map<string, AscScreenshotSet[]>();
+  const shotsBySet = new Map<string, AscScreenshot[]>();
+  const readSet = async (id: string) => {
+    let shots = shotsBySet.get(id);
+    if (!shots) { shots = await getScreenshotSetWithScreenshots(creds, id); shotsBySet.set(id, shots); }
+    return shots;
+  };
   const plans: SetPlan[] = [];
   for (const input of push.sets) {
     const localization = byLocale.get(input.locale);
     if (!localization) {
-      plans.push({ input, localizationId: null, setId: null, existing: [], action: null, blocker: "localization_missing" });
+      plans.push({ input, localizationId: null, setId: null, appleDisplayType: null, existing: [], action: null, blocker: "localization_missing" });
       continue;
     }
     let sets = setsByLocalization.get(localization.id);
-    if (!sets) {
-      sets = await listScreenshotSets(creds, localization.id);
-      setsByLocalization.set(localization.id, sets);
+    if (!sets) { sets = await listScreenshotSets(creds, localization.id); setsByLocalization.set(localization.id, sets); }
+    let set: AscScreenshotSet | null = null;
+    let existing: AscScreenshot[] = [];
+    let blocker: string | null = null;
+    if (input.display_type === ASC_IPHONE_DUO_TYPE) {
+      // Use the observed Apple type only for read-only identity. The result
+      // does not establish write support, and unknown types still fail closed.
+      const matches = sets.filter((s) => s.displayType === ASC_IPHONE_DUO_TYPE);
+      if (matches.length > 1) blocker = "duo_set_ambiguous";
+      else if (sets.some((s) => !s.displayType)) blocker = "duo_set_incomplete";
+      else if (matches.length === 0) blocker = "duo_set_not_found";
+      else {
+        set = matches[0]!;
+        existing = await readSet(set.id);
+        const sizes = allowedSizes(ASC_IPHONE_DUO_TYPE)!;
+        if (existing.length === 0 || existing.some((shot) => shot.state !== "COMPLETE"
+          || !sizes.some((size) => size.width === shot.width && size.height === shot.height))) {
+          blocker = "duo_set_incomplete";
+        }
+      }
+    } else if (isDuoScreenshotSelector(input.display_type)) {
+      const sizes = allowedSizes(input.display_type)!;
+      const candidates: Array<{ set: AscScreenshotSet; shots: AscScreenshot[] }> = [];
+      let unknownSet = false;
+      for (const possible of sets) {
+        const shots = await readSet(possible.id);
+        // An empty set or an image with unknown dimensions might be another
+        // candidate: never claim a unique match while it cannot be ruled out.
+        if (shots.length === 0 || shots.some((shot) => shot.width === null || shot.height === null)) unknownSet = true;
+        if (shots.some((shot) => sizes.some((size) => size.width === shot.width && size.height === shot.height))) {
+          candidates.push({ set: possible, shots });
+        }
+      }
+      if (candidates.length > 1) blocker = "duo_set_ambiguous";
+      else if (unknownSet) blocker = "duo_set_incomplete";
+      else if (candidates.length === 0) blocker = "duo_set_not_found";
+      else {
+        ({ set, shots: existing } = candidates[0]!);
+        if (!set.displayType || existing.some((shot) => shot.state !== "COMPLETE"
+          || !sizes.some((size) => size.width === shot.width && size.height === shot.height))) {
+          blocker = "duo_set_incomplete";
+        }
+      }
+    } else {
+      const matches = sets.filter((s) => s.displayType === input.display_type);
+      // An untyped set could be another match. Never create or change a set
+      // while Apple's list does not identify every existing set's type.
+      if (matches.length > 1 || sets.some((s) => !s.displayType)) blocker = "display_type_ambiguous";
+      else { set = matches[0] ?? null; existing = set ? await readSet(set.id) : []; }
     }
-    const set = sets.find((s) => s.displayType === input.display_type) ?? null;
-    const existing = set ? await getScreenshotSetWithScreenshots(creds, set.id) : [];
-    const decided = planSet(input, existing, set?.id ?? null);
+    const decided = blocker ? { action: null } : planSet(input, existing, set?.id ?? null);
+    // An identical checksum is not enough to report unchanged when Apple's
+    // returned dimensions disagree with the corresponding supplied image.
+    if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action === "unchanged"
+      && existing.some((shot, index) => shot.width !== input.images[index]!.width || shot.height !== input.images[index]!.height)) {
+      blocker = "duo_set_dimensions_mismatch";
+    }
+    // Duo writes are deliberately unavailable: size matching is read-only evidence,
+    // not a guarantee that the API can create or safely replace Duo screenshots.
+    if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action !== "unchanged") {
+      blocker = "duo_write_unverified";
+    }
+    // An ordinary Apple type can overlap a Duo set. Do not let its destructive
+    // replacement/reorder path touch an observed Duo-sized or unmeasurable
+    // image. This is a guard against known hazards, not proof that Apple's
+    // imageAsset dimensions are original or that all overlaps are detectable.
+    if (!blocker && !isDuoScreenshotSelector(input.display_type) && decided.action !== "unchanged" && set) {
+      const duoSizes = allowedSizes(ASC_IPHONE_DUO_TYPE)!;
+      if (existing.length === 0 || existing.some((shot) => shot.width === null || shot.height === null
+        || duoSizes.some((size) => size.width === shot.width && size.height === shot.height))) {
+        blocker = "existing_set_dimensions_unverified";
+      }
+    }
     plans.push({
-      input, localizationId: localization.id, setId: set?.id ?? null, existing,
-      action: decided.action, blocker: editable || decided.action === "unchanged" ? null : "version_not_editable",
-      ...(decided.reorderIds ? { reorderIds: decided.reorderIds } : {}),
+      input, localizationId: localization.id, setId: set?.id ?? null, appleDisplayType: set?.displayType ?? null, existing,
+      action: blocker ? null : decided.action, blocker: blocker ?? (editable || decided.action === "unchanged" ? null : "version_not_editable"),
+      ...("reorderIds" in decided && decided.reorderIds ? { reorderIds: decided.reorderIds } : {}),
     });
   }
+  // An alias and a normal type, or two aliases, must never touch one Apple set twice.
+  const counts = new Map<string, number>();
+  for (const p of plans) if (p.setId) counts.set(p.setId, (counts.get(p.setId) ?? 0) + 1);
+  for (const p of plans) if (p.setId && (counts.get(p.setId) ?? 0) > 1) { p.blocker = "duplicate_target_set"; p.action = null; }
   return { plans, locales: localizations.map((l) => l.locale) };
 }
 
@@ -149,6 +231,7 @@ function planView(plan: SetPlan) {
   return {
     locale: plan.input.locale,
     display_type: plan.input.display_type,
+    ...(isDuoScreenshotSelector(plan.input.display_type) ? { apple_display_type: plan.appleDisplayType } : {}),
     action: plan.action,
     blocker: plan.blocker,
     screenshot_set_id: plan.setId,
@@ -242,6 +325,12 @@ async function commitSet(creds: AscApiCredentials, plan: SetPlan): Promise<SetRe
     status: "ok", screenshot_set_id: plan.setId, deleted: [], images: [],
   };
   if (plan.action === "unchanged") return result;
+  // Defense in depth: no alias may reach a mutating Apple operation.
+  if (isDuoScreenshotSelector(plan.input.display_type)) {
+    result.status = "failed";
+    result.error = { code: "DUO_WRITE_UNVERIFIED", error: "Duo screenshot writes are not verified" };
+    return result;
+  }
   try {
     if (plan.action === "reorder") {
       await reorderScreenshots(creds, plan.setId!, plan.reorderIds!);
@@ -356,9 +445,7 @@ export async function handlePushAppStoreScreenshots(c: AdminContext) {
     if (blocked.length > 0) {
       return c.json({
         ...base,
-        error: blocked.some((p) => p.blocker === "version_not_editable")
-          ? `version ${version.versionString} is ${versionView(version).state}; screenshots can only change while it is editable`
-          : `no localization for ${[...new Set(blocked.map((p) => p.input.locale))].join(", ")} on this version; create it with the localizations endpoint first`,
+        error: `Screenshot plan blocked: ${blocked.map((p) => `${p.input.locale} ${p.input.display_type}: ${p.blocker}`).join("; ")}. Nothing was written.`,
         code: "SCREENSHOT_PLAN_BLOCKED",
         version_locales: locales,
         sets: plans.map(planView),
