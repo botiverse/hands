@@ -62,7 +62,10 @@ continue to use text. A failed Google Play submission is a separate
 card for each receipt; recognized failure causes appear on the card and its
 text fallback, while causes inferred from provider wording are labeled as
 possible. Google Play cards include a link to the Play Console home in both the
-card and accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
+card and accompanying text. Cards use a title, status tags, and labeled fields
+where available; recognized Play failure reasons are emphasized. Clients that do
+not support the newer card format, including mobile 1.20 and earlier, show the
+complete accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
 text even if cards are turned on again. Feedback and crash events still use
 text. A card older than Raft's update window
 is replaced by a new message. Older Raft clients see the accompanying text.

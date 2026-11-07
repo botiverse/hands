@@ -19,6 +19,15 @@ describe("error display localization", () => {
     expect(error.body).toEqual({ code: "RELEASE_REVISION_CONFLICT", revision: 8 });
   });
 
+  it("localizes the Duo write safety error while preserving its diagnostic code", () => {
+    const error = Object.assign(new Error("Duo screenshot writes are not verified"), {
+      body: { code: "DUO_WRITE_UNVERIFIED" },
+    });
+    expect(errorMessage(error, "zh-CN")).toBe("尚未验证 iPhone Duo 截图写入操作（DUO_WRITE_UNVERIFIED）");
+    expect(errorMessage(error, "en")).toBe("Duo screenshot writes are not verified");
+    expect(error.body).toEqual({ code: "DUO_WRITE_UNVERIFIED" });
+  });
+
   it("preserves unknown provider diagnostics and localizes generic network failures", () => {
     const provider = "provider: request 123 could not be classified";
     expect(errorMessage(new Error(provider), "zh-CN")).toBe(provider);

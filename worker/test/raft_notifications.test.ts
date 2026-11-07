@@ -1650,6 +1650,34 @@ describe("Hands-managed Raft notifications", () => {
       .toEqual({ revision: 2, pending_json: null });
   });
 
+  it("replays an update and its channel notice with the persisted old-format card", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    await updateConfig({ card_updates: true });
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push({ method: String(init?.method), body: data });
+      if (init?.method === "PUT") return Response.json({ ok: true, messageId: "parent-message-1", revision: 2 });
+      return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : "channel-notice", messageCard: { revision: 1 } });
+    });
+    expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
+    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const hash = await sha256Hex(JSON.stringify(event));
+    const oldCard = { version: 1, root: "root", elements: {
+      root: { type: "Stack", props: { direction: "column" }, children: ["title"] },
+      title: { type: "Text", props: { text: "Old format review rejected" } },
+    } };
+    const pending = { kind: "update", eventHash: hash, eventMs: Date.parse(event.payload.occurred_at),
+      idempotencyKey: `hands-card:update:${SUBSCRIPTION_ID}:${hash}`, content: formatRaftNotificationCard(event).content,
+      card: oldCard, target: "#releases:parent-m", messageId: "parent-message-1", expectedRevision: 1,
+      createsRoot: false, createdAt: Date.now() };
+    sqlite.prepare("UPDATE raft_notification_cards SET pending_json=?,pending_uncertain=1").run(JSON.stringify(pending));
+    expect((await request(event, "retry")).status).toBe(200);
+    expect(calls[1]).toMatchObject({ method: "PUT", body: { idempotencyKey: pending.idempotencyKey, card: oldCard } });
+    expect(calls[2]).toMatchObject({ method: "POST", body: { target: "#releases", card: oldCard } });
+    expect(sqlite.prepare("SELECT revision,pending_json FROM raft_notification_cards").get()).toEqual({ revision: 2, pending_json: null });
+  });
+
   it("announces an older pending card send that was committed to a thread", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ card_updates: true });
