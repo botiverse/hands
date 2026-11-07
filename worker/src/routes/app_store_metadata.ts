@@ -192,6 +192,12 @@ async function buildScreenshotPlan(creds: AscApiCredentials, versionId: string, 
       else { set = matches[0] ?? null; existing = set ? await readSet(set.id) : []; }
     }
     const decided = blocker ? { action: null } : planSet(input, existing, set?.id ?? null);
+    // An identical checksum is not enough to report unchanged when Apple's
+    // returned dimensions disagree with the corresponding supplied image.
+    if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action === "unchanged"
+      && existing.some((shot, index) => shot.width !== input.images[index]!.width || shot.height !== input.images[index]!.height)) {
+      blocker = "duo_set_dimensions_mismatch";
+    }
     // Duo writes are deliberately unavailable: size matching is read-only evidence,
     // not a guarantee that the API can create or safely replace Duo screenshots.
     if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action !== "unchanged") {

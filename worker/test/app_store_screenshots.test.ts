@@ -620,6 +620,17 @@ describe("observed mixed APP_IPHONE_DUO set (read-only)", () => {
     expect(asc.writes()).toEqual([]);
   });
 
+  it.each(["dry_run", "commit"])("%s refuses an apparent checksum match when the returned dimensions differ from the input", async (mode) => {
+    const sample = mixed();
+    // Both sizes are valid for Duo, but this metadata disagrees with the bytes.
+    sample.shots[0] = { ...sample.shots[0]!, width: 2007, height: 2853 };
+    const { asc } = fakeApple({ sets: [sample] });
+    const { res, json } = await push({ mode, sets: [set(images, duo)] }, files);
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_dimensions_mismatch");
+    expect(asc.writes()).toEqual([]);
+  });
+
   it.each(["dry_run", "commit"])("%s blocks reorder of the same files without any Apple write", async (mode) => {
     const { asc } = fakeApple({ sets: [mixed()] });
     const { res, json } = await push({ mode, sets: [set([...images].reverse(), duo)] }, files);
