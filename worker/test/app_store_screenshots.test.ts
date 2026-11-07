@@ -13,7 +13,7 @@ vi.mock("../src/lib/asc_api", async (importOriginal) => ({
 
 const { handlePushAppStoreScreenshots, SCREENSHOT_POLL, isGlobalScreenshotError, SCREENSHOTS_PENDING_NEXT_ACTION } = await import("../src/routes/app_store_metadata");
 const { AscApiError } = await import("../src/lib/asc_api");
-const { SCREENSHOT_DISPLAY_TYPES, allowedSizes } = await import("../src/lib/app_store_screenshots");
+const { SCREENSHOT_REQUEST_TYPES, allowedSizes } = await import("../src/lib/app_store_screenshots");
 
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 const md5 = (b: Uint8Array) => createHash("md5").update(b).digest("hex");
@@ -21,14 +21,18 @@ const md5 = (b: Uint8Array) => createHash("md5").update(b).digest("hex");
 const A = png(1290, 2796, { seed: "a" });
 const B = png(1290, 2796, { seed: "b" });
 const C = png(1320, 2868, { seed: "c" });
+const DUO_OUTER = png(1398, 2034, { seed: "outer" });
+const DUO_INNER = png(2007, 2853, { seed: "inner" });
+const DUO_OUTER_LANDSCAPE = png(2034, 1398, { seed: "outer-landscape" });
+const DUO_INNER_LANDSCAPE = png(2853, 2007, { seed: "inner-landscape" });
 
-type Shot = { id: string; fileName: string; fileSize: number; checksum: string | null; state: string };
+type Shot = { id: string; fileName: string; fileSize: number; checksum: string | null; state: string; width?: number | null; height?: number | null };
 
 /** Stateful fake of the screenshot resources for one version with one localization. */
 function fakeApple(opts: {
   versionState?: string;
   locales?: string[];
-  sets?: Array<{ id: string; locale: string; displayType: string; shots: Array<Omit<Shot, "fileName" | "fileSize"> & { fileName?: string }> }>;
+  sets?: Array<{ id: string; locale: string; displayType: string | null; shots: Array<Omit<Shot, "fileName" | "fileSize"> & { fileName?: string }> }>;
   /** Reserved screenshots (1-based creation order) that Apple ends in FAILED. */
   failReserved?: number[];
   /** Reserved screenshots that Apple keeps processing (UPLOAD_COMPLETE) forever. */
@@ -52,6 +56,7 @@ function fakeApple(opts: {
     type: "appScreenshots", id: s.id,
     attributes: {
       fileName: s.fileName, fileSize: s.fileSize, sourceFileChecksum: s.checksum,
+      imageAsset: s.width === undefined && s.height === undefined ? undefined : { width: s.width, height: s.height },
       assetDeliveryState: { state: s.state, errors: s.state === "FAILED" ? [{ code: "IMAGE_TOOL_FAILURE", description: "could not process" }] : [] },
     },
   });
@@ -181,7 +186,7 @@ describe("screenshot request validation happens before any Apple call", () => {
     const { res, json } = await push({ mode: "dry_run", sets: [set([["f1", A]], { display_type: "APP_IPHONE_DUO" })] }, { f1: A });
     expect(res.status).toBe(400);
     expect(json.code).toBe("INVALID_DISPLAY_TYPE");
-    expect(json.allowed).toEqual([...SCREENSHOT_DISPLAY_TYPES]);
+    expect(json.allowed).toEqual([...SCREENSHOT_REQUEST_TYPES]);
   });
 
   it("requires an explicit mode", async () => {
@@ -209,7 +214,7 @@ describe("screenshot request validation happens before any Apple call", () => {
 
 describe("screenshot plan and commit", () => {
   it("dry_run reads current state with include=appScreenshots, returns the plan, and writes nothing", async () => {
-    const { asc } = fakeApple({ sets: [{ id: "set-1", locale: "en-US", displayType: "APP_IPHONE_67", shots: [{ id: "old-1", checksum: "0".repeat(32), state: "COMPLETE" }] }] });
+    const { asc } = fakeApple({ sets: [{ id: "set-1", locale: "en-US", displayType: "APP_IPHONE_67", shots: [{ id: "old-1", checksum: "0".repeat(32), state: "COMPLETE", width: 1290, height: 2796 }] }] });
     const { res, json } = await push({ mode: "dry_run", sets: [set([["f1", A], ["f2", B]])] }, { f1: A, f2: B });
     expect(res.status).toBe(200);
     expect(json.outcome).toBe("planned");
@@ -233,7 +238,7 @@ describe("screenshot plan and commit", () => {
 
   it("only reorders when the same files are in another order", async () => {
     const { asc, sets } = fakeApple({ sets: [{ id: "set-1", locale: "en-US", displayType: "APP_IPHONE_67", shots: [
-      { id: "s1", checksum: md5(A), state: "COMPLETE" }, { id: "s2", checksum: md5(B), state: "COMPLETE" },
+      { id: "s1", checksum: md5(A), state: "COMPLETE", width: 1290, height: 2796 }, { id: "s2", checksum: md5(B), state: "COMPLETE", width: 1290, height: 2796 },
     ] }] });
     const { res, json } = await push({ mode: "commit", sets: [set([["f2", B], ["f1", A]])] }, { f1: A, f2: B });
     expect(res.status).toBe(200);
@@ -243,7 +248,7 @@ describe("screenshot plan and commit", () => {
   });
 
   it("replaces a different set: delete, reserve, upload parts, commit with MD5, poll, order, read back", async () => {
-    const { asc, sets } = fakeApple({ sets: [{ id: "set-1", locale: "en-US", displayType: "APP_IPHONE_67", shots: [{ id: "old-1", checksum: md5(C), state: "COMPLETE" }] }] });
+    const { asc, sets } = fakeApple({ sets: [{ id: "set-1", locale: "en-US", displayType: "APP_IPHONE_67", shots: [{ id: "old-1", checksum: md5(C), state: "COMPLETE", width: 1320, height: 2868 }] }] });
     const { res, json, audits } = await push({ mode: "commit", sets: [set([["f1", A], ["f2", B]])] }, { f1: A, f2: B });
     expect(res.status).toBe(200);
     expect(json).toMatchObject({ ok: true, outcome: "committed" });
@@ -428,6 +433,167 @@ describe("screenshot plan and commit", () => {
     const { c } = makeContext({ request: multipart({ mode: "commit", sets: [set([["f1", A]])] }, { f1: A }), params: { versionId: "ver-theirs" } });
     const res = await handlePushAppStoreScreenshots(c);
     expect(res.status).toBe(404);
+    expect(asc.writes()).toEqual([]);
+  });
+});
+
+describe("normal screenshot set safety", () => {
+  it.each(["dry_run", "commit"])("%s blocks an existing empty set because its dimensions cannot be checked", async (mode) => {
+    const { asc } = fakeApple({ sets: [{ id: "empty", locale: "en-US", displayType: "APP_IPHONE_67", shots: [] }] });
+    const { res, json } = await push({ mode, sets: [set([["f1", A]])] }, { f1: A });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("existing_set_dimensions_unverified");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it.each(["dry_run", "commit"])("%s blocks a missing display type even when a known matching set exists", async (mode) => {
+    const { asc } = fakeApple({ sets: [
+      { id: "normal", locale: "en-US", displayType: "APP_IPHONE_67", shots: [{ id: "old", checksum: md5(C), state: "COMPLETE", width: 1320, height: 2868 }] },
+      { id: "unknown", locale: "en-US", displayType: null, shots: [] },
+    ] });
+    const { res, json } = await push({ mode, sets: [set([["f1", A]])] }, { f1: A });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("display_type_ambiguous");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it.each(["dry_run", "commit"])("%s blocks replacement if existing dimensions are unavailable", async (mode) => {
+    const { asc } = fakeApple({ sets: [{ id: "normal", locale: "en-US", displayType: "APP_IPHONE_67",
+      shots: [{ id: "old", checksum: md5(C), state: "COMPLETE" }] }] });
+    const { res, json } = await push({ mode, sets: [set([["f1", A]])] }, { f1: A });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("existing_set_dimensions_unverified");
+    expect(asc.writes()).toEqual([]);
+  });
+});
+
+describe("iPhone Duo selectors (Apple writes not yet verified)", () => {
+  const outer = { display_type: "HANDS_IPHONE_DUO_OUTER" };
+  const inner = { display_type: "HANDS_IPHONE_DUO_INNER" };
+  // Fictional fake types: these are not assertions about Apple's current API.
+  const duoSet = (id = "duo", type: string | null = "FAKE_DUO_OUTER") => ({
+    id, locale: "en-US", displayType: type,
+    shots: [{ id: `${id}-1`, checksum: md5(DUO_OUTER), state: "COMPLETE", width: 1398, height: 2034 }],
+  });
+
+  it.each(["dry_run", "commit"])("%s refuses a normal type whose set contains Duo-sized screenshots", async (mode) => {
+    const { asc } = fakeApple({ sets: [duoSet("duo", "APP_IPHONE_67")] });
+    const { res, json } = await push({ mode, sets: [set([["f1", A]])] }, { f1: A });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("existing_set_dimensions_unverified");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("does not claim a unique match when another set's dimensions are unavailable", async () => {
+    const { asc } = fakeApple({ sets: [duoSet(), {
+      id: "other", locale: "en-US", displayType: "FAKE_OTHER", shots: [{ id: "unknown", checksum: "0".repeat(32), state: "COMPLETE" }],
+    }] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_incomplete");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("does not claim a unique match when another set is empty", async () => {
+    const { asc } = fakeApple({ sets: [duoSet(), { id: "empty", locale: "en-US", displayType: "FAKE_OTHER", shots: [] }] });
+    const { res, json } = await push({ mode: "dry_run", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_incomplete");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["HANDS_IPHONE_DUO_OUTER", DUO_OUTER],
+    ["HANDS_IPHONE_DUO_OUTER", DUO_OUTER_LANDSCAPE],
+    ["HANDS_IPHONE_DUO_INNER", DUO_INNER],
+    ["HANDS_IPHONE_DUO_INNER", DUO_INNER_LANDSCAPE],
+  ])("validates the %s dimension before reaching Apple", async (display_type, image) => {
+    const { asc } = fakeApple();
+    const { res, json } = await push({ mode: "dry_run", sets: [set([["f1", image]], { display_type })] }, { f1: image });
+    expect(res.status).toBe(409); // valid bytes but no existing Duo set
+    expect(json.sets[0].blocker).toBe("duo_set_not_found");
+    expect(asc.calls.some((c) => c.method === "GET")).toBe(true);
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("rejects an inner image under the outer selector before Apple calls", async () => {
+    const { asc } = fakeApple();
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_INNER]], outer)] }, { f1: DUO_INNER });
+    expect(res.status).toBe(400);
+    expect(json.code).toBe("SCREENSHOT_DIMENSIONS_INVALID");
+    expect(asc.calls).toEqual([]);
+  });
+
+  it("reports unchanged when one complete existing set matches the size and checksum", async () => {
+    const { asc } = fakeApple({ sets: [duoSet()] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ outcome: "no_changes", sets: [{ action: "unchanged", screenshot_set_id: "duo" }] });
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it.each(["dry_run", "commit"])("%s refuses replacing even a unique existing set", async (mode) => {
+    const { asc } = fakeApple({ sets: [duoSet()] });
+    const { res, json } = await push({ mode, sets: [set([["f1", DUO_OUTER_LANDSCAPE]], outer)] }, { f1: DUO_OUTER_LANDSCAPE });
+    expect(res.status).toBe(409);
+    expect(json.sets[0]).toMatchObject({ blocker: "duo_write_unverified", action: null });
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("never creates the missing set or performs unrelated set writes in the same request", async () => {
+    const { asc } = fakeApple();
+    const { res, json } = await push({ mode: "commit", sets: [set([["normal", A]]), set([["duo", DUO_OUTER]], outer)] }, { normal: A, duo: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[1].blocker).toBe("duo_set_not_found");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("refuses multiple candidate sets", async () => {
+    const { asc } = fakeApple({ sets: [duoSet("duo-1"), duoSet("duo-2")] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_ambiguous");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it.each([
+    ["missing dimensions", { id: "other", checksum: "0".repeat(32), state: "COMPLETE" }],
+    ["mixed dimensions", { id: "other", checksum: "0".repeat(32), state: "COMPLETE", width: 2007, height: 2853 }],
+    ["processing", { id: "other", checksum: "0".repeat(32), state: "UPLOAD_COMPLETE", width: 1398, height: 2034 }],
+  ])("refuses a candidate set with %s", async (_case, extra) => {
+    const sample = duoSet();
+    sample.shots.push(extra as any);
+    const { asc } = fakeApple({ sets: [sample] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_incomplete");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("refuses a candidate whose Apple display type is missing", async () => {
+    const { asc } = fakeApple({ sets: [duoSet("duo", null)] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["f1", DUO_OUTER]], outer)] }, { f1: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_incomplete");
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("blocks mixed aliases that resolve to the same Apple set", async () => {
+    const sample = duoSet("duo", "APP_IPHONE_67");
+    const { asc } = fakeApple({ sets: [sample] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["normal", A]]), set([["duo", DUO_OUTER]], outer)] }, { normal: A, duo: DUO_OUTER });
+    expect(res.status).toBe(409);
+    expect(json.sets.map((s: any) => s.blocker)).toEqual(["duplicate_target_set", "duplicate_target_set"]);
+    expect(asc.writes()).toEqual([]);
+  });
+
+  it("refuses a mixed inner/outer Apple set rather than deleting either screen", async () => {
+    const sample = duoSet();
+    sample.shots.push({ id: "inner-1", checksum: md5(DUO_INNER), state: "COMPLETE", width: 2007, height: 2853 });
+    const { asc } = fakeApple({ sets: [sample] });
+    const { res, json } = await push({ mode: "commit", sets: [set([["in", DUO_INNER]], inner)] }, { in: DUO_INNER });
+    expect(res.status).toBe(409);
+    expect(json.sets[0].blocker).toBe("duo_set_incomplete");
     expect(asc.writes()).toEqual([]);
   });
 });

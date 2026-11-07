@@ -134,6 +134,8 @@ describe("quiver OpenAPI document", () => {
       expect(paths[path], path).toBeDefined();
     }
 
+    expect(paths["/api/apps/{appId}/app-store/versions/{versionId}/screenshots"]?.get).toBeDefined();
+    expect(paths["/api/apps/{appId}/app-store/versions/{versionId}/screenshots"]?.post).toBeDefined();
     expect(paths["/api/apps/{appId}/releases/{releaseId}/publish"]?.post).toBeDefined();
     expect(paths["/api/apps/{appId}/feedback/{ticketId}/comments"]?.post).toBeDefined();
     expect(paths["/public/v2/apps/{slug}/feedback"]?.post).toBeDefined();

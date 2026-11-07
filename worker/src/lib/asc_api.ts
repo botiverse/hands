@@ -1665,31 +1665,43 @@ export interface AscVersionLocalization {
   fields: Partial<Record<VersionLocalizationField, string | null>>;
 }
 
-/**
- * Every localization of one version. This is the related-resource list, so an empty
- * `data` array is Apple saying "none"; a response without `data` is malformed and
- * throws rather than reading as "none".
- */
+/** Read all localizations; never interpret a malformed or partial list as complete. */
 export async function listVersionLocalizations(
   creds: AscApiCredentials,
   versionId: string,
 ): Promise<AscVersionLocalization[]> {
-  const res = await ascRequest<{ data?: Array<{ id?: unknown; attributes?: Record<string, unknown> }> }>(
-    creds, "GET", `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations?limit=200`,
-  );
-  if (!Array.isArray(res?.data)) {
-    throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned no localization list");
-  }
+  const basePath = `/v1/appStoreVersions/${encodeURIComponent(versionId)}/appStoreVersionLocalizations`;
   const out: AscVersionLocalization[] = [];
-  for (const item of res.data) {
-    const locale = item.attributes?.locale;
-    if (typeof item.id !== "string" || typeof locale !== "string") continue;
-    const fields: AscVersionLocalization["fields"] = {};
-    for (const field of VERSION_LOCALIZATION_FIELDS) {
-      const value = item.attributes?.[field];
-      fields[field] = typeof value === "string" ? value : null;
+  const ids = new Set<string>();
+  const locales = new Set<string>();
+  let path: string | null = `${basePath}?limit=200`;
+  for (let page = 0; path; page++) {
+    if (page >= 5) throw new AscApiError(502, "version_localizations_too_long", "App Store Connect localization list exceeded 5 pages");
+    const res: { data?: Array<{ id?: unknown; attributes?: Record<string, unknown> }>; links?: { next?: unknown } } =
+      await ascRequest(creds, "GET", path);
+    if (!Array.isArray(res?.data)) throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned no localization list");
+    for (const item of res.data) {
+      const locale = item?.attributes?.locale;
+      if (typeof item?.id !== "string" || !item.id || typeof locale !== "string" || !locale || ids.has(item.id) || locales.has(locale)) {
+        throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned an invalid or duplicate localization");
+      }
+      ids.add(item.id);
+      locales.add(locale);
+      const fields: AscVersionLocalization["fields"] = {};
+      for (const field of VERSION_LOCALIZATION_FIELDS) {
+        const value = item.attributes?.[field];
+        fields[field] = typeof value === "string" ? value : null;
+      }
+      out.push({ id: item.id, locale, fields });
     }
-    out.push({ id: item.id, locale, fields });
+    const next = res.links?.next;
+    if (next == null) { path = null; continue; }
+    if (typeof next !== "string") throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned an invalid next page");
+    const nextPath = sameOriginAscPath(next);
+    if (!nextPath || new URL(nextPath, ASC_API_BASE).pathname !== basePath) {
+      throw new AscApiError(502, "version_localizations_malformed", "App Store Connect returned an unsafe localization next page");
+    }
+    path = nextPath;
   }
   return out;
 }
@@ -1742,6 +1754,9 @@ export interface AscScreenshot {
   fileSize: number | null;
   /** MD5 hex the uploader declared at commit; null when Apple has none on record. */
   sourceFileChecksum: string | null;
+  /** Apple's reported imageAsset dimensions; null when omitted or invalid. */
+  width: number | null;
+  height: number | null;
   /** assetDeliveryState.state: AWAITING_UPLOAD | UPLOAD_COMPLETE | COMPLETE | FAILED. */
   state: string | null;
   errors: Array<{ code: string | null; description: string | null }>;
@@ -1754,10 +1769,15 @@ type RawScreenshot = {
     fileName?: unknown;
     fileSize?: unknown;
     sourceFileChecksum?: unknown;
+    imageAsset?: { width?: unknown; height?: unknown } | null;
     assetDeliveryState?: { state?: unknown; errors?: unknown } | null;
     uploadOperations?: unknown;
   };
 };
+
+function positiveImageDimension(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
 
 function toScreenshot(raw: RawScreenshot): AscScreenshot | null {
   if (typeof raw.id !== "string" || !raw.id) return null;
@@ -1772,25 +1792,44 @@ function toScreenshot(raw: RawScreenshot): AscScreenshot | null {
     fileName: str(raw.attributes?.fileName),
     fileSize: typeof raw.attributes?.fileSize === "number" ? raw.attributes.fileSize : null,
     sourceFileChecksum: str(raw.attributes?.sourceFileChecksum)?.toLowerCase() ?? null,
+    width: positiveImageDimension(raw.attributes?.imageAsset?.width),
+    height: positiveImageDimension(raw.attributes?.imageAsset?.height),
     state: str(delivery?.state),
     errors,
   };
 }
 
-/** Screenshot sets of one localization (related-resource list; empty `data` = none). */
+/** Read every screenshot set, failing closed on malformed or partial pages. */
 export async function listScreenshotSets(
   creds: AscApiCredentials,
   localizationId: string,
 ): Promise<AscScreenshotSet[]> {
-  const res = await ascRequest<{ data?: Array<{ id?: unknown; attributes?: { screenshotDisplayType?: unknown } }> }>(
-    creds, "GET", `/v1/appStoreVersionLocalizations/${encodeURIComponent(localizationId)}/appScreenshotSets?limit=50`,
-  );
-  if (!Array.isArray(res?.data)) {
-    throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned no screenshot set list");
+  const basePath = `/v1/appStoreVersionLocalizations/${encodeURIComponent(localizationId)}/appScreenshotSets`;
+  const out: AscScreenshotSet[] = [];
+  const seen = new Set<string>();
+  let path: string | null = `${basePath}?limit=50`;
+  for (let page = 0; path; page++) {
+    if (page >= 5) throw new AscApiError(502, "screenshot_sets_too_long", "App Store Connect screenshot set list exceeded 5 pages");
+    const res: { data?: Array<{ id?: unknown; attributes?: { screenshotDisplayType?: unknown } }>; links?: { next?: unknown } } =
+      await ascRequest(creds, "GET", path);
+    if (!Array.isArray(res?.data)) throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned no screenshot set list");
+    for (const raw of res.data) {
+      if (!raw || typeof raw.id !== "string" || !raw.id || seen.has(raw.id)) {
+        throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned an invalid or duplicate screenshot set id");
+      }
+      seen.add(raw.id);
+      out.push({ id: raw.id, displayType: str(raw.attributes?.screenshotDisplayType) });
+    }
+    const next = res.links?.next;
+    if (next == null) { path = null; continue; }
+    if (typeof next !== "string") throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned an invalid next page");
+    const nextPath = sameOriginAscPath(next);
+    if (!nextPath || new URL(next, ASC_API_BASE).pathname !== basePath) {
+      throw new AscApiError(502, "screenshot_sets_malformed", "App Store Connect returned an unsafe screenshot set next page");
+    }
+    path = nextPath;
   }
-  return res.data
-    .filter((s): s is { id: string; attributes?: { screenshotDisplayType?: unknown } } => typeof s.id === "string")
-    .map((s) => ({ id: s.id, displayType: str(s.attributes?.screenshotDisplayType) }));
+  return out;
 }
 
 /**
@@ -1806,7 +1845,7 @@ export async function getScreenshotSetWithScreenshots(
   setId: string,
 ): Promise<AscScreenshot[]> {
   const res = await ascRequest<{
-    data?: { relationships?: { appScreenshots?: { data?: Array<{ id?: unknown }> | null } } };
+    data?: { relationships?: { appScreenshots?: { data?: Array<{ id?: unknown }> | null; links?: { next?: unknown } } } };
     included?: RawScreenshot[];
   }>(creds, "GET", `/v1/appScreenshotSets/${encodeURIComponent(setId)}?include=appScreenshots&limit[appScreenshots]=50`);
   const linkage = res?.data?.relationships?.appScreenshots?.data;
@@ -1814,11 +1853,23 @@ export async function getScreenshotSetWithScreenshots(
     throw new AscApiError(502, "screenshot_set_relationship_missing",
       "App Store Connect did not return the screenshot set's appScreenshots relationship");
   }
+  if (res.data?.relationships?.appScreenshots?.links?.next != null) {
+    throw new AscApiError(502, "screenshot_set_incomplete", "App Store Connect returned a partial screenshot relationship");
+  }
+  if (new Set(linkage.map((ref) => ref?.id)).size !== linkage.length) {
+    throw new AscApiError(502, "screenshot_set_incomplete", "App Store Connect returned duplicate screenshots in the relationship");
+  }
   const included = new Map<string, AscScreenshot>();
+  if (res.included != null && !Array.isArray(res.included)) {
+    throw new AscApiError(502, "screenshot_set_include_missing", "App Store Connect returned malformed included screenshots");
+  }
   for (const raw of res.included ?? []) {
-    if (raw?.type !== undefined && raw.type !== "appScreenshots") continue;
+    if (!raw || (raw.type !== undefined && raw.type !== "appScreenshots")) continue;
     const shot = toScreenshot(raw);
-    if (shot) included.set(shot.id, shot);
+    if (!shot || included.has(shot.id)) {
+      throw new AscApiError(502, "screenshot_set_include_missing", "App Store Connect returned an invalid or duplicate included screenshot");
+    }
+    included.set(shot.id, shot);
   }
   return linkage.map((ref) => {
     const id = typeof ref?.id === "string" ? ref.id : "";
