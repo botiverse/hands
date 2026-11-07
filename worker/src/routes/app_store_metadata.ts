@@ -39,6 +39,7 @@ import {
 } from "../lib/asc_api";
 import {
   ASC_LOCALE_RE,
+  ASC_IPHONE_DUO_TYPE,
   ScreenshotInputError,
   allowedSizes,
   isDuoScreenshotSelector,
@@ -144,7 +145,23 @@ async function buildScreenshotPlan(creds: AscApiCredentials, versionId: string, 
     let set: AscScreenshotSet | null = null;
     let existing: AscScreenshot[] = [];
     let blocker: string | null = null;
-    if (isDuoScreenshotSelector(input.display_type)) {
+    if (input.display_type === ASC_IPHONE_DUO_TYPE) {
+      // Use the observed Apple type only for read-only identity. The result
+      // does not establish write support, and unknown types still fail closed.
+      const matches = sets.filter((s) => s.displayType === ASC_IPHONE_DUO_TYPE);
+      if (matches.length > 1) blocker = "duo_set_ambiguous";
+      else if (sets.some((s) => !s.displayType)) blocker = "duo_set_incomplete";
+      else if (matches.length === 0) blocker = "duo_set_not_found";
+      else {
+        set = matches[0]!;
+        existing = await readSet(set.id);
+        const sizes = allowedSizes(ASC_IPHONE_DUO_TYPE)!;
+        if (existing.length === 0 || existing.some((shot) => shot.state !== "COMPLETE"
+          || !sizes.some((size) => size.width === shot.width && size.height === shot.height))) {
+          blocker = "duo_set_incomplete";
+        }
+      }
+    } else if (isDuoScreenshotSelector(input.display_type)) {
       const sizes = allowedSizes(input.display_type)!;
       const candidates: Array<{ set: AscScreenshotSet; shots: AscScreenshot[] }> = [];
       let unknownSet = false;
@@ -175,6 +192,12 @@ async function buildScreenshotPlan(creds: AscApiCredentials, versionId: string, 
       else { set = matches[0] ?? null; existing = set ? await readSet(set.id) : []; }
     }
     const decided = blocker ? { action: null } : planSet(input, existing, set?.id ?? null);
+    // An identical checksum is not enough to report unchanged when Apple's
+    // returned dimensions disagree with the corresponding supplied image.
+    if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action === "unchanged"
+      && existing.some((shot, index) => shot.width !== input.images[index]!.width || shot.height !== input.images[index]!.height)) {
+      blocker = "duo_set_dimensions_mismatch";
+    }
     // Duo writes are deliberately unavailable: size matching is read-only evidence,
     // not a guarantee that the API can create or safely replace Duo screenshots.
     if (!blocker && isDuoScreenshotSelector(input.display_type) && decided.action !== "unchanged") {
@@ -185,7 +208,7 @@ async function buildScreenshotPlan(creds: AscApiCredentials, versionId: string, 
     // image. This is a guard against known hazards, not proof that Apple's
     // imageAsset dimensions are original or that all overlaps are detectable.
     if (!blocker && !isDuoScreenshotSelector(input.display_type) && decided.action !== "unchanged" && set) {
-      const duoSizes = [...allowedSizes("HANDS_IPHONE_DUO_OUTER")!, ...allowedSizes("HANDS_IPHONE_DUO_INNER")!];
+      const duoSizes = allowedSizes(ASC_IPHONE_DUO_TYPE)!;
       if (existing.length === 0 || existing.some((shot) => shot.width === null || shot.height === null
         || duoSizes.some((size) => size.width === shot.width && size.height === shot.height))) {
         blocker = "existing_set_dimensions_unverified";
