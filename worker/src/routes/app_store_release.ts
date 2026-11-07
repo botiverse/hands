@@ -34,7 +34,6 @@ import {
   ascRequest,
   renameAppStoreVersion,
   resolveAscAppId,
-  sameOriginAscPath,
   resubmitReviewSubmission,
   setVersionLocalization,
   submitVersionForReview,
@@ -185,29 +184,15 @@ export async function assertOwnedVersion(
   ascAppId: string,
   versionId: string,
 ): Promise<void> {
-  const basePath = `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions`;
-  let path: string | null = `${basePath}?limit=200`;
-  for (let page = 0; path; page++) {
-    if (page >= 5) {
-      throw new AscApiError(502, "app_store_version_list_too_long", "App Store Connect version list exceeded 5 pages");
-    }
-    const versions: { data?: Array<{ id?: unknown }>; links?: { next?: unknown } } = await ascRequest(creds, "GET", path);
-    if (!Array.isArray(versions?.data) || versions.data.some((v) => !v || typeof v.id !== "string" || !v.id)) {
-      throw new AscApiError(502, "app_store_version_list_malformed", "App Store Connect returned a malformed version list");
-    }
-    if (versions.data.some((v) => v.id === versionId)) return;
-    const next = versions.links?.next;
-    if (next == null) { path = null; continue; }
-    if (typeof next !== "string") {
-      throw new AscApiError(502, "app_store_version_list_malformed", "App Store Connect returned an invalid version next page");
-    }
-    const nextPath = sameOriginAscPath(next);
-    if (!nextPath || new URL(next).pathname !== basePath) {
-      throw new AscApiError(502, "app_store_version_list_malformed", "App Store Connect returned an unsafe version next page");
-    }
-    path = nextPath;
+  const versions = await ascRequest<{ data?: Array<{ id?: unknown }> }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(ascAppId)}/appStoreVersions?limit=200`,
+  );
+  const owned = (versions.data ?? []).some((v) => v.id === versionId);
+  if (!owned) {
+    throw new AppStoreReleaseError(404, "VERSION_NOT_IN_APP", "app store version does not belong to this app");
   }
-  throw new AppStoreReleaseError(404, "VERSION_NOT_IN_APP", "app store version does not belong to this app");
 }
 
 async function assertOwnedSubmission(

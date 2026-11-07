@@ -245,6 +245,28 @@ describe("App Store submission guards", () => {
     expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
   });
 
+  it("does not submit a second-page version before the write path can resolve its platform", async () => {
+    // Ownership and target lookup must have the same pagination boundary. The
+    // current write path deliberately stops at page one; expanding only the
+    // ownership check would fall back to IOS for this MAC_OS version.
+    const calls: Array<{ url: string; method: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url); const method = init?.method ?? "GET";
+      calls.push({ url: u, method });
+      if (u.includes("/appStoreVersions?")) {
+        return new Response(JSON.stringify(u.includes("cursor=two")
+          ? { data: [{ id: "ver-1", attributes: { platform: "MAC_OS" } }] }
+          : { data: [{ id: "ver-old" }], links: { next: "https://api.appstoreconnect.apple.com/v1/apps/asc-app-1/appStoreVersions?cursor=two" } }));
+      }
+      throw new Error(`unexpected request to ${u}`);
+    }));
+    const res = await handleSubmitAppStoreVersion(await makeContext({}));
+    expect(res.status).toBe(404);
+    expect((await res.json() as any).code).toBe("VERSION_NOT_IN_APP");
+    expect(calls).toHaveLength(1);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
   it("rejects an invalid release_type instead of sending it to Apple", async () => {
     const res = await handlePrepareAppStoreVersion(
       await makeContext({ version_string: "1.15.2", release_type: "EVERYONE" }),
