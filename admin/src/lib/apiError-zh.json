@@ -54,6 +54,7 @@
   "version_string is required": "必须提供 version_string",
   "mode must be \"dry_run\" or \"commit\"": "mode 必须是 \"dry_run\" 或 \"commit\"",
   "Apple credential encryption is not configured": "未配置 Apple 凭据加密",
+  "Duo screenshot writes are not verified": "尚未验证 iPhone Duo 截图写入操作",
   "app slug already exists": "应用标识已存在",
   "asset upload expired": "文件上传已过期",
   "external version metadata conflicts with the existing immutable version": "外部版本元数据与现有不可变版本冲突",
