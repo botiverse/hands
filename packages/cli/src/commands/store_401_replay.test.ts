@@ -260,7 +260,7 @@ describe("store CLI reactive 401 handling (local fake network)", () => {
     expect(stderr.mock.calls.flat().join(" ")).toContain("before retrying publish");
   });
 
-  it("makes the AppGallery recovery command shell- and option-safe", async () => {
+  it("makes the AppGallery recovery command option-safe", async () => {
     auth.admit.mockReturnValue({ kind: "agent", env });
     auth.fresh.mockResolvedValue("fresh-before-send");
     setApiBase("https://hands.test");
@@ -270,9 +270,12 @@ describe("store CLI reactive 401 handling (local fake network)", () => {
       .rejects.toMatchObject({ status: 502 });
     const message = stderr.mock.calls.flat().join(" ");
     const command = message.match(/Inspect it with (.+) and check Huawei/s)?.[1];
-    expect(command).toBeDefined();
-    const args = JSON.parse(execFileSync("sh", ["-c", `hands() { node -e 'console.log(JSON.stringify(process.argv.slice(1)))' \"$@\"; }; ${command}`], { encoding: "utf8" }));
-    expect(args).toEqual(["agc", "status", "--", APP, "-odd'$(echo x)"]);
+    expect(command).toBe(`hands agc status -- ${APP} '-odd'\\''$(echo x)'`);
+    const args = ["agc", "status", "--", APP, "-odd'$(echo x)"];
+    if (process.platform !== "win32") {
+      const shellArgs = JSON.parse(execFileSync("sh", ["-c", `hands() { node -e 'console.log(JSON.stringify(process.argv.slice(1)))' \"$@\"; }; ${command}`], { encoding: "utf8" }));
+      expect(shellArgs).toEqual(args);
+    }
     let parsed: string[] = [];
     const parser = new Command(); parser.command("agc").command("status <app> <id>").action((app, id) => { parsed = [app, id]; });
     await parser.parseAsync(["node", "hands", ...args]);

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -56,10 +57,10 @@ describe("401 handling through the CLI entrypoint", () => {
           ...session, access_token: "fixture-old-access", refresh_token: "fixture-old-refresh",
           access_expires_at: new Date(now + 30_000).toISOString(),
         }, base);
-        const tsx = fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url));
+        const tsx = createRequire(import.meta.url).resolve("tsx/cli");
         const entry = fileURLToPath(new URL("../index.ts", import.meta.url));
-        const child = spawn(tsx, [entry, "--api", base, ...command], {
-          env: { PATH: process.env.PATH, HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), HANDS_LOG_DIR: join(dir, "logs"), SLOCK_HOME: dir, SLOCK_AGENT_ID: env.agentId, SLOCK_CLI_TRANSPORT_DIR: transport },
+        const child = spawn(process.execPath, [tsx, entry, "--api", base, ...command], {
+          env: { PATH: process.env.PATH, ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot } : {}), HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), HANDS_LOG_DIR: join(dir, "logs"), SLOCK_HOME: dir, SLOCK_AGENT_ID: env.agentId, SLOCK_CLI_TRANSPORT_DIR: transport },
           stdio: ["ignore", "pipe", "pipe"],
         });
         let stdout = "", stderr = "";
