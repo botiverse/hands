@@ -7,7 +7,7 @@ vi.mock("../src/lib/asc_api", async (importOriginal) => ({ ...(await importOrigi
 const { handlePushAppInfo, normalizeAppInfoInput, pushAppInfoCandidate } = await import("../src/routes/app_store_app_info");
 
 type Loc = { id: string; locale: string; name?: string | null; subtitle?: string | null };
-type Options = { versionState?: string; versionString?: string; otherVersions?: Array<{ id: string; platform: string; state: string }>; infos?: Array<{ id: string; state: string }>; locs?: Loc[]; versionLocales?: string[]; unavailableCategoryPlatform?: string; subcategory?: string | null; failLocale?: string; uncertain?: boolean; unstructuredFailure?: boolean; mangle?: boolean; readbackError?: boolean; pagination?: "foreign" | "path" | "cycle" | "bad-next"; duplicate?: boolean; conflictOnFirst?: boolean; changeOnRecheck?: boolean };
+type Options = { versionState?: string; versionString?: string; otherVersions?: Array<{ id: string; platform: string; state: string }>; infos?: Array<{ id: string; state: string }>; locs?: Loc[]; versionLocales?: string[]; unavailableCategoryPlatform?: string; subcategory?: string | null; failLocale?: string; uncertain?: boolean; unstructuredFailure?: boolean; applyBeforeError?: boolean; mangle?: boolean; readbackError?: boolean; pagination?: "foreign" | "path" | "cycle" | "bad-next"; duplicate?: boolean; conflictOnFirst?: boolean; changeOnRecheck?: boolean };
 const appInfo = (i: { id: string; state: string }) => ({ type: "appInfos", id: i.id, attributes: { state: i.state } });
 function fakeApple(o: Options = {}) {
   const locs: Loc[] = (o.locs ?? [{ id: "en", locale: "en-US", name: "Old", subtitle: "Old subtitle" }, { id: "zh", locale: "zh-Hans", name: "旧名", subtitle: "旧副标题" }]).map((l) => ({ ...l }));
@@ -42,6 +42,7 @@ function fakeApple(o: Options = {}) {
       if (o.failLocale === loc.locale || (o.conflictOnFirst && loc.locale === "en-US")) {
         if (o.uncertain) throw new Error("connection lost after request");
         if (o.unstructuredFailure) return new Response("proxy failure", { status: 409 });
+        if (o.applyBeforeError) { Object.assign(loc, body.data.attributes); written = true; }
         return { status: 409, json: { errors: [{ status: "409", code: "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", title: "Name is not available", detail: "The name you entered is already in use.", source: { pointer: "/data/attributes/name" } }] } };
       }
       Object.assign(loc, body.data.attributes); written = true; return { json: { data: body.data } };
@@ -101,9 +102,22 @@ describe("App Information", () => {
   });
   it("retains Apple's conflict reason and reports prior writes and unattempted steps", async () => {
     const { asc } = fakeApple({ failLocale: "zh-Hans" }); const out = await push({ mode: "commit", ...desired });
-    expect(out.status).toBe(502); expect(out.json.results.map((r: any) => r.status)).toEqual(["written", "failed", "not_attempted", "not_attempted"]);
+    expect(out.status).toBe(502); expect(out.json.results.map((r: any) => r.status)).toEqual(["written", "unknown", "not_attempted", "not_attempted"]);
     expect(out.json.results[1].error).toMatchObject({ provider_code: "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", provider_cause: "The name you entered is already in use.", provider_source: "/data/attributes/name" });
-    expect(asc.writes().length).toBe(2); expect(out.json.recovery_required).toBe(false);
+    expect(asc.writes().length).toBe(2); expect(out.json.recovery_required).toBe(true);
+    expect(out.statements.some((s) => s.sql.startsWith("DELETE FROM store_product_locks"))).toBe(false);
+  });
+  it("retains the lock when a structured conflict follows an applied write", async () => {
+    const { asc, locs } = fakeApple({ failLocale: "zh-Hans", applyBeforeError: true });
+    const out = await push({ mode: "commit", ...desired });
+    expect(locs.find((l) => l.locale === "zh-Hans")?.name).toBe("新名称");
+    expect(asc.writes()).toHaveLength(2);
+    expect(out.status).toBe(502);
+    expect(out.json).toMatchObject({ code: "APP_INFO_WRITE_FAILED", recovery_required: true, results: [
+      { target: "en-US", status: "written" }, { target: "zh-Hans", status: "unknown" },
+      { target: "ja", status: "not_attempted" }, { target: "primary_category", status: "not_attempted" },
+    ] });
+    expect(out.statements.some((s) => s.sql.startsWith("DELETE FROM store_product_locks"))).toBe(false);
   });
   it("reports an in-flight step as unknown if error reporting itself throws", async () => {
     const { asc } = fakeApple({ failLocale: "en-US", uncertain: true });

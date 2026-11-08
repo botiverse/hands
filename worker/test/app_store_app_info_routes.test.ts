@@ -213,6 +213,28 @@ describe("isolated candidate locking (not reachable through the registered commi
     expect(asc.writes()).toHaveLength(1);
   });
 
+  it("keeps the exact lock if a structured conflict follows an applied write", async () => {
+    const h = await harness(); let name = "Old Name";
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH" && call.path === "/v1/appInfoLocalizations/loc-1") {
+        name = "New Name";
+        return { status: 409, json: { errors: [{ status: "409", code: "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE", title: "Name is not available" }] } };
+      }
+      return appleRead(call, name);
+    });
+    const context = () => { const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = h.env; return c; };
+    const request = normalizeAppInfoInput({ ...input, mode: "commit" });
+    const first = await pushAppInfoCandidate(context(), request); const body = await first.json() as any;
+    expect(name).toBe("New Name");
+    expect(first.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_WRITE_FAILED", recovery_required: true, results: [{ target: "en-US", status: "unknown" }] });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    const retry = await pushAppInfoCandidate(context(), request);
+    expect(retry.status).toBe(409);
+    expect((await retry.json() as any).code).toBe("APP_INFO_LOCKED");
+    expect(asc.writes()).toHaveLength(1);
+  });
+
   it("keeps the exact lock after an uncertain provider response, preventing a retry", async () => {
     const h = await harness();
     const asc = installAscFake((call) => {

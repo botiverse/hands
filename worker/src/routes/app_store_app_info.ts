@@ -1,7 +1,7 @@
 /** App Information is shared by the app's platforms, not a child of a version. */
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { AscApiError, type AscApiCredentials } from "../lib/asc_api";
+import type { AscApiCredentials } from "../lib/asc_api";
 import { ASC_LOCALE_RE } from "../lib/app_store_screenshots";
 import { categoryRelationship, listAppInfos, listInfoLocalizations, listOwnedVersions, listPrimaryCategories, listVersionLocales, writeInfoLocalization, writePrimaryCategory, type AppInfo, type InfoField, type InfoLocalization, type StoreVersion } from "../lib/app_store_app_info";
 import { insertAuditLog } from "../lib/permissions";
@@ -169,11 +169,10 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
         results.push({ target: step.target, action: step.action, status: "written", localization_id: id });
         activeStep = null;
       } catch (error) {
-        // A generic 4xx (especially an intermediary's response) is not proof of
-        // rejection. Require a structured Apple error on a documented validation
-        // or conflict status; classify everything else as uncertain.
-        const definite = error instanceof AscApiError && [400, 409, 422].includes(error.status) && !!error.code;
-        results.push({ target: step.target, action: step.action, status: definite ? "failed" : "unknown", localization_id: step.localization_id, error: errorBody(error).body });
+        // No error response proves that a dispatched write was rejected without
+        // effect. Even an Apple-shaped 4xx could have come from an intermediary or
+        // followed a partial mutation; retain the lock for manual recovery.
+        results.push({ target: step.target, action: step.action, status: "unknown", localization_id: step.localization_id, error: errorBody(error).body });
         activeStep = null;
         stopped = true;
       }
@@ -195,7 +194,7 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
     const failed = results.some((r) => r.status === "failed" || r.status === "unknown" || r.status === "not_attempted") || mismatches.length > 0;
     const outcome = failed ? "failed" : results.every((r) => r.status === "unchanged") ? "no_changes" : "committed";
     await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.app_info.result", payload: { ...base, outcome, results: results.map(({ error: _e, ...r }) => r), mismatches: mismatches.map((m) => ({ target: m.target, field: m.field, expected: fingerprint(m.expected), actual: fingerprint(m.actual) })) } });
-    // A definitive rejection is safe to retry only after preceding accepted writes read back correctly.
+    // Only fully acknowledged writes with matching readback can release the lock.
     releaseLock = !uncertain;
     const body = { ...base, ok: !failed, outcome, results, mismatches, readback: { localizations: afterRows.map((r) => ({ locale: r.locale, id: r.id, fields: r.fields })), primary_category: afterCategory }, recovery_required: !releaseLock };
     if (failed) return c.json({ ...body, code: mismatches.length ? "APP_INFO_READBACK_MISMATCH" : "APP_INFO_WRITE_FAILED", error: "one or more App Information steps failed or were not confirmed; inspect the results before retrying" }, 502);
