@@ -147,6 +147,8 @@ jobs:
       - run: pnpm --filter @botiverse/hands-node build
       - name: Test real HKCU device identity persistence
         run: node packages/node/test/windows-device-id.mjs
+      - name: Check recovery command arguments in Windows shells
+        run: pnpm --filter @botiverse/hands-cli exec vitest run src/lib/recovery_guidance.test.ts
 
   test:
     runs-on: ubuntu-latest

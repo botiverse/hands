@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
-import { shellArgument } from "../lib/shell_argument.js";
+import { recoveryGuidance } from "../lib/recovery_guidance.js";
 
 type AppRow = { id: string; slug: string };
 export type AgcSubmission = {
@@ -83,13 +83,15 @@ export function registerAgcCommands(program: Command): void {
         const body = error instanceof QuiverApiError && error.body && typeof error.body === "object"
           ? error.body as { submission_id?: unknown } : null;
         const knownId = typeof body?.submission_id === "string" && body.submission_id ? body.submission_id : null;
-        const command = ["hands", "agc", "status", ...(knownId ? [] : ["--build"]), "--", shellArgument(appId), shellArgument(knownId ?? buildId)].join(" ");
+        const command = knownId
+          ? recoveryGuidance("agc status", ["--", { field: "appId", value: appId }, { field: "submissionId", value: knownId }])
+          : recoveryGuidance("agc status", ["--build", "--", { field: "appId", value: appId }, { field: "buildId", value: buildId }]);
         console.error(`AppGallery upload did not return a confirmed result and may have started. Inspect it with ${command} and check Huawei before retrying upload.`);
         throw error;
       }
       const submissionId = started.submission_id ?? started.submission?.id;
       if (!submissionId) {
-        const command = ["hands", "agc", "status", "--build", "--", shellArgument(appId), shellArgument(buildId)].join(" ");
+        const command = recoveryGuidance("agc status", ["--build", "--", { field: "appId", value: appId }, { field: "buildId", value: buildId }]);
         throw new Error(`AppGallery upload returned no submission id and may have started. Inspect it with ${command} and check Huawei before retrying upload.`);
       }
       let result: StatusResponse;
@@ -97,7 +99,7 @@ export function registerAgcCommands(program: Command): void {
         result = await getStatus(appId, submissionId);
         if (opts.wait) result = await waitFor(appId, submissionId, (s) => s !== "uploading" && s !== "processing", Number(opts.timeout));
       } catch (error) {
-        const command = ["hands", "agc", "status", "--", shellArgument(appId), shellArgument(submissionId)].join(" ");
+        const command = recoveryGuidance("agc status", ["--", { field: "appId", value: appId }, { field: "submissionId", value: submissionId }]);
         console.error(`AppGallery returned a submission, but its status could not be confirmed. Inspect it with ${command} before retrying upload.`);
         throw error;
       }
