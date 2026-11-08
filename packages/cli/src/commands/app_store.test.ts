@@ -10,15 +10,15 @@ import { Command } from "commander";
  * must not write to Apple unless --commit is passed.
  */
 const APP_ID = "11111111-2222-3333-4444-555555555555";
-type Call = { method: string; path: string; body: unknown; query?: Record<string, unknown> };
+type Call = { method: string; path: string; body: unknown; query?: Record<string, unknown>; retryOnUnauthorized?: boolean | undefined };
 
 vi.mock("../lib/api.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api.js")>();
   return {
     ...actual,
-    apiRequest: async (path: string, opts: { method?: string; body?: unknown; query?: Record<string, unknown> } = {}) => {
+    apiRequest: async (path: string, opts: { method?: string; body?: unknown; query?: Record<string, unknown>; retryOnUnauthorized?: boolean } = {}) => {
       const state = globalThis as unknown as { __CALLS: Call[]; __REPLY: (call: Call) => unknown };
-      const call = { method: (opts.method ?? "GET").toUpperCase(), path: String(path), body: opts.body, query: opts.query };
+      const call = { method: (opts.method ?? "GET").toUpperCase(), path: String(path), body: opts.body, query: opts.query, ...(opts.retryOnUnauthorized !== undefined ? { retryOnUnauthorized: opts.retryOnUnauthorized } : {}) };
       state.__CALLS.push(call);
       return state.__REPLY(call) as never;
     },
@@ -177,7 +177,7 @@ describe("hands app-store", () => {
     const dry = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--file", file], () => plan);
     expect(dry.calls).toEqual([
       { method: "GET", path: `/api/apps/${APP_ID}/app-store/status`, body: undefined, query: { version_string: "1.17.0" } },
-      { method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined },
+      { method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: true },
     ]);
     const text = dry.out.join("\n");
     expect(text).toContain('name: "Old" [3] -> "New Name" [8]');
@@ -185,14 +185,51 @@ describe("hands app-store", () => {
     expect(text).toContain("not checked or reserved");
     expect(text).toContain("Commit is currently blocked");
     const json = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver/117", "--file", file, "--json"], () => plan);
-    expect(json.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver%2F117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined }]);
+    expect(json.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver%2F117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: true }]);
     expect(JSON.parse(json.out.join("\n"))).toEqual(plan);
     const { QuiverApiError } = await import("../lib/api.js");
     const guard = { code: "APP_INFO_COMMIT_UNVERIFIED", error: "App Information writes are not yet verified; nothing was written" };
     const failure = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver-117", "--file", file, "--commit"], () => { throw new QuiverApiError(409, guard, guard.error); }).catch((e) => e);
     expect(failure).toBeInstanceOf(QuiverApiError);
     expect(failure.body).toEqual(guard);
-    expect((globalThis as any).__CALLS).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "commit", version_string: "1.17.0" }, query: undefined }]);
+    expect((globalThis as any).__CALLS).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "commit", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: false }]);
+  });
+
+  it("app-info accepts only complete confirmed results matching the request", async () => {
+    const { assertAppInfoConfirmed } = await import("./app_store.js");
+    const desired = { localizations: { "en-US": { name: "New Name", subtitle: "Chat" } }, primary_category: "PRODUCTIVITY" };
+    const confirmed = { ok: true, outcome: "committed", operation_id: "op-1", recovery_required: false, mismatches: [],
+      results: [{ target: "en-US", status: "written", localization_id: "loc-1" }, { target: "primary_category", status: "unchanged", localization_id: null }],
+      readback: { localizations: [{ locale: "en-US", id: "loc-1", fields: { name: "New Name", subtitle: "Chat" } }], primary_category: "PRODUCTIVITY" } };
+    expect(assertAppInfoConfirmed(confirmed, desired)).toBe(confirmed);
+    const unchanged = { ...confirmed, outcome: "no_changes", results: confirmed.results.map((r) => ({ ...r, status: "unchanged" })) };
+    expect(assertAppInfoConfirmed(unchanged, desired)).toBe(unchanged);
+    const bad = [null, {}, { ...confirmed, results: [] }, { ...confirmed, mismatches: [{}] },
+      { ...confirmed, recovery_required: true }, { ...confirmed, operation_id: "" },
+      { ...confirmed, readback: {} }, { ...confirmed, readback: { ...confirmed.readback, primary_category: "UTILITIES" } },
+      { ...confirmed, readback: { ...confirmed.readback, localizations: [{ locale: "en-US", id: "loc-1", fields: { name: "Other", subtitle: "Chat" } }] } },
+      { ...confirmed, readback: { ...confirmed.readback, localizations: [{ locale: "en-US", id: "different", fields: { name: "New Name", subtitle: "Chat" } }] } },
+      { ...confirmed, results: [confirmed.results[0], confirmed.results[0]] },
+      { ...confirmed, results: [{ ...confirmed.results[0], status: "unknown" }, confirmed.results[1]] },
+      { ...confirmed, outcome: "no_changes" }, { ...unchanged, outcome: "committed" }];
+    for (const response of bad) expect(() => assertAppInfoConfirmed(response, desired)).toThrow("App Information write result was not confirmed");
+  });
+
+  it("app-info warns on lost, malformed or intermediary responses without hiding a structured result", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hands-info-")); const file = join(dir, "info.json");
+    await writeFile(file, JSON.stringify({ localizations: { "en-US": { name: "Example" } } }));
+    const { QuiverApiError } = await import("../lib/api.js");
+    const errors: string[] = []; vi.spyOn(console, "error").mockImplementation((line: unknown) => { errors.push(String(line)); });
+    const argv = ["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver-117", "--file", file, "--commit"];
+    const warning = "Write result could not be confirmed";
+    for (const response of [() => { throw new Error("connection lost"); }, () => { throw new QuiverApiError(401, "proxy error", "unauthorized"); }, () => ({ ok: true }), () => { throw new QuiverApiError(502, { code: "APP_INFO_WRITE_FAILED", operation_id: "op", recovery_required: false }, "malformed"); }]) {
+      errors.length = 0; await expect(run(argv, response)).rejects.toThrow(); expect(errors.join("\n")).toContain(warning);
+    }
+    const structured = { code: "APP_INFO_RECOVERY_REQUIRED", operation_id: "op-1", recovery_required: true, results: [{ target: "en-US", status: "unknown" }] };
+    errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(502, structured, "inspect"); })).rejects.toThrow();
+    expect(errors.join("\n")).toContain("Recovery required for operation op-1"); expect(errors.join("\n")).not.toContain(warning);
+    errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(409, { code: "APP_INFO_COMMIT_UNVERIFIED" }, "blocked"); })).rejects.toThrow();
+    expect(errors.join("\n")).not.toContain(warning);
   });
 
   it("app-info prints blocking platform and AppInfo details, and preserves JSON errors", async () => {

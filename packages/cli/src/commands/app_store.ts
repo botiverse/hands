@@ -306,6 +306,57 @@ export function parseLocalizationsFile(raw: unknown): Record<string, Record<stri
   return raw as Record<string, Record<string, string>>;
 }
 
+/** Do not claim success from a malformed 2xx or readback that differs from the request. */
+export function assertAppInfoConfirmed<T>(body: T, requested: Record<string, unknown>): T {
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  function reject(): never { throw new QuiverApiError(502, body, "App Information write result was not confirmed"); }
+  const value: unknown = body;
+  if (!object(value)) return reject();
+  if (value.ok !== true || (value.outcome !== "committed" && value.outcome !== "no_changes")
+    || typeof value.operation_id !== "string" || !value.operation_id.trim() || value.recovery_required !== false
+    || !Array.isArray(value.mismatches) || value.mismatches.length !== 0 || !Array.isArray(value.results)
+    || !object(value.readback) || !Array.isArray(value.readback.localizations) || !("primary_category" in value.readback)) return reject();
+  const results: unknown[] = value.results;
+  const readback = value.readback;
+  const localizations: unknown = requested.localizations === undefined ? {} : requested.localizations;
+  if (!object(localizations) || (requested.primary_category !== undefined && typeof requested.primary_category !== "string")) return reject();
+  const targets = Object.keys(localizations);
+  if (requested.primary_category !== undefined) targets.push("primary_category");
+  if (!targets.length || results.length !== targets.length) return reject();
+  const byTarget = new Map<string, Record<string, unknown>>();
+  for (const result of results) {
+    if (!object(result) || typeof result.target !== "string" || !targets.includes(result.target) || byTarget.has(result.target)
+      || (result.status !== "written" && result.status !== "unchanged")) return reject();
+    byTarget.set(result.target, result);
+  }
+  if (value.outcome === "no_changes" && results.some((r) => (r as Record<string, unknown>).status !== "unchanged")) return reject();
+  if (value.outcome === "committed" && !results.some((r) => (r as Record<string, unknown>).status === "written")) return reject();
+  for (const [locale, fields] of Object.entries(localizations)) {
+    if (!object(fields) || !Object.keys(fields).length || Object.entries(fields).some(([key, text]) => !["name", "subtitle"].includes(key) || typeof text !== "string")) return reject();
+    const matches = (readback.localizations as unknown[]).filter((row) => object(row) && row.locale === locale);
+    if (matches.length !== 1 || !object(matches[0]) || !object(matches[0].fields)) return reject();
+    const row = matches[0];
+    const readFields = row.fields as Record<string, unknown>;
+    if (Object.entries(fields).some(([key, text]) => readFields[key] !== text)) return reject();
+    const id = byTarget.get(locale)?.localization_id;
+    if (typeof id !== "string" || !id || row.id !== id) return reject();
+  }
+  if (requested.primary_category !== undefined && readback.primary_category !== requested.primary_category) return reject();
+  return body;
+}
+
+/** Only recognize complete, specific result shapes; unknown failures need caution. */
+export function appInfoFailureNeedsWarning(error: unknown): boolean {
+  if (!(error instanceof QuiverApiError) || !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return true;
+  const b = error.body as Record<string, unknown>;
+  if (b.code === "APP_INFO_COMMIT_UNVERIFIED" && error.status === 409) return false;
+  if (b.code !== "APP_INFO_RECOVERY_REQUIRED" && b.code !== "APP_INFO_WRITE_FAILED" && b.code !== "APP_INFO_READBACK_MISMATCH") return true;
+  if (typeof b.operation_id !== "string" || !b.operation_id.trim() || typeof b.recovery_required !== "boolean" || !Array.isArray(b.results) || !b.results.length) return true;
+  if (b.results.some((r: unknown) => !r || typeof r !== "object" || Array.isArray(r) || typeof (r as Record<string, unknown>).target !== "string" || !["written", "unchanged", "failed", "unknown", "not_attempted"].includes(String((r as Record<string, unknown>).status)))) return true;
+  if ((b.code === "APP_INFO_RECOVERY_REQUIRED" || b.code === "APP_INFO_READBACK_MISMATCH") && !b.recovery_required) return true;
+  return !b.recovery_required && b.results.some((r: Record<string, unknown>) => r.status === "unknown");
+}
+
 export function formatAppInfoResult(body: any): string {
   const lines: string[] = [];
   if (body.version) {
@@ -480,8 +531,19 @@ export function registerAppStoreCommands(program: Command): void {
       const versionId = opts.versionId ?? (await status(appId, opts.versionName, opts.platform)).version_id;
       const body = { ...obj, mode: opts.commit ? "commit" : "dry_run", version_string: opts.versionName };
       const json = jsonRequested(program, opts.json);
-      const result = await withDetail(json, formatAppInfoResult, () => apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/app-info`, { method: "POST", body }));
-      console.log(json ? JSON.stringify(result, null, 2) : formatAppInfoResult(result));
+      try {
+        const response = await withDetail(json, formatAppInfoResult, () =>
+          apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/app-info`, { method: "POST", body, retryOnUnauthorized: !opts.commit }));
+        const result = opts.commit ? assertAppInfoConfirmed(response, obj) : response;
+        console.log(json ? JSON.stringify(result, null, 2) : formatAppInfoResult(result));
+      } catch (error) {
+        // A lost connection, intermediary 401 or malformed reply can hide a completed
+        // write. Do not invite an immediate retry when no trustworthy result exists.
+        if (opts.commit && appInfoFailureNeedsWarning(error)) {
+          console.error("Write result could not be confirmed. Do not retry until the release owner has checked Apple and any operation lock.");
+        }
+        throw error;
+      }
     });
 
   group

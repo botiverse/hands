@@ -169,6 +169,50 @@ describe("isolated candidate locking (not reachable through the registered commi
     expect(audit).not.toContain("New Name");
   });
 
+  it("reports a successful create and later uncertain failure, retaining its lock and blocking retry", async () => {
+    const h = await harness(); let created = false;
+    const asc = installAscFake((call) => {
+      if (call.method === "POST" && call.path === "/v1/appInfoLocalizations") {
+        created = true; return { status: 201, json: { data: { type: "appInfoLocalizations", id: "loc-ja" } } };
+      }
+      if (call.method === "PATCH" && call.path === "/v1/appInfoLocalizations/loc-1") throw new Error("response lost after dispatch");
+      if (call.method === "GET" && call.path.startsWith("/v1/appInfos/info-1/appInfoLocalizations?")) return { json: { data: [
+        { type: "appInfoLocalizations", id: "loc-1", attributes: { locale: "en-US", name: "Old Name", subtitle: "Old subtitle" } },
+        ...(created ? [{ type: "appInfoLocalizations", id: "loc-ja", attributes: { locale: "ja", name: "新しい名前", subtitle: "副題" } }] : []),
+      ], links: { self: call.url } } };
+      if (call.method === "GET" && call.path.startsWith("/v1/appStoreVersions/ver-1/appStoreVersionLocalizations?")) return { json: { data: ["en-US", "ja"].map((locale) => ({ type: "appStoreVersionLocalizations", id: `version-${locale}`, attributes: { locale } })), links: { self: call.url } } };
+      return appleRead(call);
+    });
+    const context = () => { const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = h.env; return c; };
+    const request = normalizeAppInfoInput({ mode: "commit", version_string: "1.22.0", localizations: { ja: { name: "新しい名前", subtitle: "副題" }, "en-US": { name: "New Name" } } });
+    const first = await pushAppInfoCandidate(context(), request); const body = await first.json() as any;
+    expect(first.status).toBe(502);
+    expect(body).toMatchObject({ recovery_required: true, results: [{ target: "ja", status: "written", localization_id: "loc-ja" }, { target: "en-US", status: "unknown" }] });
+    expect(body.mismatches).toEqual([]);
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect((await (await pushAppInfoCandidate(context(), request)).json() as any).code).toBe("APP_INFO_LOCKED");
+    expect(asc.writes().map((call) => `${call.method} ${call.path}`)).toEqual(["POST /v1/appInfoLocalizations", "PATCH /v1/appInfoLocalizations/loc-1"]);
+  });
+
+  it("keeps the exact lock if an accepted category write cannot be read back", async () => {
+    const h = await harness(); let written = false;
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH" && call.path === "/v1/appInfos/info-1") { written = true; return { json: { data: call.body.data } }; }
+      if (written && call.method === "GET" && call.path === "/v1/appInfos/info-1/relationships/primaryCategory") return { status: 500, json: { errors: [{ title: "readback unavailable" }] } };
+      if (call.method === "GET" && /\/relationships\/primarySubcategory(One|Two)$/.test(call.path)) return { json: { data: null } };
+      if (call.method === "GET" && call.path.startsWith("/v1/appCategories?")) return { json: { data: [{ type: "appCategories", id: "UTILITIES" }, { type: "appCategories", id: "PRODUCTIVITY" }], links: { self: call.url } } };
+      return appleRead(call);
+    });
+    const context = () => { const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = h.env; return c; };
+    const request = normalizeAppInfoInput({ mode: "commit", version_string: "1.22.0", primary_category: "PRODUCTIVITY" });
+    const first = await pushAppInfoCandidate(context(), request); const body = await first.json() as any;
+    expect(first.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, results: [{ target: "primary_category", status: "written" }] });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect((await (await pushAppInfoCandidate(context(), request)).json() as any).code).toBe("APP_INFO_LOCKED");
+    expect(asc.writes()).toHaveLength(1);
+  });
+
   it("keeps the exact lock after an uncertain provider response, preventing a retry", async () => {
     const h = await harness();
     const asc = installAscFake((call) => {

@@ -129,6 +129,10 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
   let targetHash = "";
   const results: Result[] = [];
   let s: Snapshot | null = null;
+  // Prepared before dispatch so an exception during readback/audit can still
+  // account for every requested target, including steps we never attempted.
+  let steps: Array<{ target: string; action: string; localization_id: string | null; run: () => Promise<string | null> }> = [];
+  let activeStep: typeof steps[number] | null = null;
   try {
     const creds = await loadCredentials(c, appId), ascAppId = await ascAppIdFor(c, appId);
     targetHash = hash(`app-info:${ascAppId}`);
@@ -150,7 +154,7 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
     // Recheck all the read inputs after the lock and immediately before the first write.
     const fresh = await snapshot(creds, ascAppId, versionId, input);
     if (signature(fresh) !== signature(s)) return c.json({ ...base, code: "APP_INFO_CHANGED", error: "App Information changed during planning; nothing was written, run preview again" }, 409);
-    const steps = [
+    steps = [
       ...plan.localizations.map((p) => ({ target: p.locale, action: p.action, localization_id: p.localization_id, run: async () => writeInfoLocalization(creds, s!.info.id, p.locale, p.localization_id, Object.fromEntries(p.changed_fields.map((k) => [k, p.after[k]!])) as Fields) })),
       ...(plan.category ? [{ target: "primary_category", action: plan.category.action, localization_id: null, run: async () => { await writePrimaryCategory(creds, s!.info.id, plan.category!.after); return null; } }] : []),
     ];
@@ -160,12 +164,17 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
       if (step.action === "unchanged") { results.push({ target: step.target, action: step.action, status: "unchanged", localization_id: step.localization_id }); continue; }
       try {
         // A failure after this point can mean Apple accepted a request even if no response arrived.
-        mutationStarted = true; releaseLock = false;
+        mutationStarted = true; releaseLock = false; activeStep = step;
         const id = await step.run();
         results.push({ target: step.target, action: step.action, status: "written", localization_id: id });
+        activeStep = null;
       } catch (error) {
-        const definite = error instanceof AscApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429;
+        // A generic 4xx (especially an intermediary's response) is not proof of
+        // rejection. Require a structured Apple error on a documented validation
+        // or conflict status; classify everything else as uncertain.
+        const definite = error instanceof AscApiError && [400, 409, 422].includes(error.status) && !!error.code;
         results.push({ target: step.target, action: step.action, status: definite ? "failed" : "unknown", localization_id: step.localization_id, error: errorBody(error).body });
+        activeStep = null;
         stopped = true;
       }
     }
@@ -193,7 +202,14 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
     return c.json(body);
   } catch (error) {
     if (mutationStarted) {
-      return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "a write may have completed or read-back failed; inspect Apple and recover the lock before retrying", operation_id: operationId, results, recovery_required: true, cause: errorBody(error).body }, 502);
+      // An error after dispatch, including one while constructing the response,
+      // must never release the lock even if readback had previously succeeded.
+      releaseLock = false;
+      const completed = new Set(results.map((r) => r.target));
+      // If reporting itself failed after dispatch, the in-flight step is unknown,
+      // not unattempted. Everything later really was not sent.
+      const remaining: Result[] = steps.filter((step) => !completed.has(step.target)).map((step) => ({ target: step.target, action: step.action, status: step === activeStep ? "unknown" : "not_attempted", localization_id: step.localization_id }));
+      return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "a write may have completed or read-back failed; inspect Apple and recover the lock before retrying", operation_id: operationId, results: [...results, ...remaining], recovery_required: true, cause: errorBody(error).body }, 502);
     }
     if (error instanceof PlanError) return c.json({ code: error.code, error: error.message, ...error.details }, error.code === "VERSION_NOT_IN_APP" ? 404 : 409);
     return fail(c, error);
