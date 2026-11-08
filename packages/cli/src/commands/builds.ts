@@ -18,6 +18,7 @@ import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 import { createHash } from "node:crypto";
 import { jsonRequested } from "../lib/json_output.js";
+import { shellArgument } from "../lib/shell_argument.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1935,6 +1936,11 @@ export function registerBuildCommands(program: Command): void {
         );
         const quiet = shouldOutputJson(program, jsonRequested(program, opts.json));
         const distribution = opts.distribution;
+        const statusCommand = [
+          "hands", "builds", "testflight-status", "--distribution", shellArgument(distribution),
+          ...(opts.bundleId ? ["--bundle-id", shellArgument(opts.bundleId)] : []),
+          "--", shellArgument(appId), shellArgument(buildId),
+        ].join(" ");
         const waitStartedAt = Date.now();
         if (opts.wait) {
           await waitForAscBuild(appId, buildId, {
@@ -1958,6 +1964,7 @@ export function registerBuildCommands(program: Command): void {
             `/api/apps/${appId}/builds/${buildId}/testflight-publish`,
             {
               method: "POST",
+              retryOnUnauthorized: false,
               body: {
                 distribution,
                 group_ids: opts.groupId,
@@ -1977,32 +1984,48 @@ export function registerBuildCommands(program: Command): void {
                 : {}),
             },
           );
-        const result = opts.wait
-          ? await withTimeoutMessage(
-              `timed out after ${timeoutSeconds}s while submitting the TestFlight publish request`,
-              publishRequest,
-            )
-          : await publishRequest();
+        let result: TestflightPublishStatus;
+        try {
+          result = opts.wait
+            ? await withTimeoutMessage(
+                `timed out after ${timeoutSeconds}s while submitting the TestFlight publish request`,
+                publishRequest,
+              )
+            : await publishRequest();
+        } catch (error) {
+          console.error(
+            `TestFlight publish did not return a confirmed result. The outcome may be unknown; inspect the build with ${statusCommand} before retrying publish.`,
+          );
+          throw error;
+        }
         const elapsedSeconds = (Date.now() - waitStartedAt) / 1000;
         const remainingTimeoutSeconds = Math.max(
           0,
           timeoutSeconds - elapsedSeconds,
         );
-        if (opts.wait && remainingTimeoutSeconds === 0) {
-          throw new Error(
-            `timed out after ${timeoutSeconds}s before TestFlight distribution polling began`,
-          );
-        }
-        const finalStatus = opts.wait
-          ? await waitForTestflightDistribution(appId, buildId, {
+        let finalStatus = result;
+        if (opts.wait) {
+          try {
+            if (remainingTimeoutSeconds === 0) {
+              throw new Error(
+                `timed out after ${timeoutSeconds}s before TestFlight distribution polling began`,
+              );
+            }
+            finalStatus = await waitForTestflightDistribution(appId, buildId, {
               distribution,
               notifyTesters: Boolean(opts.notifyTesters),
               ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
               intervalSeconds,
               timeoutSeconds: remainingTimeoutSeconds,
               quiet,
-            })
-          : result;
+            });
+          } catch (error) {
+            console.error(
+              `TestFlight publish returned, but waiting for distribution did not complete successfully. Inspect the build with ${statusCommand} before retrying publish.`,
+            );
+            throw error;
+          }
+        }
 
         if (quiet) {
           console.log(JSON.stringify(finalStatus, null, 2));

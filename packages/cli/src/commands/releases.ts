@@ -736,7 +736,7 @@ export function registerReleaseCommands(program: Command): void {
       try {
         res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/promote`,
-          { method: "POST", body },
+          { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
         throw playWriteError("promote", err);
@@ -785,7 +785,7 @@ export function registerReleaseCommands(program: Command): void {
       try {
         res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/send-for-review`,
-          { method: "POST", body },
+          { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
         throw playWriteError("send-for-review", err);
@@ -807,7 +807,7 @@ export function registerReleaseCommands(program: Command): void {
     .description("Upload the release build's sealed R8/ProGuard mapping and/or native debug symbols to Google Play for its versionCode, which must already be on Play. Never changes a track, rollout, or bundle. Dry run by default (publisher role; no auto-retry).")
     .option("--kinds <kinds>", "Comma-separated deobfuscation file types: proguard, nativeCode. Default: every sealed file the build has.")
     .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
-    .option("--commit", "Upload and commit. Without it, only checks (Play edit opened, versionCode verified, edit deleted) and writes nothing.", false)
+    .option("--commit", "Upload and commit. Without it, checks in a temporary Play edit (which may invalidate another same-user edit).", false)
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
@@ -827,7 +827,8 @@ export function registerReleaseCommands(program: Command): void {
       try {
         res = await apiRequest<PlayUploadSymbolsResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/upload-symbols`,
-          { method: "POST", body },
+          // A dry run also creates a Play edit and can invalidate another edit.
+          { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
         throw playWriteError("upload-symbols", err);
@@ -837,7 +838,7 @@ export function registerReleaseCommands(program: Command): void {
         return;
       }
       if (!opts.commit) {
-        console.log(`Dry run: nothing was written (no upload, no receipt, Play edit deleted).`);
+        console.log(`Dry run: no file uploaded or receipt written; temporary Play edit deleted. Opening it may invalidate another edit by the same user.`);
         console.log(`  package:     ${res.package_name ?? "unavailable"}`);
         console.log(`  versionCode: ${res.version_code ?? "unavailable"} (${res.version_on_play ? "on Google Play" : "not confirmed on Google Play"})`);
       } else {
@@ -874,7 +875,7 @@ export function registerReleaseCommands(program: Command): void {
       try {
         res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/halt`,
-          { method: "POST", body },
+          { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
         throw playWriteError("halt", err);
@@ -914,7 +915,7 @@ export function registerReleaseCommands(program: Command): void {
       try {
         res = await apiRequest<PlayWriteResult>(
           `/api/apps/${appId}/releases/${releaseId}/distributions/play/rollback`,
-          { method: "POST", body },
+          { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
         throw playWriteError("rollback", err);

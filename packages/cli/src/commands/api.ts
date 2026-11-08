@@ -20,7 +20,7 @@
 
 import type { Command } from "commander";
 import { readFile, writeFile } from "node:fs/promises";
-import { getApiBase, agentAwareFetch } from "../lib/api.js";
+import { getApiBase, agentAwareFetch, warnNo401Retry } from "../lib/api.js";
 
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]);
 
@@ -59,7 +59,8 @@ export function registerApiCommand(program: Command): void {
     .command("api <method> <path>")
     .description(
       "Call a Hands API endpoint directly (same-origin /api/* only). " +
-        "Reuses your CLI login; every call still goes through server-side RBAC.",
+        "Reuses your CLI login; every call still goes through server-side RBAC. " +
+        "Requests are sent once; a 401 is not retried automatically.",
     )
     .option("--param <kv...>", "Query parameter key=value (repeatable).")
     .option("--data <json|@file>", "JSON request body inline, or @path to read it from a file.")
@@ -102,8 +103,9 @@ export function registerApiCommand(program: Command): void {
             : opts.data;
         }
 
-        // Agent-aware: proactive refresh + one guarded 401 retry in agent mode, same as
-        // every other CLI HTTP path. The request is rebuilt per attempt with the bearer.
+        // Raw API calls can target non-idempotent writes or reads that create
+        // provider edits. Their safety cannot be inferred from the HTTP method.
+        // Proactively refresh credentials, but never replay an opaque request.
         const res = await agentAwareFetch((bearer) => {
           const headers: Record<string, string> = { accept: "application/json" };
           if (bearer) headers.authorization = `Bearer ${bearer}`;
@@ -116,8 +118,9 @@ export function registerApiCommand(program: Command): void {
             // the bearer token to the redirect target.
             redirect: "manual",
           });
-        });
+        }, { retryOnUnauthorized: false });
 
+        warnNo401Retry(res.status);
         const requestId = res.headers.get("x-request-id") ?? res.headers.get("cf-ray");
         const statusLine = `${res.status} ${res.statusText}${
           requestId ? `  request-id=${requestId}` : ""

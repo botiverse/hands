@@ -211,8 +211,8 @@ hands releases play-upload-symbols raft-android <release> --kinds proguard \
 - 上传原生压缩包会**替换**该版本已有的 Play 原生符号。明确选择前，请检查其覆盖所有需要符号化的原生库和 ABI，否则可能丢失覆盖。Hands 无法回读已有 Play 符号文件进行比较。
 - 明确选择原生符号时，如果构建上存在内容不同的多个原生压缩包，会以 `symbols_ambiguous` 失败，而不是任选一个。`--kinds proguard` 不受影响。没有选中文件时返回 `no_symbols`；只有通用原生附件时返回 `native_symbols_selection_required`。
 - Play 必须已经持有该版本号及该版本的 AAB，否则上传以 `version_not_on_play` 失败。即使 AAB 存在，Play 仍可能拒绝文件；请检查返回的错误，不要假设重试会成功。
-- 任何失败都会删除 Play 编辑，不会提交一半。重新运行是安全的：上传会替换该版本号相同类型的文件。
-- `--commit` 写入回执（`play-promotion` / `upload-symbols`）；预演不写回执，也不改变版本修订号。
+- 失败时适配器会尝试删除尚未提交的 Play 编辑。响应丢失或清理失败时，结果可能不确定，包括提交是否完成；重试前先检查 Play 和 Hands 回执。再次上传会替换该版本号相同类型的文件。
+- `--commit` 写入回执（`play-promotion` / `upload-symbols`）；预演不写回执，也不改变版本修订号。但即使不提交，创建临时 Play 编辑也可能使同一 Google 用户已有的编辑失效。
 
 API：`POST /api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols`，请求体 `{mode?: "dry_run" | "commit", kinds?, expected_revision, approval: {note}}`。参阅 OpenAPI。
 
@@ -248,7 +248,7 @@ hands store-listing receipts raft-android
 }
 ```
 
-也接受 Google 的列表形式 `{ "listings": [ { "language": "en-US", "title": "…" } ] }`。
+也接受 Google 的列表形式 `{ "listings": [ { "language": "en-US", "title": "…" } ] }`。拉取详情和预演会打开临时 Play 编辑；即使不提交，创建它也可能使同一 Google 用户已有的编辑失效。
 
 - **语言**必须是 Play 商店详情标签，拼写与 Play 列表完全一致，例如 `en-US`、`zh-CN`、`zh-TW`、`zh-HK`、`ja-JP`、`ko-KR`、`es-ES`、`fr-FR`、`de-DE`、`pt-BR`、`iw-IL`（希伯来语）、`es-419`、`fil` 等，共 86 个，来源为 Play Console 帮助中的应用翻译和本地化说明。`zh-Hans`、`en` 或 `en-us` 会在调用 Play 前被拒绝，并给出建议，例如 `zh-Hans (did you mean zh-CN?)`。
 - **长度限制**（Play Console 帮助中的应用创建和设置说明）：`title` 30、`shortDescription` 80、`fullDescription` 4,000 个字符；中文及其他中日韩文字与拉丁文字均逐字符计数。超长文本以 `listing_field_too_long` 拒绝，不会截断。
@@ -477,13 +477,13 @@ hands agc submit raft-ohos <submissionId> --group <groupId>
 hands agc status raft-ohos <submissionId> --events   # 或使用：<buildId> --build
 ```
 
-`upload` 对每个构建是幂等的。状态为 `failed`、`rejected` 或 `stopped` 后再次调用会开始新的尝试（新的 AGC 测试版本）；先前提交保留其历史。
+`upload` 会复用该构建尚未结束的尝试。状态为 `failed`、`rejected` 或 `stopped` 后再次调用会开始新的尝试（新的 AGC 测试版本）；先前提交保留其历史。失败响应可能留下不确定的提供方操作；再次上传前请先检查提交记录和 Huawei。`hands agc market-status` 也可能记录市场包的最终状态并将通知加入队列，因此收到 401 后不会自动重发。
 
 通过 `hands api` 使用管理 API 执行相同流程：
 
 ```bash
 APP=/api/apps/<appId>
-# 1. 上传构建的 .app 并创建测试版本（对每个构建幂等）。
+# 1. 上传构建的 .app 并创建测试版本（复用尚未结束的尝试）。
 hands api POST $APP/builds/<buildId>/agc-invitation-test \
   --data '{"package_name":"build.raft.mobile","test_desc":"1.12.0 (11200003)"}' --json
 # 2. 轮询至状态为 "ready"（Huawei 编译应用包，约 1–3 分钟）。
@@ -496,7 +496,7 @@ hands api POST $APP/agc-submissions/<submissionId>/submit \
 hands api GET $APP/agc-submissions/<submissionId> --json
 ```
 
-应用有多个测试组时，`submit` 需要明确的 `group_id` / `group_ids`；只有一个组时自动使用该组。提交结果仍未终结时，每次 `GET` 都会重新读取 Huawei，因此存储状态会跟随 AppGallery：
+应用有多个测试组时，`submit` 需要明确的 `group_id` / `group_ids`；只有一个组时自动使用该组。提交结果仍未终结时，每次 `GET` 都会重新读取 Huawei；如果包已完成编译，该 GET 还可能将包绑定到 Huawei 的测试版本。CLI 收到 401 后不会自动重发这一状态请求；若结果不确定，重试前请检查提交记录和 Huawei。存储状态会跟随 AppGallery：
 
 | Hands `state` | Huawei 测试 `releaseState` |
 | --- | --- |
@@ -689,6 +689,7 @@ hands --json api GET /api/apps
 ```
 
 - **原始路径参数。** `<appId>` 及其他 ID 是资源 UUID，不是 slug。`hands api` 原样传递路径，不会像专用子命令那样解析 slug。
+- **收到 401 不自动重发。** 直接 API 请求只发送一次，即使是 GET 也是如此，因为某些读取会创建提供方编辑。托管智能体的凭据仍会在发送前主动刷新。如果 401 或响应丢失导致结果不确定，请先检查当前状态再重试。
 - **仅限同源 `/api/*`。** `<path>` 根据当前 Hands API 基础地址解析，并遵守根级 `--api` 参数。接受相对路径或**同源绝对 URL**；跨源绝对 URL、`//` 协议相对主机及逃出来源的 `../` 路径遍历均被拒绝，因此认证 Bearer 令牌不会离开 Hands 来源。
 - **绝不跟随重定向。** `3xx` 会被报告，不会继续请求；跟随跨源重定向会泄露 Bearer 令牌。
 - **认证与角色控制不变。** 复用现有命令行登录或令牌；服务端执行与其他调用相同的角色检查。

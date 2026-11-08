@@ -2424,7 +2424,8 @@ describe("play distribution commands", () => {
     try {
       await harness.run("releases", "play-upload-symbols", "raft-android", "release-1", "--note", "backfill 11700009");
       const dryRunText = harness.logs.join("\n");
-      expect(dryRunText).toContain("Dry run: nothing was written");
+      expect(dryRunText).toContain("Dry run: no file uploaded or receipt written");
+      expect(dryRunText).toContain("may invalidate another edit by the same user");
       expect(dryRunText).toContain("would upload: proguard  282000000 bytes");
       expect(dryRunText).toContain("--commit");
 
