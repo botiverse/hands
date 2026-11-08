@@ -1661,20 +1661,24 @@ describe("Hands-managed Raft notifications", () => {
       return Response.json({ state: "sent", messageId: calls.length === 1 ? "parent-message-1" : "channel-notice", messageCard: { revision: 1 } });
     });
     expect((await request(stateBody("IN_REVIEW", "2026-11-04T07:00:00Z"), "a")).status).toBe(200);
-    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const event = stateBody("PENDING_DEVELOPER_RELEASE", "2026-11-04T07:01:00Z");
     const hash = await sha256Hex(JSON.stringify(event));
-    const oldCard = { version: 1, root: "root", elements: {
-      root: { type: "Stack", props: { direction: "column" }, children: ["title"] },
-      title: { type: "Text", props: { text: "Old format review rejected" } },
-    } };
+    const oldCard = { version: 1, header: { title: "Raft App · App Store · Approved; waiting for developer release" },
+      root: "root", elements: {
+        root: { type: "Stack", props: { direction: "column" }, children: ["state"] },
+        state: { type: "Badge", props: { text: "Approved; waiting for developer release", tone: "neutral" } },
+      } };
+    const now = formatRaftNotificationCard(event);
+    expect(now.card.header?.tags).toEqual([{ text: "Approved; not released", tone: "success" }]);
+    expect(now.card).not.toEqual(oldCard);
     const pending = { kind: "update", eventHash: hash, eventMs: Date.parse(event.payload.occurred_at),
       idempotencyKey: `hands-card:update:${SUBSCRIPTION_ID}:${hash}`, content: formatRaftNotificationCard(event).content,
       card: oldCard, target: "#releases:parent-m", messageId: "parent-message-1", expectedRevision: 1,
       createsRoot: false, createdAt: Date.now() };
     sqlite.prepare("UPDATE raft_notification_cards SET pending_json=?,pending_uncertain=1").run(JSON.stringify(pending));
     expect((await request(event, "retry")).status).toBe(200);
-    expect(calls[1]).toMatchObject({ method: "PUT", body: { idempotencyKey: pending.idempotencyKey, card: oldCard } });
-    expect(calls[2]).toMatchObject({ method: "POST", body: { target: "#releases", card: oldCard } });
+    expect(calls[1]).toMatchObject({ method: "PUT", body: { idempotencyKey: pending.idempotencyKey, content: pending.content, card: oldCard } });
+    expect(calls[2]).toMatchObject({ method: "POST", body: { target: "#releases", content: pending.content, card: oldCard } });
     expect(sqlite.prepare("SELECT revision,pending_json FROM raft_notification_cards").get()).toEqual({ revision: 2, pending_json: null });
   });
 

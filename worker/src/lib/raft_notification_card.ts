@@ -1,6 +1,6 @@
 /** Build the display-only Raft card and the independently readable fallback.
  * Delivery and revision ordering are deliberately kept outside this renderer. */
-import { formatRaftNotificationMessage, raftNotificationCurrentState } from "./raft_notification_content";
+import { formatRaftNotificationMessage, raftNotificationCardTestNotes, raftNotificationCurrentState, raftNotificationRawState } from "./raft_notification_content";
 
 type Payload = Record<string, unknown>;
 type App = { id: string; slug: string | null; name: string | null };
@@ -61,17 +61,77 @@ function headerTitle(value: string): string {
   return remaining > 0 ? `${shorten(value.slice(0, split), remaining)} · ${suffix}` : shorten(suffix, 100);
 }
 
-function statusTone(event: string, payload: Payload): "neutral" | "info" | "success" | "warning" | "danger" {
-  const build = record(payload.build);
-  const state = String(payload.status ?? build.status ?? payload.state ?? build.state ?? "");
-  if (event === "google_play:submission_failed" || event === "build:failed"
-    || ["SUBMISSION_FAILED", "FAILED", "PROCESSING_EXCEPTION", "BETA_REJECTED", "REJECTED", "METADATA_REJECTED",
-      "INVALID_BINARY", "RELEASE_LIFECYCLE_STATE_NOT_APPROVED", "failed", "rejected"].includes(state)) return "danger";
-  if (["EXPIRED", "MISSING_EXPORT_COMPLIANCE", "NOT_APPLICABLE", "DEVELOPER_REJECTED", "stopped"].includes(state)) return "warning";
-  if (["READY_FOR_SALE", "READY_FOR_BETA_TESTING", "IN_BETA_TESTING", "BETA_APPROVED", "COMPLETE", "ready", "testing_active"].includes(state)) return "success";
-  if (["IN_REVIEW", "WAITING_FOR_REVIEW", "IN_BETA_REVIEW", "WAITING_FOR_BETA_REVIEW", "PROCESSING",
-    "RELEASE_LIFECYCLE_STATE_IN_REVIEW", "processing", "testing_review"].includes(state)) return "info";
-  return "neutral";
+type TagTone = "neutral" | "info" | "success" | "warning" | "danger";
+type StateTag = { tone: TagTone; text?: string };
+
+// A state is meaningful only within its provider/event family. Compact labels
+// fit Raft's 24-code-point header limit; the full qualified status remains in
+// the title and in the unchanged text fallback. Unknown states stay neutral.
+const STORE_TAGS: Readonly<Record<string, Readonly<Record<string, StateTag>>>> = {
+  "app_store:version_state_changed": {
+    PREPARE_FOR_SUBMISSION: { tone: "neutral" },
+    WAITING_FOR_REVIEW: { tone: "info" }, IN_REVIEW: { tone: "info" },
+    PENDING_DEVELOPER_RELEASE: { tone: "success", text: "Approved; not released" },
+    PENDING_APPLE_RELEASE: { tone: "success", text: "Apple release pending" },
+    READY_FOR_SALE: { tone: "success" }, READY_FOR_DISTRIBUTION: { tone: "success", text: "Ready for distribution" },
+    REJECTED: { tone: "danger" }, METADATA_REJECTED: { tone: "danger" },
+    DEVELOPER_REJECTED: { tone: "warning" }, INVALID_BINARY: { tone: "danger" },
+  },
+  "google_play:release_state_changed": {
+    RELEASE_LIFECYCLE_STATE_DRAFT: { tone: "neutral" },
+    RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW: { tone: "neutral" },
+    RELEASE_LIFECYCLE_STATE_IN_REVIEW: { tone: "info" },
+    RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED: { tone: "success", text: "Approved; not released" },
+    RELEASE_LIFECYCLE_STATE_NOT_APPROVED: { tone: "danger" },
+    RELEASE_LIFECYCLE_STATE_PUBLISHED: { tone: "success", text: "Available on track" },
+  },
+  "google_play:submission_succeeded": { SUBMISSION_SUCCEEDED: { tone: "success", text: "Operation succeeded" } },
+  "google_play:submission_failed": { SUBMISSION_FAILED: { tone: "danger" } },
+  "testflight:external_state_changed": {
+    READY_FOR_BETA_TESTING: { tone: "success" }, IN_BETA_TESTING: { tone: "success" },
+    BETA_APPROVED: { tone: "success", text: "Beta approved" }, BETA_REJECTED: { tone: "danger" },
+    EXPIRED: { tone: "warning" }, PROCESSING_EXCEPTION: { tone: "danger" },
+    MISSING_EXPORT_COMPLIANCE: { tone: "warning", text: "Export info needed" },
+    IN_EXPORT_COMPLIANCE_REVIEW: { tone: "info", text: "Export info in review" },
+    READY_FOR_BETA_SUBMISSION: { tone: "neutral", text: "Ready to submit" },
+    WAITING_FOR_BETA_REVIEW: { tone: "info" }, IN_BETA_REVIEW: { tone: "info" },
+    NOT_APPLICABLE: { tone: "warning", text: "Beta testing unavailable" },
+  },
+  "app_store:build_upload_state_changed": {
+    AWAITING_UPLOAD: { tone: "neutral" }, PROCESSING: { tone: "info" }, COMPLETE: { tone: "success" }, FAILED: { tone: "danger" },
+  },
+  "appgallery:invitation_state_changed": {
+    uploading: { tone: "neutral", text: "Uploading build" }, processing: { tone: "info", text: "Processing build" },
+    ready: { tone: "neutral", text: "Ready to submit" }, failed: { tone: "danger", text: "Processing failed" },
+    testing_review: { tone: "info", text: "Invitation test review" },
+    testing_scheduled: { tone: "success", text: "Approved; test pending" }, testing_active: { tone: "success" },
+    rejected: { tone: "danger", text: "Test review rejected" }, stopped: { tone: "warning", text: "Invitation test stopped" },
+  },
+  "appgallery:package_state_changed": {
+    uploading: { tone: "neutral", text: "Uploading package" }, processing: { tone: "info", text: "Package processing" },
+    ready: { tone: "success", text: "Package processed" }, failed: { tone: "danger", text: "Package failed" },
+  },
+};
+
+function cardStatus(event: string, payload: Payload, raw: string | null, label: string | null): { text: string; tone: TagTone } | null {
+  // Build/release receipts are emitted only after the named operation has
+  // succeeded or failed. Do not conflate a Hands channel with a public store.
+  const receipt = event === "build:succeeded" ? { text: "Build succeeded", tone: "success" as const, state: "succeeded" }
+    : event === "build:failed" ? { text: "Build failed", tone: "danger" as const, state: "failed" }
+    : event === "release:new" ? { text: "Active on Hands", tone: "success" as const, state: "active" }
+    : event === "release:published" ? { text: "Published on Hands", tone: "success" as const, state: "active" }
+    : null;
+  if (receipt && (!raw || raw === receipt.state)) return { text: receipt.text, tone: receipt.tone };
+  if (!raw || !label) return null;
+  // Internal TestFlight readiness shares the same state enum as external; an
+  // upload-processing notification shares the Apple upload state enum.
+  const family = event === "testflight:internal_distribution_ready" ? "testflight:external_state_changed"
+    : event === "testflight:upload_processing" ? "app_store:build_upload_state_changed" : event;
+  // The heading treats this producer label as a withdrawal even if an
+  // inconsistent state arrives; never put a green tag on that heading.
+  const spec = event === "appgallery:invitation_state_changed" && payload.state_label === "开发者撤回邀请测试审核"
+    ? { text: "Review withdrawn", tone: "warning" as const } : STORE_TAGS[family]?.[raw];
+  return { text: spec?.text ?? label, tone: spec?.tone ?? "neutral" };
 }
 
 function reviewUrl(payload: Payload): string | null {
@@ -105,6 +165,13 @@ function isTechnicalLine(line: string): boolean {
   return /^(?:Package|Reason code|Play reason code|Version code|Build|Commit): /.test(line);
 }
 
+function isFooterLine(line: string): boolean {
+  return line.startsWith("observation: ") || line.startsWith("occurred: ") || line.startsWith("At: ")
+    || line.startsWith("Observation: ") || line.startsWith("First observation;") || line.startsWith("Observed by polling;")
+    || line.startsWith("Review: ") || line.startsWith("📖 View more: ") || line.startsWith("[Open App Store Connect](")
+    || line === "Apple's review message is available in App Store Connect.";
+}
+
 /** The card contract bounds each Text by Unicode code points, not UTF-16 units. */
 function pieces(value: string): string[] {
   const chars = Array.from(value);
@@ -120,7 +187,12 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const [heading = "Hands", ...lines] = baseContent.split("\n");
   const payload = record(body.payload);
   const event = typeof body.event === "string" ? body.event : "";
-  const title = headerTitle(plain(heading.replace(/\*\*/g, "").replace(/ failed or was blocked$/, " failed")));
+  const rawState = raftNotificationRawState(body);
+  // Recognize the newer Apple enum in the visual card only. The established
+  // fallback may already be in flight under a Raft idempotency key.
+  const visualHeading = event === "app_store:version_state_changed" && rawState === "READY_FOR_DISTRIBUTION"
+    ? heading.replace(/ · Status changed\*\*$/, " · Ready for distribution**") : heading;
+  const title = headerTitle(plain(visualHeading.replace(/\*\*/g, "").replace(/ failed or was blocked$/, " failed")));
   const isPlay = event.startsWith("google_play:");
   const appleUrl = isPlay ? null : reviewUrl(payload);
   const url = appleUrl ?? (isPlay ? PLAY_CONSOLE_URL : null);
@@ -128,14 +200,29 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const at = relativeTime(body, payload);
   const currentState = raftNotificationCurrentState(body);
   const state = currentState ? shorten(plain(currentState), 60) : null;
-  const footerLines = lines.filter((line) => line.startsWith("observation: ") || line.startsWith("occurred: ") || line.startsWith("At: ")
-    || line.startsWith("Observation: ") || line.startsWith("First observation;") || line.startsWith("Observed by polling;")
-    || line.startsWith("Review: ") || line.startsWith("📖 View more: ")
-    || line.startsWith("[Open App Store Connect](")
-    || line === "Apple's review message is available in App Store Connect.");
-  // The fallback uses a Markdown code fence for What to test. Card Text is
-  // already plain text, so retain the content without showing fence markers.
-  const detailLines = lines.filter((line) => !footerLines.includes(line) && line !== "```text" && line !== "```");
+  // The fallback normalizes notes and adds a two-space fence prefix. Build
+  // card-only notes from the same selected input instead, preserving intended
+  // indentation without changing fallback/replay. Keep note provenance through
+  // footer/metadata classification so note text cannot impersonate a field.
+  let inTestNotes = false;
+  const footerLines: string[] = [];
+  const detailLines: Array<{ text: string; isTestNote: boolean }> = [];
+  for (const [index, line] of lines.entries()) {
+    if ((event === "testflight:external_state_changed" || event === "testflight:internal_distribution_ready")
+      && line === "```text" && lines[index - 1] === "What to test:") {
+      inTestNotes = true;
+      const notes = raftNotificationCardTestNotes(body);
+      if (notes) detailLines.push({ text: notes, isTestNote: true });
+      continue;
+    }
+    if (inTestNotes && line === "```") { inTestNotes = false; continue; }
+    if (inTestNotes) continue;
+    if (isFooterLine(line)) { footerLines.push(line); continue; }
+    if (line === "```text" || line === "```") continue;
+    if (event === "app_store:version_state_changed" && rawState === "READY_FOR_DISTRIBUTION"
+      && line === "Status: READY\\_FOR\\_DISTRIBUTION") continue;
+    detailLines.push({ text: line, isTestNote: false });
+  }
   // Apple uses its verified app URL; Play uses the fixed Console home.
   // Bound each remaining item so a long observation cannot displace time.
   const footer = shorten(footerLines.filter((line) => !line.startsWith("Review: ") && !line.startsWith("[Open App Store Connect](")
@@ -143,23 +230,23 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
     .map((line) => shorten(plain(line), line.startsWith("observation: ") || line.startsWith("Observation: ") ? 250
       : line.startsWith("occurred: ") || line.startsWith("At: ") ? 120 : 256)).join("\n"), FOOTER_LIMIT);
   const reasonIndex = event === "google_play:submission_failed"
-    ? detailLines.findIndex((line) => /^(?:Reason|Possible reason \(inferred\)|Possible reason \(source unconfirmed\)): /.test(line)) : -1;
+    ? detailLines.findIndex(({ text }) => /^(?:Reason|Possible reason \(inferred\)|Possible reason \(source unconfirmed\)): /.test(text)) : -1;
   // These labels and descriptions are the allowlisted Play diagnoses. Never
   // pass arbitrary provider prose through the Markdown element.
-  const reasonLine = reasonIndex < 0 ? null : plain(detailLines.splice(reasonIndex, 1)[0]!);
+  const reasonLine = reasonIndex < 0 ? null : plain(detailLines.splice(reasonIndex, 1)[0]!.text);
   const reasonSeparator = reasonLine?.indexOf(": ") ?? -1;
   const reasonLabel = reasonLine && reasonSeparator >= 0 ? reasonLine.slice(0, reasonSeparator) : null;
   const reason = reasonLine && reasonSeparator >= 0 ? shorten(reasonLine.slice(reasonSeparator + 2), 200) : null;
   const technical: string[] = [];
-  const ordinary: string[] = [];
-  for (const line of detailLines) {
+  const ordinary: Array<{ text: string; isTestNote: boolean }> = [];
+  for (const { text: line, isTestNote } of detailLines) {
     const identity = event === "google_play:submission_failed"
       ? /^(.*?) · version code (\d{1,16})( · track: .+)?$/.exec(line) : null;
     if (identity) {
-      ordinary.push(`${identity[1]}${identity[3] ?? ""}`);
+      ordinary.push({ text: `${identity[1]}${identity[3] ?? ""}`, isTestNote: false });
       technical.push(`Version code: ${identity[2]}`);
-    } else if (isTechnicalLine(line)) technical.push(line);
-    else ordinary.push(line);
+    } else if (!isTestNote && isTechnicalLine(line)) technical.push(line);
+    else ordinary.push({ text: line, isTestNote });
   }
   const metadata = shorten(plain(technical.join("\n")), METADATA_LIMIT);
   const fields: Array<{ label: string; value: string; mono: true }> = [];
@@ -174,14 +261,15 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   }
   // A short identity line works as the card subtitle; longer or multi-line
   // content stays in the body rather than being silently cut.
-  const first = ordinary[0] ? plain(ordinary[0]) : "";
+  const first = ordinary[0] && !ordinary[0].isTestNote ? plain(ordinary[0].text) : "";
   const subtitle = first && Array.from(first).length <= 100
     && !/[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]/.test(first)
     && !/^(?:Previously|Status|Reason|What to test|Test groups|Requested rollout|Reported rollout|Observation):/.test(first)
     ? first : null;
   if (subtitle) ordinary.shift();
-  const detail = plain(ordinary.join("\n"));
-  const tag = state && Array.from(state).length <= 24 ? { text: state, tone: statusTone(event, payload) } : null;
+  const detail = ordinary.map(({ text, isTestNote }) => isTestNote ? text : plain(text)).join("\n");
+  const status = cardStatus(event, payload, rawState, state);
+  const tag = status && Array.from(status.text).length <= 24 ? status : null;
   const badge = state && !tag ? state : null;
   // Reserve each non-body child before fitting text to the root's 12-child
   // bound. A title and tag live in the header, outside the element tree.

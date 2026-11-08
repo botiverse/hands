@@ -63,9 +63,12 @@ card for each receipt; recognized failure causes appear on the card and its
 text fallback, while causes inferred from provider wording are labeled as
 possible. Google Play cards include a link to the Play Console home in both the
 card and accompanying text. Cards use a title, status tags, and labeled fields
-where available; recognized Play failure reasons are emphasized. Clients that do
-not support the newer card format, including mobile 1.20 and earlier, show the
-complete accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
+where available; recognized Play failure reasons are emphasized. A green tag
+indicates success for the specific operation or state, not necessarily public
+availability: approved releases may still be waiting for release, and a Play
+track may be partially rolled out or paused. Clients that do not support the
+newer card format, including mobile 1.20 and earlier, show the complete
+accompanying text. Unknown provider text and metadata are not displayed. If an object returns to text, it stays on
 text even if cards are turned on again. Feedback and crash events still use
 text. A card older than Raft's update window
 is replaced by a new message. Older Raft clients see the accompanying text.
@@ -101,8 +104,10 @@ are posted in its existing Raft thread.
 
 TestFlight notifications can include test group names and a short excerpt of a
 developer's testing notes. Select a channel whose members may see these details.
-HTTP(S) URLs and Raft mentions in the excerpt are neutralized. A Play status
-notification distinguishes a first observed snapshot from a later transition.
+Cards preserve intentional indentation in the notes; the accompanying text keeps
+its existing formatting. HTTP(S) URLs and Raft mentions in the excerpt are
+neutralized. A Play status notification distinguishes a first observed snapshot
+from a later transition.
 
 Hands stores one encrypted bot credential per Raft server installation and
 never displays it in the console. Connecting another Hands app on that same
