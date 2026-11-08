@@ -87,7 +87,7 @@ export function makeContext(opts: {
           if (/INSERT INTO audit_logs/i.test(sql)) {
             audits.push({ action: String(args[2]), payload: JSON.parse(String(args[6])) });
           }
-          return { meta: { changes: 1 } };
+          return { success: true, meta: { changes: 1 } };
         },
       }),
     }),

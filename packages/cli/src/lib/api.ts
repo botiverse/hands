@@ -39,15 +39,18 @@ async function resolveBearer(): Promise<string | undefined> {
  * path (`apiRequest`, `apiUploadFile`, and `hands api`): resolve the bearer (proactive
  * refresh in agent mode), and on a 401 in agent mode force ONE refresh and retry once.
  * `doFetch` MUST build a fresh request each call — a request body stream cannot be reused
- * across attempts, so callers that send a body rebuild it inside the thunk.
+ * across attempts, so callers that send a body rebuild it inside the thunk. A caller may
+ * disable the reactive 401 retry for a non-idempotent request; proactive refresh remains.
  */
 export async function agentAwareFetch(
   doFetch: (bearer: string | undefined) => Promise<Response>,
+  opts: { retryOnUnauthorized?: boolean } = {},
 ): Promise<Response> {
   let res = await doFetch(await resolveBearer());
-  // The proactive refresh in resolveBearer covers near-expiry; this covers a token
-  // rejected despite looking unexpired (server-side revocation, clock skew).
-  if (res.status === 401) {
+  // A mutation without a provider idempotency key must be able to opt out: an
+  // intermediary's 401 does not prove that the first request did not reach the server.
+  // The proactive refresh in resolveBearer still happens before that first request.
+  if (opts.retryOnUnauthorized !== false && res.status === 401) {
     const admission = admitAgent();
     if (admission.kind === "agent") {
       const refreshed = await forceRefreshAgentToken(admission.env);
@@ -106,6 +109,8 @@ export interface ApiRequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
   raw?: boolean; // when true, return Response instead of parsed JSON
   signal?: AbortSignal;
+  /** Set false for non-idempotent writes where a 401 cannot safely be retried. */
+  retryOnUnauthorized?: boolean;
 }
 
 export async function apiRequest<T = unknown>(
@@ -137,7 +142,7 @@ export async function apiRequest<T = unknown>(
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
   };
-  const res = await agentAwareFetch(doFetch);
+  const res = await agentAwareFetch(doFetch, opts.retryOnUnauthorized === undefined ? {} : { retryOnUnauthorized: opts.retryOnUnauthorized });
   if (readEnv("VERBOSE") === "1") {
     console.error(`> ${opts.method ?? "GET"} ${url}`);
     console.error(`< ${res.status}`);
