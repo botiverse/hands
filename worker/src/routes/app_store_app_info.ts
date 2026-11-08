@@ -125,7 +125,7 @@ export async function handlePushAppInfo(c: AdminContext) {
 export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
   const appId = c.req.param("appId") ?? "", versionId = c.req.param("versionId") ?? "";
   const operationId = crypto.randomUUID();
-  let locked = false, releaseLock = true, mutationStarted = false;
+  let locked = false, acquisitionUnconfirmed = false, releaseLock = true, mutationStarted = false;
   let targetHash = "";
   const results: Result[] = [];
   let s: Snapshot | null = null;
@@ -147,6 +147,7 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
         } catch {
           // The insert may have committed even when the response was lost. No
           // Apple write was sent, but an exact lock may need inspection.
+          acquisitionUnconfirmed = true;
           return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "no write was dispatched, but operation lock acquisition could not be confirmed; inspect the lock before retrying", operation_id: operationId, results, recovery_required: true, mutation_started: false }, 502);
         }
         if (changes === 0) return c.json({ code: "APP_INFO_LOCKED", error: "an App Information operation is active or requires recovery; do not retry until it is resolved" }, 409);
@@ -210,6 +211,7 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
       if (failed) return c.json({ ...body, code: mismatches.length ? "APP_INFO_READBACK_MISMATCH" : "APP_INFO_WRITE_FAILED", error: "one or more App Information steps failed or were not confirmed; inspect the results before retrying" }, 502);
       return c.json(body);
     } catch (error) {
+      if (acquisitionUnconfirmed) throw error;
       if (mutationStarted) {
         // An error after dispatch, including one while constructing the response,
         // must never release the lock even if readback had previously succeeded.
@@ -224,10 +226,15 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
       return fail(c, error);
     }
   }
-  let response: Response;
+  let response: Response | undefined, executionFailed = false, executionError: unknown;
   let releaseUnconfirmed = false;
   try {
     response = await execute();
+  } catch (error) {
+    executionFailed = true; executionError = error;
+    // A thrown response formatter or other unexpected failure after dispatch is
+    // not a confirmed outcome, even if a preceding readback succeeded.
+    if (mutationStarted) releaseLock = false;
   } finally {
     if (locked && releaseLock) {
       try {
@@ -238,17 +245,38 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
       } catch { releaseUnconfirmed = true; }
     }
   }
+  if (executionFailed && (acquisitionUnconfirmed || mutationStarted || releaseUnconfirmed)) {
+    // Do not let a second response-formatting exception erase the operation ID.
+    // Deliberately emit only known-safe fields, not the unexpected exception.
+    const completed = new Set(results.map((r) => r.target));
+    const remaining = steps.filter((step) => !completed.has(step.target)).map((step) => ({
+      target: step.target, action: step.action, status: step === activeStep ? "unknown" : "not_attempted", localization_id: step.localization_id,
+    }));
+    const safeResults = [...results.map(({ error: _error, ...r }) => r), ...remaining];
+    const message = acquisitionUnconfirmed
+      ? "no write was dispatched, but operation lock acquisition could not be confirmed; inspect the lock before retrying"
+      : releaseUnconfirmed && !mutationStarted
+        ? "no write was dispatched, but operation lock release could not be confirmed; inspect the lock before retrying"
+        : "a write may have completed or read-back failed; inspect Apple and recover the lock before retrying";
+    return new Response(JSON.stringify({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: message,
+      operation_id: operationId, results: safeResults, recovery_required: true, mutation_started: mutationStarted,
+      execution_failed: true, prior_status: null, prior_result: null }), { status: 502, headers: { "content-type": "application/json" } });
+  }
+  if (executionFailed) throw executionError;
+  if (!response) throw new Error("App Information operation produced no response");
   if (releaseUnconfirmed) {
     // The delete may have failed before or after taking effect. Preserve the
     // earlier response, including a pre-write rejection, without claiming that
-    // the row is present. Do not return from finally and mask a thrown error.
+    // the row is present.
     let priorResult: unknown;
     try { priorResult = await response.clone().json(); } catch { priorResult = null; }
-    return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: mutationStarted
+    const recovery = { ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: mutationStarted
       ? "a write was dispatched, but operation lock release could not be confirmed; inspect Apple and the lock before retrying"
       : "no write was dispatched, but operation lock release could not be confirmed; inspect the lock before retrying",
       operation_id: operationId, results, recovery_required: true, mutation_started: mutationStarted,
-      prior_status: response.status, prior_result: priorResult }, 502);
+      prior_status: response.status, prior_result: priorResult };
+    try { return c.json(recovery, 502); }
+    catch { return new Response(JSON.stringify(recovery), { status: 502, headers: { "content-type": "application/json" } }); }
   }
   return response;
 }

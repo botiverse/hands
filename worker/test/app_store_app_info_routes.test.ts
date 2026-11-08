@@ -278,6 +278,144 @@ describe("isolated candidate locking (not reachable through the registered commi
     expect(asc.calls).toHaveLength(0);
   });
 
+  it.each([
+    ["failed success flag", { success: false, meta: { changes: 1 } }],
+    ["missing success flag", { meta: { changes: 1 } }],
+    ["missing change count", { success: true, meta: {} }],
+    ["unexpected change count", { success: true, meta: { changes: 2 } }],
+  ])("treats %s on lock acquisition as uncertain", async (_label, reply) => {
+    const h = await harness(); const asc = fakeApple(); const originalDB = h.env.DB;
+    const faultyDB = { prepare(sql: string) {
+      const statement = originalDB.prepare(sql);
+      if (!sql.startsWith("INSERT OR IGNORE INTO store_product_locks")) return statement;
+      return { bind(...args: unknown[]) {
+        const bound = statement.bind(...args);
+        return { ...bound, async run() { await bound.run(); return reply; } };
+      } };
+    } } as unknown as D1Database;
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = { ...h.env, DB: faultyDB };
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, mutation_started: false, results: [] });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect(asc.calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["failed success flag", { success: false, meta: { changes: 1 } }],
+    ["missing success flag", { meta: { changes: 1 } }],
+    ["missing change count", { success: true, meta: {} }],
+    ["unexpected change count", { success: true, meta: { changes: 2 } }],
+  ])("treats %s on lock release as uncertain", async (_label, reply) => {
+    const h = await harness(); let name = "Old Name";
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH") { name = "New Name"; return { json: { data: call.body.data } }; }
+      return appleRead(call, name);
+    });
+    const originalDB = h.env.DB;
+    const faultyDB = { prepare(sql: string) {
+      const statement = originalDB.prepare(sql);
+      if (!sql.startsWith("DELETE FROM store_product_locks")) return statement;
+      return { bind(...args: unknown[]) {
+        const bound = statement.bind(...args);
+        return { ...bound, async run() { await bound.run(); return reply; } };
+      } };
+    } } as unknown as D1Database;
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = { ...h.env, DB: faultyDB };
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, mutation_started: true, results: [{ target: "en-US", status: "written" }], prior_status: 200, prior_result: { outcome: "committed" } });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
+    expect(asc.writes()).toHaveLength(1);
+  });
+
+  it("reports the operation if execution and pre-write lock release both fail", async () => {
+    const h = await harness(); const asc = fakeApple(); const originalDB = h.env.DB;
+    const faultyDB = { prepare(sql: string) {
+      if (sql.startsWith("DELETE FROM store_product_locks")) return { bind: () => ({ run: async () => { throw new Error("delete response lost"); } }) };
+      return originalDB.prepare(sql);
+    } } as unknown as D1Database;
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = { ...h.env, DB: faultyDB };
+    const send = c.json.bind(c); let calls = 0;
+    c.json = ((...args: Parameters<typeof send>) => { if (++calls === 1) throw new Error("response failed"); return send(...args); }) as typeof c.json;
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit", version_string: "1.22.1" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, mutation_started: false, execution_failed: true, results: [], prior_status: null, prior_result: null });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect(asc.writes()).toHaveLength(0);
+  });
+
+  it("propagates an execution error when pre-write lock release is confirmed", async () => {
+    const h = await harness(); const asc = fakeApple();
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = h.env;
+    c.json = (() => { throw new Error("response failed"); }) as typeof c.json;
+    const request = normalizeAppInfoInput({ ...input, mode: "commit", version_string: "1.22.1" });
+    await expect(pushAppInfoCandidate(c, request)).rejects.toThrow("response failed");
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
+    expect(asc.writes()).toHaveLength(0);
+  });
+
+  it("reports unconfirmed lock release even if the recovery response formatter fails", async () => {
+    const h = await harness(); let name = "Old Name";
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH") { name = "New Name"; return { json: { data: call.body.data } }; }
+      return appleRead(call, name);
+    });
+    const originalDB = h.env.DB;
+    const faultyDB = { prepare(sql: string) {
+      if (sql.startsWith("DELETE FROM store_product_locks")) return { bind: () => ({ run: async () => { throw new Error("delete response lost"); } }) };
+      return originalDB.prepare(sql);
+    } } as unknown as D1Database;
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = { ...h.env, DB: faultyDB };
+    const send = c.json.bind(c);
+    c.json = ((data: any, ...args: any[]) => {
+      if (data?.code === "APP_INFO_RECOVERY_REQUIRED") throw new Error("recovery response failed");
+      return send(data, ...args);
+    }) as typeof c.json;
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", mutation_started: true, recovery_required: true, prior_status: 200, prior_result: { outcome: "committed" } });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect(asc.writes()).toHaveLength(1);
+  });
+
+  it("reports an uncertain acquisition even if building its response fails", async () => {
+    const h = await harness(); const asc = fakeApple(); const originalDB = h.env.DB;
+    const faultyDB = { prepare(sql: string) {
+      const statement = originalDB.prepare(sql);
+      if (!sql.startsWith("INSERT OR IGNORE INTO store_product_locks")) return statement;
+      return { bind(...args: unknown[]) { const bound = statement.bind(...args); return { ...bound, async run() { await bound.run(); throw new Error("insert response lost"); } }; } };
+    } } as unknown as D1Database;
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = { ...h.env, DB: faultyDB };
+    c.json = (() => { throw new Error("response failed"); }) as typeof c.json;
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, mutation_started: false, execution_failed: true });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect(asc.calls).toHaveLength(0);
+  });
+
+  it("retains the lock and operation ID if success and recovery response construction both fail after a write", async () => {
+    const h = await harness(); let name = "Old Name";
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH") { name = "New Name"; return { json: { data: call.body.data } }; }
+      return appleRead(call, name);
+    });
+    const { c } = makeContext({ params: { appId: APP, versionId: "ver-1" } }); c.env = h.env;
+    c.json = (() => { throw new Error("response failed"); }) as typeof c.json;
+    const response = await pushAppInfoCandidate(c, normalizeAppInfoInput({ ...input, mode: "commit" }));
+    const body = await response.json() as any;
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({ code: "APP_INFO_RECOVERY_REQUIRED", recovery_required: true, mutation_started: true, execution_failed: true, results: [{ target: "en-US", status: "written" }] });
+    expect(h.sqlite.prepare("SELECT provider, operation_id FROM store_product_locks").get()).toEqual({ provider: "apple_app_info", operation_id: body.operation_id });
+    expect(asc.writes()).toHaveLength(1);
+  });
+
   it("does not report success if the owned lock vanished before the delete", async () => {
     const h = await harness(); const asc = fakeApple(); const originalDB = h.env.DB;
     const faultyDB = { prepare(sql: string) {
