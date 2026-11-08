@@ -140,9 +140,29 @@ class App : Application() {
 
 ### ANR
 
-从 `0.13.0` 起，SDK 在 Android 11 及以上版本（API 30）还会上报 ANR（应用无响应导致的终止）。系统从外部杀死进程，进程内不会有代码运行；下次启动时，SDK 读取带 `REASON_ANR` 的 `ApplicationExitInfo` 条目，并将每条提交一次为 `kind=crash`、`crash_type=anr` 工单。系统 ANR 线程转储会作为附件，并像 Java 崩溃日志一样通过 R8 映射还原。工单按 `ANR@<主线程的第一个应用堆栈帧>` 分组，因此相同卡死可跨构建聚合，也不会与同一帧上的 Java 异常混合。控制台的崩溃页面可按异常、原生崩溃和 ANR 筛选。
+从 `0.13.0` 起，SDK 在 Android 11 及以上版本（API 30）还会上报 ANR（应用无响应导致的终止）。系统从外部杀死进程，进程内不会有代码运行；下次启动时，SDK 读取带 `REASON_ANR` 的 `ApplicationExitInfo` 条目，并将选中的记录提交为 `kind=crash`、`crash_type=anr` 工单。系统 ANR 线程转储会作为附件，并像 Java 崩溃日志一样通过 R8 映射还原。工单按 `ANR@<主线程的第一个应用堆栈帧>` 分组，因此相同卡死可跨构建聚合，也不会与同一帧上的 Java 异常混合。控制台的崩溃页面可按异常、原生崩溃和 ANR 筛选。
 
-上报保证恰好一次：仅在服务端接受工单后才推进持久化水位，因此上传失败会在下次启动时重试。首次使用此 SDK 启动时回溯 7 天，每次启动最多发送 3 条 ANR。向 `Hands.install(...)` 传入 `captureAnrs = false` 可关闭此功能；低于 API 30 时不执行任何操作。
+服务端接受工单后，SDK 推进持久化水位，上传失败时会在下次启动重试；永久性客户端拒绝会被跳过。如果服务端已接受但响应丢失、水位尚未推进，可能产生重复工单。首次使用此 SDK 启动时回溯 7 天，每次启动最多发送最新的 3 条 ANR；水位推进后，超出上限的较早记录会被跳过。向 `Hands.install(...)` 传入 `captureAnrs = false` 可关闭此功能；低于 API 30 时不执行任何操作。
+
+在 Android 11 及以上版本，启用 ANR 捕获后，`HandsCrash.install` 会将已安装应用包的版本写入 Android 最多 128 字节的进程状态摘要。请在上报进程中尽早调用 `Hands.install`。如需覆盖内容提供器启动前的阶段，或某个进程不运行上报器，可在 `Application.attachBaseContext` 中提前调用：
+
+```kotlin
+override fun attachBaseContext(base: Context) {
+    super.attachBaseContext(base)
+    HandsCrash.stampAnrBuild(base)
+}
+```
+
+这个提前调用只写入当前进程的摘要，不安装崩溃处理器，也不启动上报。请只在一个进程运行上报器：Android 各进程的偏好设置缓存不能提供跨进程协调，多个上报器可能重复提交。写入前发生的 ANR 或从未写入摘要的进程可能没有版本。每张工单读取各自退出记录中的摘要；旧记录、摘要缺失、无效或被覆盖时，版本保持未知，不会使用上传时安装的版本。版本名称放不下时只记录完整的版本号（version code），不会提交截断的名称。SDK 也识别 Raft 临时上报器的常规长度 `raft-build:1` 摘要；已提交的旧工单不会因此改变。
+
+Android **每个进程只有一个共享摘要槽**：之后调用的代码可能覆盖 Hands 标记，Hands 也会覆盖之前的摘要。如果宿主应用已使用这个槽，请在每个进程提前写入摘要或安装 Hands 之前关闭版本标记；ANR 上报仍然启用：
+
+```kotlin
+HandsCrash.setAnrBuildStampingEnabled(false)
+Hands.install(/* ... */)
+```
+
+不要同时启用 SDK ANR 上报和独立的应用侧 ANR 上报器。SDK 继续使用原有的 Hands 水位；请协调切换，因为两套独立保存的水位不一致或服务端响应丢失时，重启后仍可能产生重复工单，并不保证恰好一次。`channel`、manifest 中的构建提交和设备元数据来自上传进程，不是历史退出记录中原构建的证据。
 
 ## 发布健康状况
 

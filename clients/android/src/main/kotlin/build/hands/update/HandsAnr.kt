@@ -13,8 +13,8 @@ import java.io.File
  * An ANR kills the process from outside, so no in-process handler ever runs.
  * Android 11+ (API 30) keeps the kill in [ApplicationExitInfo] with
  * `reason = REASON_ANR` and the ART thread dump in `traceInputStream`. On the
- * next launch [uploadPending] reports every ANR exit not yet reported as a
- * `kind=crash` ticket:
+ * next launch [uploadPending] reports selected ANR exits as `kind=crash`
+ * tickets, subject to the lookback and per-launch cap below:
  *
  * - `crash_exception_class = "ANR"` and `crash_top_frame` = the first app
  *   frame of the main thread, so the server groups it as `ANR@<frame>` with
@@ -23,11 +23,11 @@ import java.io.File
  * - the system trace is the first attachment, so the Android R8 retrace lane
  *   deobfuscates it like a Java crash log.
  *
- * Exactly-once is tracked by a persisted watermark (the newest reported exit
- * timestamp). It only advances after the server accepted the ticket; a failed
- * upload is retried on the next launch. Without a watermark (first launch with
- * this SDK) only ANRs from the last [FIRST_RUN_LOOKBACK_MS] are considered.
- * Below API 30 this is a no-op.
+ * A persisted timestamp watermark advances after an accepted report or a
+ * permanent client rejection; transient failures retry on the next launch.
+ * A lost acceptance response may still lead to a duplicate. Without a
+ * watermark, only the last [FIRST_RUN_LOOKBACK_MS] is considered. Below API
+ * 30 this is a no-op.
  */
 internal object HandsAnr {
     private const val TAG = "HandsAnr"
@@ -112,6 +112,15 @@ internal object HandsAnr {
         if (frame.isNotEmpty()) append("\nat ").append(frame)
     }
 
+    /** Record this process's installed build before a future ANR, on API 30+. */
+    fun stampProcess(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val stamp = HandsAnrBuildStamp.encode(HandsCrash.installedBuild(context)) ?: return
+            context.getSystemService(ActivityManager::class.java)?.setProcessStateSummary(stamp)
+        }.onFailure { Log.w(TAG, "Could not stamp process build", it) }
+    }
+
     /** Report pending ANR exits; call off the main thread. */
     suspend fun uploadPending(
         context: Context,
@@ -143,8 +152,8 @@ internal object HandsAnr {
             if (watermark == null) prefs.edit().putLong(KEY_WATERMARK, System.currentTimeMillis() - FIRST_RUN_LOOKBACK_MS).apply()
             return
         }
-        // ApplicationExitInfo has no app version. Leave the ticket build empty
-        // instead of stamping versionName/versionCode from the uploading install.
+        // Each exit's build is read from that process's summary below. Never
+        // substitute the uploading install's version for a missing summary.
         val feedback = HandsFeedback(
             context = context,
             baseUrl = baseUrl,
@@ -157,6 +166,9 @@ internal object HandsAnr {
         val dir = File(context.cacheDir, "hands-anr").apply { mkdirs() }
         for (exit in pending) {
             val info = byKey[exit.pid to exit.timestamp] ?: continue
+            val versionExtras = historicalVersionExtras(
+                runCatching { info.processStateSummary }.getOrNull(),
+            )
             val traceFile = File(dir, "anr-${exit.timestamp}-${exit.pid}.txt")
             val traceText = persistTrace(info, traceFile)
             val frames = traceText?.let(::mainThreadFrames).orEmpty()
@@ -168,6 +180,7 @@ internal object HandsAnr {
                     kind = "crash",
                     attachments = listOfNotNull(traceFile.takeIf { traceText != null }),
                     extras = buildMap {
+                        putAll(versionExtras)
                         put("crash_type", "anr")
                         put("crash_reason", "anr")
                         put("crash_exception_class", "ANR")
@@ -203,6 +216,9 @@ internal object HandsAnr {
             Log.i(TAG, "Uploaded ANR ${exit.pid}@${exit.timestamp} as ticket ${result.getOrNull()}")
         }
     }
+
+    internal fun historicalVersionExtras(summary: ByteArray?): Map<String, Any> =
+        HandsHistoricalBuildPolicy.versionExtras(HandsAnrBuildStamp.decode(summary))
 
     internal fun isPermanentRejection(error: Throwable): Boolean =
         error is HandsFeedbackException && error.code in 400..499 && error.code != 408 && error.code != 429

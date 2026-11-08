@@ -190,18 +190,62 @@ deterministic retry rather than guessed from the nearest package exit.
 Since `0.13.0`, on Android 11+ (API 30) the SDK also reports ANRs
 (Application Not Responding kills). The system kills the process from outside,
 so nothing runs in-process; on the next launch the SDK reads
-`ApplicationExitInfo` entries with `REASON_ANR` and submits each one once as a
-`kind=crash` ticket with `crash_type=anr`. The system ANR thread dump is
+`ApplicationExitInfo` entries with `REASON_ANR` and submits selected entries as
+`kind=crash` tickets with `crash_type=anr`. The system ANR thread dump is
 attached (and R8-retraced like a Java crash log). The ticket is grouped as
 `ANR@<first app frame on the main thread>`, so the same freeze clusters
 across builds and never merges with a Java exception on the same frame. The
 console's Crashes page can filter by type (Exceptions / Native / ANRs).
 
-Reporting is exactly-once: a persisted watermark advances only after the
-server accepts a ticket, so a failed upload retries on the next launch. The
-first launch with this SDK looks back 7 days, and at most 3 ANRs are sent per
-launch. Pass `captureAnrs = false` to `Hands.install(...)` to opt out. Below
-API 30 this is a no-op.
+A persisted watermark advances after the server accepts a ticket, so a failed
+upload retries on the next launch. A permanent client rejection is skipped; an
+accepted response lost before the watermark advances can result in a duplicate.
+The first launch with this SDK looks back 7 days, and at most 3 of the newest
+ANRs are sent per launch; older exits beyond the cap are skipped when the
+watermark advances. Pass `captureAnrs = false` to `Hands.install(...)` to opt
+out. Below API 30 this is a no-op.
+
+On Android 11+, when ANR capture is enabled, `HandsCrash.install` records the
+installed package's version in Android's 128-byte process-state summary. Call
+`Hands.install` early in the reporting process. For coverage before content
+providers start, or in a process that does not run the uploader, call
+`HandsCrash.stampAnrBuild` as early as `Application.attachBaseContext`:
+
+```kotlin
+override fun attachBaseContext(base: Context) {
+    super.attachBaseContext(base)
+    HandsCrash.stampAnrBuild(base)
+}
+```
+
+This early call only writes the process summary; it does not install a crash
+handler or start an uploader. Run the uploader from one process only: Android's
+process-local preference caches do not provide cross-process coordination, and
+multiple uploaders can duplicate reports. An ANR before stamping, or in a
+process that never stamps, may have no version. Each ticket reads its own exit
+record; old, missing, invalid or overwritten summaries leave the build unknown
+rather than using the uploading install's version. If a version name does not
+fit, Hands records the exact version code only; it never submits a truncated
+name. Normal-length `raft-build:1` summaries from Raft's temporary reporter are
+understood as well. This does not change previously filed tickets.
+
+Android exposes **one shared summary slot per process**. A later caller can
+replace the Hands stamp, and Hands would replace an earlier caller's summary.
+Apps already using the slot should disable stamping before either the early
+stamp call or Hands installation in each process (ANR reporting remains enabled):
+
+```kotlin
+HandsCrash.setAnrBuildStampingEnabled(false)
+Hands.install(/* ... */)
+```
+
+Do not enable the SDK ANR uploader and a separate app ANR reporter at the same
+time. The existing Hands watermark remains in use. Coordinate any handoff:
+independently persisted reporter watermarks and a lost server response can
+still cause duplicate tickets after a restart; this is not exactly-once delivery.
+`channel`, manifest build commit, and device metadata are read by the uploading
+process, not restored from the historical exit; they are not evidence of the
+ANR's original build.
 
 ## Release health
 
