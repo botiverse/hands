@@ -378,7 +378,7 @@ export function formatAppInfoResult(body: any): string {
     for (const e of r.error?.provider_errors ?? []) lines.push(`    ${[e.code, e.title, e.detail].filter(Boolean).join(": ")}`);
   }
   for (const m of body.mismatches ?? []) lines.push(`  read-back mismatch: ${m.target} ${m.field}`);
-  if (body.recovery_required) lines.push(`Recovery required for operation ${body.operation_id}: inspect Apple and recover the lock before retrying.`);
+  if (body.recovery_required) lines.push(`Recovery required for operation ${body.operation_id}: inspect Apple and the operation lock before retrying; the lock may already be absent.`);
   if (body.outcome === "planned") lines.push("Dry run: nothing written; name availability is not checked or reserved. App Information is shared across platforms and not bound to this version. Commit is currently blocked pending verification.");
   else if (body.outcome === "committed") lines.push("Committed and read back from Apple.");
   else if (body.outcome === "no_changes") lines.push("No changes; requested fields match Apple.");

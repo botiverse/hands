@@ -228,6 +228,13 @@ describe("hands app-store", () => {
     const structured = { code: "APP_INFO_RECOVERY_REQUIRED", operation_id: "op-1", recovery_required: true, results: [{ target: "en-US", status: "unknown" }] };
     errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(502, structured, "inspect"); })).rejects.toThrow();
     expect(errors.join("\n")).toContain("Recovery required for operation op-1"); expect(errors.join("\n")).not.toContain(warning);
+    const releaseUnconfirmed = { code: "APP_INFO_RECOVERY_REQUIRED", operation_id: "op-2", recovery_required: true, mutation_started: true,
+      results: [{ target: "en-US", status: "written" }], prior_status: 200, prior_result: { outcome: "committed" } };
+    errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(502, releaseUnconfirmed, "inspect"); })).rejects.toThrow();
+    expect(errors.join("\n")).toContain("en-US: written"); expect(errors.join("\n")).toContain("Recovery required for operation op-2");
+    expect(errors.join("\n")).toContain("lock may already be absent");
+    errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(502, { ...releaseUnconfirmed, mutation_started: false, results: [] }, "inspect"); })).rejects.toThrow();
+    expect(errors.join("\n")).toContain("Recovery required for operation op-2"); expect(errors.join("\n")).toContain(warning);
     errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(409, { code: "APP_INFO_COMMIT_UNVERIFIED" }, "blocked"); })).rejects.toThrow();
     expect(errors.join("\n")).not.toContain(warning);
   });

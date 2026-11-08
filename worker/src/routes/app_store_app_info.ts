@@ -109,7 +109,7 @@ function signature(s: Snapshot) { return JSON.stringify(s); }
 const versionView = (s: Snapshot) => ({ id: s.version.id, version_string: s.version.versionString, platform: s.version.platform, state: s.version.state });
 const infoView = (s: Snapshot) => ({ id: s.info.id, state: s.info.state });
 
-type Result = { target: string; action: string; status: "written" | "unchanged" | "failed" | "unknown" | "not_attempted"; localization_id?: string | null; error?: Record<string, unknown> };
+type Result = { target: string; action: string; status: "written" | "unchanged" | "unknown" | "not_attempted"; localization_id?: string | null; error?: Record<string, unknown> };
 
 export async function handlePushAppInfo(c: AdminContext) {
   let input: Input;
@@ -133,86 +133,122 @@ export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
   // account for every requested target, including steps we never attempted.
   let steps: Array<{ target: string; action: string; localization_id: string | null; run: () => Promise<string | null> }> = [];
   let activeStep: typeof steps[number] | null = null;
-  try {
-    const creds = await loadCredentials(c, appId), ascAppId = await ascAppIdFor(c, appId);
-    targetHash = hash(`app-info:${ascAppId}`);
-    if (input.mode === "commit") {
-      const acquired = await c.env.DB.prepare("INSERT OR IGNORE INTO store_product_locks (provider, target_hash, operation_id, acquired_at) VALUES (?1, ?2, ?3, ?4)")
-        .bind("apple_app_info", targetHash, operationId, Date.now()).run();
-      if (acquired.meta.changes !== 1) return c.json({ code: "APP_INFO_LOCKED", error: "an App Information operation is active or requires recovery; do not retry until it is resolved" }, 409);
-      locked = true;
-    }
-    s = await snapshot(creds, ascAppId, versionId, input);
-    const plan = makePlan(s, input);
-    const base = { operation_id: operationId, mode: input.mode, version: versionView(s), app_info: infoView(s), observed_platforms: s.observedPlatforms };
-    const blocked = plan.localizations.some((p) => p.blocker) || !!plan.category?.blocker;
-    if (blocked) return c.json({ ...base, code: "APP_INFO_PLAN_BLOCKED", error: "App Information plan is blocked; nothing was written", ...plan }, 409);
-    if (input.mode === "dry_run") return c.json({ ...base, outcome: "planned", ...plan, writes: 0, warning: "Name availability is not checked or reserved by this preview. App Information is shared across platforms and is not bound to this version. Observed platforms come from version records and may omit newly added platforms. Language differences are a warning, not proof of an Apple submission requirement; verify them in App Store Connect before submitting." });
+  async function execute(): Promise<Response> {
+    try {
+      const creds = await loadCredentials(c, appId), ascAppId = await ascAppIdFor(c, appId);
+      targetHash = hash(`app-info:${ascAppId}`);
+      if (input.mode === "commit") {
+        let changes: number;
+        try {
+          const acquired = await c.env.DB.prepare("INSERT OR IGNORE INTO store_product_locks (provider, target_hash, operation_id, acquired_at) VALUES (?1, ?2, ?3, ?4)")
+            .bind("apple_app_info", targetHash, operationId, Date.now()).run();
+          if (acquired.success !== true || ![0, 1].includes(acquired.meta?.changes)) throw new Error("lock acquisition was not confirmed");
+          changes = acquired.meta.changes;
+        } catch {
+          // The insert may have committed even when the response was lost. No
+          // Apple write was sent, but an exact lock may need inspection.
+          return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "no write was dispatched, but operation lock acquisition could not be confirmed; inspect the lock before retrying", operation_id: operationId, results, recovery_required: true, mutation_started: false }, 502);
+        }
+        if (changes === 0) return c.json({ code: "APP_INFO_LOCKED", error: "an App Information operation is active or requires recovery; do not retry until it is resolved" }, 409);
+        locked = true;
+      }
+      s = await snapshot(creds, ascAppId, versionId, input);
+      const plan = makePlan(s, input);
+      const base = { operation_id: operationId, mode: input.mode, version: versionView(s), app_info: infoView(s), observed_platforms: s.observedPlatforms };
+      const blocked = plan.localizations.some((p) => p.blocker) || !!plan.category?.blocker;
+      if (blocked) return c.json({ ...base, code: "APP_INFO_PLAN_BLOCKED", error: "App Information plan is blocked; nothing was written", ...plan }, 409);
+      if (input.mode === "dry_run") return c.json({ ...base, outcome: "planned", ...plan, writes: 0, warning: "Name availability is not checked or reserved by this preview. App Information is shared across platforms and is not bound to this version. Observed platforms come from version records and may omit newly added platforms. Language differences are a warning, not proof of an Apple submission requirement; verify them in App Store Connect before submitting." });
 
-    const auditPlan = { localizations: plan.localizations.map((p) => ({ locale: p.locale, action: p.action, changed_fields: p.changed_fields, before: Object.fromEntries(Object.entries(p.before).map(([k,v]) => [k, fingerprint(v)])), after: Object.fromEntries(Object.entries(p.after).map(([k,v]) => [k, fingerprint(v)])) })), category: plan.category };
-    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.app_info.attempt", payload: { ...base, plan: auditPlan } });
-    // Recheck all the read inputs after the lock and immediately before the first write.
-    const fresh = await snapshot(creds, ascAppId, versionId, input);
-    if (signature(fresh) !== signature(s)) return c.json({ ...base, code: "APP_INFO_CHANGED", error: "App Information changed during planning; nothing was written, run preview again" }, 409);
-    steps = [
-      ...plan.localizations.map((p) => ({ target: p.locale, action: p.action, localization_id: p.localization_id, run: async () => writeInfoLocalization(creds, s!.info.id, p.locale, p.localization_id, Object.fromEntries(p.changed_fields.map((k) => [k, p.after[k]!])) as Fields) })),
-      ...(plan.category ? [{ target: "primary_category", action: plan.category.action, localization_id: null, run: async () => { await writePrimaryCategory(creds, s!.info.id, plan.category!.after); return null; } }] : []),
-    ];
-    let stopped = false;
-    for (const step of steps) {
-      if (stopped) { results.push({ target: step.target, action: step.action, status: "not_attempted", localization_id: step.localization_id }); continue; }
-      if (step.action === "unchanged") { results.push({ target: step.target, action: step.action, status: "unchanged", localization_id: step.localization_id }); continue; }
-      try {
-        // A failure after this point can mean Apple accepted a request even if no response arrived.
-        mutationStarted = true; releaseLock = false; activeStep = step;
-        const id = await step.run();
-        results.push({ target: step.target, action: step.action, status: "written", localization_id: id });
-        activeStep = null;
-      } catch (error) {
-        // No error response proves that a dispatched write was rejected without
-        // effect. Even an Apple-shaped 4xx could have come from an intermediary or
-        // followed a partial mutation; retain the lock for manual recovery.
-        results.push({ target: step.target, action: step.action, status: "unknown", localization_id: step.localization_id, error: errorBody(error).body });
-        activeStep = null;
-        stopped = true;
+      const auditPlan = { localizations: plan.localizations.map((p) => ({ locale: p.locale, action: p.action, changed_fields: p.changed_fields, before: Object.fromEntries(Object.entries(p.before).map(([k,v]) => [k, fingerprint(v)])), after: Object.fromEntries(Object.entries(p.after).map(([k,v]) => [k, fingerprint(v)])) })), category: plan.category };
+      await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.app_info.attempt", payload: { ...base, plan: auditPlan } });
+      // Recheck all the read inputs after the lock and immediately before the first write.
+      const fresh = await snapshot(creds, ascAppId, versionId, input);
+      if (signature(fresh) !== signature(s)) return c.json({ ...base, code: "APP_INFO_CHANGED", error: "App Information changed during planning; nothing was written, run preview again" }, 409);
+      steps = [
+        ...plan.localizations.map((p) => ({ target: p.locale, action: p.action, localization_id: p.localization_id, run: async () => writeInfoLocalization(creds, s!.info.id, p.locale, p.localization_id, Object.fromEntries(p.changed_fields.map((k) => [k, p.after[k]!])) as Fields) })),
+        ...(plan.category ? [{ target: "primary_category", action: plan.category.action, localization_id: null, run: async () => { await writePrimaryCategory(creds, s!.info.id, plan.category!.after); return null; } }] : []),
+      ];
+      let stopped = false;
+      for (const step of steps) {
+        if (stopped) { results.push({ target: step.target, action: step.action, status: "not_attempted", localization_id: step.localization_id }); continue; }
+        if (step.action === "unchanged") { results.push({ target: step.target, action: step.action, status: "unchanged", localization_id: step.localization_id }); continue; }
+        try {
+          // A failure after this point can mean Apple accepted a request even if no response arrived.
+          mutationStarted = true; releaseLock = false; activeStep = step;
+          const id = await step.run();
+          results.push({ target: step.target, action: step.action, status: "written", localization_id: id });
+          activeStep = null;
+        } catch (error) {
+          // No error response proves that a dispatched write was rejected without
+          // effect. Even an Apple-shaped 4xx could have come from an intermediary or
+          // followed a partial mutation; retain the lock for manual recovery.
+          results.push({ target: step.target, action: step.action, status: "unknown", localization_id: step.localization_id, error: errorBody(error).body });
+          activeStep = null;
+          stopped = true;
+        }
       }
-    }
-    // Read the selected exact resource, not whichever draft may now be selected.
-    const afterRows = await listInfoLocalizations(creds, s.info.id);
-    const afterCategory = await categoryRelationship(creds, s.info.id, "primaryCategory");
-    const after = new Map(afterRows.map((r) => [r.locale, r]));
-    const mismatches: Array<{ target: string; field: string; expected: string; actual: string | null }> = [];
-    for (const p of plan.localizations) {
-      const row = after.get(p.locale), result = results.find((r) => r.target === p.locale);
-      if (result?.status === "written" || result?.status === "unchanged") {
-        for (const field of Object.keys(p.after) as InfoField[]) if (!row || row.fields[field] !== p.after[field] || (result.localization_id && row.id !== result.localization_id)) mismatches.push({ target: p.locale, field, expected: p.after[field]!, actual: row?.fields[field] ?? null });
+      // Read the selected exact resource, not whichever draft may now be selected.
+      const afterRows = await listInfoLocalizations(creds, s.info.id);
+      const afterCategory = await categoryRelationship(creds, s.info.id, "primaryCategory");
+      const after = new Map(afterRows.map((r) => [r.locale, r]));
+      const mismatches: Array<{ target: string; field: string; expected: string; actual: string | null }> = [];
+      for (const p of plan.localizations) {
+        const row = after.get(p.locale), result = results.find((r) => r.target === p.locale);
+        if (result?.status === "written" || result?.status === "unchanged") {
+          for (const field of Object.keys(p.after) as InfoField[]) if (!row || row.fields[field] !== p.after[field] || (result.localization_id && row.id !== result.localization_id)) mismatches.push({ target: p.locale, field, expected: p.after[field]!, actual: row?.fields[field] ?? null });
+        }
       }
+      const categoryResult = results.find((r) => r.target === "primary_category");
+      if (plan.category && (categoryResult?.status === "written" || categoryResult?.status === "unchanged") && afterCategory !== plan.category.after) mismatches.push({ target: "primary_category", field: "primary_category", expected: plan.category.after, actual: afterCategory });
+      const uncertain = results.some((r) => r.status === "unknown") || mismatches.length > 0;
+      const failed = results.some((r) => r.status === "unknown" || r.status === "not_attempted") || mismatches.length > 0;
+      const outcome = failed ? "failed" : results.every((r) => r.status === "unchanged") ? "no_changes" : "committed";
+      await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.app_info.result", payload: { ...base, outcome, results: results.map(({ error: _e, ...r }) => r), mismatches: mismatches.map((m) => ({ target: m.target, field: m.field, expected: fingerprint(m.expected), actual: fingerprint(m.actual) })) } });
+      // Only fully acknowledged writes with matching readback can release the lock.
+      releaseLock = !uncertain;
+      const body = { ...base, ok: !failed, outcome, results, mismatches, readback: { localizations: afterRows.map((r) => ({ locale: r.locale, id: r.id, fields: r.fields })), primary_category: afterCategory }, recovery_required: !releaseLock };
+      if (failed) return c.json({ ...body, code: mismatches.length ? "APP_INFO_READBACK_MISMATCH" : "APP_INFO_WRITE_FAILED", error: "one or more App Information steps failed or were not confirmed; inspect the results before retrying" }, 502);
+      return c.json(body);
+    } catch (error) {
+      if (mutationStarted) {
+        // An error after dispatch, including one while constructing the response,
+        // must never release the lock even if readback had previously succeeded.
+        releaseLock = false;
+        const completed = new Set(results.map((r) => r.target));
+        // If reporting itself failed after dispatch, the in-flight step is unknown,
+        // not unattempted. Everything later really was not sent.
+        const remaining: Result[] = steps.filter((step) => !completed.has(step.target)).map((step) => ({ target: step.target, action: step.action, status: step === activeStep ? "unknown" : "not_attempted", localization_id: step.localization_id }));
+        return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "a write may have completed or read-back failed; inspect Apple and recover the lock before retrying", operation_id: operationId, results: [...results, ...remaining], recovery_required: true, cause: errorBody(error).body }, 502);
+      }
+      if (error instanceof PlanError) return c.json({ code: error.code, error: error.message, ...error.details }, error.code === "VERSION_NOT_IN_APP" ? 404 : 409);
+      return fail(c, error);
     }
-    const categoryResult = results.find((r) => r.target === "primary_category");
-    if (plan.category && (categoryResult?.status === "written" || categoryResult?.status === "unchanged") && afterCategory !== plan.category.after) mismatches.push({ target: "primary_category", field: "primary_category", expected: plan.category.after, actual: afterCategory });
-    const uncertain = results.some((r) => r.status === "unknown") || mismatches.length > 0;
-    const failed = results.some((r) => r.status === "failed" || r.status === "unknown" || r.status === "not_attempted") || mismatches.length > 0;
-    const outcome = failed ? "failed" : results.every((r) => r.status === "unchanged") ? "no_changes" : "committed";
-    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "app_store.app_info.result", payload: { ...base, outcome, results: results.map(({ error: _e, ...r }) => r), mismatches: mismatches.map((m) => ({ target: m.target, field: m.field, expected: fingerprint(m.expected), actual: fingerprint(m.actual) })) } });
-    // Only fully acknowledged writes with matching readback can release the lock.
-    releaseLock = !uncertain;
-    const body = { ...base, ok: !failed, outcome, results, mismatches, readback: { localizations: afterRows.map((r) => ({ locale: r.locale, id: r.id, fields: r.fields })), primary_category: afterCategory }, recovery_required: !releaseLock };
-    if (failed) return c.json({ ...body, code: mismatches.length ? "APP_INFO_READBACK_MISMATCH" : "APP_INFO_WRITE_FAILED", error: "one or more App Information steps failed or were not confirmed; inspect the results before retrying" }, 502);
-    return c.json(body);
-  } catch (error) {
-    if (mutationStarted) {
-      // An error after dispatch, including one while constructing the response,
-      // must never release the lock even if readback had previously succeeded.
-      releaseLock = false;
-      const completed = new Set(results.map((r) => r.target));
-      // If reporting itself failed after dispatch, the in-flight step is unknown,
-      // not unattempted. Everything later really was not sent.
-      const remaining: Result[] = steps.filter((step) => !completed.has(step.target)).map((step) => ({ target: step.target, action: step.action, status: step === activeStep ? "unknown" : "not_attempted", localization_id: step.localization_id }));
-      return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: "a write may have completed or read-back failed; inspect Apple and recover the lock before retrying", operation_id: operationId, results: [...results, ...remaining], recovery_required: true, cause: errorBody(error).body }, 502);
-    }
-    if (error instanceof PlanError) return c.json({ code: error.code, error: error.message, ...error.details }, error.code === "VERSION_NOT_IN_APP" ? 404 : 409);
-    return fail(c, error);
-  } finally {
-    if (locked && releaseLock) await c.env.DB.prepare("DELETE FROM store_product_locks WHERE provider = ?1 AND target_hash = ?2 AND operation_id = ?3").bind("apple_app_info", targetHash, operationId).run();
   }
+  let response: Response;
+  let releaseUnconfirmed = false;
+  try {
+    response = await execute();
+  } finally {
+    if (locked && releaseLock) {
+      try {
+        const released = await c.env.DB.prepare("DELETE FROM store_product_locks WHERE provider = ?1 AND target_hash = ?2 AND operation_id = ?3").bind("apple_app_info", targetHash, operationId).run();
+        // A zero-change result is not confirmation that we released this lock:
+        // the row may already have been removed or replaced by another actor.
+        releaseUnconfirmed = released.success !== true || released.meta?.changes !== 1;
+      } catch { releaseUnconfirmed = true; }
+    }
+  }
+  if (releaseUnconfirmed) {
+    // The delete may have failed before or after taking effect. Preserve the
+    // earlier response, including a pre-write rejection, without claiming that
+    // the row is present. Do not return from finally and mask a thrown error.
+    let priorResult: unknown;
+    try { priorResult = await response.clone().json(); } catch { priorResult = null; }
+    return c.json({ ok: false, code: "APP_INFO_RECOVERY_REQUIRED", error: mutationStarted
+      ? "a write was dispatched, but operation lock release could not be confirmed; inspect Apple and the lock before retrying"
+      : "no write was dispatched, but operation lock release could not be confirmed; inspect the lock before retrying",
+      operation_id: operationId, results, recovery_required: true, mutation_started: mutationStarted,
+      prior_status: response.status, prior_result: priorResult }, 502);
+  }
+  return response;
 }
