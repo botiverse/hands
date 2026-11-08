@@ -44,6 +44,34 @@ object HandsCrash {
     private val installed = AtomicBoolean(false)
     private val processStartMs = System.currentTimeMillis()
 
+    @Volatile
+    private var anrBuildStampingEnabled = true
+
+    /**
+     * Disable stamping without disabling ANR uploads when the host uses the
+     * process-state summary for something else. Call before [stampAnrBuild]
+     * or [install] in every process. Changing this does not clear the slot.
+     */
+    @JvmStatic
+    fun setAnrBuildStampingEnabled(enabled: Boolean) {
+        anrBuildStampingEnabled = enabled
+    }
+
+    /**
+     * Stamp this process's installed build before a possible ANR, without
+     * installing crash handlers or starting an uploader. Applications may
+     * call this in `Application.attachBaseContext` before providers start,
+     * including in processes that do not call [install]. On Android below 11
+     * or when stamping has been disabled this is a no-op.
+     *
+     * The stamp shares Android's single process-state summary slot. It can
+     * replace an earlier value and a later caller can replace the stamp.
+     */
+    @JvmStatic
+    fun stampAnrBuild(context: Context) {
+        if (anrBuildStampingEnabled) HandsAnr.stampProcess(context)
+    }
+
     fun install(
         context: Context,
         baseUrl: String,
@@ -64,6 +92,9 @@ object HandsCrash {
         }
         if (!installed.compareAndSet(false, true)) return
         val appContext = context.applicationContext
+        if (captureAnrs) {
+            stampAnrBuild(appContext)
+        }
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             // Persist the release-health crash marker before doing any heavier
@@ -246,7 +277,7 @@ object HandsCrash {
         )
     }
 
-    private fun installedBuild(context: Context): HandsHistoricalBuild =
+    internal fun installedBuild(context: Context): HandsHistoricalBuild =
         runCatching {
             val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
             val code =
