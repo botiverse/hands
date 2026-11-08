@@ -18,7 +18,7 @@ import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
 import { createHash } from "node:crypto";
 import { jsonRequested } from "../lib/json_output.js";
-import { shellArgument } from "../lib/shell_argument.js";
+import { recoveryGuidance, type RecoveryPart } from "../lib/recovery_guidance.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1936,11 +1936,10 @@ export function registerBuildCommands(program: Command): void {
         );
         const quiet = shouldOutputJson(program, jsonRequested(program, opts.json));
         const distribution = opts.distribution;
-        const statusCommand = [
-          "hands", "builds", "testflight-status", "--distribution", shellArgument(distribution),
-          ...(opts.bundleId ? ["--bundle-id", shellArgument(opts.bundleId)] : []),
-          "--", shellArgument(appId), shellArgument(buildId),
-        ].join(" ");
+        const statusParts: RecoveryPart[] = ["--distribution", { field: "distribution", value: distribution }];
+        if (opts.bundleId) statusParts.push("--bundle-id", { field: "bundleId", value: opts.bundleId });
+        statusParts.push("--", { field: "appId", value: appId }, { field: "buildId", value: buildId });
+        const statusCommand = recoveryGuidance("builds testflight-status", statusParts);
         const waitStartedAt = Date.now();
         if (opts.wait) {
           await waitForAscBuild(appId, buildId, {

@@ -19,6 +19,7 @@ describe("401 handling through the CLI entrypoint", () => {
     { command: ["store-listing", "pull", APP, "--json"], path: `/api/apps/${APP}/distributions/play/store-listing`, status: 401, failure: { code: "UNAUTHORIZED", error: "unauthorized" } },
     { command: ["api", "GET", `/api/apps/${APP}/distributions/play/store-listing`, "--json"], path: `/api/apps/${APP}/distributions/play/store-listing`, status: 401, failure: { code: "UNAUTHORIZED", error: "unauthorized" } },
     { command: ["agc", "upload", APP, "build1", "--package-name", "build.example"], path: `/api/apps/${APP}/builds/build1/agc-invitation-test`, status: 502, failure: { error: "AppGallery invitation upload failed", submission_id: "submission1" } },
+    { command: ["agc", "upload", APP, "build1", "--package-name", "build.example"], path: `/api/apps/${APP}/builds/build1/agc-invitation-test`, status: 502, failure: { error: "AppGallery invitation upload failed", submission_id: "-x'$(touch bad)\u001b[31m" } },
   ]) {
     it(`refreshes before ${command[0]}, sends once, and prints an actionable error`, async () => {
       const dir = await mkdtemp(join(tmpdir(), "hands-retry-e2e-"));
@@ -79,7 +80,14 @@ describe("401 handling through the CLI entrypoint", () => {
           else expect(stderr).toContain("Code: UNAUTHORIZED");
         } else {
           expect(stderr).toContain("Error: AppGallery invitation upload failed");
-          expect(stderr).toContain(`hands agc status -- ${APP} submission1`);
+          if (failure.submission_id === "submission1") {
+            expect(stderr).toContain(`hands agc status -- ${APP} submission1`);
+          } else {
+            expect(stderr).toContain("template only, not an executable command: hands agc status -- {appId} {submissionId}");
+            expect(stderr).not.toContain(failure.submission_id);
+            const data = JSON.parse(stderr.match(/: (\{.*?\}) and check Huawei/s)?.[1] ?? "null");
+            expect(data).toEqual({ appId: APP, submissionId: failure.submission_id });
+          }
           expect(stderr).toContain("check Huawei before retrying upload");
         }
         expect(`${stdout}\n${stderr}`).not.toContain("fixture-old-refresh");

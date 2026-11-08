@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -260,7 +259,7 @@ describe("store CLI reactive 401 handling (local fake network)", () => {
     expect(stderr.mock.calls.flat().join(" ")).toContain("before retrying publish");
   });
 
-  it("makes the AppGallery recovery command option-safe", async () => {
+  it("preserves an unsafe AppGallery submission id as escaped data, not an executable command", async () => {
     auth.admit.mockReturnValue({ kind: "agent", env });
     auth.fresh.mockResolvedValue("fresh-before-send");
     setApiBase("https://hands.test");
@@ -269,20 +268,14 @@ describe("store CLI reactive 401 handling (local fake network)", () => {
     await expect(program().parseAsync(["node", "hands", "agc", "upload", APP, "build1", "--package-name", "build.example"]))
       .rejects.toMatchObject({ status: 502 });
     const message = stderr.mock.calls.flat().join(" ");
-    const command = message.match(/Inspect it with (.+) and check Huawei/s)?.[1];
-    expect(command).toBe(`hands agc status -- ${APP} '-odd'\\''$(echo x)'`);
-    const args = ["agc", "status", "--", APP, "-odd'$(echo x)"];
-    if (process.platform !== "win32") {
-      const shellArgs = JSON.parse(execFileSync("sh", ["-c", `hands() { node -e 'console.log(JSON.stringify(process.argv.slice(1)))' \"$@\"; }; ${command}`], { encoding: "utf8" }));
-      expect(shellArgs).toEqual(args);
-    }
-    let parsed: string[] = [];
-    const parser = new Command(); parser.command("agc").command("status <app> <id>").action((app, id) => { parsed = [app, id]; });
-    await parser.parseAsync(["node", "hands", ...args]);
-    expect(parsed).toEqual([APP, "-odd'$(echo x)"]);
+    expect(message).toContain("template only, not an executable command: hands agc status -- {appId} {submissionId}");
+    expect(message).toContain("JSON strings are data, not shell syntax");
+    expect(message).not.toContain("-odd'$(echo x)");
+    const data = JSON.parse(message.match(/: (\{.*?\}) and check Huawei/s)?.[1] ?? "null");
+    expect(data).toEqual({ appId: APP, submissionId: "-odd'$(echo x)" });
   });
 
-  it("quotes TestFlight recovery arguments for a POSIX shell", async () => {
+  it("preserves unusual TestFlight arguments as escaped data instead of shell syntax", async () => {
     auth.admit.mockReturnValue({ kind: "agent", env });
     auth.fresh.mockResolvedValue("fresh-before-send"); auth.force.mockResolvedValue(null);
     setApiBase("https://hands.test");
@@ -290,7 +283,11 @@ describe("store CLI reactive 401 handling (local fake network)", () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ error: "unauthorized" }, 401)));
     await expect(program().parseAsync(["node", "hands", "builds", "testflight-publish", APP, "build one", "--distribution", "external", "--group-id", "group1", "--bundle-id", "app'$(echo x)"]))
       .rejects.toMatchObject({ status: 401 });
-    expect(stderr.mock.calls.flat().join(" ")).toContain(`hands builds testflight-status --distribution external --bundle-id 'app'\\''$(echo x)' -- ${APP} 'build one'`);
+    const message = stderr.mock.calls.flat().join(" ");
+    expect(message).toContain("template only, not an executable command: hands builds testflight-status --distribution {distribution} --bundle-id {bundleId} -- {appId} {buildId}");
+    expect(message).not.toContain("app'$(echo x)");
+    const data = JSON.parse(message.match(/: (\{.*?\}) before retrying publish/s)?.[1] ?? "null");
+    expect(data).toEqual({ distribution: "external", bundleId: "app'$(echo x)", appId: APP, buildId: "build one" });
   });
 
   it("does not replay raw API calls, including an edit-creating GET and writes", async () => {
