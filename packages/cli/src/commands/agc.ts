@@ -1,6 +1,7 @@
 import type { Command } from "commander";
-import { apiRequest } from "../lib/api.js";
+import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
+import { shellArgument } from "../lib/shell_argument.js";
 
 type AppRow = { id: string; slug: string };
 export type AgcSubmission = {
@@ -35,18 +36,19 @@ export function registerAgcCommands(program: Command): void {
     .action(async (app: string, buildId: string, opts: { packageName: string; json?: boolean }) => {
       const appId = await resolveAppId(app);
       const result = await apiRequest(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-market-package`, {
-        method: "POST", body: { package_name: opts.packageName },
+        method: "POST", body: { package_name: opts.packageName }, retryOnUnauthorized: false,
       });
       console.log(JSON.stringify(result, null, 2));
       if (!wantsJson(opts)) console.log(`Check parsing: hands agc market-status ${app} ${buildId}`);
     });
   agc
     .command("market-status <appIdOrSlug> <buildId>")
-    .description("Refresh formal package parsing status (ready means selectable, not published).")
+    .description("Refresh formal package parsing status (may record a state transition and notification; ready means selectable, not published).")
     .option("--json", "Output JSON.", false)
     .action(async (app: string, buildId: string) => {
       const appId = await resolveAppId(app);
-      console.log(JSON.stringify(await apiRequest(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-market-package`), null, 2));
+      // A terminal parsing observation may persist a package transition and outbox entry.
+      console.log(JSON.stringify(await apiRequest(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-market-package`, { retryOnUnauthorized: false }), null, 2));
     });
 
   agc
@@ -63,7 +65,7 @@ export function registerAgcCommands(program: Command): void {
 
   agc
     .command("upload <appIdOrSlug> <buildId>")
-    .description("Upload the build's signed .app to AGC and create an invitation-test version (idempotent per build; repeats after failed/rejected/stopped start a new attempt).")
+    .description("Upload the build's signed .app to AGC and create an invitation-test version (reuse open attempt; repeats after failed/rejected/stopped start a new attempt).")
     .requiredOption("--package-name <name>", "HarmonyOS bundle name, e.g. build.raft.mobile.")
     .option("--test-desc <text>", "Test description shown to testers.")
     .option("--wait", "Poll until Huawei finishes compiling (ready or failed).", false)
@@ -71,14 +73,34 @@ export function registerAgcCommands(program: Command): void {
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, buildId: string, opts: { packageName: string; testDesc?: string; wait?: boolean; timeout: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const started = await apiRequest<{ submission_id?: string; submission?: AgcSubmission; state?: string }>(
-        `/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-invitation-test`,
-        { method: "POST", body: { package_name: opts.packageName, ...(opts.testDesc ? { test_desc: opts.testDesc } : {}) } },
-      );
+      let started: { submission_id?: string; submission?: AgcSubmission; state?: string };
+      try {
+        started = await apiRequest(
+          `/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/agc-invitation-test`,
+          { method: "POST", body: { package_name: opts.packageName, ...(opts.testDesc ? { test_desc: opts.testDesc } : {}) }, retryOnUnauthorized: false },
+        );
+      } catch (error) {
+        const body = error instanceof QuiverApiError && error.body && typeof error.body === "object"
+          ? error.body as { submission_id?: unknown } : null;
+        const knownId = typeof body?.submission_id === "string" && body.submission_id ? body.submission_id : null;
+        const command = ["hands", "agc", "status", ...(knownId ? [] : ["--build"]), "--", shellArgument(appId), shellArgument(knownId ?? buildId)].join(" ");
+        console.error(`AppGallery upload did not return a confirmed result and may have started. Inspect it with ${command} and check Huawei before retrying upload.`);
+        throw error;
+      }
       const submissionId = started.submission_id ?? started.submission?.id;
-      if (!submissionId) throw new Error("server did not return a submission id");
-      let result = await getStatus(appId, submissionId);
-      if (opts.wait) result = await waitFor(appId, submissionId, (s) => s !== "uploading" && s !== "processing", Number(opts.timeout));
+      if (!submissionId) {
+        const command = ["hands", "agc", "status", "--build", "--", shellArgument(appId), shellArgument(buildId)].join(" ");
+        throw new Error(`AppGallery upload returned no submission id and may have started. Inspect it with ${command} and check Huawei before retrying upload.`);
+      }
+      let result: StatusResponse;
+      try {
+        result = await getStatus(appId, submissionId);
+        if (opts.wait) result = await waitFor(appId, submissionId, (s) => s !== "uploading" && s !== "processing", Number(opts.timeout));
+      } catch (error) {
+        const command = ["hands", "agc", "status", "--", shellArgument(appId), shellArgument(submissionId)].join(" ");
+        console.error(`AppGallery returned a submission, but its status could not be confirmed. Inspect it with ${command} before retrying upload.`);
+        throw error;
+      }
       if (wantsJson(opts)) return void console.log(JSON.stringify(result, null, 2));
       console.log(formatSubmission(result.submission, result.sync_error));
       if (result.submission.state === "ready") console.log(`Next: hands agc submit ${appIdOrSlug} ${submissionId} --group <groupId>`);
@@ -93,7 +115,7 @@ export function registerAgcCommands(program: Command): void {
       const appId = await resolveAppId(appIdOrSlug);
       const res = await apiRequest<{ submission?: AgcSubmission; group_ids?: string[] }>(
         `/api/apps/${appId}/agc-submissions/${encodeURIComponent(submissionId)}/submit`,
-        { method: "POST", body: opts.group?.length ? { group_ids: opts.group } : {} },
+        { method: "POST", body: opts.group?.length ? { group_ids: opts.group } : {}, retryOnUnauthorized: false },
       );
       if (wantsJson(opts)) return void console.log(JSON.stringify(res, null, 2));
       console.log(`✔ Submitted ${submissionId} to AppGallery invitation-test review (groups: ${(res.group_ids ?? []).join(", ") || "-"}).`);
@@ -102,7 +124,7 @@ export function registerAgcCommands(program: Command): void {
 
   agc
     .command("status <appIdOrSlug> <submissionIdOrBuildId>")
-    .description("Show a submission (refreshed from Huawei). Accepts a submission id, or a full build id with --build.")
+    .description("Refresh a submission from Huawei (may bind a compiled package). Accepts a submission id, or a full build id with --build.")
     .option("--build", "Treat the id as a build id and show its latest submission.", false)
     .option("--events", "Include the state history.", false)
     .option("--json", "Output JSON.", false)
@@ -124,7 +146,8 @@ export function registerAgcCommands(program: Command): void {
 type StatusResponse = { submission: AgcSubmission; events: Array<{ state: string; detail_json: string; created_at: number }>; sync_error?: string };
 
 async function getStatus(appId: string, submissionId: string): Promise<StatusResponse> {
-  return apiRequest<StatusResponse>(`/api/apps/${appId}/agc-submissions/${encodeURIComponent(submissionId)}`);
+  // A processing status can bind the compiled package at Huawei before replying.
+  return apiRequest<StatusResponse>(`/api/apps/${appId}/agc-submissions/${encodeURIComponent(submissionId)}`, { retryOnUnauthorized: false });
 }
 
 async function waitFor(appId: string, submissionId: string, done: (state: string) => boolean, timeoutSeconds: number, intervalMs = 5000): Promise<StatusResponse> {

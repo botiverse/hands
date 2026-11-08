@@ -158,7 +158,7 @@ export function registerTestflightCommands(program: Command): void {
       const segment = kind === "crash" ? "testflight-crashes" : "testflight-feedback";
       const result = await apiRequest<{ ok: boolean; id: string }>(
         `/api/apps/${appId}/${segment}/${encodeURIComponent(submissionId)}`,
-        { method: "DELETE" },
+        { method: "DELETE", retryOnUnauthorized: false },
       );
       if (jsonRequested(program, opts.json) || program.opts<{ json?: boolean }>().json) {
         console.log(JSON.stringify(result, null, 2));

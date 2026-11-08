@@ -6,7 +6,7 @@ import { jsonRequested } from "../lib/json_output.js";
 
 type Obj = Record<string, unknown>;
 type Request = { store: "apple" | "google"; product: Obj; regionsVersion?: string; screenshot?: { fileName: string; base64: string } };
-type ProductResult = { code?: string; message?: string; recovery_required?: boolean; operation_id?: string | null; product_id: string; mode: string; outcome: string; changes?: Array<{resource: string; action: string; before?: unknown; after?: unknown}>; completed?: string[]; error?: unknown };
+type ProductResult = { code?: string; message?: string; recovery_required?: boolean; outcome_uncertain?: boolean; operation_id?: string | null; product_id: string; mode: string; outcome: string; changes?: Array<{resource: string; action: string; before?: unknown; after?: unknown}>; completed?: string[]; error?: unknown };
 const object = (x: unknown, name: string): Obj => {
   if (!x || typeof x !== "object" || Array.isArray(x)) throw new Error(`${name} must be an object`);
   return x as Obj;
@@ -64,12 +64,17 @@ async function applyRequests(appId: string, requests: Request[], mode: "dry_run"
   const results: Array<ProductResult | Obj> = [];
   for (const item of requests) {
     try {
-      const result = await apiRequest<ProductResult>(`/api/apps/${encodeURIComponent(appId)}/store-products`, { method: "POST", body: { ...item, mode } });
+      const result = await apiRequest<ProductResult>(`/api/apps/${encodeURIComponent(appId)}/store-products`, { method: "POST", body: { ...item, mode }, retryOnUnauthorized: mode !== "commit" });
       results.push(result);
       if (result.outcome === "failed") return { results, stopped: true };
     } catch (error) {
       const info = error instanceof QuiverApiError && error.body && typeof error.body === "object" ? error.body as Obj : { code: "request_failed", message: "Hands request failed; inspect current state before retrying" };
-      results.push({ product_id: item.product.productId, outcome: "failed", ...info });
+      // An intermediary's 401 cannot establish whether a commit reached the
+      // provider. Keep this warning in JSON output as well as text output.
+      const uncertain401 = mode === "commit" && error instanceof QuiverApiError && error.status === 401
+        ? { outcome_uncertain: true, message: "Commit outcome may be unknown; inspect the provider before retrying" }
+        : {};
+      results.push({ ...info, ...uncertain401, product_id: item.product.productId, outcome: "failed" });
       return { results, stopped: true };
     }
   }
@@ -110,6 +115,7 @@ export function registerStoreProductsCommands(program: Command) {
             if (Array.isArray(row.changes)) for (const change of row.changes) console.log(`    ${change.resource}: ${change.action} ${JSON.stringify(change.before ?? null)} -> ${JSON.stringify(change.after ?? null)}`);
             if (row.error) console.log(`    error: ${JSON.stringify(row.error)}`);
             if (row.code) console.log(`    ${row.code}: ${row.message ?? "request failed"}`);
+            else if (row.outcome_uncertain && row.message) console.log(`    ${row.message}`);
             if (Array.isArray(row.completed) && row.completed.length) console.log(`    completed: ${row.completed.join(", ")}`);
             if (row.recovery_required) console.log("    recovery required before another commit");
             if (row.operation_id) console.log(`    operation: ${row.operation_id}`);

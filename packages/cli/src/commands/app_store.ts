@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { Command } from "commander";
-import { agentAwareFetch, apiRequest, getApiBase, QuiverApiError } from "../lib/api.js";
+import { agentAwareFetch, apiRequest, getApiBase, QuiverApiError, warnNo401Retry } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
 
 /**
@@ -165,7 +165,7 @@ async function buildScreenshotRequest(sets: ScreenshotSetPlan[], mode: "dry_run"
   return { request: { mode, sets: declared }, parts };
 }
 
-async function postMultipart<T>(path: string, request: unknown, parts: Array<{ name: string; path: string; bytes: Buffer }>): Promise<T> {
+async function postMultipart<T>(path: string, request: { mode: "dry_run" | "commit" }, parts: Array<{ name: string; path: string; bytes: Buffer }>): Promise<T> {
   const url = new URL(path, getApiBase());
   const res = await agentAwareFetch((bearer) => {
     const form = new FormData();
@@ -177,7 +177,8 @@ async function postMultipart<T>(path: string, request: unknown, parts: Array<{ n
     const headers: Record<string, string> = { accept: "application/json" };
     if (bearer) headers.authorization = `Bearer ${bearer}`;
     return fetch(url.toString(), { method: "POST", headers, body: form });
-  });
+  }, { retryOnUnauthorized: request.mode !== "commit" });
+  if (request.mode === "commit") warnNo401Retry(res.status);
   const text = await res.text();
   let data: unknown = text;
   try { data = JSON.parse(text); } catch { /* keep text */ }
@@ -429,6 +430,7 @@ export function registerAppStoreCommands(program: Command): void {
       const result = await withDetail(json, (b) => JSON.stringify(b.versions ?? b, null, 2), () =>
         apiRequest<any>(`/api/apps/${appId}/app-store/versions`, {
           method: "POST",
+          retryOnUnauthorized: !opts.commit,
           body: {
             version_string: opts.versionName,
             mode: opts.commit ? "commit" : "dry_run",
@@ -508,7 +510,7 @@ export function registerAppStoreCommands(program: Command): void {
       const versionId = await resolveVersionId(appId, opts);
       const json = jsonRequested(program, opts.json);
       const result = await withDetail(json, formatLocalizationResult, () =>
-        apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/localizations`, { method: "POST", body }));
+        apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/localizations`, { method: "POST", body, retryOnUnauthorized: !opts.commit }));
       console.log(json ? JSON.stringify(result, null, 2) : formatLocalizationResult(result));
     });
 
@@ -574,7 +576,7 @@ export function registerAppStoreCommands(program: Command): void {
         console.log("Run again with --commit to submit for review.");
         return;
       }
-      const result = await apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(current.version_id)}/submit`, { method: "POST" });
+      const result = await apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(current.version_id)}/submit`, { method: "POST", retryOnUnauthorized: false });
       console.log(json ? JSON.stringify(result, null, 2) : result.resubmitted
         ? `Resubmitted ${current.version_string} (${current.version_id}) in its rejected review submission ${result.submission_id}.`
         : `Submitted ${current.version_string} (${current.version_id}); review submission ${result.submission_id}.`);
@@ -593,6 +595,7 @@ export function registerAppStoreCommands(program: Command): void {
       const result = await withDetail(json, (b) => JSON.stringify(b, null, 2), () =>
         apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/release`, {
           method: "POST",
+          retryOnUnauthorized: !opts.commit,
           body: {
             mode: opts.commit ? "commit" : "dry_run",
             version_string: opts.versionName,
@@ -629,7 +632,7 @@ export function registerAppStoreCommands(program: Command): void {
         console.log("Run again with --commit to withdraw.");
         return;
       }
-      const result = await apiRequest<any>(`/api/apps/${appId}/app-store/withdraw`, { method: "POST", body: { version_id: current.version_id } });
+      const result = await apiRequest<any>(`/api/apps/${appId}/app-store/withdraw`, { method: "POST", body: { version_id: current.version_id }, retryOnUnauthorized: false });
       console.log(json ? JSON.stringify(result, null, 2) : `Withdrew review submission ${result.submission_id} for ${current.version_string}.`);
     });
 }

@@ -205,8 +205,11 @@ it has the material to **revoke by identity**. Scope this version:
 
 ## Auto-refresh (CP3)
 
-- Refresh proactively shortly **before** `access_expires_at`, and reactively **once**
-  on a `401`.
+- Refresh proactively shortly **before** `access_expires_at`. Eligible requests
+  reactively refresh and retry **once** on a `401`; raw `hands api` requests,
+  non-idempotent store operations, Play reads or previews that create edits, and
+  AppGallery status requests that can bind a package or record a terminal market
+  package transition and notification are not reactively retried.
 - Concurrency: single-flight refresh (lock/temp file) so parallel `hands` invocations
   don't double-rotate; crash mid-rotate must not lock the agent out (recover from the
   last durably-persisted token).
@@ -315,7 +318,7 @@ Hands's local proof check; `server/agent` id is never client-self-reported.
 | refresh happy path | rotates; old refresh no longer valid |
 | refresh reuse (rotated token) | fail closed + chain revoked |
 | refresh expired / revoked | store cleared, re-login required |
-| access 401 mid-session | single auto-refresh, then retry |
+| access 401 mid-session | eligible requests: single auto-refresh and retry; opted-out requests: no reactive refresh or replay, inspect outcome before retrying |
 | parallel invocations | single-flight refresh, no double-rotate |
 | crash mid-rotate | recover from last persisted token, no lockout |
 | any output (stdout/stderr/json/error) | contains no grant/token |

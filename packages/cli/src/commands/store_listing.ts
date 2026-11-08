@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { Command } from "commander";
-import { agentAwareFetch, apiRequest, getApiBase, QuiverApiError } from "../lib/api.js";
+import { agentAwareFetch, apiRequest, getApiBase, QuiverApiError, warnNo401Retry } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
 
 /** androidpublisher v3 `Listing` fields, verbatim. */
@@ -286,7 +286,7 @@ async function call<T>(path: string, opts: Parameters<typeof apiRequest>[1]): Pr
   }
 }
 
-async function postMultipart<T>(path: string, request: unknown, parts: Array<{ name: string; path: string; bytes: Buffer }>): Promise<T> {
+async function postMultipart<T>(path: string, request: { mode: "dry_run" | "commit" }, parts: Array<{ name: string; path: string; bytes: Buffer }>): Promise<T> {
   const url = new URL(path, getApiBase());
   const res = await agentAwareFetch((bearer) => {
     const form = new FormData();
@@ -298,7 +298,8 @@ async function postMultipart<T>(path: string, request: unknown, parts: Array<{ n
     const headers: Record<string, string> = { accept: "application/json" };
     if (bearer) headers.authorization = `Bearer ${bearer}`;
     return fetch(url.toString(), { method: "POST", headers, body: form });
-  });
+  }, { retryOnUnauthorized: false });
+  warnNo401Retry(res.status);
   const text = await res.text();
   let data: unknown = text;
   try { data = JSON.parse(text); } catch { /* keep text */ }
@@ -331,13 +332,14 @@ export function registerStoreListingCommands(program: Command): void {
 
   group
     .command("pull <appIdOrSlug>")
-    .description("Read the live Google Play listing; writes the same language-keyed JSON that push accepts.")
+    .description("Read the live Google Play listing using a temporary edit (which may invalidate another same-user edit); output uses the push JSON format.")
     .option("--out <file>", "Write listing JSON to this file instead of stdout.")
     .option("--json", "Output the raw API response.", false)
     .action(async (appIdOrSlug: string, opts: { out?: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const result = await call<{ package_name: string; default_language: string | null; listings: PlayListing[] }>(
-        `/api/apps/${appId}/distributions/play/store-listing`, {},
+        // The provider read creates an edit too, which can invalidate an existing one.
+        `/api/apps/${appId}/distributions/play/store-listing`, { retryOnUnauthorized: false },
       );
       if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
@@ -401,7 +403,7 @@ export function registerStoreListingCommands(program: Command): void {
         imagePush = await buildImagePush(sets, opts.aiGeneratedState);
       }
       const request = {
-        mode: opts.commit ? "commit" : "dry_run",
+        mode: opts.commit ? "commit" as const : "dry_run" as const,
         listings,
         ...(opts.deleteUnlistedLanguages ? { delete_unlisted_languages: true } : {}),
         ...(opts.changesNotSentForReview ? { changes_not_sent_for_review: true } : {}),
@@ -411,7 +413,8 @@ export function registerStoreListingCommands(program: Command): void {
       const path = `/api/apps/${appId}/distributions/play/store-listing`;
       const result = imagePush
         ? await postMultipart<StoreListingPushResponse>(path, request, imagePush.parts)
-        : await call<StoreListingPushResponse>(path, { method: "POST", body: request });
+        // Play dry runs create an edit even though they do not commit it.
+        : await call<StoreListingPushResponse>(path, { method: "POST", body: request, retryOnUnauthorized: false });
       if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(result, null, 2));
         return;

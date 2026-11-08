@@ -293,10 +293,14 @@ hands releases play-upload-symbols raft-android <release> --kinds proguard \
   upload fails with `version_not_on_play`. Play can still reject the file even
   when the AAB is present; inspect the returned error and do not assume a retry
   will succeed.
-- Any failure deletes the Play edit; nothing is half-committed. Re-running is
-  safe: an upload replaces the file of the same type for that versionCode.
+- The adapter attempts to delete an uncommitted Play edit on failure. A lost
+  response or failed cleanup can leave the result uncertain, including whether a
+  commit completed. Inspect Play and the Hands receipt before retrying; uploading
+  again replaces the file of the same type for that versionCode.
 - `--commit` writes a receipt (`play-promotion` / `upload-symbols`); the dry run
-  writes none and leaves the release revision unchanged.
+  writes none and leaves the release revision unchanged. Opening its temporary
+  Play edit can invalidate an existing edit made by the same Google user, even
+  without a commit.
 
 API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols`
 with `{mode?: "dry_run" | "commit", kinds?, expected_revision, approval: {note}}`
@@ -338,7 +342,8 @@ hands store-listing receipts raft-android
 ```
 
 Google's list form `{ "listings": [ { "language": "en-US", "title": "…" } ] }` is
-accepted too.
+accepted too. Listing pulls and dry runs open temporary Play edits; creating one
+can invalidate an existing edit by the same Google user, even without a commit.
 
 - **Languages** must be Play store listing tags, spelled exactly as Play lists
   them: `en-US`, `zh-CN`, `zh-TW`, `zh-HK`, `ja-JP`, `ko-KR`, `es-ES`, `fr-FR`,
@@ -699,15 +704,18 @@ hands agc submit raft-ohos <submissionId> --group <groupId>
 hands agc status raft-ohos <submissionId> --events   # or: <buildId> --build
 ```
 
-`upload` is idempotent per build. After `failed`, `rejected`, or `stopped` it
-starts a new attempt (a new AGC test version); the earlier submission keeps its
-history.
+`upload` reuses an open attempt for the build. After `failed`, `rejected`, or
+`stopped`, it starts a new attempt (a new AGC test version); the earlier
+submission keeps its history. A failed response can leave a provider operation
+uncertain, so inspect the submission and Huawei before trying another upload.
+`hands agc market-status` may also record a terminal package state and enqueue a
+notification; it is not automatically replayed after a 401.
 
 The same flow over the admin API with `hands api`:
 
 ```bash
 APP=/api/apps/<appId>
-# 1. Upload the build's .app and create the test version (idempotent per build).
+# 1. Upload the build's .app and create the test version (reuses an open attempt).
 hands api POST $APP/builds/<buildId>/agc-invitation-test \
   --data '{"package_name":"build.raft.mobile","test_desc":"1.12.0 (11200003)"}' --json
 # 2. Poll until state is "ready" (Huawei compiles the package, ~1-3 min).
@@ -722,8 +730,11 @@ hands api GET $APP/agc-submissions/<submissionId> --json
 
 `submit` requires an explicit `group_id`/`group_ids` when the app has more than
 one test group; with exactly one group it uses that group. Every `GET` of a
-submission re-reads Huawei while the outcome is still open, so the stored state
-follows AppGallery:
+submission re-reads Huawei while the outcome is still open. If a package has
+finished compiling, that GET can also bind the package to the test version in
+Huawei. The CLI does not replay this status request after a 401; if the outcome
+is uncertain, inspect the submission and Huawei before retrying. The stored
+state follows AppGallery:
 
 | Hands `state` | Huawei test `releaseState` |
 | --- | --- |
@@ -976,6 +987,10 @@ hands --json api GET /api/apps
 - **Raw path params.** `<appId>` and the other ids are the resource UUIDs, not
   slugs — `hands api` passes the path through verbatim and does not resolve
   slugs the way the dedicated subcommands do.
+- **No automatic 401 replay.** A direct API request is sent once, even for GET:
+  some reads create provider edits. Managed-agent credentials are still refreshed
+  proactively before sending. If a 401 or lost response leaves the outcome
+  uncertain, inspect current state before retrying.
 - **Same-origin `/api/*` only.** `<path>` is resolved against the active Hands
   API base (honoring the root `--api` flag). A relative path or a **same-origin
   absolute URL** is accepted; cross-origin absolute URLs, `//protocol-relative`

@@ -70,10 +70,11 @@ afterEach(() => {
 describe("hands app-store", () => {
   it("prepare is a dry run unless --commit", async () => {
     const dry = await run(["app-store", "prepare", APP_ID, "--version-name", "1.17.0", "--build", "b-17"], () => ({ mode: "dry_run", action: "renamed", previous_version_string: "1.12.0", version_id: "ver-112", version_string: "1.17.0", state: "DEVELOPER_REJECTED" }));
-    expect(dry.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions`, body: { version_string: "1.17.0", mode: "dry_run", asc_build_id: "b-17" }, query: undefined }]);
+    expect(dry.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions`, body: { version_string: "1.17.0", mode: "dry_run", asc_build_id: "b-17" }, query: undefined, retryOnUnauthorized: true }]);
     expect(dry.out.join("\n")).toContain("would rename 1.12.0");
     const commit = await run(["app-store", "prepare", APP_ID, "--version-name", "1.17.0", "--commit"], () => ({ mode: "commit", action: "created", version_id: "v", version_string: "1.17.0", state: "PREPARE_FOR_SUBMISSION", build_attached: false }));
     expect((commit.calls[0]!.body as any).mode).toBe("commit");
+    expect(commit.calls[0]!.retryOnUnauthorized).toBe(false);
   });
 
   it("submit without --commit only reads status and the preflight, and prints its errors", async () => {
@@ -140,14 +141,14 @@ describe("hands app-store", () => {
     const dry = await run(["app-store", "release", APP_ID, "ver-117", "--version-name", "1.17.0", "--build", "b-17"], () => ({
       mode: "dry_run", outcome: "planned", released: false, version: { version_id: "ver-117", version_string: "1.17.0", state: "PENDING_DEVELOPER_RELEASE", build_id: "b-17" },
     }));
-    expect(dry.calls).toEqual([{ method: "POST", path, body: { mode: "dry_run", version_string: "1.17.0", asc_build_id: "b-17" }, query: undefined }]);
+    expect(dry.calls).toEqual([{ method: "POST", path, body: { mode: "dry_run", version_string: "1.17.0", asc_build_id: "b-17" }, query: undefined, retryOnUnauthorized: true }]);
     expect(dry.out.join("\n")).toContain("Dry run: would release 1.17.0");
     expect(dry.out.join("\n")).toContain("--commit");
 
     const committed = await run(["app-store", "release", APP_ID, "ver-117", "--version-name", "1.17.0", "--commit"], () => ({
       mode: "commit", outcome: "release_requested", released: false, version_id: "ver-117", version_string: "1.17.0", observed_state: "PENDING_DEVELOPER_RELEASE",
     }));
-    expect(committed.calls).toEqual([{ method: "POST", path, body: { mode: "commit", version_string: "1.17.0" }, query: undefined }]);
+    expect(committed.calls).toEqual([{ method: "POST", path, body: { mode: "commit", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: false }]);
     expect(committed.out.join("\n")).toContain("Release requested");
     expect(committed.out.join("\n")).not.toContain("Released ");
   });

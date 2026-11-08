@@ -37,10 +37,10 @@ async function resolveBearer(): Promise<string | undefined> {
 /**
  * Run a bearer-parameterized request with agent-aware auth, shared by every CLI HTTP
  * path (`apiRequest`, `apiUploadFile`, and `hands api`): resolve the bearer (proactive
- * refresh in agent mode), and on a 401 in agent mode force ONE refresh and retry once.
- * `doFetch` MUST build a fresh request each call — a request body stream cannot be reused
- * across attempts, so callers that send a body rebuild it inside the thunk. A caller may
- * disable the reactive 401 retry for a non-idempotent request; proactive refresh remains.
+ * refresh in agent mode). Unless opted out, a 401 in agent mode forces ONE refresh
+ * and retry. `doFetch` MUST build a fresh request each call — a request body stream
+ * cannot be reused across attempts. Callers can disable the reactive 401 retry for
+ * non-idempotent requests or reads with side effects; proactive refresh remains.
  */
 export async function agentAwareFetch(
   doFetch: (bearer: string | undefined) => Promise<Response>,
@@ -68,6 +68,13 @@ export class QuiverApiError extends Error {
     this.name = "QuiverApiError";
     this.status = status;
     this.body = body;
+  }
+}
+
+/** A 401 can come from an intermediary after the request reached the server. */
+export function warnNo401Retry(status: number): void {
+  if (status === 401) {
+    console.error("No automatic 401 retry was attempted. The outcome may be unknown; inspect current state before retrying.");
   }
 }
 
@@ -109,7 +116,7 @@ export interface ApiRequestOptions {
   query?: Record<string, string | number | boolean | null | undefined>;
   raw?: boolean; // when true, return Response instead of parsed JSON
   signal?: AbortSignal;
-  /** Set false for non-idempotent writes where a 401 cannot safely be retried. */
+  /** Set false when a 401 cannot safely be retried, including reads with side effects. */
   retryOnUnauthorized?: boolean;
 }
 
@@ -147,6 +154,7 @@ export async function apiRequest<T = unknown>(
     console.error(`> ${opts.method ?? "GET"} ${url}`);
     console.error(`< ${res.status}`);
   }
+  if (opts.retryOnUnauthorized === false) warnNo401Retry(res.status);
   if (opts.raw) return (res as unknown) as T;
   const text = await res.text();
   let data: unknown = text;
