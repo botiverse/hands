@@ -28,6 +28,14 @@ describe("error display localization", () => {
     expect(error.body).toEqual({ code: "DUO_WRITE_UNVERIFIED" });
   });
 
+  it("distinguishes lock recovery before and after an App Information write", () => {
+    const before = Object.assign(new Error("no write was dispatched, but operation lock acquisition could not be confirmed; inspect the lock before retrying"), { body: { code: "APP_INFO_RECOVERY_REQUIRED" } });
+    const after = Object.assign(new Error("a write was dispatched, but operation lock release could not be confirmed; inspect Apple and the lock before retrying"), { body: { code: "APP_INFO_RECOVERY_REQUIRED" } });
+    expect(errorMessage(before, "zh-CN")).toBe("未发送写入请求，但无法确认是否取得操作锁；请先检查锁再重试（APP_INFO_RECOVERY_REQUIRED）");
+    expect(errorMessage(after, "zh-CN")).toBe("已发送写入请求，但无法确认是否释放操作锁；请先检查 Apple 数据和锁再重试（APP_INFO_RECOVERY_REQUIRED）");
+    expect(errorMessage(before, "en")).toBe(before.message);
+  });
+
   it("preserves unknown provider diagnostics and localizes generic network failures", () => {
     const provider = "provider: request 123 could not be classified";
     expect(errorMessage(new Error(provider), "zh-CN")).toBe(provider);
