@@ -226,9 +226,10 @@ unsupplied locales and succeeds only after exact Apple readback.
 
 ## App Store release (version, listing, screenshots, review)
 
-The whole App Store submission runs through Hands with the stored App Store
-Connect key; nothing needs the App Store Connect website. Every step that
-changes something at Apple is a dry run in the CLI unless `--commit` is passed.
+Hands uses the stored App Store Connect key for supported submission steps.
+Some changes, including App Information and Duo screenshot writes, currently
+require App Store Connect; see the restrictions below. Every CLI step that
+changes something at Apple is a dry run unless `--commit` is passed.
 
 On the API, `mode` defaults differ on purpose:
 
@@ -387,7 +388,51 @@ refuses review); without them the plan entry is blocked with
 `promotionalText` may change; other fields return 409
 `LOCALIZATION_PLAN_BLOCKED`. Commit reads every requested field back and fails
 with `READBACK_MISMATCH` if Apple holds anything else. App name and subtitle
-live on `appInfoLocalizations` and are not covered yet.
+live separately on `appInfoLocalizations`; use the read-only preview below.
+
+### App Information (preview only)
+
+App Information is shared by the app's platforms, not owned by the selected
+version. The version is a context and safety check, **not** a guarantee that
+changes will affect only that version. Apple describes pending information as
+taking effect with the next version release. Confirm its intended effect and
+existing submissions in App Store Connect before submitting.
+
+Create an `app-info.json` file containing only the desired fields, for example:
+
+```json
+{
+  "primary_category": "PRODUCTIVITY",
+  "localizations": {
+    "en-US": { "name": "Example App", "subtitle": "Stay in touch" },
+    "ja": { "name": "Example App", "subtitle": "Connect with your team" }
+  }
+}
+```
+
+```sh
+hands app-store app-info push raft-ios --version-name 1.22.0 --file app-info.json
+# Optional: --version-id <ASC-version-id>, --platform <platform>, --json
+```
+
+The publisher-only `POST /api/apps/{appId}/app-store/versions/{versionId}/app-info`
+requires explicit `mode` and exact `version_string` (the CLI sends `dry_run` by
+default). Preview makes only Apple GET requests and shows the existing and
+requested values, category, observed platforms and language differences. It does
+**not** check or reserve name availability, make writes, or submit a review.
+It requires an editable app-owned version and one unambiguous pending AppInfo;
+other active or unknown versions and unknown platform types block the plan.
+Category checks cover platforms present in Apple's version records, which
+may omit newly added platforms or an inconsistent response. A requested new App
+Information locale must also exist on the selected version; this is a
+conservative Hands guard, **not** a claim that Apple requires identical language
+sets. Existing differences are reported for inspection.
+
+**Writes are not enabled:** even an explicit `--commit` on a valid request is
+rejected with `APP_INFO_COMMIT_UNVERIFIED` before this handler calls Apple or
+writes. Invalid requests may fail validation first. Until provider behavior and
+recovery are verified, make any authorized changes in App Store Connect and
+inspect the result there; Hands does not submit automatically.
 
 ### Screenshots
 

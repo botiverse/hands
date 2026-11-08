@@ -168,6 +168,53 @@ describe("hands app-store", () => {
     });
   });
 
+  it("app-info previews by default, sends the exact version guard, and keeps commits explicit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hands-info-"));
+    const file = join(dir, "info.json");
+    const desired = { primary_category: "PRODUCTIVITY", localizations: { "en-US": { name: "New Name", subtitle: "Chat" } } };
+    await writeFile(file, JSON.stringify(desired));
+    const plan = { outcome: "planned", version: { id: "ver-117", version_string: "1.17.0", platform: "IOS", state: "PREPARE_FOR_SUBMISSION" }, app_info: { id: "info-1", state: "PREPARE_FOR_SUBMISSION" }, observed_platforms: ["IOS"], localizations: [{ locale: "en-US", action: "update", changed_fields: ["name"], before: { name: "Old" }, after: { name: "New Name" }, blocker: null }], category: { before: "UTILITIES", after: "PRODUCTIVITY", action: "update", blocker: null }, locale_consistency: { missing_app_info: [], missing_version: ["ja"] } };
+    const dry = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--file", file], () => plan);
+    expect(dry.calls).toEqual([
+      { method: "GET", path: `/api/apps/${APP_ID}/app-store/status`, body: undefined, query: { version_string: "1.17.0" } },
+      { method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined },
+    ]);
+    const text = dry.out.join("\n");
+    expect(text).toContain('name: "Old" [3] -> "New Name" [8]');
+    expect(text).toContain("App Information languages missing in the selected version: ja");
+    expect(text).toContain("not checked or reserved");
+    expect(text).toContain("Commit is currently blocked");
+    const json = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver/117", "--file", file, "--json"], () => plan);
+    expect(json.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver%2F117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined }]);
+    expect(JSON.parse(json.out.join("\n"))).toEqual(plan);
+    const { QuiverApiError } = await import("../lib/api.js");
+    const guard = { code: "APP_INFO_COMMIT_UNVERIFIED", error: "App Information writes are not yet verified; nothing was written" };
+    const failure = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver-117", "--file", file, "--commit"], () => { throw new QuiverApiError(409, guard, guard.error); }).catch((e) => e);
+    expect(failure).toBeInstanceOf(QuiverApiError);
+    expect(failure.body).toEqual(guard);
+    expect((globalThis as any).__CALLS).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "commit", version_string: "1.17.0" }, query: undefined }]);
+  });
+
+  it("app-info prints blocking platform and AppInfo details, and preserves JSON errors", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hands-info-")); const file = join(dir, "info.json");
+    await writeFile(file, JSON.stringify({ localizations: { "en-US": { name: "Example" } } }));
+    const { QuiverApiError } = await import("../lib/api.js");
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((line: unknown) => { errors.push(String(line)); });
+    const argv = ["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver-117", "--file", file];
+    const blocked = { code: "APP_INFO_OTHER_PLATFORM_ACTIVE", error: "another platform has an active version", other_versions: [{ id: "mac-1", versionString: "2.0", platform: "MAC_OS", state: "IN_REVIEW" }] };
+    const failure = await run(argv, () => { throw new QuiverApiError(409, blocked, blocked.error); }).catch((e) => e);
+    expect(failure.body).toEqual(blocked);
+    expect(errors.join("\n")).toContain("Other version: 2.0 (mac-1, MAC_OS, IN_REVIEW)");
+    const ambiguous = { code: "APP_INFO_NOT_UNAMBIGUOUS", error: "ambiguous", app_infos: [{ id: "draft-1", state: "PREPARE_FOR_SUBMISSION" }, { id: "pending", state: "IN_REVIEW" }] };
+    await run(argv, () => { throw new QuiverApiError(409, ambiguous, ambiguous.error); }).catch(() => undefined);
+    expect(errors.join("\n")).toContain("App Information: pending (IN_REVIEW)");
+    await run([...argv, "--json"], () => { throw new QuiverApiError(409, blocked, blocked.error); }).catch(() => undefined);
+    const lastLog = (console.log as any).mock.calls.at(-1)?.[0];
+    expect(JSON.parse(lastLog)).toEqual(blocked);
+    await expect(run(["app-store", "app-info", "push", APP_ID, "--file", file])).rejects.toThrow();
+  });
+
   it("screenshots inspect only reads the selected version and locale, preserving Apple's metadata", async () => {
     const inspection = { version_id: "ver-117", localizations: [{ locale: "en-US", sets: [
       { id: "set-1", display_type: "FAKE_APPLE_TYPE", screenshots: [{ id: "s1", file_name: "one.png", width: 1398, height: 2034, state: "COMPLETE" }] },

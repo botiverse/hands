@@ -147,7 +147,7 @@ Beta App 描述是应用级邀请文案，使用 `betaAppLocalizations.descripti
 
 ## App Store 发布（版本、商店详情、截图、审核） {#app-store-release-version-listing-screenshots-review}
 
-整个 App Store 提交流程都通过 Hands 使用已保存的 App Store Connect 密钥完成，不需要操作 App Store Connect 网站。命令行中，所有会修改 Apple 数据的步骤默认只预演，只有传入 `--commit` 才执行。
+Hands 使用已保存的 App Store Connect 密钥执行受支持的提交步骤。有些修改（包括 App Information 和 Duo 截图写入）目前仍需在 App Store Connect 完成，限制见下文。命令行中，所有会修改 Apple 数据的步骤默认只预演，只有传入 `--commit` 才执行。
 
 API 中的 `mode` 默认值有意不同：
 
@@ -234,7 +234,32 @@ Apple 每个平台只允许一个尚未发布的 App Store 版本。已撤回版
 
 ### 商店详情文本
 
-调用 `POST /api/apps/{appId}/app-store/versions/{versionId}/localizations`，请求体为 `{ "mode": "dry_run" | "commit", "localizations": { "<locale>": { ... } } }`。字段是 Apple 的 `appStoreVersionLocalizations` 属性：`description`（最多 4000 字符）、`keywords`（100）、`promotionalText`（170）、`whatsNew`（4000）、`marketingUrl`、`supportUrl`（http 或 https）。只写入提供的字段；已有语言仅修补变化字段，缺失语言则创建。创建语言需要 `description`、`keywords` 和 `supportUrl`：Apple 虽然接受缺少它们的创建请求，之后会拒绝审核；缺少时计划项以 `missing_required_fields` 阻止，并列出 `missing_fields`。更新说明接口（`.../notes`）只更新已有语言，语言不存在时返回 409 `LOCALIZATION_MISSING`。Apple 持有版本期间只能修改 `promotionalText`，其他字段返回 409 `LOCALIZATION_PLAN_BLOCKED`。提交后回读每个请求字段；Apple 保存的值不一致时以 `READBACK_MISMATCH` 失败。应用名称和副标题位于 `appInfoLocalizations`，目前尚不覆盖。
+调用 `POST /api/apps/{appId}/app-store/versions/{versionId}/localizations`，请求体为 `{ "mode": "dry_run" | "commit", "localizations": { "<locale>": { ... } } }`。字段是 Apple 的 `appStoreVersionLocalizations` 属性：`description`（最多 4000 字符）、`keywords`（100）、`promotionalText`（170）、`whatsNew`（4000）、`marketingUrl`、`supportUrl`（http 或 https）。只写入提供的字段；已有语言仅修补变化字段，缺失语言则创建。创建语言需要 `description`、`keywords` 和 `supportUrl`：Apple 虽然接受缺少它们的创建请求，之后会拒绝审核；缺少时计划项以 `missing_required_fields` 阻止，并列出 `missing_fields`。更新说明接口（`.../notes`）只更新已有语言，语言不存在时返回 409 `LOCALIZATION_MISSING`。Apple 持有版本期间只能修改 `promotionalText`，其他字段返回 409 `LOCALIZATION_PLAN_BLOCKED`。提交后回读每个请求字段；Apple 保存的值不一致时以 `READBACK_MISMATCH` 失败。应用名称和副标题单独位于 `appInfoLocalizations`，可按下文只读预演。
+
+### App Information（仅预演）
+
+App Information 由应用各平台共享，不属于所选版本。版本仅用于上下文和安全检查，**不保证**修改只影响该版本。Apple 描述待发布信息在下一次版本发布时生效；送审前请在 App Store Connect 确认影响范围及已有审核。
+
+创建只包含所需字段的 `app-info.json`，例如：
+
+```json
+{
+  "primary_category": "PRODUCTIVITY",
+  "localizations": {
+    "en-US": { "name": "Example App", "subtitle": "Stay in touch" },
+    "ja": { "name": "Example App", "subtitle": "Connect with your team" }
+  }
+}
+```
+
+```sh
+hands app-store app-info push raft-ios --version-name 1.22.0 --file app-info.json
+# 可选：--version-id <ASC-version-id>、--platform <platform>、--json
+```
+
+仅应用发布者可调用 `POST /api/apps/{appId}/app-store/versions/{versionId}/app-info`；请求必须明确指定 `mode` 和精确的 `version_string`（CLI 默认发送 `dry_run`）。预演只使用 Apple GET，展示已有值、请求值、类别、观察到的平台和语言差异；它**不会**检查或预留名称，也不写入或提交审核。所选版本须属于该应用且可编辑，并须只有一个明确的待发布 AppInfo；存在其他活跃或未知状态的版本、或出现未知平台时会阻止计划。类别仅按 Apple 版本记录中观察到的平台检查：记录可能遗漏新加的平台，也可能不一致。请求新建的 App Information 语言还须存在于所选版本；这是 Hands 的保守限制，**不是**宣称 Apple 要求语言集合完全相同。已有语言差异会报告供检查。
+
+**写入尚未开放：**即使明确传入 `--commit`，有效请求也会在此处理器调用 Apple 或写入前返回 `APP_INFO_COMMIT_UNVERIFIED`。无效请求可能先被校验拒绝。在提供商行为和恢复流程验证完成前，请在 App Store Connect 中进行获授权的修改并检查结果；Hands 不会自动送审。
 
 ### 截图
 

@@ -199,7 +199,7 @@ async function withDetail<T>(json: boolean, format: (body: any) => string, run: 
     if (error instanceof QuiverApiError && error.body && typeof error.body === "object") {
       const body = error.body as Record<string, unknown>;
       if (json) console.log(JSON.stringify(body, null, 2));
-      else if (body.sets || body.localizations || body.results || body.versions) console.error(format(body));
+      else if (body.sets || body.localizations || body.results || body.versions || body.version || body.other_versions || body.category || body.app_infos) console.error(format(body));
     }
     throw error;
   }
@@ -304,6 +304,34 @@ export function parseLocalizationsFile(raw: unknown): Record<string, Record<stri
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${locale}: expected an object of fields`);
   }
   return raw as Record<string, Record<string, string>>;
+}
+
+export function formatAppInfoResult(body: any): string {
+  const lines: string[] = [];
+  if (body.version) {
+    const v = body.version;
+    lines.push(`Version ${v.version_string ?? v.versionString ?? "?"} (${v.id}, ${v.platform ?? "?"}, ${v.state})${body.app_info ? `; App Information ${body.app_info.id} (${body.app_info.state})` : ""}`);
+  }
+  for (const version of body.other_versions ?? []) lines.push(`  Other version: ${version.versionString ?? version.version_string ?? "?"} (${version.id}, ${version.platform}, ${version.state})`);
+  for (const info of body.app_infos ?? []) lines.push(`  App Information: ${info.id} (${info.state})`);
+  if (body.observed_platforms) lines.push(`  Platforms observed in version records: ${body.observed_platforms.join(", ") || "(none)"} (may omit newly added platforms)`);
+  for (const p of body.localizations ?? []) {
+    lines.push(`  ${p.locale}: ${p.blocker ? `BLOCKED (${p.blocker})` : p.action}`);
+    for (const field of p.changed_fields ?? []) lines.push(`    ${field}: ${preview(p.before?.[field])} -> ${preview(p.after?.[field])}`);
+  }
+  if (body.category) lines.push(`  primary category: ${body.category.before ?? "(unset)"} -> ${body.category.after}${body.category.blocker ? ` BLOCKED (${body.category.blocker}${body.category.unavailable_platforms?.length ? `: ${body.category.unavailable_platforms.join(", ")}` : ""})` : ` (${body.category.action})`}`);
+  if (body.locale_consistency?.missing_app_info?.length) lines.push(`  Version languages missing in App Information: ${body.locale_consistency.missing_app_info.join(", ")}`);
+  if (body.locale_consistency?.missing_version?.length) lines.push(`  App Information languages missing in the selected version: ${body.locale_consistency.missing_version.join(", ")}`);
+  for (const r of body.results ?? []) {
+    lines.push(`  ${r.target}: ${r.status}${r.error ? ` — ${[r.error.provider_code, r.error.error, r.error.provider_cause].filter(Boolean).join(": ")}` : ""}`);
+    for (const e of r.error?.provider_errors ?? []) lines.push(`    ${[e.code, e.title, e.detail].filter(Boolean).join(": ")}`);
+  }
+  for (const m of body.mismatches ?? []) lines.push(`  read-back mismatch: ${m.target} ${m.field}`);
+  if (body.recovery_required) lines.push(`Recovery required for operation ${body.operation_id}: inspect Apple and recover the lock before retrying.`);
+  if (body.outcome === "planned") lines.push("Dry run: nothing written; name availability is not checked or reserved. App Information is shared across platforms and not bound to this version. Commit is currently blocked pending verification.");
+  else if (body.outcome === "committed") lines.push("Committed and read back from Apple.");
+  else if (body.outcome === "no_changes") lines.push("No changes; requested fields match Apple.");
+  return lines.join("\n");
 }
 
 export function registerAppStoreCommands(program: Command): void {
@@ -431,6 +459,29 @@ export function registerAppStoreCommands(program: Command): void {
       const result = await withDetail(json, formatLocalizationResult, () =>
         apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/localizations`, { method: "POST", body }));
       console.log(json ? JSON.stringify(result, null, 2) : formatLocalizationResult(result));
+    });
+
+  const appInfo = group.command("app-info").description("Shared App Information: localized name, subtitle and primary category.");
+  appInfo.command("push <appIdOrSlug>")
+    .description("Preview shared App Information from JSON. Preview does not reserve a name; commits are currently blocked pending verification.")
+    .requiredOption("--file <json>", '{"primary_category":"PRODUCTIVITY","localizations":{"en-US":{"name":"...","subtitle":"..."}}}')
+    .requiredOption("--version-name <version>", "Exact editable version string (also sent as a confirmation).")
+    .option("--version-id <id>", "Optional ASC version ID; must still match --version-name.")
+    .option("--platform <platform>", "Platform for version lookup, IOS by default.")
+    .option("--commit", "Request a write (currently blocked pending verification).", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { file: string; versionName: string; versionId?: string; platform?: string; commit?: boolean; json?: boolean }) => {
+      let raw: unknown;
+      try { raw = JSON.parse(await readFile(opts.file, "utf8")); } catch (error) { throw new Error(`cannot read ${opts.file}: ${(error as Error).message}`); }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("app-info file must be an object with localizations and/or primary_category");
+      const obj = raw as Record<string, unknown>;
+      if (Object.keys(obj).some((key) => key !== "localizations" && key !== "primary_category")) throw new Error("app-info file has unsupported fields");
+      const appId = await resolveAppId(appIdOrSlug);
+      const versionId = opts.versionId ?? (await status(appId, opts.versionName, opts.platform)).version_id;
+      const body = { ...obj, mode: opts.commit ? "commit" : "dry_run", version_string: opts.versionName };
+      const json = jsonRequested(program, opts.json);
+      const result = await withDetail(json, formatAppInfoResult, () => apiRequest<any>(`/api/apps/${appId}/app-store/versions/${encodeURIComponent(versionId)}/app-info`, { method: "POST", body }));
+      console.log(json ? JSON.stringify(result, null, 2) : formatAppInfoResult(result));
     });
 
   group
