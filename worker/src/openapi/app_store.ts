@@ -66,6 +66,15 @@ const LocalizationsInput = z.object({
   }),
 }).passthrough().openapi("AppStoreLocalizationsInput");
 
+// Unlike legacy endpoints, make the no-default mode and exact version guard
+// machine-readable as well as documented; schema-invalid values fail before the handler.
+const AppInfoInput = z.object({
+  mode: z.enum(["dry_run", "commit"]).openapi({ description: 'Required, no default: "dry_run" or "commit". Valid commit requests are currently blocked before Apple calls.' }),
+  version_string: z.string().min(1).max(100).openapi({ description: "Required exact version string; the version is a guard, not the owner of App Information." }),
+  primary_category: z.string().optional().openapi({ description: "Apple primary category ID, e.g. PRODUCTIVITY." }),
+  localizations: z.record(z.string(), z.object({ name: z.string().optional(), subtitle: z.string().optional() }).passthrough()).optional(),
+}).passthrough().openapi("AppStoreAppInfoInput");
+
 const ScreenshotsRequest = z.object({
   mode: Mode,
   sets: z.array(z.object({
@@ -150,6 +159,16 @@ export function registerAppStoreRoutes(): RouteConfigList {
       409: error("LOCALIZATION_PLAN_BLOCKED; nothing written."),
       502: error("A write failed (LOCALIZATIONS_FAILED) or read-back mismatched (READBACK_MISMATCH); per-locale results included."),
     },
+  });
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/app-store/versions/{versionId}/app-info",
+    tags: ["App Store"],
+    summary: "Preview shared App Information (writes currently blocked)",
+    description: "Publisher only. Requires explicit dry_run or commit and the exact version_string. App Information is shared across platforms and is not bound to the selected version. Preview requires an editable version and one unambiguous draft, checks category availability for observed platforms and reports language differences; version records may omit newly added platforms. A planned new App Information locale must also exist on the selected version. Preview uses only Apple GETs; it neither checks nor reserves name availability, and language differences do not prove Apple's submission requirements. Valid commit requests return APP_INFO_COMMIT_UNVERIFIED before this handler calls Apple or writes until provider behavior and recovery are verified; malformed requests can fail validation first.",
+    security: auth,
+    request: { params: AppVersionParams, body: { content: json(AppInfoInput), required: true } },
+    responses: { 200: success("Read-only plan.", GenericObject), 400: error("Invalid request."), 403: error("Publisher role required."), 404: error("Version not in this app."), 409: error("APP_INFO_COMMIT_UNVERIFIED, blocked plan or ambiguous target; nothing written."), 502: error("Apple rejected a read or returned invalid or incomplete metadata.") },
   });
   routes.push({
     method: "get",

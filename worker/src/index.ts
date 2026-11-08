@@ -180,6 +180,7 @@ import {
   handleWithdrawAppStoreVersion,
 } from "./routes/app_store_release";
 import { handlePushAppStoreLocalizations, handlePushAppStoreScreenshots } from "./routes/app_store_metadata";
+import { handlePushAppInfo } from "./routes/app_store_app_info";
 import { handleGetAppStorePreflight } from "./routes/app_store_preflight";
 import { handleInspectAppStoreScreenshots } from "./routes/app_store_screenshot_inspection";
 import { handleAppStoreReview } from "./routes/appstore_review";
@@ -1387,6 +1388,7 @@ bindAdmin("post", "/api/apps/:appId/app-store/versions", requireAppRole("publish
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/notes", requireAppRole("publisher"), handleSetAppStoreReleaseNotes);
 // Listing text and screenshots: explicit mode (dry_run | commit), no default.
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/localizations", requireAppRole("publisher"), handlePushAppStoreLocalizations);
+bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/app-info", requireAppRole("publisher"), handlePushAppInfo);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/screenshots", requireAppRole("publisher"), handlePushAppStoreScreenshots);
 bindAdmin("get", "/api/apps/:appId/app-store/versions/:versionId/screenshots", requireAppRole("viewer"), handleInspectAppStoreScreenshots);
 bindAdmin("post", "/api/apps/:appId/app-store/versions/:versionId/submit", requireAppRole("publisher"), handleSubmitAppStoreVersion);
