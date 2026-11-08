@@ -44,14 +44,19 @@ function safePreview(value: unknown, limit: number): string | null {
   return shortened.replace(/[@#]/g, "$&\u200b").replace(/[\\`*_{}\[\]()<>!|]/g, "\\$&");
 }
 
-function safeNotes(value: unknown, limit: number): string | null {
+function safeNotes(value: unknown, limit: number, preserveFormatting = false): string | null {
   if (typeof value !== "string") return null;
-  const cleaned = value.replace(/https?:\/\/[^\s]+/gi, "[link]")
+  const lines = value.replace(/https?:\/\/[^\s]+/gi, "[link]")
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, " ")
-    .split("\n").map((line) => line.replace(/[^\S\n]+/gu, " ").trim()).join("\n")
-    .replace(/\n{3,}/g, "\n\n").trim();
-  if (!cleaned) return null;
+    .split("\n").map((line) => {
+      if (!preserveFormatting) return line.replace(/[^\S\n]+/gu, " ").trim();
+      // Cards use plain Text, so preserve intentional spaces and list nesting.
+      // Normalize other whitespace to spaces and keep blank lines truly blank.
+      return line.trim() ? line.replace(/[^\S\n]/gu, " ") : "";
+    }).join("\n").replace(/\n{3,}/g, "\n\n");
+  const cleaned = preserveFormatting ? lines.replace(/^\n+|\n+$/g, "") : lines.trim();
+  if (!cleaned.trim()) return null;
   const chars = Array.from(cleaned);
   const shortened = chars.length > limit ? `${chars.slice(0, limit).join("")}…` : cleaned;
   // Fenced code is plain text: keep punctuation legible, but break backtick
@@ -65,13 +70,23 @@ function feedbackPreview(payload: Payload): string[] {
   return preview ? [`Feedback: ${preview}`] : [];
 }
 
-function testflightDetails(payload: Payload): string[] {
-  const lines: string[] = [];
+function testflightNote(payload: Payload, preserveFormatting: boolean): { locale: string; note: string } | null {
   const notes = record(payload.what_to_test);
   const locales = Object.keys(notes).filter((locale) => /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale)).sort();
   const locale = locales.includes("zh-Hans") ? "zh-Hans" : locales[0];
-  const note = locale ? safeNotes(notes[locale], MAX_TEST_NOTES_LENGTH) : null;
-  if (locale && note) lines.push(`Test notes (${locale}):\n\`\`\`text\n  ${note.replace(/\n/g, "\n  ")}\n\`\`\``);
+  const note = locale ? safeNotes(notes[locale], MAX_TEST_NOTES_LENGTH, preserveFormatting) : null;
+  return locale && note ? { locale, note } : null;
+}
+
+/** The visual card can preserve indentation; the established text fallback cannot change. */
+export function raftNotificationCardTestNotes(body: Payload): string | null {
+  return testflightNote(record(body.payload), true)?.note ?? null;
+}
+
+function testflightDetails(payload: Payload): string[] {
+  const lines: string[] = [];
+  const selected = testflightNote(payload, false);
+  if (selected) lines.push(`Test notes (${selected.locale}):\n\`\`\`text\n  ${selected.note.replace(/\n/g, "\n  ")}\n\`\`\``);
   const commit = safeValue(payload.source_commit);
   if (commit && /^[0-9a-f]{7,64}$/i.test(commit)) lines.push(`source commit: ${commit}`);
   return lines;
@@ -148,12 +163,18 @@ function standardFields(payload: Payload, build: Payload): string[] {
   return lines;
 }
 
-/** Current state for the card badge, independent of the formatted transition. */
-export function raftNotificationCurrentState(body: Payload): string | null {
+/** Use the same source field as the displayed market heading. */
+export function raftNotificationRawState(body: Payload): string | null {
   const payload = record(body.payload);
   const build = record(payload.build);
-  const state = safeValue(payload.status) ?? safeValue(build.status)
-    ?? safeValue(payload.state) ?? safeValue(build.state);
+  const event = safeValue(body.event) ?? "";
+  return MARKET_EVENTS.has(event) ? safeValue(payload.state) ?? safeValue(build.state)
+    : safeValue(payload.status) ?? safeValue(build.status) ?? safeValue(payload.state) ?? safeValue(build.state);
+}
+
+/** Current state for the card badge, independent of the formatted transition. */
+export function raftNotificationCurrentState(body: Payload): string | null {
+  const state = raftNotificationRawState(body);
   const event = safeValue(body.event) ?? "";
   return safePreview((state && marketStateLabel(event, state)) ?? state, MAX_FIELD_LENGTH);
 }

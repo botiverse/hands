@@ -13,14 +13,115 @@ describe("Raft release notification cards", () => {
     expect(content).toContain("Release submission failed or was blocked");
   });
 
-  it("only colors known statuses and preserves a long state without truncating its qualification", () => {
-    for (const [state, tone] of [["IN_REVIEW", "info"], ["REJECTED", "danger"], ["READY_FOR_SALE", "success"], ["UNRECOGNIZED", "neutral"]] as const) {
-      const { card } = formatRaftNotificationCard({ event: "app_store:version_state_changed", payload: { state } });
-      expect(card.header?.tags?.[0]?.tone).toBe(tone);
+  it.each([
+    ["app_store:version_state_changed", "PENDING_DEVELOPER_RELEASE", "Approved; not released", "success", "Approved; waiting for developer release"],
+    ["app_store:version_state_changed", "PENDING_APPLE_RELEASE", "Apple release pending", "success", "Waiting for Apple release"],
+    ["app_store:version_state_changed", "READY_FOR_SALE", "Ready for distribution", "success", "Ready for distribution"],
+    ["app_store:version_state_changed", "READY_FOR_DISTRIBUTION", "Ready for distribution", "success", "Ready for distribution"],
+    ["google_play:release_state_changed", "RELEASE_LIFECYCLE_STATE_APPROVED_NOT_PUBLISHED", "Approved; not released", "success", "Approved; waiting for release"],
+    ["google_play:release_state_changed", "RELEASE_LIFECYCLE_STATE_PUBLISHED", "Available on track", "success", "Available on track (may be partially rolled out or paused)"],
+    ["google_play:submission_succeeded", "SUBMISSION_SUCCEEDED", "Operation succeeded", "success", "Release submitted"],
+    ["testflight:external_state_changed", "BETA_APPROVED", "Beta approved", "success", "Approved for beta testing"],
+    ["testflight:external_state_changed", "READY_FOR_BETA_TESTING", "Ready for beta testing", "success", "Ready for beta testing"],
+    ["app_store:build_upload_state_changed", "COMPLETE", "Upload processed", "success", "Upload processed"],
+    ["appgallery:invitation_state_changed", "testing_scheduled", "Approved; test pending", "success", "Approved; waiting for testing to start"],
+    ["appgallery:invitation_state_changed", "testing_active", "Invitation testing open", "success", "Invitation testing open"],
+    ["appgallery:package_state_changed", "ready", "Package processed", "success", "Market package processed"],
+  ] as const)("shows a qualified success for %s %s", (event, state, tag, tone, title) => {
+    const body = { event, payload: { state } };
+    const { card, content } = formatRaftNotificationCard(body);
+    expect(card.header?.tags).toEqual([{ text: tag, tone }]);
+    expect(card.header?.title).toContain(title);
+    expect(Array.from(tag).length).toBeLessThanOrEqual(24);
+    // The established text is also an idempotency key's replay body; do not change it.
+    const fallback = formatRaftNotificationMessage(body);
+    expect(content).toBe(fallback + (event.startsWith("google_play:") ? "\n[Open Play Console](https://play.google.com/console/)" : ""));
+    if (state === "READY_FOR_DISTRIBUTION") {
+      expect(fallback).toContain("Status changed");
+      expect(fallback).toContain("READY\\_FOR\\_DISTRIBUTION");
     }
-    const { card } = formatRaftNotificationCard({ event: "google_play:release_state_changed", payload: { state: "RELEASE_LIFECYCLE_STATE_PUBLISHED" } });
+    if (state === "RELEASE_LIFECYCLE_STATE_PUBLISHED") {
+      expect(card.header?.title).toContain("may be partially rolled out or paused");
+    }
+    if (state === "SUBMISSION_SUCCEEDED") expect(content).toContain("Review status is not yet confirmed");
+  });
+
+  it.each([
+    ["app_store:version_state_changed", "WAITING_FOR_REVIEW", "info"],
+    ["app_store:version_state_changed", "IN_REVIEW", "info"],
+    ["app_store:version_state_changed", "REJECTED", "danger"],
+    ["app_store:version_state_changed", "METADATA_REJECTED", "danger"],
+    ["app_store:version_state_changed", "DEVELOPER_REJECTED", "warning"],
+    ["app_store:version_state_changed", "UNRECOGNIZED", "neutral"],
+    ["google_play:release_state_changed", "RELEASE_LIFECYCLE_STATE_IN_REVIEW", "info"],
+    ["google_play:release_state_changed", "RELEASE_LIFECYCLE_STATE_NOT_APPROVED", "danger"],
+    ["google_play:release_state_changed", "RELEASE_LIFECYCLE_STATE_DRAFT", "neutral"],
+    ["testflight:external_state_changed", "WAITING_FOR_BETA_REVIEW", "info"],
+    ["testflight:external_state_changed", "READY_FOR_BETA_SUBMISSION", "neutral"],
+    ["testflight:external_state_changed", "BETA_REJECTED", "danger"],
+    ["testflight:external_state_changed", "MISSING_EXPORT_COMPLIANCE", "warning"],
+    ["app_store:build_upload_state_changed", "FAILED", "danger"],
+    ["appgallery:invitation_state_changed", "ready", "neutral"],
+    ["appgallery:invitation_state_changed", "testing_review", "info"],
+    ["appgallery:invitation_state_changed", "rejected", "danger"],
+    ["appgallery:invitation_state_changed", "stopped", "warning"],
+  ] as const)("does not make %s %s a success", (event, state, tone) => {
+    const { card } = formatRaftNotificationCard({ event, payload: { state } });
+    expect(card.header?.tags?.[0]?.tone).toBe(tone);
+  });
+
+  it("does not color another provider's state or an unknown long state as success", () => {
+    for (const [event, state] of [
+      ["app_store:version_state_changed", "READY_FOR_BETA_TESTING"],
+      ["testflight:external_state_changed", "READY_FOR_SALE"],
+      ["appgallery:invitation_state_changed", "COMPLETE"],
+    ]) {
+      const { card } = formatRaftNotificationCard({ event, payload: { state } });
+      expect(card.header?.tags?.[0]?.tone).toBe("neutral");
+    }
+    const state = "UNKNOWN_" + "L".repeat(40);
+    const { card } = formatRaftNotificationCard({ event: "app_store:version_state_changed", payload: { state } });
     expect(card.header?.tags).toBeUndefined();
-    expect(card.elements.state).toMatchObject({ type: "Badge", props: { text: "Available on track (may be partially rolled out or paused)" } });
+    expect(card.elements.state).toMatchObject({ type: "Badge", props: { text: state, tone: "neutral" } });
+  });
+
+  it.each([
+    ["build:succeeded", "Build succeeded", "success", "succeeded"],
+    ["build:failed", "Build failed", "danger", "failed"],
+    ["release:new", "Active on Hands", "success", "active"],
+    ["release:published", "Published on Hands", "success", "active"],
+  ] as const)("colors %s operation receipts even when their producer omits a state", (event, text, tone, state) => {
+    for (const payload of [{}, { status: state }]) {
+      const { card, content } = formatRaftNotificationCard({ event, payload });
+      expect(card.header?.tags).toEqual([{ text, tone }]);
+      expect(content).toBe(formatRaftNotificationMessage({ event, payload }));
+    }
+    const { card } = formatRaftNotificationCard({ event, payload: { status: "UNKNOWN" } });
+    expect(card.header?.tags?.[0]?.tone).toBe("neutral");
+  });
+
+  it("qualifies a Hands release's partial rollout without implying store publication", () => {
+    const { card, content } = formatRaftNotificationCard({ event: "release:published", payload: { rollout: 25 } });
+    expect(card.header?.tags).toEqual([{ text: "Published on Hands", tone: "success" }]);
+    expect(JSON.stringify(card)).toContain("Rollout: 25%");
+    expect(content).toContain("Rollout: 25%");
+  });
+
+  it("uses the displayed market state, not a conflicting status field", () => {
+    const body = { event: "app_store:version_state_changed", payload: { state: "REJECTED", status: "READY_FOR_SALE" } };
+    const { card, content } = formatRaftNotificationCard(body);
+    expect(card.header?.title).toContain("Review rejected");
+    expect(card.header?.tags).toEqual([{ text: "Review rejected", tone: "danger" }]);
+    expect(content).toContain("Review rejected");
+  });
+
+  it.each(["ready", "testing_active", "testing_scheduled"])("does not mark withdrawn AppGallery review as approved when state is %s", (state) => {
+    const { card, content } = formatRaftNotificationCard({ event: "appgallery:invitation_state_changed", payload: {
+      state, state_label: "开发者撤回邀请测试审核",
+    } });
+    expect(card.header?.title).toContain("Invitation test review withdrawn by developer");
+    expect(card.header?.tags).toEqual([{ text: "Review withdrawn", tone: "warning" }]);
+    expect(content).toContain("Invitation test review withdrawn by developer");
   });
 
   it("never copies user-provided text into Markdown and retains the complete fallback", () => {
@@ -199,6 +300,42 @@ describe("Raft release notification cards", () => {
     expect(text).not.toContain("```text");
   });
 
+  it.each(["testflight:external_state_changed", "testflight:internal_distribution_ready"])(
+    "removes only the added fenced-note indentation from %s cards, without changing fallback", (event) => {
+      const body = { event, delivered_at: 100, payload: {
+        state: "READY_FOR_BETA_TESTING", version: "1.21.0", groups_display: "Group 1",
+        what_to_test: { en: "  Intro\n- first\n    - nested  item\n\n- second\nAt: not a timestamp\nCommit: not metadata\nVersion code: 42\n\\*literal\\*\n```\n@user" },
+      } };
+      const { card, content } = formatRaftNotificationCard(body);
+      expect(content).toBe(formatRaftNotificationMessage(body));
+      expect(content).toContain("What to test:\n```text\n  Intro\n  - first\n  - nested item\n  \n  - second");
+      const text = Object.values(card.elements).filter((element) => element.type === "Text")
+        .map((element) => element.props.text).join("");
+      expect(text).toContain("Test groups: Group 1\nWhat to test:\n  Intro\n- first\n    - nested  item\n\n- second\nAt: not a timestamp\nCommit: not metadata\nVersion code: 42\n\\*literal\\*");
+      expect(card.elements.fields).toBeUndefined();
+      expect(text).not.toContain("\n  - first");
+      expect(text).toContain("@\u200buser");
+      expect(text).not.toContain("```text");
+      expect(card.elements.time?.type).toBe("RelativeTime");
+    },
+  );
+
+  it("retains note formatting while selecting the same preferred locale and protecting mentions and links", () => {
+    const body = { event: "testflight:external_state_changed", delivered_at: 100, payload: {
+      state: "IN_BETA_TESTING", app_store_connect_url: "https://appstoreconnect.apple.com/apps/123",
+      what_to_test: { en: "Wrong locale", "zh-Hans": "- 一级\n  - 二级\n    - 三级\n  @name #channel https://example.test/secret" },
+    } };
+    const { card, content } = formatRaftNotificationCard(body);
+    const text = Object.values(card.elements).filter((e) => e.type === "Text").map((e) => e.props.text).join("");
+    expect(content).toBe(formatRaftNotificationMessage(body));
+    expect(content).toContain("  - 一级\n  - 二级\n  - 三级");
+    expect(text).toContain("- 一级\n  - 二级\n    - 三级\n  @\u200bname #\u200bchannel [link]");
+    expect(text).not.toContain("Wrong locale");
+    expect(text).not.toContain("example.test");
+    expect(card.elements.time?.type).toBe("RelativeTime");
+    expect(card.elements.review?.type).toBe("Button");
+  });
+
   it("fits lengthy multibyte test notes while keeping the event time", () => {
     const { card, content } = formatRaftNotificationCard({ event: "testflight:external_state_changed", delivered_at: 100,
       payload: { state: "READY_FOR_BETA_TESTING", what_to_test: { en: "🧪".repeat(1200) } },
@@ -224,6 +361,24 @@ describe("Raft release notification cards", () => {
     const root = card.elements.root;
     if (!root || root.type !== "Stack") throw new Error("missing root stack");
     expect(root.children.length).toBeLessThanOrEqual(12);
+  });
+
+  it("keeps note lines that duplicate actual footer text in place without treating them as footer or fields", () => {
+    const occurred = "2026-11-08T05:00:00Z";
+    const body = { event: "testflight:external_state_changed", payload: {
+      state: "IN_BETA_TESTING", occurred_at: occurred, observation_display: "same",
+      what_to_test: { en: "At: 2026-11-08 05:00:00 UTC\nObservation: same\nCommit: fake\nFirst observation; not a footer\nend" },
+    } };
+    const { card, content } = formatRaftNotificationCard(body);
+    const detail = Object.entries(card.elements).filter(([id, el]) => id.startsWith("detail") && el.type === "Text")
+      .map(([, el]) => el.type === "Text" ? el.props.text : "").join("");
+    const footer = Object.entries(card.elements).filter(([id, el]) => id.startsWith("footer") && el.type === "Text")
+      .map(([, el]) => el.type === "Text" ? el.props.text : "").join("");
+    expect(detail).toContain("What to test:\nAt: 2026-11-08 05:00:00 UTC\nObservation: same\nCommit: fake\nFirst observation; not a footer\nend");
+    expect(footer).toContain("Observation: same");
+    expect(card.elements.time).toEqual({ type: "RelativeTime", props: { at: "2026-11-08T05:00:00.000Z" } });
+    expect(card.elements.fields).toBeUndefined();
+    expect(content).toBe(formatRaftNotificationMessage(body));
   });
 
   it("keeps an invalid provider time as text rather than showing a different relative date", () => {
