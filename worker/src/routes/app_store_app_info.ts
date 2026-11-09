@@ -15,16 +15,18 @@ const KNOWN_PLATFORMS = new Set(["IOS", "MAC_OS", "TV_OS", "VISION_OS"]);
 // it does not expose an AppInfo-to-version relationship. Never fall back to live info.
 const SAFE_OTHER_INFOS = new Set(["READY_FOR_DISTRIBUTION", "REPLACED_WITH_NEW_INFO"]);
 const FIELDS = ["name", "subtitle"] as const;
+const APP_INFO_COMMIT_CONTRACT_VERSION = 1;
 type Fields = Partial<Record<InfoField, string>>;
-type Input = { mode: "dry_run" | "commit"; version_string: string; localizations: Record<string, Fields>; primary_category?: string };
+type Input = { mode: "dry_run" | "commit"; version_string: string; commit_contract_version?: number; localizations: Record<string, Fields>; primary_category?: string };
 class InputError extends Error { constructor(readonly code: string, message: string) { super(message); } }
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const hash = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value)));
 const fingerprint = (value: string | null | undefined) => value == null ? null : { sha256: hash(value), chars: [...value].length };
 
 export function normalizeAppInfoInput(raw: unknown): Input {
-  if (!isObject(raw) || Object.keys(raw).some((k) => !["mode", "version_string", "localizations", "primary_category"].includes(k))) throw new InputError("INVALID_REQUEST", "body contains unsupported fields");
+  if (!isObject(raw) || Object.keys(raw).some((k) => !["mode", "version_string", "commit_contract_version", "localizations", "primary_category"].includes(k))) throw new InputError("INVALID_REQUEST", "body contains unsupported fields");
   if (raw.mode !== "dry_run" && raw.mode !== "commit") throw new InputError("MODE_REQUIRED", "mode must be dry_run or commit");
+  if (raw.commit_contract_version !== undefined && raw.commit_contract_version !== APP_INFO_COMMIT_CONTRACT_VERSION) throw new InputError("INVALID_COMMIT_CONTRACT", `commit_contract_version must be ${APP_INFO_COMMIT_CONTRACT_VERSION} when provided`);
   if (typeof raw.version_string !== "string" || !raw.version_string.trim() || raw.version_string.length > 100) throw new InputError("VERSION_STRING_REQUIRED", "the exact version_string is required");
   if (raw.primary_category !== undefined && (typeof raw.primary_category !== "string" || !/^[A-Z][A-Z0-9_]{1,99}$/.test(raw.primary_category))) throw new InputError("INVALID_CATEGORY", "primary_category must be an Apple category ID such as PRODUCTIVITY");
   const localizations: Record<string, Fields> = {};
@@ -45,7 +47,7 @@ export function normalizeAppInfoInput(raw: unknown): Input {
     }
   }
   if (!Object.keys(localizations).length && !raw.primary_category) throw new InputError("INVALID_REQUEST", "provide localizations and/or primary_category");
-  return { mode: raw.mode, version_string: raw.version_string, localizations, ...(raw.primary_category !== undefined ? { primary_category: raw.primary_category as string } : {}) };
+  return { mode: raw.mode, version_string: raw.version_string, ...(raw.commit_contract_version !== undefined ? { commit_contract_version: APP_INFO_COMMIT_CONTRACT_VERSION } : {}), localizations, ...(raw.primary_category !== undefined ? { primary_category: raw.primary_category as string } : {}) };
 }
 
 interface Plan { locale: string; localization_id: string | null; action: "create" | "update" | "unchanged"; changed_fields: InfoField[]; before: Partial<Record<InfoField, string | null>>; after: Fields; blocker: string | null }
@@ -115,13 +117,16 @@ export async function handlePushAppInfo(c: AdminContext) {
   let input: Input;
   try { input = normalizeAppInfoInput(await c.req.json().catch(() => null)); }
   catch (error) { if (error instanceof InputError) return c.json({ code: error.code, error: error.message }, 400); throw error; }
-  // Product acceptance of application-scoped semantics does not verify Apple
-  // write behavior or recovery. Keep every externally reachable commit blocked.
-  if (input.mode === "commit") return c.json({ code: "APP_INFO_COMMIT_UNVERIFIED", error: "App Information writes are not yet verified; nothing was written" }, 409);
+  // Old CLIs (<= 0.5.43) omit commit_contract_version and predate single-send
+  // 401 handling and complete confirmation checks; refuse their commit calls
+  // before any Apple read, lock acquisition, or audit entry.
+  if (input.mode === "commit" && input.commit_contract_version !== APP_INFO_COMMIT_CONTRACT_VERSION) {
+    return c.json({ code: "APP_INFO_CLIENT_UPGRADE_REQUIRED", error: "upgrade @botiverse/hands-cli to 0.5.44 or newer before running App Information --commit; nothing was written" }, 409);
+  }
   return pushAppInfoCandidate(c, input);
 }
 
-/** Test the candidate machinery directly; the public route above does not allow commits. */
+/** Run App Information preview or commit reconciliation with operation lock and readback. */
 export async function pushAppInfoCandidate(c: AdminContext, input: Input) {
   const appId = c.req.param("appId") ?? "", versionId = c.req.param("versionId") ?? "";
   const operationId = crypto.randomUUID();

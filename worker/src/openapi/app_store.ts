@@ -69,8 +69,9 @@ const LocalizationsInput = z.object({
 // Unlike legacy endpoints, make the no-default mode and exact version guard
 // machine-readable as well as documented; schema-invalid values fail before the handler.
 const AppInfoInput = z.object({
-  mode: z.enum(["dry_run", "commit"]).openapi({ description: 'Required, no default: "dry_run" or "commit". Valid commit requests are currently blocked before Apple calls.' }),
+  mode: z.enum(["dry_run", "commit"]).openapi({ description: 'Required, no default: "dry_run" or "commit". Commit requires commit_contract_version: 1.' }),
   version_string: z.string().min(1).max(100).openapi({ description: "Required exact version string; the version is a guard, not the owner of App Information." }),
+  commit_contract_version: z.literal(1).optional().openapi({ description: 'Required for mode "commit": integer 1. Refuses older CLIs before any Apple call or operation lock.' }),
   primary_category: z.string().optional().openapi({ description: "Apple primary category ID, e.g. PRODUCTIVITY." }),
   localizations: z.record(z.string(), z.object({ name: z.string().optional(), subtitle: z.string().optional() }).passthrough()).optional(),
 }).passthrough().openapi("AppStoreAppInfoInput");
@@ -164,11 +165,11 @@ export function registerAppStoreRoutes(): RouteConfigList {
     method: "post",
     path: "/api/apps/{appId}/app-store/versions/{versionId}/app-info",
     tags: ["App Store"],
-    summary: "Preview shared App Information (writes currently blocked)",
-    description: "Publisher only. Requires explicit dry_run or commit and the exact version_string. App Information is shared across platforms and is not bound to the selected version. Preview requires an editable version and one unambiguous draft, checks category availability for observed platforms and reports language differences; version records may omit newly added platforms. A planned new App Information locale must also exist on the selected version. Preview uses only Apple GETs; it neither checks nor reserves name availability, and language differences do not prove Apple's submission requirements. Valid commit requests return APP_INFO_COMMIT_UNVERIFIED before this handler calls Apple or writes until provider behavior and recovery are verified; malformed requests can fail validation first.",
+    summary: "Preview or update shared App Information (localized name, subtitle, primary category)",
+    description: "Publisher only. Requires explicit dry_run or commit and the exact version_string; commit also requires commit_contract_version: 1 (refusing older CLIs with APP_INFO_CLIENT_UPGRADE_REQUIRED before any Apple call or lock). App Information is shared across platforms and is not bound to the selected version. Requires an editable version and one unambiguous draft, checks category availability for observed platforms and reports language differences; version records may omit newly added platforms. A planned new App Information locale must also exist on the selected version. Preview uses only Apple GETs; it neither checks nor reserves name availability, and language differences do not prove Apple's submission requirements. Commit acquires the apple_app_info operation lock, rechecks snapshot consistency, writes only requested changed fields and primary_category, and reads back the selected AppInfo; any uncertain or mismatched result retains the lock with recovery_required: true.",
     security: auth,
     request: { params: AppVersionParams, body: { content: json(AppInfoInput), required: true } },
-    responses: { 200: success("Read-only plan.", GenericObject), 400: error("Invalid request."), 403: error("Publisher role required."), 404: error("Version not in this app."), 409: error("APP_INFO_COMMIT_UNVERIFIED, blocked plan or ambiguous target; nothing written."), 502: error("Apple rejected a read or returned invalid or incomplete metadata.") },
+    responses: { 200: success("Planned (dry_run), committed, or no_changes.", GenericObject), 400: error("Invalid request."), 403: error("Publisher role required."), 404: error("Version not in this app."), 409: error("APP_INFO_CLIENT_UPGRADE_REQUIRED, APP_INFO_LOCKED, APP_INFO_CHANGED, blocked plan or ambiguous target; nothing written."), 502: error("Apple rejected a read or write, readback mismatched, or operation outcome is uncertain (recovery_required: true).") },
   });
   routes.push({
     method: "get",

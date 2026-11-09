@@ -350,7 +350,7 @@ export function assertAppInfoConfirmed<T>(body: T, requested: Record<string, unk
 export function appInfoFailureNeedsWarning(error: unknown): boolean {
   if (!(error instanceof QuiverApiError) || !error.body || typeof error.body !== "object" || Array.isArray(error.body)) return true;
   const b = error.body as Record<string, unknown>;
-  if (b.code === "APP_INFO_COMMIT_UNVERIFIED" && error.status === 409) return false;
+  if ((b.code === "APP_INFO_COMMIT_UNVERIFIED" || b.code === "APP_INFO_CLIENT_UPGRADE_REQUIRED") && error.status === 409) return false;
   if (b.code !== "APP_INFO_RECOVERY_REQUIRED" && b.code !== "APP_INFO_WRITE_FAILED" && b.code !== "APP_INFO_READBACK_MISMATCH") return true;
   if (typeof b.operation_id !== "string" || !b.operation_id.trim() || typeof b.recovery_required !== "boolean" || !Array.isArray(b.results) || !b.results.length) return true;
   if (b.results.some((r: unknown) => !r || typeof r !== "object" || Array.isArray(r) || typeof (r as Record<string, unknown>).target !== "string" || !["written", "unchanged", "failed", "unknown", "not_attempted"].includes(String((r as Record<string, unknown>).status)))) return true;
@@ -380,7 +380,7 @@ export function formatAppInfoResult(body: any): string {
   }
   for (const m of body.mismatches ?? []) lines.push(`  read-back mismatch: ${m.target} ${m.field}`);
   if (body.recovery_required) lines.push(`Recovery required for operation ${body.operation_id}: inspect Apple and the operation lock before retrying; the lock may already be absent.`);
-  if (body.outcome === "planned") lines.push("Dry run: nothing written; name availability is not checked or reserved. App Information is shared across platforms and not bound to this version. Commit is currently blocked pending verification.");
+  if (body.outcome === "planned") lines.push("Dry run: nothing written; name availability is not checked or reserved. App Information is shared across platforms and not bound to this version. Run again with --commit to write.");
   else if (body.outcome === "committed") lines.push("Committed and read back from Apple.");
   else if (body.outcome === "no_changes") lines.push("No changes; requested fields match Apple.");
   return lines.join("\n");
@@ -516,12 +516,12 @@ export function registerAppStoreCommands(program: Command): void {
 
   const appInfo = group.command("app-info").description("Shared App Information: localized name, subtitle and primary category.");
   appInfo.command("push <appIdOrSlug>")
-    .description("Preview shared App Information from JSON. Preview does not reserve a name; commits are currently blocked pending verification.")
+    .description("Preview or update shared App Information from JSON. Preview does not reserve a name; --commit writes and reads back.")
     .requiredOption("--file <json>", '{"primary_category":"PRODUCTIVITY","localizations":{"en-US":{"name":"...","subtitle":"..."}}}')
     .requiredOption("--version-name <version>", "Exact editable version string (also sent as a confirmation).")
     .option("--version-id <id>", "Optional ASC version ID; must still match --version-name.")
     .option("--platform <platform>", "Platform for version lookup, IOS by default.")
-    .option("--commit", "Request a write (currently blocked pending verification).", false)
+    .option("--commit", "Write to App Store Connect (dry run by default).", false)
     .option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, opts: { file: string; versionName: string; versionId?: string; platform?: string; commit?: boolean; json?: boolean }) => {
       let raw: unknown;
@@ -531,7 +531,7 @@ export function registerAppStoreCommands(program: Command): void {
       if (Object.keys(obj).some((key) => key !== "localizations" && key !== "primary_category")) throw new Error("app-info file has unsupported fields");
       const appId = await resolveAppId(appIdOrSlug);
       const versionId = opts.versionId ?? (await status(appId, opts.versionName, opts.platform)).version_id;
-      const body = { ...obj, mode: opts.commit ? "commit" : "dry_run", version_string: opts.versionName };
+      const body = { ...obj, mode: opts.commit ? "commit" : "dry_run", version_string: opts.versionName, ...(opts.commit ? { commit_contract_version: 1 } : {}) };
       const json = jsonRequested(program, opts.json);
       try {
         const response = await withDetail(json, formatAppInfoResult, () =>

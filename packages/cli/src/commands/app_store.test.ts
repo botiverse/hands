@@ -184,16 +184,16 @@ describe("hands app-store", () => {
     expect(text).toContain('name: "Old" [3] -> "New Name" [8]');
     expect(text).toContain("App Information languages missing in the selected version: ja");
     expect(text).toContain("not checked or reserved");
-    expect(text).toContain("Commit is currently blocked");
+    expect(text).toContain("Run again with --commit to write.");
     const json = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver/117", "--file", file, "--json"], () => plan);
     expect(json.calls).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver%2F117/app-info`, body: { ...desired, mode: "dry_run", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: true }]);
     expect(JSON.parse(json.out.join("\n"))).toEqual(plan);
     const { QuiverApiError } = await import("../lib/api.js");
-    const guard = { code: "APP_INFO_COMMIT_UNVERIFIED", error: "App Information writes are not yet verified; nothing was written" };
+    const guard = { code: "APP_INFO_CLIENT_UPGRADE_REQUIRED", error: "upgrade @botiverse/hands-cli to 0.5.44 or newer before running App Information --commit; nothing was written" };
     const failure = await run(["app-store", "app-info", "push", APP_ID, "--version-name", "1.17.0", "--version-id", "ver-117", "--file", file, "--commit"], () => { throw new QuiverApiError(409, guard, guard.error); }).catch((e) => e);
     expect(failure).toBeInstanceOf(QuiverApiError);
     expect(failure.body).toEqual(guard);
-    expect((globalThis as any).__CALLS).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "commit", version_string: "1.17.0" }, query: undefined, retryOnUnauthorized: false }]);
+    expect((globalThis as any).__CALLS).toEqual([{ method: "POST", path: `/api/apps/${APP_ID}/app-store/versions/ver-117/app-info`, body: { ...desired, mode: "commit", version_string: "1.17.0", commit_contract_version: 1 }, query: undefined, retryOnUnauthorized: false }]);
   });
 
   it("app-info accepts only complete confirmed results matching the request", async () => {
@@ -237,6 +237,8 @@ describe("hands app-store", () => {
     errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(502, { ...releaseUnconfirmed, mutation_started: false, results: [] }, "inspect"); })).rejects.toThrow();
     expect(errors.join("\n")).toContain("Recovery required for operation op-2"); expect(errors.join("\n")).toContain(warning);
     errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(409, { code: "APP_INFO_COMMIT_UNVERIFIED" }, "blocked"); })).rejects.toThrow();
+    expect(errors.join("\n")).not.toContain(warning);
+    errors.length = 0; await expect(run(argv, () => { throw new QuiverApiError(409, { code: "APP_INFO_CLIENT_UPGRADE_REQUIRED" }, "upgrade"); })).rejects.toThrow();
     expect(errors.join("\n")).not.toContain(warning);
   });
 
