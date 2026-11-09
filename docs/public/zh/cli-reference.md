@@ -634,14 +634,17 @@ hands releases revoke-share raft-android <release-id> <share-id>
 
 ```bash
 hands feedback list raft-android --status open --kind crash
+hands feedback list raft-android --kind crash --crash-type system_kill
 hands feedback list raft-ios --build-scope external
 hands feedback show raft-android <ticket-id>
 hands feedback update raft-android <ticket-id> --status in_progress --assignee me
 hands feedback comment raft-android <ticket-id> "已复现，修复中"
 hands feedback update raft-android <ticket-id> --status resolved
+hands feedback update raft-android <ticket-id> --status closed --closure-reason completed
+hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
 
-`--assignee none` 移除负责人。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
+`--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce`、`duplicate` 或 `no_longer_needed`），重复工单还需提供 `--duplicate-of <ticket-id>`。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
 
 ## 应用 Webhook
 

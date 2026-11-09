@@ -12,6 +12,8 @@ interface TicketRow {
   id: string;
   kind: string;
   status: string;
+  closure_reason?: string | null;
+  duplicate_of_ticket_id?: string | null;
   assignee: string | null;
   message: string;
   version_name: string | null;
@@ -21,6 +23,7 @@ interface TicketRow {
   attachment_count: number;
   comment_count: number;
   build_origin?: "configured" | "external" | "unknown" | null;
+  crash_type?: "anr" | "system_kill" | "native" | "exception" | null;
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
@@ -43,14 +46,16 @@ export function registerFeedbackCommands(program: Command): void {
     .command("list <appIdOrSlug>")
     .description("List tickets, newest first.")
     .option("--status <status>", "Filter: open | in_progress | resolved | closed.")
-    .option("--kind <kind>", "Filter: feedback | bug | crash.")
+    .option("--kind <kind>", "Filter: feedback | bug | crash | error.")
+    .option("--crash-type <type>", "Filter crashes by type: exception | native | anr | system_kill.")
     .option("--build-scope <scope>", "Filter by origin: standard | external | all.")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; buildScope?: string; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; crashType?: string; buildScope?: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const params = new URLSearchParams();
       if (opts.status) params.set("status", opts.status);
       if (opts.kind) params.set("kind", opts.kind);
+      if (opts.crashType) params.set("crash_type", opts.crashType);
       if (opts.buildScope) params.set("build_scope", opts.buildScope);
       const qs = params.toString();
       const res = await apiRequest<{ tickets: TicketRow[] }>(
@@ -66,10 +71,12 @@ export function registerFeedbackCommands(program: Command): void {
       }
       for (const t of res.tickets) {
         const preview = t.message.replace(/\s+/g, " ").slice(0, 60);
+        const crashTag = t.crash_type && t.crash_type !== "exception" ? `[${t.crash_type}] ` : "";
         console.log(
           `${t.id}  ${t.status.padEnd(11)} ${t.kind.padEnd(8)} ` +
             `${(t.assignee ?? "-").padEnd(16)} v${t.version_name ?? "?"} ` +
             `[${t.attachment_count}📎 ${t.comment_count}💬] ` +
+            `${crashTag}` +
             `${t.build_origin === "external" || t.build_origin === "unknown" ? `[${t.build_origin}] ` : ""} ${preview}`,
         );
       }
@@ -92,6 +99,10 @@ export function registerFeedbackCommands(program: Command): void {
       }
       const t = res.ticket as Record<string, unknown>;
       console.log(`Ticket ${String(t["id"])} (${t["kind"]}, ${t["status"]})`);
+      if (t["closure_reason"]) {
+        const dup = t["duplicate_of_ticket_id"] ? ` (${t["duplicate_of_ticket_id"]})` : "";
+        console.log(`  closure:  ${t["closure_reason"]}${dup}`);
+      }
       if (t["build_origin"]) console.log(`  origin:   ${t["build_origin"]}`);
       console.log(`  assignee: ${t["assignee"] ?? "-"}`);
       console.log(`  version:  ${t["version_name"] ?? "?"} (${t["version_code"] ?? "?"}) · ${t["channel"] ?? "?"}`);
@@ -116,24 +127,52 @@ export function registerFeedbackCommands(program: Command): void {
 
   feedback
     .command("update <appIdOrSlug> <ticketId>")
-    .description("Change status and/or assignee.")
+    .description("Change status, closure reason, and/or assignee.")
     .option("--status <status>", "open | in_progress | resolved | closed.")
+    .option(
+      "--closure-reason <reason>",
+      "Reason when closing a ticket: completed | not_planned | cannot_reproduce | duplicate | no_longer_needed.",
+    )
+    .option(
+      "--duplicate-of <ticketId>",
+      "Canonical ticket ID (or unique prefix) when closing with --closure-reason duplicate.",
+    )
     .option("--assignee <name>", "Assign to a person/agent; use 'none' to unassign.")
     .option("--json", "Output JSON.", false)
     .action(
       async (
         appIdOrSlug: string,
         ticketId: string,
-        opts: { status?: string; assignee?: string; json?: boolean },
+        opts: {
+          status?: string;
+          closureReason?: string;
+          duplicateOf?: string;
+          assignee?: string;
+          json?: boolean;
+        },
       ) => {
         const appId = await resolveAppId(appIdOrSlug);
-        const body: { status?: string; assignee?: string | null } = {};
+        const body: {
+          status?: string;
+          closure_reason?: string;
+          duplicate_of_ticket_id?: string;
+          assignee?: string | null;
+        } = {};
         if (opts.status) body.status = opts.status;
+        if (opts.closureReason) {
+          body.closure_reason = opts.closureReason;
+          if (!body.status) body.status = "closed";
+        }
+        if (opts.duplicateOf) {
+          body.duplicate_of_ticket_id = opts.duplicateOf;
+          if (!body.closure_reason) body.closure_reason = "duplicate";
+          if (!body.status) body.status = "closed";
+        }
         if (opts.assignee !== undefined) {
           body.assignee = opts.assignee === "none" ? null : opts.assignee;
         }
         if (body.status === undefined && body.assignee === undefined) {
-          throw new Error("nothing to update: pass --status and/or --assignee");
+          throw new Error("nothing to update: pass --status, --closure-reason, --duplicate-of, and/or --assignee");
         }
         const res = await apiRequest<Record<string, unknown>>(
           `/api/apps/${appId}/feedback/${ticketId}`,

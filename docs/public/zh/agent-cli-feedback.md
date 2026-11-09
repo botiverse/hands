@@ -48,6 +48,7 @@ npm exec --package @botiverse/hands-cli -- hands whoami
 ```bash
 # 列出工单，最新的排在前面（可以筛选）
 hands feedback list raft-android --status open --kind crash
+hands feedback list raft-android --kind crash --crash-type system_kill
 hands feedback list raft-android --kind bug
 
 # 对已启用外部报告分流的 iOS 应用：
@@ -57,9 +58,11 @@ hands feedback list raft-ios --build-scope external
 # 使用提交工单的响应或引用中的完整 UUID。
 hands feedback show raft-android 389d855b-0000-0000-0000-000000000000
 
-# 处理：修改状态和（或）重新分配负责人
+# 处理：修改状态、关闭原因和（或）重新分配负责人
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status in_progress --assignee me
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status resolved
+hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status closed --closure-reason not_planned
+hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --closure-reason duplicate --duplicate-of 11111111
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --assignee none   # 移除负责人
 
 # 公开回复报告人（他们可以在反馈对话中看到）
@@ -69,7 +72,7 @@ hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "reprod
 hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root cause: null listItemId in badge render" --internal
 ```
 
-状态流程：`open → in_progress → resolved → closed`。负责人与状态相互独立。
+状态流程：`open → in_progress → resolved → closed`。关闭工单时必须传入 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce`、`duplicate` 或 `no_longer_needed`），原因为 `duplicate` 时还需传入 `--duplicate-of <ticketId>`。负责人与状态相互独立。
 
 应用启用外部 iOS 报告分流后，默认列表保留已配置和未知来源的报告。`--build-scope external` 显示不匹配的报告；`--build-scope all` 显示全部报告。上报的 bundle ID 来自客户端，仅供处理时参考，并非身份凭证。
 

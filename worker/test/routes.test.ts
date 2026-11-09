@@ -11546,6 +11546,12 @@ describe("quiver public API v2 — scope resolution", () => {
       crash_top_frame: "libraft.so+0x1a2b",
       crash_reason: "native_signal",
     })).status).toBe(201);
+    expect((await submit("devE", {
+      crash_type: "system_kill",
+      crash_reason: "system_kill",
+      crash_exception_class: "SystemKill",
+      crash_top_frame: "other",
+    })).status).toBe(201);
 
     const groups = async (query: Record<string, string>) => {
       const ctx = {
@@ -11556,7 +11562,7 @@ describe("quiver public API v2 — scope resolution", () => {
       return (await responseJson<any>(await handleListCrashGroups(ctx))).groups as any[];
     };
     const all = await groups({});
-    expect(all).toHaveLength(3);
+    expect(all).toHaveLength(4);
     // Same frame, different builds' line numbers → one ANR group, never merged
     // with the Java exception on the same frame.
     const anrGroup = all.find((g) => g.signature === "ANR@app.members.MemberTab.bind")!;
@@ -11564,13 +11570,16 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(all.find((g) => g.signature.startsWith("java.lang.IllegalStateException@"))!.crash_type)
       .toBe("exception");
     expect(all.find((g) => g.signature.startsWith("SIGSEGV@"))!.crash_type).toBe("native");
+    expect(all.find((g) => g.signature === "SystemKill@other")!.crash_type).toBe("system_kill");
 
     expect((await groups({ crash_type: "anr" })).map((g) => g.signature))
       .toEqual(["ANR@app.members.MemberTab.bind"]);
+    expect((await groups({ crash_type: "system_kill" })).map((g) => g.signature))
+      .toEqual(["SystemKill@other"]);
     expect((await groups({ crash_type: "native" })).map((g) => g.crash_type)).toEqual(["native"]);
     expect(await groups({ crash_type: "exception" })).toHaveLength(1);
     // Unknown values are ignored (no filter), never interpolated.
-    expect(await groups({ crash_type: "anr' OR 1=1 --" })).toHaveLength(3);
+    expect(await groups({ crash_type: "anr' OR 1=1 --" })).toHaveLength(4);
 
     const listCtx = {
       env,
@@ -11583,6 +11592,18 @@ describe("quiver public API v2 — scope resolution", () => {
     const tickets = (await responseJson<any>(await handleListFeedback(listCtx))).tickets as any[];
     expect(tickets).toHaveLength(2);
     expect(tickets.every((t) => t.crash_type === "anr")).toBe(true);
+
+    const killListCtx = {
+      env,
+      req: {
+        param: (n: string) => (n === "appId" ? "app-scope" : ""),
+        query: (k: string) => ({ kind: "crash", crash_type: "system_kill" } as Record<string, string>)[k],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any;
+    const killTickets = (await responseJson<any>(await handleListFeedback(killListCtx))).tickets as any[];
+    expect(killTickets).toHaveLength(1);
+    expect(killTickets[0].crash_type).toBe("system_kill");
   });
 
   it("parseNativeFrames bounds and shape-checks SDK input", async () => {

@@ -106,6 +106,7 @@ hands feedback show <app> <ticketId>
 hands feedback update <app> <ticketId> --status in_progress --assignee <name>
 hands feedback comment <app> <ticketId> "reproduced; fix in progress"
 hands feedback update <app> <ticketId> --status resolved
+hands feedback update <app> <ticketId> --status closed --closure-reason completed
 ```
 
 崩溃工单包含分组签名；如果上传了构建的 `mapping.txt`，评论中还会包含自动还原的堆栈。`GET /api/apps/:id/feedback/crash-groups` 按签名汇总。

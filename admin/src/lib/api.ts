@@ -1903,7 +1903,7 @@ export interface FeedbackTicket {
   crash_type?: CrashType | null;
 }
 
-export type CrashType = "anr" | "native" | "exception";
+export type CrashType = "anr" | "system_kill" | "native" | "exception";
 
 export interface FeedbackDetail {
   ticket: FeedbackTicket & {
