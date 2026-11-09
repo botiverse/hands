@@ -53,7 +53,7 @@ Use a new version code for each new build. Your first upload can use your app's 
 
 ## Release notifications
 
-App webhooks can subscribe to `google_play:submission_succeeded`,
+App webhooks (and [Raft channel notifications](store-release-notifications.md)) can subscribe to `google_play:submission_succeeded`,
 `google_play:submission_failed`, and `google_play:release_state_changed`.
 Submission events come from immutable Hands promotion receipts and include the
 package, version code, Hands track, and receipt ID. A successful submission is

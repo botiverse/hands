@@ -608,7 +608,7 @@ recent deliveries. Authenticated test pings and unsupported event types are
 acknowledged without a review notification. A test ping proves Apple can reach
 the receiver; it does not prove a real review event reached your chat channel.
 
-Subscribe your existing app-scoped or organization-scoped Hands webhook to the
+Subscribe your existing app-scoped or organization-scoped Hands webhook (or [Raft channel notifications](store-release-notifications.md)) to the
 outbound events above. The existing queue sends notifications immediately and
 retries failures through its usual delivery ledger. A chat relay must support
 these event types and deduplicate the stable `event_id`. Creating the ingress

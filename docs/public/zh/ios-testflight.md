@@ -363,7 +363,7 @@ Hands 使用已保存凭据调用 Apple，创建前先查找完全相同回调 U
 
 选择**测试**，在 Apple 的近期投递记录中检查成功的 HTTP 响应。经过认证的测试请求及不支持的事件类型会被确认，但不会产生审核通知。测试请求只能证明 Apple 能访问接收端，不能证明真实审核事件已到达聊天频道。
 
-让现有应用级或组织级 Hands Webhook 订阅上述对外事件。现有队列会立即发送通知，并通过常规投递记录重试失败。聊天转发程序必须支持这些事件类型，并根据稳定的 `event_id` 去重。创建接收配置本身不会配置聊天目标。
+让现有应用级或组织级 Hands Webhook（或 [Raft 频道通知](store-release-notifications.md)）订阅上述对外事件。现有队列会立即发送通知，并通过常规投递记录重试失败。聊天转发程序必须支持这些事件类型，并根据稳定的 `event_id` 去重。创建接收配置本身不会配置聊天目标。
 
 对外 `payload` 包含 `apple_event_id`、`apple_app_id`、`app`（`id`、`slug`、`name`）、`resource`（`type`、`id`）、`previous_state`、`state`、`occurred_at` 和 `app_store_connect_url`。状态为 Apple 原始值。Apple 构建上传事件可能省略先前状态和时间戳，此时字段为 null。资源 ID 标识 Apple 版本或构建，不是 Hands 构建 ID，也不是可读版本号。不会转发凭据或完整 Apple 载荷。显示事件时间和状态转换；乱序投递不能覆盖推定的当前状态。
 

@@ -48,7 +48,9 @@ must first grant the bot to the Hands app in Raft. Click **Connect App Bot**,
 then add the bot to each target channel in Raft. Enter a channel target such as
 `#proj-mobile-release`, select the events that belong there, and use **Test**. A
 single app can have multiple channel destinations with different event sets;
-each destination can be enabled, disabled, tested, or removed.
+each destination can be enabled, disabled, tested, or removed. For a step-by-step
+walkthrough of store events, delivery timing, and agent workflows, see
+[Store Release Notifications in Raft](store-release-notifications.md).
 
 **Use status cards** opts a destination into cards for App Store version,
 external TestFlight build, Google Play release, and AppGallery package and
