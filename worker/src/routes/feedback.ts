@@ -2171,18 +2171,21 @@ export async function dispatchSymbolication(
 /**
  * Crash flavour derived from SDK metadata (no column, no migration):
  * `anr` (Android ApplicationExitInfo REASON_ANR, `crash_type=anr`),
+ * `system_kill` (Android ApplicationExitInfo silent system kill, `crash_type=system_kill`),
  * `native` (signal records, `crash_reason=native_signal`), else `exception`.
  */
 const CRASH_TYPE_SQL = `CASE WHEN json_valid(metadata_json) THEN CASE
     WHEN json_extract(metadata_json, '$.crash_type') = 'anr' THEN 'anr'
+    WHEN json_extract(metadata_json, '$.crash_type') = 'system_kill' THEN 'system_kill'
     WHEN json_extract(metadata_json, '$.crash_reason') = 'native_signal' THEN 'native'
     ELSE 'exception'
   END ELSE 'exception' END`;
-export const CRASH_TYPES = ["anr", "native", "exception"] as const;
+export const CRASH_TYPES = ["anr", "system_kill", "native", "exception"] as const;
 export type CrashType = (typeof CRASH_TYPES)[number];
 
 export function crashTypeOf(metadata: Record<string, unknown>): CrashType {
   if (metadata["crash_type"] === "anr") return "anr";
+  if (metadata["crash_type"] === "system_kill") return "system_kill";
   if (metadata["crash_reason"] === "native_signal") return "native";
   return "exception";
 }

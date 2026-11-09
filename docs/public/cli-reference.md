@@ -916,14 +916,20 @@ role for read, publisher for changes):
 
 ```bash
 hands feedback list raft-android --status open --kind crash
+hands feedback list raft-android --kind crash --crash-type system_kill
 hands feedback list raft-ios --build-scope external
 hands feedback show raft-android <ticket-id>
 hands feedback update raft-android <ticket-id> --status in_progress --assignee me
 hands feedback comment raft-android <ticket-id> "已复现，修复中"
 hands feedback update raft-android <ticket-id> --status resolved
+hands feedback update raft-android <ticket-id> --status closed --closure-reason completed
+hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
 
-`--assignee none` unassigns. All subcommands accept `--json` for scripting.
+`--assignee none` unassigns. Closing a ticket requires `--closure-reason`
+(`completed`, `not_planned`, `cannot_reproduce`, `duplicate`, or
+`no_longer_needed`), plus `--duplicate-of <ticket-id>` for duplicates. All
+subcommands accept `--json` for scripting.
 For iOS apps that enable external report separation, `--build-scope` accepts
 `standard`, `external`, or `all`; the default includes configured and unknown
 origins. Bundle IDs are client-reported and do not verify identity.

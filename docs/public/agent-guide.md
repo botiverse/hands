@@ -170,6 +170,7 @@ hands feedback show <app> <ticketId>
 hands feedback update <app> <ticketId> --status in_progress --assignee <name>
 hands feedback comment <app> <ticketId> "reproduced; fix in progress"
 hands feedback update <app> <ticketId> --status resolved
+hands feedback update <app> <ticketId> --status closed --closure-reason completed
 ```
 
 Crash tickets carry a grouping signature and, when the build's

@@ -298,6 +298,11 @@ export function AppFeedback({ appId }: { appId: string }) {
                         ANR
                       </Badge>
                     )}
+                    {t.crash_type === "system_kill" && (
+                      <Badge variant="muted" className="mr-2">
+                        {tx("System kill", "系统强杀")}
+                      </Badge>
+                    )}
                     {t.build_origin === "external" && <Badge variant="warning" className="mr-2">{tx("External", "外部构建")}</Badge>}
                     {t.build_origin === "unknown" && <Badge variant="muted" className="mr-2">{tx("Origin unknown", "来源未知")}</Badge>}
                     <span className="align-middle">{t.message.slice(0, 80)}{t.message.length > 80 ? "…" : ""}</span>

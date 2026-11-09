@@ -63,6 +63,7 @@ The first argument is the **app slug** (or id), e.g. `raft-android`.
 ```bash
 # List tickets, newest first (filterable)
 hands feedback list raft-android --status open --kind crash
+hands feedback list raft-android --kind crash --crash-type system_kill
 hands feedback list raft-android --kind bug
 
 # For an iOS app with external report separation enabled:
@@ -72,9 +73,11 @@ hands feedback list raft-ios --build-scope external
 # Use the full UUID from the submitted ticket response/reference.
 hands feedback show raft-android 389d855b-0000-0000-0000-000000000000
 
-# Triage: change status and/or (re)assign
+# Triage: change status, closure reason, and/or (re)assign
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status in_progress --assignee me
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status resolved
+hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --status closed --closure-reason not_planned
+hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --closure-reason duplicate --duplicate-of 11111111
 hands feedback update raft-android 389d855b-0000-0000-0000-000000000000 --assignee none   # unassign
 
 # Reply to the reporter (public — they see it in their feedback thread)
@@ -84,8 +87,10 @@ hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "reprod
 hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root cause: null listItemId in badge render" --internal
 ```
 
-Status flow: `open → in_progress → resolved → closed`. Assignee is
-independent of status.
+Status flow: `open → in_progress → resolved → closed`. Closing a ticket
+requires `--closure-reason` (`completed`, `not_planned`, `cannot_reproduce`,
+`duplicate`, or `no_longer_needed`), plus `--duplicate-of <ticketId>` when the
+reason is `duplicate`. Assignee is independent of status.
 
 When an app enables external iOS report separation, the default list retains
 configured and unknown origins. `--build-scope external` shows mismatches;

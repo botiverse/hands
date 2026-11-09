@@ -24,4 +24,79 @@ describe("feedback origin filtering", () => {
     expect(apiRequest).toHaveBeenCalledWith("/api/apps/11111111-2222-3333-4444-555555555555/feedback?build_scope=external");
     expect(output).toHaveBeenCalledWith(expect.stringContaining("[external]"));
   });
+
+  it("filters by crash_type and labels non-exception crash types", async () => {
+    apiRequest.mockResolvedValue({ tickets: [{
+      id: "ticket-kill", status: "open", kind: "crash", assignee: null,
+      message: "System kill: other", version_name: "1.22.0", attachment_count: 1,
+      comment_count: 0, crash_type: "system_kill",
+    }] });
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerFeedbackCommands(program);
+    await program.parseAsync([
+      "node", "hands", "feedback", "list",
+      "11111111-2222-3333-4444-555555555555",
+      "--kind", "crash", "--crash-type", "system_kill",
+    ]);
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/api/apps/11111111-2222-3333-4444-555555555555/feedback?kind=crash&crash_type=system_kill",
+    );
+    expect(output).toHaveBeenCalledWith(expect.stringContaining("[system_kill]"));
+  });
+
+  it("passes closure_reason and duplicate_of_ticket_id on feedback update", async () => {
+    apiRequest.mockResolvedValue({
+      id: "a14fc3a1-cad6-4830-828a-29dd14e84ee1",
+      status: "closed",
+      closure_reason: "not_planned",
+    });
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerFeedbackCommands(program);
+    await program.parseAsync([
+      "node", "hands", "feedback", "update",
+      "11111111-2222-3333-4444-555555555555",
+      "a14fc3a1",
+      "--status", "closed",
+      "--closure-reason", "not_planned",
+    ]);
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/api/apps/11111111-2222-3333-4444-555555555555/feedback/a14fc3a1",
+      {
+        method: "PATCH",
+        body: { status: "closed", closure_reason: "not_planned" },
+      },
+    );
+    expect(output).toHaveBeenCalledWith("Updated ticket a14fc3a1.");
+  });
+
+  it("infers closed status and duplicate closure_reason when --duplicate-of is passed", async () => {
+    apiRequest.mockResolvedValue({
+      id: "40eb8cea-bfd4-4fed-b79a-c06f996e5ad8",
+      status: "closed",
+      closure_reason: "duplicate",
+      duplicate_of_ticket_id: "a14fc3a1-cad6-4830-828a-29dd14e84ee1",
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerFeedbackCommands(program);
+    await program.parseAsync([
+      "node", "hands", "feedback", "update",
+      "11111111-2222-3333-4444-555555555555",
+      "40eb8cea",
+      "--duplicate-of", "a14fc3a1",
+    ]);
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/api/apps/11111111-2222-3333-4444-555555555555/feedback/40eb8cea",
+      {
+        method: "PATCH",
+        body: {
+          status: "closed",
+          closure_reason: "duplicate",
+          duplicate_of_ticket_id: "a14fc3a1",
+        },
+      },
+    );
+  });
 });

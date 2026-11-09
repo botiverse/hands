@@ -17,12 +17,14 @@ export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
   exception: "Exception",
   native: "Native",
   anr: "ANR",
+  system_kill: "System kill",
 };
 
 export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]> = {
   exception: "danger",
   native: "accent",
   anr: "warning",
+  system_kill: "muted",
 };
 
 const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: string }> = [
@@ -30,12 +32,18 @@ const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: strin
   { value: "exception", label: "Exceptions", labelZh: "异常" },
   { value: "native", label: "Native", labelZh: "原生崩溃" },
   { value: "anr", label: "ANRs", labelZh: "无响应（ANR）" },
+  { value: "system_kill", label: "System kills", labelZh: "系统强杀" },
 ];
 
-const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = { exception: "异常", native: "原生崩溃", anr: "无响应（ANR）" };
+const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = {
+  exception: "异常",
+  native: "原生崩溃",
+  anr: "无响应（ANR）",
+  system_kill: "系统强杀",
+};
 
 function parseCrashType(raw: string | null): CrashType | "" {
-  return raw === "anr" || raw === "native" || raw === "exception" ? raw : "";
+  return raw === "anr" || raw === "system_kill" || raw === "native" || raw === "exception" ? raw : "";
 }
 
 export function AppCrashes({ appId }: { appId: string }) {
