@@ -53,7 +53,7 @@ order: 7
 
 ## 发布通知
 
-应用 Webhook 可以订阅 `google_play:submission_succeeded`、`google_play:submission_failed` 和 `google_play:release_state_changed`。提交事件来自不可修改的 Hands 推送回执，包含包名、版本号、Hands 轨道和回执 ID。提交成功并不代表审核通过或已可下载。使用 `--changes-not-sent-for-review` 上传的版本包含 `action: "promote"` 和 `review_requested: false`；`hands releases play-send-for-review` 对应 `action: "send-for-review"` 和 `review_requested: true`。普通推送不包含这两个字段。Hands 在创建推送回执之前发生的失败仍是 API 错误，不会生成发布通知。
+应用 Webhook（以及 [Raft 频道通知](store-release-notifications.md)）可以订阅 `google_play:submission_succeeded`、`google_play:submission_failed` 和 `google_play:release_state_changed`。提交事件来自不可修改的 Hands 推送回执，包含包名、版本号、Hands 轨道和回执 ID。提交成功并不代表审核通过或已可下载。使用 `--changes-not-sent-for-review` 上传的版本包含 `action: "promote"` 和 `review_requested: false`；`hands releases play-send-for-review` 对应 `action: "send-for-review"` 和 `review_requested: true`。普通推送不包含这两个字段。Hands 在创建推送回执之前发生的失败仍是 API 错误，不会生成发布通知。
 
 对于已启用且经过验证的连接，Hands 会读取所配置轨道的 Google 实时发布生命周期。查询每五分钟运行一次，每次最多处理四个应用；应用更多时，会在后续轮次依次处理。第一次观察是当前状态快照（`observation: initial_snapshot`），此后状态变化才生成转换事件。状态不变不会产生新通知。状态与待投递记录一同提交；服务商请求失败时会保留上一次观察结果，并在后续定时运行中重试。
 
