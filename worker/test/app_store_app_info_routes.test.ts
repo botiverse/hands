@@ -88,17 +88,25 @@ describe("registered App Information route", () => {
     expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 0 });
   });
 
-  it("lets a publisher preview with GETs only and blocks every valid commit before Apple, lock or audit", async () => {
-    const h = await harness(); const asc = fakeApple();
+  it("lets a publisher preview with GETs only, rejects legacy commit without commit_contract_version, and executes v1 commit through the registered route", async () => {
+    const h = await harness();
+    let name = "Old Name";
+    const asc = installAscFake((call) => {
+      if (call.method === "PATCH" && call.path === "/v1/appInfoLocalizations/loc-1") {
+        name = "New Name";
+        return { json: { data: call.body.data } };
+      }
+      return appleRead(call, name);
+    });
     const preview = await h.post(h.publisher, { ...input, mode: "dry_run" });
     expect(preview.status).toBe(200);
     expect(await preview.json()).toMatchObject({ outcome: "planned", writes: 0, app_info: { id: "info-1" }, localizations: [{ locale: "en-US", before: { name: "Old Name" }, after: { name: "New Name" } }] });
     expect(asc.calls.length).toBeGreaterThan(0);
     expect(asc.calls.every((call) => call.method === "GET")).toBe(true);
     const count = asc.calls.length;
-    const commit = await h.post(h.publisher, { ...input, mode: "commit" });
-    expect(commit.status).toBe(409);
-    expect(await commit.json()).toMatchObject({ code: "APP_INFO_COMMIT_UNVERIFIED" });
+    const legacyCommit = await h.post(h.publisher, { ...input, mode: "commit" });
+    expect(legacyCommit.status).toBe(409);
+    expect(await legacyCommit.json()).toMatchObject({ code: "APP_INFO_CLIENT_UPGRADE_REQUIRED" });
     expect(asc.calls).toHaveLength(count);
     expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
     expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 0 });
@@ -109,27 +117,35 @@ describe("registered App Information route", () => {
     for (const bad of [
       { ...input },
       { ...input, mode: "unexpected" },
+      { ...input, mode: "commit", commit_contract_version: 2 },
+      { ...input, mode: "commit", commit_contract_version: "1" },
       { ...input, mode: "dry_run", version_string: undefined },
       { ...input, mode: "dry_run", version_string: "" },
       { ...input, mode: "dry_run", version_string: " " },
     ]) expect((await h.post(h.publisher, bad)).status).toBe(400);
     expect(asc.calls).toHaveLength(count);
+    const commit = await h.post(h.publisher, { ...input, mode: "commit", commit_contract_version: 1 });
+    expect(commit.status).toBe(200);
+    expect(await commit.json()).toMatchObject({ outcome: "committed", recovery_required: false, results: [{ target: "en-US", action: "update", status: "written" }] });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM store_product_locks").get()).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 2 });
   });
 
-  it("documents required mode and version in the generated machine contract", () => {
+  it("documents required mode, version, and commit contract version in the generated machine contract", () => {
     const schema = (openApiDocument.components?.schemas as any).AppStoreAppInfoInput;
     expect(schema.required).toEqual(expect.arrayContaining(["mode", "version_string"]));
     expect(schema.properties.mode.enum).toEqual(["dry_run", "commit"]);
     expect(schema.properties.mode.default).toBeUndefined();
+    expect(schema.properties.commit_contract_version).toMatchObject({ enum: [1] });
     expect(schema.properties.version_string).toMatchObject({ type: "string", minLength: 1, maxLength: 100 });
     const operation = (openApiDocument.paths as any)["/api/apps/{appId}/app-store/versions/{versionId}/app-info"].post;
     expect(operation.requestBody.required).toBe(true);
-    expect(operation.description).toContain("APP_INFO_COMMIT_UNVERIFIED");
+    expect(operation.description).toContain("APP_INFO_CLIENT_UPGRADE_REQUIRED");
     expect(operation.responses["409"]).toBeDefined();
   });
 });
 
-describe("isolated candidate locking (not reachable through the registered commit route)", () => {
+describe("operation locking and audit trail", () => {
   it("serializes two operations on the same Apple app and persists only fingerprints in the audit", async () => {
     const h = await harness();
     let started!: () => void, release!: () => void;

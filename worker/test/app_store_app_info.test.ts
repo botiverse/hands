@@ -61,8 +61,6 @@ function fakeApple(o: Options = {}) {
 const desired = { version_string: "1.22.0", primary_category: "PRODUCTIVITY", localizations: { "en-US": { name: "New Name", subtitle: "A subtitle" }, "zh-Hans": { name: "新名称" }, ja: { name: "新しい名前", subtitle: "副題" } } };
 async function push(body: unknown = { mode: "dry_run", ...desired }, candidate = true) {
   const ctx = makeContext({ body, params: { versionId: "ver-122" } });
-  // Exercise the isolated candidate code as well as the guarded public route.
-  // Invalid inputs still go through public parsing so these tests cover validation.
   let input: ReturnType<typeof normalizeAppInfoInput> | undefined;
   if (candidate) {
     try { input = normalizeAppInfoInput(body); } catch { /* handled by the public route */ }
@@ -73,10 +71,14 @@ async function push(body: unknown = { mode: "dry_run", ...desired }, candidate =
 afterEach(() => vi.unstubAllGlobals());
 
 describe("App Information", () => {
-  it("rejects every public commit before any Apple request, lock, or audit", async () => {
-    const { asc } = fakeApple(); const out = await push({ mode: "commit", ...desired }, false);
-    expect(out.status).toBe(409); expect(out.json.code).toBe("APP_INFO_COMMIT_UNVERIFIED");
-    expect(asc.calls).toEqual([]); expect(out.statements).toEqual([]); expect(out.audits).toEqual([]);
+  it("rejects legacy public commit without commit_contract_version before any Apple request, lock, or audit, and allows v1 public commit", async () => {
+    const { asc } = fakeApple();
+    const legacy = await push({ mode: "commit", ...desired }, false);
+    expect(legacy.status).toBe(409); expect(legacy.json.code).toBe("APP_INFO_CLIENT_UPGRADE_REQUIRED");
+    expect(asc.calls).toEqual([]); expect(legacy.statements).toEqual([]); expect(legacy.audits).toEqual([]);
+    const committed = await push({ mode: "commit", commit_contract_version: 1, ...desired }, false);
+    expect(committed.status).toBe(200); expect(committed.json.outcome).toBe("committed");
+    expect(asc.writes()).toHaveLength(4);
   });
   it("previews all differences with Apple GETs only, warning names are not reserved", async () => {
     const { asc } = fakeApple(); const out = await push({ mode: "dry_run", ...desired }, false);

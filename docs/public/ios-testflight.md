@@ -387,10 +387,11 @@ refuses review); without them the plan entry is blocked with
 `LOCALIZATION_MISSING` for one that does not exist. While Apple holds the version only
 `promotionalText` may change; other fields return 409
 `LOCALIZATION_PLAN_BLOCKED`. Commit reads every requested field back and fails
-with `READBACK_MISMATCH` if Apple holds anything else. App name and subtitle
-live separately on `appInfoLocalizations`; use the read-only preview below.
+with `READBACK_MISMATCH` if Apple holds anything else. App name, subtitle and
+primary category live separately on `appInfos` / `appInfoLocalizations`; use
+the App Information section below.
 
-### App Information (preview only)
+### App Information (name, subtitle, primary category)
 
 App Information is shared by the app's platforms, not owned by the selected
 version. The version is a context and safety check, **not** a guarantee that
@@ -412,12 +413,15 @@ Create an `app-info.json` file containing only the desired fields, for example:
 
 ```sh
 hands app-store app-info push raft-ios --version-name 1.22.0 --file app-info.json
+# Add --commit to write (requires @botiverse/hands-cli >= 0.5.44).
 # Optional: --version-id <ASC-version-id>, --platform <platform>, --json
 ```
 
 The publisher-only `POST /api/apps/{appId}/app-store/versions/{versionId}/app-info`
 requires explicit `mode` and exact `version_string` (the CLI sends `dry_run` by
-default). Preview makes only Apple GET requests and shows the existing and
+default); `commit` also requires `commit_contract_version: 1` (older CLIs are
+refused with `409 APP_INFO_CLIENT_UPGRADE_REQUIRED` before any Apple call or
+lock). Preview makes only Apple GET requests and shows the existing and
 requested values, category, observed platforms and language differences. It does
 **not** check or reserve name availability, make writes, or submit a review.
 It requires an editable app-owned version and one unambiguous pending AppInfo;
@@ -428,11 +432,16 @@ Information locale must also exist on the selected version; this is a
 conservative Hands guard, **not** a claim that Apple requires identical language
 sets. Existing differences are reported for inspection.
 
-**Writes are not enabled:** even an explicit `--commit` on a valid request is
-rejected with `APP_INFO_COMMIT_UNVERIFIED` before this handler calls Apple or
-writes. Invalid requests may fail validation first. Until provider behavior and
-recovery are verified, make any authorized changes in App Store Connect and
-inspect the result there; Hands does not submit automatically.
+With `--commit`, Hands acquires an application-scoped `apple_app_info` operation
+lock, rechecks that the snapshot has not drifted, records an
+`app_store.app_info.attempt` audit row (storing SHA-256 and character length
+rather than plaintext), patches or creates only requested changed locale fields
+and `primary_category`, and reads back the selected AppInfo and rechecks
+consistency. If any write fails, returns an uncertain outcome, or mismatches on
+readback, Hands retains the lock with `recovery_required: true` so a second run
+cannot blindly replay; follow the store-product recovery runbook and inspect App
+Store Connect before releasing the lock. Hands does not submit for review
+automatically.
 
 ### Screenshots
 
