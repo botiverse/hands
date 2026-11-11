@@ -448,6 +448,58 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
   const link = feedbackLink(dashboardOrigin, appId, ticketId);
   const signature = safePreview(safeValue(payload.signature), 160);
   const alertReason = safeValue(payload.alert_reason);
+  if (alertReason === "background_system_kill_daily_summary") {
+    const day = safePreview(safeValue(payload.day), 32);
+    const totalCount = typeof payload.total_count === "number" && Number.isSafeInteger(payload.total_count)
+      ? payload.total_count : 0;
+    const deviceCount = typeof payload.device_count === "number" && Number.isSafeInteger(payload.device_count)
+      ? payload.device_count : 0;
+    const lines = [
+      `📊 **${app ? `${app} · ` : ""}后台被系统结束每日汇总 (${day ?? "最近 24h"})**`,
+      `总次数: ${totalCount} · 涉及设备: ${deviceCount}`,
+    ];
+    const byVersion = Array.isArray(payload.by_version) ? payload.by_version : [];
+    if (byVersion.length > 0) {
+      lines.push("按版本统计:");
+      for (const raw of byVersion.slice(0, 6)) {
+        const entry = record(raw);
+        const vName = safePreview(safeValue(entry.version_name), 80);
+        const vCode = safePreview(safeValue(entry.version_code), 40);
+        const vLabel = [vName, vCode && vCode !== vName ? `(${vCode})` : null].filter(Boolean).join(" ") || "unknown";
+        const count = typeof entry.count === "number" ? entry.count : 0;
+        const devices = typeof entry.device_count === "number" ? entry.device_count : 0;
+        const prevName = safePreview(safeValue(entry.previous_version_name), 80);
+        const prevCode = safePreview(safeValue(entry.previous_version_code), 40);
+        const prevCount = typeof entry.previous_version_count === "number" ? entry.previous_version_count : null;
+        const prevDevices = typeof entry.previous_version_device_count === "number" ? entry.previous_version_device_count : null;
+        const prevLabel = [prevName, prevCode && prevCode !== prevName ? `(${prevCode})` : null].filter(Boolean).join(" ");
+        const spike = entry.spike === true ? " ⚠️ 较上一版本显著上升" : "";
+        const prevPart = prevCount !== null
+          ? ` (对比上一版本 ${prevLabel || "prev"}: ${prevCount} 次 / ${prevDevices ?? 0} 台${spike})`
+          : "";
+        lines.push(`- ${vLabel}: ${count} 次 (${devices} 台设备)${prevPart}`);
+      }
+    }
+    const topDevices = Array.isArray(payload.top_devices) ? payload.top_devices : [];
+    if (topDevices.length > 0) {
+      lines.push("次数最多的设备:");
+      for (const raw of topDevices.slice(0, 5)) {
+        const entry = record(raw);
+        const dId = safePreview(safeValue(entry.device_id), 80) ?? "unknown";
+        const dModel = safePreview(safeValue(entry.device_model), 80);
+        const count = typeof entry.count === "number" ? entry.count : 0;
+        const label = dModel ? `${dModel} (${dId})` : dId;
+        lines.push(`- ${label}: ${count} 次`);
+      }
+    }
+    const footer: string[] = [];
+    if (cliApp) footer.push(`📖 View more: \`hands feedback crashes ${cliApp} --type system_kill\``);
+    if (occurred) footer.push(`At: ${humanTime(occurred)}`);
+    const content = lines.join("\n");
+    if (!footer.length) return truncateMessage(content, MAX_MESSAGE_LENGTH);
+    const tail = footer.join("\n");
+    return `${truncateMessage(content, MAX_MESSAGE_LENGTH - tail.length - 1)}\n${tail}`;
+  }
   const isBgKill = signature === "SystemKill@background"
     || alertReason === "device_daily_repeat"
     || alertReason === "version_spike";

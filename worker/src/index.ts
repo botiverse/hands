@@ -116,6 +116,8 @@ import {
   handleDownloadFeedbackAttachment,
   handleListCrashGroups,
   handleFeedbackStats,
+  handleSendBackgroundSystemKillDailySummary,
+  dispatchBackgroundSystemKillDailySummaries,
   handlePresignFeedbackAttachments,
   handleFeedbackMultipartPart,
   handleCompleteFeedbackMultipart,
@@ -1191,6 +1193,7 @@ bindAdmin("get", "/api/apps/:appId/client-key", requireAppRole("admin"), handleG
 bindAdmin("post", "/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
 bindAdmin("get", "/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
 bindAdmin("get", "/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
+bindAdmin("post", "/api/apps/:appId/feedback/background-system-kills/daily-summary", requireAppRole("admin"), handleSendBackgroundSystemKillDailySummary);
 bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
@@ -1498,8 +1501,14 @@ export async function scheduled(
     }));
     throw error;
   });
+  const scheduledTime = controller.scheduledTime || Date.now();
+  const minuteOfDay = Math.floor(scheduledTime / 60_000) % 1440;
+  const dailyBgKillSummary = minuteOfDay < 15
+    ? dispatchBackgroundSystemKillDailySummaries(env, scheduledTime).catch(() => undefined)
+    : Promise.resolve();
   ctx.waitUntil(Promise.all([
     reaper,
+    dailyBgKillSummary,
     pollGooglePlayReleases(env),
     pollAgcInvitations(env),
     cleanupReporterFeedbackData(env),

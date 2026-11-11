@@ -425,5 +425,42 @@ describe("Raft release notification cards", () => {
     });
     expect(versionSpike).toContain("Background system kill spike (后台被系统结束)");
     expect(versionSpike).toContain("Version background kill spike: 12 reports across 4 devices vs 5 reports (3 devices) on 1.22.0 (1022000)");
+
+    const dailySummary = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android",
+        signature: "SystemKill@background",
+        alert_reason: "background_system_kill_daily_summary",
+        day: "2026-11-11",
+        total_count: 15,
+        device_count: 7,
+        by_version: [
+          {
+            version_name: "1.23.0",
+            version_code: 1023000,
+            count: 10,
+            device_count: 5,
+            previous_version_name: "1.22.0",
+            previous_version_code: 1022000,
+            previous_version_count: 5,
+            previous_version_device_count: 2,
+            spike: true,
+          },
+        ],
+        top_devices: [
+          {
+            device_id: "dev-oppo",
+            device_model: "PME110",
+            count: 6,
+          },
+        ],
+      },
+    });
+    expect(dailySummary).toContain("后台被系统结束每日汇总 (2026-11-11)");
+    expect(dailySummary).toContain("总次数: 15 · 涉及设备: 7");
+    expect(dailySummary).toContain("1.23.0 (1023000): 10 次 (5 台设备)");
+    expect(dailySummary).toContain("较上一版本显著上升");
+    expect(dailySummary).toContain("PME110 (dev-oppo): 6 次");
   });
 });

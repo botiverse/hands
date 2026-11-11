@@ -76,6 +76,16 @@ class RaftBotApiError extends Error {
 }
 
 const CHANNEL_TARGET_RE = /^#[^\s:#]{1,120}$/;
+const SERVER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseOptionalServerId(value: unknown): { serverId: string | null } | { error: string } {
+  if (value === undefined || value === null) return { serverId: null };
+  if (typeof value !== "string") return { error: "server_id must be a UUID string" };
+  const trimmed = value.trim();
+  if (!trimmed) return { serverId: null };
+  if (!SERVER_ID_RE.test(trimmed)) return { error: "server_id must be a valid UUID" };
+  return { serverId: trimmed.toLowerCase() };
+}
 function safeProviderCode(value: unknown, fallback: string): string {
   return typeof value === "string" && /^[a-z0-9_]{1,80}$/.test(value)
     ? value
@@ -383,51 +393,67 @@ export async function handleRetryRaftNotificationFailure(c: AdminContext) {
   return c.json({ ok: true, delivery_id: retryId }, 202);
 }
 
+async function ensureBotForServer(
+  env: Env,
+  serverId: string,
+  rotate = false,
+): Promise<BotInstallationRow> {
+  const existing = await botForServer(env.DB, serverId);
+  if (existing && existing.state === "active" && !rotate) return existing;
+
+  // Validate the dedicated KEK before minting a one-time provider key. A
+  // missing encryption secret must not leave an unrecoverable credential at
+  // Raft that Hands cannot persist.
+  const encryptionSecret = botEncryptionSecret(env);
+  const installationId = await lookupInstallation(env, serverId);
+  const token = await mintBotToken(env, installationId, rotate);
+  const encrypted = await encryptP8(token.apiKey, encryptionSecret);
+  const now = Date.now();
+  const id = existing?.id ?? crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO raft_bot_installations
+       (id, server_id, installation_id, credential_id, agent_id, handle,
+        key_ciphertext_b64, key_iv_b64, state, created_at, updated_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?9)
+     ON CONFLICT(server_id) DO UPDATE SET
+       installation_id = excluded.installation_id,
+       credential_id = excluded.credential_id,
+       agent_id = excluded.agent_id,
+       handle = excluded.handle,
+       key_ciphertext_b64 = excluded.key_ciphertext_b64,
+       key_iv_b64 = excluded.key_iv_b64,
+       state = 'active',
+       updated_at = excluded.updated_at`,
+  ).bind(
+    id,
+    serverId,
+    installationId,
+    token.credentialId,
+    token.agentId,
+    token.handle,
+    encrypted.ciphertext_b64,
+    encrypted.iv_b64,
+    now,
+  ).run();
+  const saved = await botForServer(env.DB, serverId);
+  if (!saved) throw new RaftBotApiError(500, "bot_persist_failed");
+  return saved;
+}
+
 export async function handleConnectRaftBot(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await appContext(c.env.DB, appId);
   if (!app) return c.json({ error: "app not found" }, 404);
   const body = parseJsonRecord(await c.req.json().catch(() => ({})));
   const rotate = body.rotate === true;
-  const existing = await botForServer(c.env.DB, app.server_id);
+  const parsedServer = parseOptionalServerId(body.server_id);
+  if ("error" in parsedServer) return c.json({ error: parsedServer.error }, 400);
+  const targetServerId = parsedServer.serverId ?? app.server_id;
+  const existing = await botForServer(c.env.DB, targetServerId);
   if (existing && !rotate) return c.json({ bot: publicBot(existing) });
 
   try {
-    // Validate the dedicated KEK before minting a one-time provider key. A
-    // missing encryption secret must not leave an unrecoverable credential at
-    // Raft that Hands cannot persist.
-    const encryptionSecret = botEncryptionSecret(c.env);
-    const installationId = await lookupInstallation(c.env, app.server_id);
-    const token = await mintBotToken(c.env, installationId, rotate);
-    const encrypted = await encryptP8(token.apiKey, encryptionSecret);
-    const now = Date.now();
-    const id = existing?.id ?? crypto.randomUUID();
-    await c.env.DB.prepare(
-      `INSERT INTO raft_bot_installations
-         (id, server_id, installation_id, credential_id, agent_id, handle,
-          key_ciphertext_b64, key_iv_b64, state, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'active', ?9, ?9)
-       ON CONFLICT(server_id) DO UPDATE SET
-         installation_id = excluded.installation_id,
-         credential_id = excluded.credential_id,
-         agent_id = excluded.agent_id,
-         handle = excluded.handle,
-         key_ciphertext_b64 = excluded.key_ciphertext_b64,
-         key_iv_b64 = excluded.key_iv_b64,
-         state = 'active',
-         updated_at = excluded.updated_at`,
-    ).bind(
-      id,
-      app.server_id,
-      installationId,
-      token.credentialId,
-      token.agentId,
-      token.handle,
-      encrypted.ciphertext_b64,
-      encrypted.iv_b64,
-      now,
-    ).run();
-    const saved = await botForServer(c.env.DB, app.server_id);
+    const saved = await ensureBotForServer(c.env, targetServerId, rotate);
     return c.json({ bot: publicBot(saved) });
   } catch (error) {
     return providerErrorResponse(c, error);
@@ -438,11 +464,21 @@ export async function handleCreateRaftNotification(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await appContext(c.env.DB, appId);
   if (!app) return c.json({ error: "app not found" }, 404);
-  const bot = await botForServer(c.env.DB, app.server_id);
+  const body = parseJsonRecord(await c.req.json().catch(() => ({})));
+  const parsedServer = parseOptionalServerId(body.server_id);
+  if ("error" in parsedServer) return c.json({ error: parsedServer.error }, 400);
+  const targetServerId = parsedServer.serverId ?? app.server_id;
+  let bot = await botForServer(c.env.DB, targetServerId);
+  if ((!bot || bot.state !== "active") && parsedServer.serverId) {
+    try {
+      bot = await ensureBotForServer(c.env, targetServerId, false);
+    } catch (error) {
+      return providerErrorResponse(c, error);
+    }
+  }
   if (!bot || bot.state !== "active") {
     return c.json({ error: "RAFT_BOT_NOT_CONNECTED", detail: "Connect the Hands App Bot before adding a destination." }, 409);
   }
-  const body = parseJsonRecord(await c.req.json().catch(() => ({})));
   const channelTarget = body.channel_target;
   if (typeof channelTarget !== "string" || !CHANNEL_TARGET_RE.test(channelTarget)) {
     return c.json({ error: "channel_target must be a Raft channel such as #releases" }, 400);
@@ -471,7 +507,7 @@ export async function handleCreateRaftNotification(c: AdminContext) {
            (id, app_id, server_id, channel_target, events_json, enabled, card_updates,
             bot_installation_id, webhook_id, created_by, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10, ?10)`,
-      ).bind(id, appId, app.server_id, channelTarget, JSON.stringify(parsed.events), body.card_updates === true ? 1 : 0, bot.id, id, actor.id, now),
+      ).bind(id, appId, targetServerId, channelTarget, JSON.stringify(parsed.events), body.card_updates === true ? 1 : 0, bot.id, id, actor.id, now),
     ]);
   } catch {
     return c.json({ error: "notification destination already exists or could not be created" }, 409);
@@ -490,11 +526,37 @@ export async function handleUpdateRaftNotification(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const subscriptionId = c.req.param("subscriptionId") ?? "";
   const body = parseJsonRecord(await c.req.json().catch(() => ({})));
-  if (body.card_updates !== undefined && (body.events !== undefined || body.enabled !== undefined)) {
+  if (body.card_updates !== undefined && (body.events !== undefined || body.enabled !== undefined || body.server_id !== undefined || body.channel_target !== undefined)) {
     return c.json({ error: "change card_updates separately from other settings" }, 400);
   }
   const updates: string[] = [];
   const binds: (string | number)[] = [];
+  if (body.server_id !== undefined) {
+    const parsedServer = parseOptionalServerId(body.server_id);
+    if ("error" in parsedServer || !parsedServer.serverId) {
+      return c.json({ error: "error" in parsedServer ? parsedServer.error : "server_id must be a valid UUID" }, 400);
+    }
+    let bot = await botForServer(c.env.DB, parsedServer.serverId);
+    if (!bot || bot.state !== "active") {
+      try {
+        bot = await ensureBotForServer(c.env, parsedServer.serverId, false);
+      } catch (error) {
+        return providerErrorResponse(c, error);
+      }
+    }
+    if (!bot || bot.state !== "active") {
+      return c.json({ error: "RAFT_BOT_NOT_CONNECTED", detail: "Connect the Hands App Bot before updating destination server." }, 409);
+    }
+    updates.push("server_id = ?", "bot_installation_id = ?");
+    binds.push(parsedServer.serverId, bot.id);
+  }
+  if (body.channel_target !== undefined) {
+    if (typeof body.channel_target !== "string" || !CHANNEL_TARGET_RE.test(body.channel_target)) {
+      return c.json({ error: "channel_target must be a Raft channel such as #releases" }, 400);
+    }
+    updates.push("channel_target = ?");
+    binds.push(body.channel_target);
+  }
   if (body.events !== undefined) {
     const parsed = parseEvents(body.events);
     if ("error" in parsed) return c.json({ error: parsed.error }, 400);
