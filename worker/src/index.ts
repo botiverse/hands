@@ -124,6 +124,7 @@ import {
   handleAbortFeedbackMultipart,
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
+import { handleAppStats } from "./routes/stats";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
   handlePublicAppHistory,
@@ -253,6 +254,7 @@ import {
   handleListPlayStoreListingReceipts,
   handlePushPlayStoreListing,
 } from "./routes/play_store_listing";
+import { handleProxyPlayApi } from "./routes/play_api_proxy";
 import {
   handleDeleteGooglePlayBinding,
   handleDisableGooglePlayBinding,
@@ -1177,6 +1179,10 @@ bindAdmin("get", "/api/apps/:appId/distributions/play/store-listing/receipts",
   requireAppRole("viewer"),
   handleListPlayStoreListingReceipts,
 );
+bindAdmin("post", "/api/apps/:appId/distributions/play/api",
+  requireAppRole("viewer"),
+  handleProxyPlayApi,
+);
 bindAdmin("post", "/api/apps/:appId/google-play-oauth/start", requireAppRole("admin"), handleStartGooglePlayOAuth);
 bindAdmin("get", "/api/google-play/oauth/callback", handleGooglePlayOAuthCallback);
 bindAdmin("get", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleGetGooglePlayBinding);
@@ -1197,6 +1203,7 @@ bindAdmin("post", "/api/apps/:appId/feedback/background-system-kills/daily-summa
 bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
+bindAdmin("get", "/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
 bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
 bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
 bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);

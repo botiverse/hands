@@ -240,6 +240,21 @@ interface GooglePlayAdapterService {
     }>;
     commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false } | null;
   }>>;
+  callPlayApi?(
+    input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+      operationId: string;
+      method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+      path: string;
+      query?: Record<string, string | string[]> | null;
+      body?: unknown;
+    },
+  ): Promise<GooglePlayAdapterResult<{
+    package_name: string;
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+    path: string;
+    status: number;
+    body: unknown;
+  }>>;
 }
 
 declare global {

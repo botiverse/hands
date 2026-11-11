@@ -14,6 +14,8 @@ import type { ResumableUploadOptions } from "./resumable_upload";
 import { PLAY_LISTING_FIELDS } from "./types";
 import type {
   PlayAiGeneratedState,
+  PlayApiProxyRequest,
+  PlayApiProxyResult,
   PlayImageRef,
   PlayImageType,
   PlayListing,
@@ -1382,6 +1384,67 @@ export class GooglePlayClient {
       mode: "commit", edit_id: editId, package_name: request.packageName, version_code: request.versionCode,
       version_on_play: true, files,
       commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+    };
+  }
+
+  /**
+   * Execute an app-scoped Google Play Android Publisher API request on behalf of
+   * Hands. The caller has already normalized and pinned `canonicalPath` to
+   * `/androidpublisher/v3/applications/{packageName}/...`.
+   */
+  async callPlayApi(request: PlayApiProxyRequest): Promise<PlayApiProxyResult> {
+    const expectedPrefix = `/androidpublisher/v3/applications/${encodeURIComponent(request.packageName)}`;
+    if (request.canonicalPath !== expectedPrefix && !request.canonicalPath.startsWith(`${expectedPrefix}/`)) {
+      throw new PlayAdapterError(400, "play_api_path_invalid", "Google Play API path is not scoped to the bound package");
+    }
+    const url = new URL(`https://androidpublisher.googleapis.com${request.canonicalPath}`);
+    for (const [key, value] of Object.entries(request.query)) {
+      if (Array.isArray(value)) {
+        for (const item of value) url.searchParams.append(key, item);
+      } else {
+        url.searchParams.append(key, value);
+      }
+    }
+    const hasBody = request.body !== undefined && request.body !== null && request.method !== "GET";
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url.toString(), {
+        method: request.method,
+        signal: AbortSignal.timeout(30_000),
+        headers: {
+          authorization: `Bearer ${this.accessToken}`,
+          accept: "application/json",
+          ...(hasBody ? { "content-type": "application/json" } : {}),
+        },
+        ...(hasBody ? { body: JSON.stringify(request.body) } : {}),
+        redirect: "manual",
+      });
+    } catch {
+      throw new PlayAdapterError(502, "play_api_unavailable", "Google Play API request failed");
+    }
+    const responseText = await response.text();
+    let parsed: unknown = null;
+    if (responseText.trim().length > 0) {
+      try {
+        parsed = JSON.parse(responseText);
+      } catch {
+        if (response.ok) {
+          throw new PlayAdapterError(502, "play_api_malformed", "Google Play API returned malformed JSON", {
+            stage: playRequestStage(url.toString(), request.method),
+            response_shape: { status: response.status, body_empty: false, json_parsed: false },
+          });
+        }
+      }
+    }
+    if (!response.ok) {
+      throw playRejection(response.status, parsed, playRequestStage(url.toString(), request.method));
+    }
+    return {
+      package_name: request.packageName,
+      method: request.method,
+      path: `${url.pathname}${url.search}`,
+      status: response.status,
+      body: parsed,
     };
   }
 }

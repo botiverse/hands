@@ -460,3 +460,37 @@ export interface StoreListingImageChange {
   /** Commit only: what a fresh edit lists for this set afterwards. */
   readback?: { count: number; sha256_match: boolean | null };
 }
+
+export type PlayApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export interface PlayApiProxyRpcInput extends PlayDiscoveryInput {
+  operationId: string;
+  method: PlayApiMethod;
+  /**
+   * Relative path under `/androidpublisher/v3/applications/{packageName}`, or a
+   * full `/androidpublisher/v3/applications/{packageName}/...` path for the bound
+   * package. Cross-package paths, path traversal, and non-API origins are refused.
+   */
+  path: string;
+  query?: Record<string, string | string[]> | null;
+  body?: unknown;
+}
+
+export interface PlayApiProxyRequest {
+  packageName: string;
+  operationId: string;
+  method: PlayApiMethod;
+  /** Canonical path starting with `/androidpublisher/v3/applications/{packageName}`. */
+  canonicalPath: string;
+  query: Record<string, string | string[]>;
+  body?: unknown;
+}
+
+export interface PlayApiProxyResult {
+  package_name: string;
+  method: PlayApiMethod;
+  path: string;
+  status: number;
+  body: unknown;
+}
+
