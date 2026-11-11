@@ -85,7 +85,7 @@
       }
     },
     "actor": { "type": "string", "minLength": 1 },
-    "action": { "enum": ["accept", "promote", "send-for-review", "halt", "resume", "rollback-republish"] },
+    "action": { "enum": ["accept", "promote", "send-for-review", "release-notes", "halt", "resume", "rollback-republish"] },
     "review": {
       "description": "Play review mode of this operation's commit (independent of result). promote: requested=true unless changes_not_sent_for_review; requested=null with reason not_acknowledged when the adapter did not confirm the flag. send-for-review: requested=true plus the release lifecycle read before/after.",
       "type": "object",

@@ -242,6 +242,7 @@ import {
   handleListReleaseReceipts,
   handlePromotePlayDistribution,
   handleSendPlayDistributionForReview,
+  handleUpdatePlayReleaseNotes,
   handleUploadPlaySymbols,
   handleRollbackPlayDistribution,
 } from "./routes/play_distribution";
@@ -1131,6 +1132,12 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/promo
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review",
   requireAppRole("publisher"),
   handleSendPlayDistributionForReview,
+);
+// Replace the Play release notes of a release already on a track, from its changelog.
+// Never changes versionCodes, status or rollout. Same lock as promote.
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/distributions/play/release-notes",
+  requireAppRole("publisher"),
+  handleUpdatePlayReleaseNotes,
 );
 // Backfill R8/ProGuard mapping / native symbols for a versionCode already on Play
 // (dry run by default). Never touches a track or rollout. Same lock as promote.

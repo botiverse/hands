@@ -26,6 +26,7 @@ import {
   handlePromotePlayDistribution,
   handleSendPlayDistributionForReview,
   handleUploadPlaySymbols,
+  handleUpdatePlayReleaseNotes,
   normalizePlayUploadSymbolsInput,
 } from "../src/routes/play_distribution";
 import { createRelease } from "../src/routes/releases";
@@ -291,6 +292,7 @@ describe("Android distribution OpenAPI", () => {
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/promote",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/send-for-review",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/upload-symbols",
+      "/api/apps/{appId}/releases/{releaseId}/distributions/play/release-notes",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/halt",
       "/api/apps/{appId}/releases/{releaseId}/distributions/play/rollback",
     ]) {
@@ -437,6 +439,7 @@ function routeHarness(principal: "human" | "agent" = "human", role: "publisher" 
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/promote", requireAppRole("publisher"), handlePromotePlayDistribution);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/send-for-review", requireAppRole("publisher"), handleSendPlayDistributionForReview);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols", requireAppRole("publisher"), handleUploadPlaySymbols);
+  app.post("/api/apps/:appId/releases/:releaseId/distributions/play/release-notes", requireAppRole("publisher"), handleUpdatePlayReleaseNotes);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
@@ -737,6 +740,9 @@ function playAdapterStub(overrides: Partial<PlayAdapter> = {}): PlayAdapter {
     },
     uploadDeobfuscation: async () => {
       throw new Error("unexpected uploadDeobfuscation call");
+    },
+    updateReleaseNotes: async () => {
+      throw new Error("unexpected updateReleaseNotes call");
     },
     ...overrides,
   };
@@ -2468,6 +2474,181 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     const response = await sendForReview(h);
     expect(response.status).toBe(502);
     expect(receipts(h).at(-1)).toMatchObject({ action: "send-for-review", verdict: "failed-closed" });
+  });
+});
+
+describe("Play release-notes (What's new for a release already on a track)", () => {
+  type Harness = Awaited<ReturnType<typeof readyRelease>>;
+  const json = { "content-type": "application/json" };
+  const changelog = JSON.stringify({ "zh-CN": "**修复** 问题", en: "- Bug fixes", ja: "- 修正", fr: "corrections" });
+
+  function receipts(h: Harness) {
+    return (h.sqlite.prepare(
+      "SELECT action, verdict, track, play_edit_id, payload_json FROM release_receipts WHERE kind='play-promotion' ORDER BY rowid",
+    ).all() as Array<{ action: string; verdict: string; track: string; play_edit_id: string | null; payload_json: string }>)
+      .map((row) => ({ ...row, payload: JSON.parse(row.payload_json) }));
+  }
+
+  /** A release promoted to production without notes (as 1.23.0 was), then given a changelog. */
+  async function promotedWithoutNotes(principal: "human" | "agent" = "human", withChangelog: string | null = changelog): Promise<Harness> {
+    const h = await readyRelease(principal);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (_input, stream) => {
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        return { ok: true, value: { edit_id: "edit-1", package_name: "build.raft.app", version_code: 42, track: "production",
+          sha256: sha(bytes), rollout_percent: 100, release_notes_languages: [] } };
+      },
+    });
+    const promoted = await h.request("/api/apps/app/releases/release/distributions/play/promote", {
+      method: "POST", headers: json,
+      body: JSON.stringify({ track: "production", expected_revision: 1, approval: { note: "ship" } }),
+    });
+    expect(promoted.status).toBe(200);
+    h.sqlite.prepare("UPDATE releases SET changelog = ? WHERE id = 'release'").run(withChangelog);
+    return h;
+  }
+
+  function updateNotes(h: Harness, body: Record<string, unknown> = {}) {
+    return h.request("/api/apps/app/releases/release/distributions/play/release-notes", {
+      method: "POST", headers: json,
+      body: JSON.stringify({ track: "production", expected_revision: 2, approval: { note: "add 1.23 notes" }, ...body }),
+    });
+  }
+
+  const notesValue = (overrides: Record<string, unknown> = {}) => ({
+    edit_id: "edit-7", package_name: "build.raft.app", version_code: 42, track: "production" as const,
+    play_track: "production", sha256: sha(new TextEncoder().encode("exact-aab")),
+    track_release: { status: "completed", user_fraction: null },
+    previous_release_notes_languages: [],
+    release_notes_languages: ["zh-CN", "en-US", "ja-JP"],
+    commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW" as const, changes_not_sent_for_review: false as const },
+    ...overrides,
+  });
+
+  it.each(["human", "agent"] as const)("%s publisher sends the changelog's notes for the promoted versionCode and gets a receipt", async (principal) => {
+    const h = await promotedWithoutNotes(principal);
+    let seen: Record<string, unknown> | undefined;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      updateReleaseNotes: async (input) => {
+        seen = input as unknown as Record<string, unknown>;
+        expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 1 });
+        return { ok: true, value: notesValue() };
+      },
+    });
+    const stateBefore = h.sqlite.prepare("SELECT * FROM play_distribution_state").get();
+    const response = await updateNotes(h);
+    expect(response.status).toBe(200);
+    const releaseNotes = {
+      present: true, sent: ["zh-CN", "en-US", "ja-JP"], skipped: ["fr"], requested: ["zh-CN", "en-US", "ja-JP"],
+      chars: { "zh-CN": 5, "en-US": 11, "ja-JP": 4 }, format: "plain_text_markdown_bold_stripped", previous_languages: [],
+    };
+    expect(await response.json()).toEqual({
+      receipt_id: expect.any(String), edit_id: "edit-7", track: "production", version_code: 42, revision: 3, release_notes: releaseNotes,
+    });
+    expect(seen).toMatchObject({
+      packageName: "build.raft.app", handsTrack: "production", versionCode: 42, expectedSha256: sha(h.aab),
+      releaseNotes: [
+        { language: "zh-CN", text: "修复 问题" }, { language: "en-US", text: "- Bug fixes" }, { language: "ja-JP", text: "- 修正" },
+      ],
+    });
+    const receipt = receipts(h).at(-1)!;
+    expect(receipt).toMatchObject({ action: "release-notes", verdict: "success", track: "production", play_edit_id: "edit-7" });
+    expect(receipt.payload).toMatchObject({
+      action: "release-notes", actor: `raft:${principal}@test`, release_notes: releaseNotes,
+      approvals: [{ scope: "production: add 1.23 notes" }],
+      play: { edit_id: "edit-7", track_changed: false, track_release: { status: "completed", user_fraction: null } },
+      result: { status: "success" },
+    });
+    // Track and rollout did not change, so neither does the Play distribution state.
+    expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").get()).toEqual(stateBefore);
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 3 });
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  });
+
+  it.each([
+    ["no changelog", null, "no_release_notes"],
+    ["a plain-text changelog", "just text", "no_release_notes"],
+    ["only unsupported languages", JSON.stringify({ fr: "corrections" }), "no_release_notes"],
+    ["notes over 500 characters", JSON.stringify({ en: "x".repeat(501) }), "play_release_notes_too_long"],
+  ] as const)("refuses %s at the release_notes gate, before any Play call or revision bump", async (_label, value, failure) => {
+    const h = await promotedWithoutNotes("human", value);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const before = receipts(h).length;
+    const response = await updateNotes(h);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "gate_failed", gate: "release_notes", failure_code: failure } });
+    expect(receipts(h)).toHaveLength(before);
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+  });
+
+  it("refuses a release never promoted to that track", async () => {
+    const h = await promotedWithoutNotes();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    const response = await updateNotes(h, { track: "internal" });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { gate: "channel", failure_code: "not_promoted_to_track" } });
+  });
+
+  it("refuses viewers, a stale revision and a missing note", async () => {
+    const h = await promotedWithoutNotes();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    expect((await updateNotes(h, { expected_revision: 1 })).status).toBe(409);
+    expect((await updateNotes(h, { approval: { note: " " } })).status).toBe(400);
+    h.sqlite.prepare("UPDATE app_members SET app_role='viewer' WHERE id='promotion-member'").run();
+    expect((await updateNotes(h)).status).toBe(403);
+  });
+
+  it("fails with play_api_error, without a receipt or revision bump, when the adapter predates the RPC", async () => {
+    const h = await promotedWithoutNotes();
+    const stub = playAdapterStub();
+    delete (stub as Partial<PlayAdapter>).updateReleaseNotes;
+    h.env.PLAY_RELEASE_SERVICE = stub;
+    const before = receipts(h).length;
+    const response = await updateNotes(h);
+    expect(response.status).toBe(502);
+    expect(receipts(h)).toHaveLength(before);
+    expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+  });
+
+  it("returns edit_conflict without calling Play while another Play edit holds the package", async () => {
+    const h = await promotedWithoutNotes();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
+    h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+    const response = await updateNotes(h);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+  });
+
+  it.each([
+    ["play_edit_in_review", 409, "edit_in_review"],
+    ["play_commit_ambiguous", 502, "edit_state_unknown"],
+    ["play_release_not_on_track", 409, "gate_failed"],
+    ["play_readback_mismatch", 502, "play_api_error"],
+  ] as const)("maps adapter %s to %i %s with a failed-closed release-notes receipt", async (failure, status, code) => {
+    const h = await promotedWithoutNotes();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      updateReleaseNotes: async () => ({ ok: false, error: { status, code: failure, message: "adapter message",
+        cause: { stage: "commit_edit", provider_cause: failure === "play_edit_in_review" ? "EDIT_IN_REVIEW" : "OTHER" } } }),
+    });
+    const response = await updateNotes(h);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ error: { code, failure_code: failure, receipt_id: expect.any(String) } });
+    const failed = receipts(h).at(-1)!;
+    expect(failed).toMatchObject({ action: "release-notes", verdict: "failed-closed" });
+    expect(failed.payload.release_notes).toMatchObject({ present: true, sent: [], requested: ["zh-CN", "en-US", "ja-JP"] });
+    expect(failed.payload.result.failure_reason).toContain(failure);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  });
+
+  it("fails closed when the adapter's answer names different bytes or misses a language", async () => {
+    for (const value of [notesValue({ sha256: B }), notesValue({ release_notes_languages: ["zh-CN", "en-US"] })]) {
+      const h = await promotedWithoutNotes();
+      h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ updateReleaseNotes: async () => ({ ok: true, value }) });
+      const response = await updateNotes(h);
+      expect(response.status).toBe(502);
+      expect(receipts(h).at(-1)).toMatchObject({ action: "release-notes", verdict: "failed-closed" });
+    }
   });
 });
 

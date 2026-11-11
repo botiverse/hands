@@ -64,6 +64,13 @@ interface PlayWriteResult {
     lifecycle_before?: string | null;
     lifecycle_after?: string | null;
   } | null;
+  /** Present for play-release-notes. */
+  release_notes?: {
+    sent?: string[];
+    skipped?: string[];
+    previous_languages?: string[];
+    chars?: Record<string, number>;
+  } | null;
 }
 
 interface ReleaseReceipt {
@@ -800,6 +807,50 @@ export function registerReleaseCommands(program: Command): void {
       console.log(`  track:       ${res.track ?? track}`);
       console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
       console.log(`  lifecycle:   ${res.review?.lifecycle_before ?? "unknown"} -> ${res.review?.lifecycle_after ?? "unknown"}`);
+    });
+
+  releases
+    .command("play-release-notes <appIdOrSlug> <releaseId>")
+    .description("Replace the Google Play release notes (What's new) of a release already promoted to a track, from the release's changelog (write it first with `hands releases update --changelog-file zh=… --changelog-file en=…`). Never changes the track, versionCode, or rollout; Google reviews the change (publisher role; ERROR_IF_IN_REVIEW, never cancels a review in progress; no auto-retry).")
+    .option("--track <track>", "Play track the release was promoted to: internal, closed, or production.", "production")
+    .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
+    .option("--json", "Output JSON.", false)
+    .action(async (
+      appIdOrSlug: string,
+      releaseId: string,
+      opts: { track: string; note: string; json?: boolean },
+      command: Command,
+    ) => {
+      const track = parsePlayTrack(opts.track);
+      const appId = await resolveAppId(appIdOrSlug);
+      const body: Record<string, unknown> = {
+        track,
+        expected_revision: await fetchReleaseRevision(appId, releaseId),
+        approval: { note: opts.note },
+      };
+      let res: PlayWriteResult;
+      try {
+        res = await apiRequest<PlayWriteResult>(
+          `/api/apps/${appId}/releases/${releaseId}/distributions/play/release-notes`,
+          { method: "POST", body, retryOnUnauthorized: false },
+        );
+      } catch (err) {
+        throw playWriteError("release-notes", err);
+      }
+      if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      const list = (values: string[] | undefined) => (values && values.length > 0 ? values.join(", ") : "none");
+      console.log(`Updated Google Play release notes for release ${releaseId}.`);
+      console.log(`  receipt:     ${res.receipt_id}`);
+      console.log(`  play edit:   ${res.edit_id ?? "unavailable"}`);
+      console.log(`  track:       ${res.track ?? track}`);
+      console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
+      console.log(`  languages:   ${list(res.release_notes?.sent)} (before: ${list(res.release_notes?.previous_languages)})`);
+      if (res.release_notes?.skipped && res.release_notes.skipped.length > 0) {
+        console.log(`  skipped:     ${res.release_notes.skipped.join(", ")} (no Play language mapping)`);
+      }
     });
 
   releases

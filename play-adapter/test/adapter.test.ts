@@ -220,6 +220,8 @@ function googleFixture(options: GoogleFixtureOptions = {}) {
     mappingUploads,
     assertion: () => assertion,
     track: () => track,
+    /** Replace the track Google returns (e.g. a staged release next to a completed one). */
+    setTrack: (next: TrackResource) => { track = next; },
     /** Pretend Google Play already holds this versionCode (as after an earlier promote). */
     alreadyOnPlay: (versionCode: number, sha256: string = ALREADY_SHA) => {
       alreadyOnPlayVersion = String(versionCode);
@@ -1108,6 +1110,138 @@ describe("changesNotSentForReview and sendForReview", () => {
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
     for (const bad of [{ versionCode: 0 }, { expectedSha256: "nope" }, { operationId: "" }, { handsTrack: "beta" }]) {
       const result = await service.sendForReview(sendInput(bad) as never, environment());
+      expect(result).toMatchObject({ ok: false });
+    }
+    expect(fixture.requests).toHaveLength(0);
+  });
+});
+
+describe("updateReleaseNotes (What's new for a release already on a track)", () => {
+  const notes = [
+    { language: "zh-CN", text: "- 修复若干问题" },
+    { language: "en-US", text: "- Bug fixes" },
+    { language: "ja-JP", text: "- 不具合を修正" },
+  ];
+
+  function notesInput(overrides: Record<string, unknown> = {}) {
+    return {
+      ...binding, handsTrack: "production" as const, versionCode: 42, expectedSha256: digest,
+      operationId: "operation-3", releaseNotes: notes, ...overrides,
+    };
+  }
+
+  function puts(fixture: ReturnType<typeof googleFixture>) {
+    return fixture.requests.filter((request) => request.method === "PUT" && request.url.includes("/tracks/"));
+  }
+
+  function commits(fixture: ReturnType<typeof googleFixture>) {
+    return fixture.requests.filter((request) => request.url.includes(":commit?")).map((request) => request.url.split("?")[1]);
+  }
+
+  it("replaces only the notes of the release carrying versionCode, commits, and reads them back", async () => {
+    const fixture = googleFixture({ trackMaximum: 42 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.updateReleaseNotes(notesInput(), environment());
+    expect(result).toEqual({ ok: true, value: {
+      edit_id: "edit-1",
+      package_name: PACKAGE,
+      version_code: 42,
+      track: "production",
+      play_track: "production",
+      sha256: digest,
+      track_release: { status: "completed", user_fraction: null },
+      previous_release_notes_languages: [],
+      release_notes_languages: ["zh-CN", "en-US", "ja-JP"],
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+    } });
+    // One track update: same release (name, versionCodes, status), only notes added.
+    expect(puts(fixture).map((request) => request.body)).toEqual([{
+      track: "production",
+      releases: [{ name: "existing", versionCodes: ["42"], status: "completed", releaseNotes: notes }],
+    }]);
+    expect(commits(fixture)).toEqual(["changesInReviewBehavior=ERROR_IF_IN_REVIEW"]);
+    // No bundle or deobfuscation upload.
+    expect(fixture.requests.some((request) => request.url.includes("uploadType"))).toBe(false);
+  });
+
+  it("keeps other releases and a staged rollout as they are, and replaces existing notes", async () => {
+    const fixture = googleFixture({ trackMaximum: 41 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    fixture.setTrack({ track: "production", releases: [
+      { name: "existing", versionCodes: ["41"], status: "completed" },
+      { versionCodes: ["42"], status: "inProgress", userFraction: 0.2,
+        releaseNotes: [{ language: "en-US", text: "stale" }, { language: "fr-FR", text: "vieux" }] },
+    ] });
+    const result = await service.updateReleaseNotes(notesInput(), environment());
+    expect(result).toMatchObject({ ok: true, value: {
+      track_release: { status: "inProgress", user_fraction: 0.2 },
+      previous_release_notes_languages: ["en-US", "fr-FR"],
+      release_notes_languages: ["zh-CN", "en-US", "ja-JP"],
+    } });
+    expect(fixture.track().releases).toEqual([
+      { name: "existing", versionCodes: ["41"], status: "completed" },
+      { versionCodes: ["42"], status: "inProgress", userFraction: 0.2, releaseNotes: notes },
+    ]);
+  });
+
+  it("refuses a versionCode the track does not carry, deleting the edit without a PUT or commit", async () => {
+    const fixture = googleFixture({ trackMaximum: 41 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.updateReleaseNotes(notesInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_release_not_on_track" } });
+    expect(puts(fixture)).toHaveLength(0);
+    expect(commits(fixture)).toEqual([]);
+    expect(fixture.requests.at(-1)?.method).toBe("DELETE");
+  });
+
+  it("refuses when Play holds no bundle, or different bytes, for the versionCode", async () => {
+    const missing = googleFixture({ trackMaximum: 42 });
+    const missingService = createPlayAdapterService({ fetchImpl: missing.fetchImpl, nowSeconds: () => NOW });
+    expect(await missingService.updateReleaseNotes(notesInput(), environment()))
+      .toMatchObject({ ok: false, error: { status: 409, code: "play_bundle_not_on_play" } });
+    expect(puts(missing)).toHaveLength(0);
+
+    const different = googleFixture({ trackMaximum: 42 });
+    different.alreadyOnPlay(42, "b".repeat(64));
+    const differentService = createPlayAdapterService({ fetchImpl: different.fetchImpl, nowSeconds: () => NOW });
+    expect(await differentService.updateReleaseNotes(notesInput(), environment()))
+      .toMatchObject({ ok: false, error: { status: 409, code: "aab_integrity_mismatch" } });
+    expect(puts(different)).toHaveLength(0);
+  });
+
+  it("reports another change in review as play_edit_in_review and deletes the edit (never cancels the review)", async () => {
+    const fixture = googleFixture({ trackMaximum: 42, failCommitOf: "edit-1" });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.updateReleaseNotes(notesInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
+    expect(String((result as { error?: { message?: string } }).error?.message)).toContain("the release notes were not updated");
+    expect(fixture.requests.at(-1)?.method).toBe("DELETE");
+    expect(fixture.requests.some((request) => /CANCEL_IN_REVIEW/.test(request.url))).toBe(false);
+  });
+
+  it("leaves an unanswered commit alone and calls it ambiguous", async () => {
+    const fixture = googleFixture({ trackMaximum: 42, commitThrows: true });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.updateReleaseNotes(notesInput(), environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_commit_ambiguous" } });
+    expect(fixture.requests.filter((request) => request.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("validates input before OAuth: notes are required, unique, Play-tagged and at most 500 characters", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    for (const bad of [
+      { versionCode: 0 }, { expectedSha256: "nope" }, { operationId: "" }, { handsTrack: "beta" },
+      { releaseNotes: [] }, { releaseNotes: null },
+      { releaseNotes: [{ language: "en", text: "a" }, { language: "EN", text: "b" }] },
+      { releaseNotes: [{ language: "en-US", text: "x".repeat(501) }] },
+    ]) {
+      const result = await service.updateReleaseNotes(notesInput(bad) as never, environment());
       expect(result).toMatchObject({ ok: false });
     }
     expect(fixture.requests).toHaveLength(0);

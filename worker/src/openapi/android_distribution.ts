@@ -381,6 +381,27 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
 
   routes.push({
     method: "post",
+    path: "/api/apps/{appId}/releases/{releaseId}/distributions/play/release-notes",
+    tags: ["Android distribution"],
+    summary: "Replace the Google Play release notes of a release already on a track",
+    description:
+      "For a versionCode Hands already promoted to the track (promote cannot add notes then: it refuses a versionCode not above the track maximum). The release's changelog is mapped to Play releaseNotes exactly as promote maps it; it must yield at least one Play language (400 gate release_notes, failure_code no_release_notes, or promote's release_notes failure codes, before any Play call). The adapter checks Play holds the accepted AAB (sha256) for the versionCode, then updates only that track release's releaseNotes (the notes become exactly the mapped list); versionCodes, status, userFraction, country targeting and other releases are carried as read. Commit is changesInReviewBehavior=ERROR_IF_IN_REVIEW without changesNotSentForReview, so Google reviews the change; another change in review returns 409 edit_in_review and is never cancelled. A post-commit readback must show the requested notes on an unchanged release. Same publisher, revision, acceptance, live-hold, binding and edit-lock gates as send-for-review. Appends a play-promotion receipt with action release-notes; play_distribution_state is not touched.",
+    security: auth,
+    request: {
+      params: AppReleaseParams,
+      body: { content: json(PlaySendForReviewInput), required: true },
+    },
+    responses: {
+      200: success("Commit accepted and read back; {receipt_id, edit_id, track, version_code, revision, release_notes}.", GenericObject),
+      400: error("A gate failed (release_notes, not promoted to this track through Hands, acceptance, binding)."),
+      403: error("Authenticated publisher, binding, or live-hold gate failed."),
+      409: error("Release revision or edit lock conflicts, another change is in review (edit_in_review), or Play does not hold this release on the track."),
+      502: error("Server-side Play adapter failed or is too old, readback did not match, or Google's answer was unrecognised (edit_state_unknown); see receipt_id."),
+    },
+  });
+
+  routes.push({
+    method: "post",
     path: "/api/apps/{appId}/releases/{releaseId}/distributions/play/upload-symbols",
     tags: ["Android distribution"],
     summary: "Upload deobfuscation files for a versionCode already on Google Play",

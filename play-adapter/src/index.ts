@@ -25,6 +25,9 @@ import type {
   StoreListingReadRpcInput,
   SymbolsRpcInput,
   TrackMaximumRpcInput,
+  UpdateReleaseNotesRequest,
+  UpdateReleaseNotesResult,
+  UpdateReleaseNotesRpcInput,
   UploadDeobfuscationRequest,
   UploadDeobfuscationResult,
   UploadDeobfuscationRpcInput,
@@ -211,6 +214,30 @@ function sendForReviewInput(input: SendForReviewRpcInput): SendForReviewRequest 
     operationId,
   };
 }
+/** updateReleaseNotes input: the notes are required and validated like promote's. */
+function updateReleaseNotesInput(input: UpdateReleaseNotesRpcInput): UpdateReleaseNotesRequest {
+  const track = trackInput(input);
+  const versionCode = positiveInteger(input.versionCode);
+  const expectedSha256 = typeof input.expectedSha256 === "string" ? input.expectedSha256.toLowerCase() : "";
+  const operationId = typeof input.operationId === "string" ? input.operationId : "";
+  if (versionCode === null || versionCode > 2_100_000_000 || !SHA256.test(expectedSha256) || !OPERATION_ID.test(operationId)) {
+    throw new PlayAdapterError(400, "release_notes_request_invalid", "Hands release notes request is invalid");
+  }
+  const releaseNotes = releaseNotesInput(input.releaseNotes);
+  if (!releaseNotes) {
+    throw new PlayAdapterError(400, "release_notes_invalid", "Release notes are required to update them");
+  }
+  return {
+    packageName: track.packageName,
+    handsTrack: track.handsTrack,
+    playTrack: track.playTrack,
+    versionCode,
+    expectedSha256,
+    operationId,
+    releaseNotes,
+  };
+}
+
 /**
  * uploadDeobfuscation input. At least one file must be declared. On dry_run no
  * stream may be passed (nothing is uploaded); on commit every declared file must
@@ -430,6 +457,22 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
         const request = sendForReviewInput(input);
         const resolved = await client(input, env);
         return { ok: true, value: await resolved.client.sendForReview(request) };
+      } catch (error) {
+        return failure(error, operationId);
+      }
+    },
+
+    /**
+     * Replace the release notes of the track release carrying versionCode; nothing
+     * else on the track changes. Commit is ERROR_IF_IN_REVIEW, then a readback.
+     */
+    async updateReleaseNotes(input: UpdateReleaseNotesRpcInput, env: PlayAdapterEnv): Promise<AdapterResult<UpdateReleaseNotesResult>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        // Validate before OAuth: a malformed request never reaches Google.
+        const request = updateReleaseNotesInput(input);
+        const resolved = await client(input, env);
+        return { ok: true, value: await resolved.client.updateReleaseNotes(request) };
       } catch (error) {
         return failure(error, operationId);
       }

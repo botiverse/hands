@@ -324,6 +324,7 @@ function marketMessage(event: string, payload: Payload, build: Payload, app: str
     icon = success ? "✅" : "⚠️";
     label = action === "upload-symbols" ? (success ? "Symbols uploaded" : "Symbols upload failed or was blocked")
       : action === "send-for-review" ? (success ? "Review request sent" : "Review request failed or was blocked")
+      : action === "release-notes" ? (success ? "Release notes updated" : "Release notes update failed or was blocked")
       : action && action !== "promote" ? (success ? "Operation completed" : "Operation failed or was blocked")
       : success && payload.review_requested === false ? "Release saved; not sent for review"
       : success ? "Release submitted" : "Release submission failed or was blocked";
@@ -349,7 +350,8 @@ function marketMessage(event: string, payload: Payload, build: Payload, app: str
     if (state && !status) lines.push(`Status: ${safePreview(state, 160)}`);
     if (previous && previous !== state) lines.push(`Previously: ${safePreview(marketStateLabel(event, previous) ?? previous, 160)}`);
   }
-  if (isReceipt && action && action !== "promote" && action !== "send-for-review" && action !== "upload-symbols") {
+  if (isReceipt && action && action !== "promote" && action !== "send-for-review" && action !== "upload-symbols"
+      && action !== "release-notes") {
     lines.push(`Action: ${safePreview(action, 160)}`);
   }
   if (isReceipt && event === "google_play:submission_succeeded" && (!action || action === "promote" || action === "send-for-review")
