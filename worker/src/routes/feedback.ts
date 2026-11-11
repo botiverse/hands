@@ -906,13 +906,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   }
 
   // Crash alerting: fire webhooks when a signature is first seen or when it
-  // spikes. Background system kills skip individual new-group alerts and fire
-  // only when the same device hits >= 3 in 24h or when a version spikes >= 2x
-  // against the previous version (with >= 10 reports across >= 3 devices).
-  if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id) {
+  // spikes. Background system kills skip real-time alerts and are reported via
+  // a once-a-day summary instead.
+  if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id && !backgroundSystemKill) {
     const orgId = app.org_id;
     const eventPrefix = kind === "crash" ? "crash" : "error";
-    const deviceId = meta("device_id");
     const alert = async () => {
       const base = {
         app_slug: app.slug,
@@ -923,20 +921,6 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         version_name: versionName,
         version_code: versionCode,
       };
-      if (backgroundSystemKill) {
-        await evaluateBackgroundSystemKillAlerts(c.env, {
-          orgId,
-          appId: app.id,
-          eventPrefix,
-          now,
-          occurredAt: effectiveOccurredAtMs(metadata, now),
-          deviceId,
-          versionName,
-          versionCode,
-          base,
-        });
-        return;
-      }
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets t
          WHERE app_id = ?1 AND signature = ?2 AND id != ?3
@@ -2301,80 +2285,126 @@ const BG_KILL_VERSION_MIN_COUNT = 10;
 const BG_KILL_VERSION_MIN_DEVICES = 3;
 const BG_KILL_VERSION_SPIKE_MULTIPLIER = 2;
 
-async function evaluateBackgroundSystemKillAlerts(
-  env: Env,
-  input: {
-    orgId: string;
-    appId: string;
-    eventPrefix: "crash" | "error";
-    now: number;
-    occurredAt?: number;
-    deviceId: string | null;
-    versionName: string | null;
-    versionCode: number | null;
-    base: Record<string, unknown>;
-  },
-): Promise<void> {
-  const { orgId, appId, eventPrefix, now, deviceId, versionName, versionCode, base } = input;
-  const occurredAt = input.occurredAt ?? now;
-  const dayMs = 24 * 60 * 60 * 1000;
-  if (deviceId) {
-    const [occurredRow, ingestedRow] = await Promise.all([
-      env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets t
-         WHERE t.app_id = ?1 AND t.device_id = ?2
-           AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?3 AND ${EFFECTIVE_OCCURRED_AT_SQL} <= ?4
-           AND t.kind IN ('crash', 'error')
-           AND ${BACKGROUND_SYSTEM_KILL_SQL}
-           AND ${feedbackBuildScopeClause("standard")}`,
-      )
-        .bind(appId, deviceId, occurredAt - dayMs, occurredAt)
-        .first<{ n: number }>(),
-      env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets t
-         WHERE t.app_id = ?1 AND t.device_id = ?2
-           AND t.created_at >= ?3 AND t.created_at <= ?4
-           AND t.kind IN ('crash', 'error')
-           AND ${BACKGROUND_SYSTEM_KILL_SQL}
-           AND ${feedbackBuildScopeClause("standard")}`,
-      )
-        .bind(appId, deviceId, now - dayMs, now)
-        .first<{ n: number }>(),
-    ]);
-    const deviceCount24h = Math.max(occurredRow?.n ?? 0, ingestedRow?.n ?? 0);
-    if (deviceCount24h >= BG_KILL_DEVICE_DAILY_THRESHOLD) {
-      const bucketAnchor = (occurredRow?.n ?? 0) >= BG_KILL_DEVICE_DAILY_THRESHOLD ? occurredAt : now;
-      const dayBucket = Math.floor(bucketAnchor / dayMs);
-      await emitWebhookEvent(env, {
-        orgId,
-        appId,
-        event: `${eventPrefix}:spike`,
-        eventId: `${eventPrefix}:spike:${appId}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:device:${deviceId}:${dayBucket}`,
-        body: {
-          ...base,
-          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
-          alert_reason: "device_daily_repeat",
-          device_id: deviceId,
-          count_last_24h: deviceCount24h,
-        },
-      });
-    }
-  }
+export interface BackgroundSystemKillDailySummaryVersionEntry {
+  version_name: string;
+  version_code: number | null;
+  count: number;
+  device_count: number;
+  previous_version_name: string | null;
+  previous_version_code: number | null;
+  previous_version_count: number | null;
+  previous_version_device_count: number | null;
+  spike: boolean;
+}
 
-  if (versionCode !== null) {
-    const currentRow = await env.DB.prepare(
-      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.device_id) AS devices
+export interface BackgroundSystemKillDailySummary {
+  app_id: string;
+  app_slug: string;
+  signature: string;
+  alert_reason: "background_system_kill_daily_summary";
+  day: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  total_count: number;
+  device_count: number;
+  by_version: BackgroundSystemKillDailySummaryVersionEntry[];
+  top_devices: Array<{
+    device_id: string;
+    device_model: string | null;
+    count: number;
+    last_seen: number;
+  }>;
+}
+
+function parseUtcDayWindow(day?: string, nowMs = Date.now()): { day: string; startMs: number; endMs: number } | null {
+  const dayMs = 24 * 60 * 60 * 1000;
+  if (day !== undefined) {
+    const trimmed = day.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+    const parsed = Date.parse(`${trimmed}T00:00:00.000Z`);
+    if (!Number.isFinite(parsed)) return null;
+    const normalized = new Date(parsed).toISOString().slice(0, 10);
+    if (normalized !== trimmed) return null;
+    return { day: trimmed, startMs: parsed, endMs: parsed + dayMs };
+  }
+  const todayStart = Math.floor(nowMs / dayMs) * dayMs;
+  const yesterdayStart = todayStart - dayMs;
+  return {
+    day: new Date(yesterdayStart).toISOString().slice(0, 10),
+    startMs: yesterdayStart,
+    endMs: todayStart,
+  };
+}
+
+export async function buildBackgroundSystemKillDailySummary(
+  env: Env,
+  appId: string,
+  dayWindow: { day: string; startMs: number; endMs: number },
+): Promise<{ orgId: string | null; summary: BackgroundSystemKillDailySummary } | null> {
+  const app = await env.DB.prepare(
+    `SELECT id, org_id, slug FROM apps WHERE id = ?1`,
+  )
+    .bind(appId)
+    .first<{ id: string; org_id: string | null; slug: string }>();
+  if (!app) return null;
+
+  const { day, startMs, endMs } = dayWindow;
+  const [totalsRow, versionRows, deviceRows] = await Promise.all([
+    env.DB.prepare(
+      `SELECT COUNT(*) AS total_count, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS device_count
        FROM feedback_tickets t
-       WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
-         AND t.kind IN ('crash', 'error')
+       WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
          AND ${BACKGROUND_SYSTEM_KILL_SQL}
-         AND ${feedbackBuildScopeClause("standard")}`,
+         AND ${feedbackBuildScopeClause("standard")}
+         AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?2 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?3`,
     )
-      .bind(appId, versionCode)
-      .first<{ n: number; devices: number }>();
-    const currentCount = currentRow?.n ?? 0;
-    const currentDevices = currentRow?.devices ?? 0;
-    if (currentCount >= BG_KILL_VERSION_MIN_COUNT && currentDevices >= BG_KILL_VERSION_MIN_DEVICES) {
+      .bind(appId, startMs, endMs)
+      .first<{ total_count: number; device_count: number }>(),
+    env.DB.prepare(
+      `SELECT
+         COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
+         ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+         COUNT(*) AS count,
+         COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS device_count
+       FROM feedback_tickets t
+       WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause("standard")}
+         AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?2 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?3
+       GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
+       ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC, count DESC
+       LIMIT 20`,
+    )
+      .bind(appId, startMs, endMs)
+      .all<{ version_name: string; version_code: number | null; count: number; device_count: number }>(),
+    env.DB.prepare(
+      `SELECT
+         COALESCE(t.device_id, 'unknown') AS device_id,
+         MAX(t.device_model) AS device_model,
+         COUNT(*) AS count,
+         MAX(${EFFECTIVE_OCCURRED_AT_SQL}) AS last_seen
+       FROM feedback_tickets t
+       WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause("standard")}
+         AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?2 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?3
+       GROUP BY COALESCE(t.device_id, 'unknown')
+       ORDER BY count DESC, last_seen DESC
+       LIMIT 10`,
+    )
+      .bind(appId, startMs, endMs)
+      .all<{ device_id: string; device_model: string | null; count: number; last_seen: number }>(),
+  ]);
+
+  const byVersion: BackgroundSystemKillDailySummaryVersionEntry[] = [];
+  for (const row of versionRows.results) {
+    let prevVersionName: string | null = null;
+    let prevVersionCode: number | null = null;
+    let prevCount: number | null = null;
+    let prevDevices: number | null = null;
+    let spike = false;
+
+    if (row.version_code !== null) {
       const prevVersion = await env.DB.prepare(
         `SELECT version_code, MAX(version_name) AS version_name FROM (
            SELECT b.version_code AS version_code, b.version_name AS version_name
@@ -2393,112 +2423,114 @@ async function evaluateBackgroundSystemKillAlerts(
          ORDER BY version_code DESC
          LIMIT 1`,
       )
-        .bind(appId, versionCode)
+        .bind(appId, row.version_code)
         .first<{ version_code: number; version_name: string | null }>();
       if (prevVersion && prevVersion.version_code != null) {
-        const prevRow = await env.DB.prepare(
-          `SELECT COUNT(*) AS n, COUNT(DISTINCT t.device_id) AS devices
-           FROM feedback_tickets t
-           WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
-             AND t.kind IN ('crash', 'error')
-             AND ${BACKGROUND_SYSTEM_KILL_SQL}
-             AND ${feedbackBuildScopeClause("standard")}`,
-        )
-          .bind(appId, prevVersion.version_code)
-          .first<{ n: number; devices: number }>();
-        const prevCount = prevRow?.n ?? 0;
-        const prevDevices = prevRow?.devices ?? 0;
-        const countSpike = currentCount >= Math.max(BG_KILL_VERSION_MIN_COUNT, prevCount * BG_KILL_VERSION_SPIKE_MULTIPLIER);
-        const rateSpike =
-          prevDevices > 0
-          && currentDevices > 0
-          && (currentCount / currentDevices) >= (prevCount / prevDevices) * BG_KILL_VERSION_SPIKE_MULTIPLIER;
-        if (countSpike || rateSpike) {
-          await emitWebhookEvent(env, {
-            orgId,
-            appId,
-            event: `${eventPrefix}:spike`,
-            eventId: `${eventPrefix}:spike:${appId}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:version:${versionCode}`,
-            body: {
-              ...base,
-              signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
-              alert_reason: "version_spike",
-              version_name: versionName,
-              version_code: versionCode,
-              version_count: currentCount,
-              version_device_count: currentDevices,
-              previous_version_name: prevVersion.version_name,
-              previous_version_code: prevVersion.version_code,
-              previous_version_count: prevCount,
-              previous_version_device_count: prevDevices,
-            },
-          });
+        prevVersionCode = prevVersion.version_code;
+        prevVersionName = prevVersion.version_name;
+        const [curAllTime, prevAllTime] = await Promise.all([
+          env.DB.prepare(
+            `SELECT COUNT(*) AS n, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS devices
+             FROM feedback_tickets t
+             WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
+               AND t.kind IN ('crash', 'error')
+               AND ${BACKGROUND_SYSTEM_KILL_SQL}
+               AND ${feedbackBuildScopeClause("standard")}`,
+          )
+            .bind(appId, row.version_code)
+            .first<{ n: number; devices: number }>(),
+          env.DB.prepare(
+            `SELECT COUNT(*) AS n, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS devices
+             FROM feedback_tickets t
+             WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
+               AND t.kind IN ('crash', 'error')
+               AND ${BACKGROUND_SYSTEM_KILL_SQL}
+               AND ${feedbackBuildScopeClause("standard")}`,
+          )
+            .bind(appId, prevVersion.version_code)
+            .first<{ n: number; devices: number }>(),
+        ]);
+        const curTotal = curAllTime?.n ?? row.count;
+        const curDevs = curAllTime?.devices ?? row.device_count;
+        prevCount = prevAllTime?.n ?? 0;
+        prevDevices = prevAllTime?.devices ?? 0;
+        if (curTotal >= BG_KILL_VERSION_MIN_COUNT && curDevs >= BG_KILL_VERSION_MIN_DEVICES) {
+          const countSpike = curTotal >= Math.max(BG_KILL_VERSION_MIN_COUNT, prevCount * BG_KILL_VERSION_SPIKE_MULTIPLIER);
+          const rateSpike =
+            prevDevices > 0
+            && curDevs > 0
+            && (curTotal / curDevs) >= (prevCount / prevDevices) * BG_KILL_VERSION_SPIKE_MULTIPLIER;
+          spike = countSpike || rateSpike;
         }
       }
     }
-  }
-}
 
-async function backfillBackgroundSystemKillAlerts(
-  env: Env,
-  appId: string,
-): Promise<void> {
-  const app = await env.DB.prepare(
-    `SELECT id, org_id, slug FROM apps WHERE id = ?1`,
-  )
-    .bind(appId)
-    .first<{ id: string; org_id: string | null; slug: string }>();
-  if (!app?.org_id) return;
-
-  const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const { results } = await env.DB.prepare(
-    `SELECT t.id, t.kind, t.message, t.device_id, t.created_at,
-            ${EFFECTIVE_VERSION_NAME_SQL} AS version_name,
-            ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
-            ${EFFECTIVE_OCCURRED_AT_SQL} AS occurred_at
-     FROM feedback_tickets t
-     WHERE t.app_id = ?1
-       AND t.created_at >= ?2
-       AND t.kind IN ('crash', 'error')
-       AND ${BACKGROUND_SYSTEM_KILL_SQL}
-       AND ${feedbackBuildScopeClause("standard")}
-     ORDER BY t.created_at ASC
-     LIMIT 100`,
-  )
-    .bind(appId, since)
-    .all<{
-      id: string;
-      kind: string;
-      message: string | null;
-      device_id: string | null;
-      created_at: number;
-      version_name: string | null;
-      version_code: number | null;
-      occurred_at: number;
-    }>();
-
-  for (const row of results) {
-    const eventPrefix = row.kind === "error" ? "error" : "crash";
-    await evaluateBackgroundSystemKillAlerts(env, {
-      orgId: app.org_id,
-      appId: app.id,
-      eventPrefix,
-      now: row.created_at,
-      occurredAt: row.occurred_at,
-      deviceId: row.device_id,
-      versionName: row.version_name,
-      versionCode: row.version_code,
-      base: {
-        app_slug: app.slug,
-        signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
-        crash_type: "system_kill",
-        ticket_id: row.id,
-        message: (row.message ?? "").slice(0, 300),
-        version_name: row.version_name,
-        version_code: row.version_code,
-      },
+    byVersion.push({
+      version_name: row.version_name,
+      version_code: row.version_code,
+      count: row.count,
+      device_count: row.device_count,
+      previous_version_name: prevVersionName,
+      previous_version_code: prevVersionCode,
+      previous_version_count: prevCount,
+      previous_version_device_count: prevDevices,
+      spike,
     });
   }
+
+  return {
+    orgId: app.org_id,
+    summary: {
+      app_id: app.id,
+      app_slug: app.slug,
+      signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+      alert_reason: "background_system_kill_daily_summary",
+      day,
+      window_start_ms: startMs,
+      window_end_ms: endMs,
+      total_count: totalsRow?.total_count ?? 0,
+      device_count: totalsRow?.device_count ?? 0,
+      by_version: byVersion,
+      top_devices: deviceRows.results,
+    },
+  };
+}
+
+export async function dispatchBackgroundSystemKillDailySummaries(
+  env: Env,
+  nowMs = Date.now(),
+  explicitDay?: string,
+): Promise<{ day: string; emitted: number }> {
+  const dayWindow = parseUtcDayWindow(explicitDay, nowMs);
+  if (!dayWindow) return { day: explicitDay ?? "", emitted: 0 };
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT t.app_id AS app_id
+     FROM feedback_tickets t
+     WHERE t.kind IN ('crash', 'error')
+       AND ${BACKGROUND_SYSTEM_KILL_SQL}
+       AND ${feedbackBuildScopeClause("standard")}
+       AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?1 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?2`,
+  )
+    .bind(dayWindow.startMs, dayWindow.endMs)
+    .all<{ app_id: string }>();
+
+  let emitted = 0;
+  for (const row of results) {
+    const built = await buildBackgroundSystemKillDailySummary(env, row.app_id, dayWindow);
+    if (!built?.orgId || built.summary.total_count <= 0) continue;
+    await emitWebhookEvent(env, {
+      orgId: built.orgId,
+      appId: row.app_id,
+      event: "crash:spike",
+      eventId: `crash:spike:${row.app_id}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:daily:${dayWindow.day}`,
+      body: {
+        ...built.summary,
+        crash_type: "system_kill",
+      },
+    });
+    emitted++;
+  }
+  return { day: dayWindow.day, emitted };
 }
 
 /**
@@ -2576,14 +2608,6 @@ export async function handleListCrashGroups(c: AdminContext) {
     }>();
 
   if (results.some((group: { signature: string }) => group.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE)) {
-    const backfillPromise = scope === "standard" && appId
-      ? backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {})
-      : Promise.resolve();
-    try {
-      c.executionCtx.waitUntil(backfillPromise);
-    } catch {
-      await backfillPromise;
-    }
     const [byVersion, byDevice] = await Promise.all([
       c.env.DB.prepare(
         `SELECT
@@ -2710,14 +2734,6 @@ export async function handleFeedbackStats(c: AdminContext) {
       .bind(appId)
       .all<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>(),
   ]);
-  if (scope === "standard" && appId && bgByDevice.results.length > 0) {
-    const backfillPromise = backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {});
-    try {
-      c.executionCtx.waitUntil(backfillPromise);
-    } catch {
-      await backfillPromise;
-    }
-  }
   return c.json({
     daily: daily.results,
     crashes_by_version: byVersion.results,
@@ -2726,6 +2742,38 @@ export async function handleFeedbackStats(c: AdminContext) {
       by_version: bgByVersion.results,
       by_device: bgByDevice.results,
     },
+  });
+}
+
+export async function handleSendBackgroundSystemKillDailySummary(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const requestedDay = typeof body.day === "string" ? body.day : undefined;
+  const force = body.force === true;
+  const dayWindow = parseUtcDayWindow(requestedDay, Date.now());
+  if (!dayWindow) {
+    return c.json({ error: "day must be a valid YYYY-MM-DD UTC date" }, 400);
+  }
+  const built = await buildBackgroundSystemKillDailySummary(c.env, appId, dayWindow);
+  if (!built) return c.json({ error: "app not found" }, 404);
+  let emitted = false;
+  if (built.orgId && (built.summary.total_count > 0 || force)) {
+    const suffix = force ? `:manual:${Date.now()}` : "";
+    await emitWebhookEvent(c.env, {
+      orgId: built.orgId,
+      appId,
+      event: "crash:spike",
+      eventId: `crash:spike:${appId}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:daily:${dayWindow.day}${suffix}`,
+      body: {
+        ...built.summary,
+        crash_type: "system_kill",
+      },
+    });
+    emitted = true;
+  }
+  return c.json({
+    emitted,
+    summary: built.summary,
   });
 }
 

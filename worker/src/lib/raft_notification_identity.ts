@@ -69,6 +69,9 @@ export async function notificationObjectKey(body: Record<string, unknown>): Prom
   if (isFeedbackThreadEvent(event) && typeof payload.ticket_id === "string" && payload.ticket_id.length > 0) {
     return `feedback:new:${payload.ticket_id.slice(0, 160)}`;
   }
+  if (payload.alert_reason === "background_system_kill_daily_summary" && typeof payload.day === "string" && payload.day.length > 0) {
+    return `${event}:bg_kill_daily_summary:${payload.day.slice(0, 32)}`;
+  }
   const resource = record(payload.resource);
   const candidates = [
     payload.ticket_id,

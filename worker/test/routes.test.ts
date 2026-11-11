@@ -11606,7 +11606,7 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(killTickets[0].crash_type).toBe("system_kill");
   });
 
-  it("feedback: background system kills auto-close under SystemKill@background, aggregate by version/device, and only alert on device/version spikes", async () => {
+  it("feedback: background system kills auto-close under SystemKill@background, skip real-time alerts, aggregate by version/device, and emit a once-a-day summary", async () => {
     const env = makeEnv();
     env.APK_BUCKET = { put: async () => {}, get: async () => null };
     const {
@@ -11614,6 +11614,7 @@ describe("quiver public API v2 — scope resolution", () => {
       handleListCrashGroups,
       handleListFeedback,
       handleFeedbackStats,
+      handleSendBackgroundSystemKillDailySummary,
     } = await import("../src/routes/feedback");
 
     // Register a webhook for app-scope to capture fired events.
@@ -11675,7 +11676,7 @@ describe("quiver public API v2 — scope resolution", () => {
       };
 
       // 1) Background system kill with missing top-level version_code/version_name uses fallback_version_*
-      // and is auto-closed with not_planned without firing feedback:new or crash:new_group.
+      // and is auto-closed with not_planned without firing any real-time alert.
       const r1 = await submit("dev-repeat", {
         crash_type: "system_kill",
         crash_reason: "system_kill",
@@ -11700,46 +11701,18 @@ describe("quiver public API v2 — scope resolution", () => {
       });
       expect(await getWebhookEvents()).toHaveLength(0);
 
-      // 2nd report on same device in 24h -> still no alert.
-      expect((await submit("dev-repeat", {
-        crash_type: "system_kill",
-        crash_exit_reason: "other",
-        crash_exit_reason_code: 13,
-        crash_exit_importance: 400,
-        fallback_version_name: "1.22.0",
-        fallback_version_code: 1022000,
-      })).status).toBe(201);
+      // Even repeated background system kills on the same device do NOT fire real-time alerts.
+      for (let k = 0; k < 3; k++) {
+        expect((await submit("dev-repeat", {
+          crash_type: "system_kill",
+          crash_exit_reason: "other",
+          crash_exit_reason_code: 13,
+          crash_exit_importance: 400,
+          fallback_version_name: "1.22.0",
+          fallback_version_code: 1022000,
+        })).status).toBe(201);
+      }
       expect(await getWebhookEvents()).toHaveLength(0);
-
-      // 3rd report on same device in 24h -> triggers device_daily_repeat crash:spike alert once!
-      expect((await submit("dev-repeat", {
-        crash_type: "system_kill",
-        crash_exit_reason: "other",
-        crash_exit_reason_code: 13,
-        crash_exit_importance: 400,
-        fallback_version_name: "1.22.0",
-        fallback_version_code: 1022000,
-      })).status).toBe(201);
-      let webhookEvents = await getWebhookEvents();
-      expect(webhookEvents).toHaveLength(1);
-      expect(webhookEvents[0]!.event).toBe("crash:spike");
-      expect(webhookEvents[0]!.payload).toMatchObject({
-        signature: "SystemKill@background",
-        alert_reason: "device_daily_repeat",
-        device_id: "dev-repeat",
-        count_last_24h: 3,
-      });
-
-      // 4th report on same device in 24h -> deduplicated, no second device alert.
-      expect((await submit("dev-repeat", {
-        crash_type: "system_kill",
-        crash_exit_reason: "other",
-        crash_exit_reason_code: 13,
-        crash_exit_importance: 400,
-        fallback_version_name: "1.22.0",
-        fallback_version_code: 1022000,
-      })).status).toBe(201);
-      expect(await getWebhookEvents()).toHaveLength(1);
 
       // 2) Reason 9 (excessive_resource_usage) even at importance 400 is NOT treated as benign background kill:
       // it stays open and fires normal feedback:new + crash:new_group.
@@ -11761,11 +11734,10 @@ describe("quiver public API v2 — scope resolution", () => {
         status: "open",
       });
       expect(rExcessiveJson.background_system_kill).toBeUndefined();
-      webhookEvents = await getWebhookEvents();
+      let webhookEvents = await getWebhookEvents();
       expect(webhookEvents.some((e) => e.event === "crash:new_group" && e.payload.signature === "SystemKill@excessive_resource_usage")).toBe(true);
 
-      // 3) Version spike: version 1.22.0 (1022000) currently has 4 background kills on 1 device (dev-repeat).
-      // Add 1 report on dev-prev2 for 1.22.0 so 1.22.0 has 5 reports across 2 devices.
+      // 3) Submit additional background kills across 1.22.0 and 1.23.0 -> no real-time crash:spike alerts.
       await submit("dev-prev2", {
         version_name: "1.22.0",
         version_code: 1022000,
@@ -11776,8 +11748,6 @@ describe("quiver public API v2 — scope resolution", () => {
 
       webhookEvents = await getWebhookEvents();
       const spikeCountBefore = webhookEvents.filter((e) => e.event === "crash:spike").length;
-      // Now submit 10 background kills on version 1.23.0 (1023000) across 5 devices (2 each -> no single device hits 3).
-      // 10 >= 10, 5 >= 3 devices, and 10 >= 2 * 5 (previous version count) -> triggers version_spike on the 10th report!
       for (let i = 1; i <= 5; i++) {
         for (let j = 1; j <= 2; j++) {
           await submit(`dev-v23-${i}`, {
@@ -11791,18 +11761,52 @@ describe("quiver public API v2 — scope resolution", () => {
         }
       }
       webhookEvents = await getWebhookEvents();
-      const spikeEvents = webhookEvents.filter((e) => e.event === "crash:spike");
-      expect(spikeEvents).toHaveLength(spikeCountBefore + 1);
-      const versionSpike = spikeEvents[spikeEvents.length - 1]!.payload;
-      expect(versionSpike).toMatchObject({
+      expect(webhookEvents.filter((e) => e.event === "crash:spike")).toHaveLength(spikeCountBefore);
+
+      // 4) Trigger the once-a-day summary report for today's UTC date and verify total, devices, by_version spike flag, and top_devices.
+      const todayUtc = new Date().toISOString().slice(0, 10);
+      const summaryCtx = {
+        env,
+        req: {
+          param: (n: string) => (n === "appId" ? "app-scope" : ""),
+          json: async () => ({ day: todayUtc }),
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      const summaryResp = await handleSendBackgroundSystemKillDailySummary(summaryCtx);
+      expect(summaryResp.status).toBe(200);
+      const summaryBody = await responseJson<any>(summaryResp);
+      expect(summaryBody.emitted).toBe(true);
+      expect(summaryBody.summary).toMatchObject({
         signature: "SystemKill@background",
-        alert_reason: "version_spike",
-        version_code: 1023000,
+        alert_reason: "background_system_kill_daily_summary",
+        day: todayUtc,
+        total_count: 15,
+        device_count: 7,
+      });
+      expect(summaryBody.summary.by_version[0]).toMatchObject({
         version_name: "1.23.0",
-        version_count: 10,
-        version_device_count: 5,
+        version_code: 1023000,
+        count: 10,
+        device_count: 5,
         previous_version_code: 1022000,
         previous_version_count: 5,
+        spike: true,
+      });
+      expect(summaryBody.summary.top_devices[0]).toMatchObject({
+        device_id: "dev-repeat",
+        count: 4,
+      });
+
+      webhookEvents = await getWebhookEvents();
+      const spikeEvents = webhookEvents.filter((e) => e.event === "crash:spike");
+      expect(spikeEvents).toHaveLength(spikeCountBefore + 1);
+      expect(spikeEvents[spikeEvents.length - 1]!.payload).toMatchObject({
+        signature: "SystemKill@background",
+        alert_reason: "background_system_kill_daily_summary",
+        day: todayUtc,
+        total_count: 15,
+        device_count: 7,
       });
 
       // Verify crash-groups and stats include by_version and by_device breakdowns for SystemKill@background.
@@ -11862,9 +11866,9 @@ describe("quiver public API v2 — scope resolution", () => {
     }
   });
 
-  it("feedback: prioritizes crash_exit_timestamp for 24h rolling window and backfills pre-deployment background system kill alerts", async () => {
+  it("feedback: prioritizes crash_exit_timestamp for daily background system kill summaries and deduplicates per day", async () => {
     const env = makeEnv();
-    const { handleListCrashGroups } = await import("../src/routes/feedback");
+    const { dispatchBackgroundSystemKillDailySummaries } = await import("../src/routes/feedback");
     const now = Date.now();
     await env.DB.prepare(
       `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
@@ -11873,11 +11877,8 @@ describe("quiver public API v2 — scope resolution", () => {
       .bind("wh-bg-backfill", JSON.stringify(["crash:spike"]), now, now)
       .run();
 
-    // Insert 3 pre-existing background system kill tickets on the same device:
-    // - Exit timestamps are within 22 hours of each other on the same day.
-    // - Upload (`created_at`) timestamps are spread across > 24h (e.g. delayed launch)
-    //   so only `crash_exit_timestamp` puts all 3 inside a 24h window.
-    const exitBase = now - 3 * 24 * 60 * 60 * 1000;
+    const targetDay = "2026-11-10";
+    const exitBase = Date.parse(`${targetDay}T02:00:00.000Z`);
     const preExisting = [
       { id: "bg-pre-1", exitAt: exitBase + 1_000, createdAt: exitBase + 2_000 },
       { id: "bg-pre-2", exitAt: exitBase + 3_600_000, createdAt: exitBase + 30 * 3_600_000 },
@@ -11908,23 +11909,8 @@ describe("quiver public API v2 — scope resolution", () => {
         .run();
     }
 
-    const groupsCtx = {
-      env,
-      req: {
-        param: (n: string) => (n === "appId" ? "app-scope" : ""),
-        query: (k: string) => ({ kind: "crash" } as Record<string, string>)[k],
-      },
-      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
-    } as any;
-    const res = await handleListCrashGroups(groupsCtx);
-    expect(res.status).toBe(200);
-    const body = await responseJson<any>(res);
-    const bgGroup = (body.groups as any[]).find((g) => g.signature === "SystemKill@background");
-    expect(bgGroup).toBeTruthy();
-    expect(bgGroup.by_device[0]).toMatchObject({
-      device_id: "dev-oppo-backfill",
-      count: 3,
-    });
+    const res = await dispatchBackgroundSystemKillDailySummaries(env as unknown as Env, now, targetDay);
+    expect(res).toEqual({ day: targetDay, emitted: 1 });
 
     const deliveries = (
       await env.DB.prepare(
@@ -11936,13 +11922,19 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(parsed.event).toBe("crash:spike");
     expect(parsed.payload).toMatchObject({
       signature: "SystemKill@background",
-      alert_reason: "device_daily_repeat",
+      alert_reason: "background_system_kill_daily_summary",
+      day: targetDay,
+      total_count: 3,
+      device_count: 1,
+    });
+    expect(parsed.payload.top_devices[0]).toMatchObject({
       device_id: "dev-oppo-backfill",
-      count_last_24h: 3,
+      device_model: "PME110",
+      count: 3,
     });
 
-    // Re-calling crash-groups is idempotent (event_id deduplicates).
-    await handleListCrashGroups(groupsCtx);
+    // Re-running for the same day is deduplicated by eventId.
+    await dispatchBackgroundSystemKillDailySummaries(env as unknown as Env, now, targetDay);
     const deliveriesAfterSecondCall = (
       await env.DB.prepare(
         "SELECT id FROM webhook_deliveries WHERE webhook_id = 'wh-bg-backfill'",
