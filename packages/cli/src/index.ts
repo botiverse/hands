@@ -34,6 +34,8 @@ import { registerAgcCommands } from "./commands/agc.js";
 import { registerStoreProductsCommands } from "./commands/store_products.js";
 import { registerStoreListingCommands } from "./commands/store_listing.js";
 import { registerAppStoreCommands } from "./commands/app_store.js";
+import { registerPlayCommands } from "./commands/play.js";
+import { registerStatsCommands } from "./commands/stats.js";
 import { registerApiCommand } from "./commands/api.js";
 import { getConfig } from "./lib/config.js";
 import { redactForLog } from "./lib/redact_for_log.js";
@@ -94,6 +96,9 @@ Common recipes:
   hands store-listing pull <app> --out listing.json   Google Play listing text as JSON
   hands store-listing push <app> --listing listing.json [--commit]
                                                        Dry-run (default) or commit listing text to Play
+  hands play api <app> GET reviews                    Call Google Play Android Publisher v3 API via Hands
+  hands play api <app> POST edits/<id>/tracks/production --input track.json
+  hands stats [app]                                   Unified downloads, active devices & store stats
   hands app-store prepare <app> --version-name 1.17.0 --build <ascBuildId> [--commit]
                                                        Create, reuse, or rename the App Store version (dry run by default)
   hands app-store screenshots push <app> --version-name 1.17.0 --dir shots [--commit]
@@ -142,6 +147,8 @@ registerAgcCommands(program);
 registerStoreListingCommands(program);
 registerStoreProductsCommands(program);
 registerAppStoreCommands(program);
+registerPlayCommands(program);
+registerStatsCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
 registerLogsCommands(program);

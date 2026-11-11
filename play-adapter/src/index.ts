@@ -10,6 +10,10 @@ import type {
   LocalizedReleaseNote,
   HandsTrack,
   PlayAdapterEnv,
+  PlayApiMethod,
+  PlayApiProxyRequest,
+  PlayApiProxyResult,
+  PlayApiProxyRpcInput,
   PlayBindingInput,
   PlayDiscoveryInput,
   PlayTracks,
@@ -322,6 +326,132 @@ function storeListingPushInput(input: StoreListingPushRpcInput) {
   };
 }
 
+const PLAY_API_METHODS = new Set<PlayApiMethod>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+export function normalizePlayApiPath(packageName: string, rawPath: string): {
+  canonicalPath: string;
+  inlineQuery: Record<string, string[]>;
+} {
+  const invalid = (message = "Google Play API path is invalid") =>
+    new PlayAdapterError(400, "play_api_path_invalid", message);
+  if (typeof rawPath !== "string" || !rawPath.trim()) throw invalid();
+  const trimmed = rawPath.trim();
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    throw invalid("Google Play API path must be a path, not a full URL");
+  }
+  if (trimmed.startsWith("//") || trimmed.includes("\\")) {
+    throw invalid();
+  }
+  const [pathnamePart = "", searchPart] = trimmed.split("?", 2);
+  if (pathnamePart.includes("#")) throw invalid();
+  const rawSegments = pathnamePart.replace(/^\/+/, "").split("/").filter((s) => s.length > 0);
+  for (const seg of rawSegments) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      throw invalid();
+    }
+    if (decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\") || decoded.includes("\0")) {
+      throw invalid("Google Play API path cannot contain path traversal segments");
+    }
+  }
+
+  let subSegments: string[];
+  if (
+    rawSegments[0] === "androidpublisher" &&
+    rawSegments[1] === "v3" &&
+    rawSegments[2] === "applications"
+  ) {
+    if (rawSegments.length < 4) throw invalid("Google Play API path is missing packageName");
+    const pathPkg = decodeURIComponent(rawSegments[3]!);
+    if (pathPkg !== packageName) {
+      throw new PlayAdapterError(
+        403,
+        "play_api_package_mismatch",
+        `Google Play API path targets package '${pathPkg}', but this app is bound to '${packageName}'`,
+      );
+    }
+    subSegments = rawSegments.slice(4);
+  } else if (rawSegments[0] === "v3" && rawSegments[1] === "applications") {
+    if (rawSegments.length < 3) throw invalid("Google Play API path is missing packageName");
+    const pathPkg = decodeURIComponent(rawSegments[2]!);
+    if (pathPkg !== packageName) {
+      throw new PlayAdapterError(
+        403,
+        "play_api_package_mismatch",
+        `Google Play API path targets package '${pathPkg}', but this app is bound to '${packageName}'`,
+      );
+    }
+    subSegments = rawSegments.slice(3);
+  } else if (rawSegments[0] === "applications") {
+    if (rawSegments.length < 2) throw invalid("Google Play API path is missing packageName");
+    const pathPkg = decodeURIComponent(rawSegments[1]!);
+    if (pathPkg !== packageName) {
+      throw new PlayAdapterError(
+        403,
+        "play_api_package_mismatch",
+        `Google Play API path targets package '${pathPkg}', but this app is bound to '${packageName}'`,
+      );
+    }
+    subSegments = rawSegments.slice(2);
+  } else if (rawSegments[0] === "upload") {
+    throw invalid("Media upload paths are not supported by the JSON API proxy");
+  } else {
+    subSegments = rawSegments;
+  }
+
+  const base = `/androidpublisher/v3/applications/${encodeURIComponent(packageName)}`;
+  const canonicalPath = subSegments.length > 0 ? `${base}/${subSegments.join("/")}` : base;
+
+  const inlineQuery: Record<string, string[]> = {};
+  if (searchPart) {
+    const params = new URLSearchParams(searchPart);
+    for (const [k, v] of params.entries()) {
+      if (!inlineQuery[k]) inlineQuery[k] = [];
+      inlineQuery[k].push(v);
+    }
+  }
+  return { canonicalPath, inlineQuery };
+}
+
+function playApiProxyInput(input: PlayApiProxyRpcInput): PlayApiProxyRequest {
+  const binding = discoveryInput(input);
+  const operationId = typeof input?.operationId === "string" ? input.operationId : "";
+  if (!OPERATION_ID.test(operationId)) {
+    throw new PlayAdapterError(400, "play_api_request_invalid", "Hands Google Play API request is invalid");
+  }
+  const method = (typeof input.method === "string" ? input.method.toUpperCase() : "") as PlayApiMethod;
+  if (!PLAY_API_METHODS.has(method)) {
+    throw new PlayAdapterError(400, "play_api_method_invalid", "Google Play API method must be GET, POST, PUT, PATCH, or DELETE");
+  }
+  if (method === "GET" && input.body !== undefined && input.body !== null) {
+    throw new PlayAdapterError(400, "play_api_request_invalid", "GET requests cannot include a request body");
+  }
+  const { canonicalPath, inlineQuery } = normalizePlayApiPath(binding.packageName, input.path);
+  const query: Record<string, string | string[]> = { ...inlineQuery };
+  if (input.query && typeof input.query === "object") {
+    for (const [key, value] of Object.entries(input.query)) {
+      if (!key.trim()) continue;
+      if (typeof value === "string") {
+        query[key] = value;
+      } else if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+        query[key] = value;
+      } else {
+        throw new PlayAdapterError(400, "play_api_request_invalid", "Query parameter values must be strings");
+      }
+    }
+  }
+  return {
+    packageName: binding.packageName,
+    operationId,
+    method,
+    canonicalPath,
+    query,
+    ...(input.body !== undefined && input.body !== null ? { body: input.body } : {}),
+  };
+}
+
 function failure(error: unknown, operationId: string | null): AdapterResult<never> {
   const known = error instanceof PlayAdapterError;
   const status = known ? error.status : 502;
@@ -538,6 +668,20 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
         const promotion = promotionInput(input, unusedBody, symbolsBody, null, env);
         const resolved = await client(input, env);
         return { ok: true, value: await resolved.client.promote({ ...promotion, requireExistingBundle: true }) };
+      } catch (error) {
+        return failure(error, operationId);
+      }
+    },
+
+    async callPlayApi(
+      input: PlayApiProxyRpcInput,
+      env: PlayAdapterEnv,
+    ): Promise<AdapterResult<PlayApiProxyResult>> {
+      const operationId = OPERATION_ID.test(input?.operationId ?? "") ? input.operationId : null;
+      try {
+        const request = playApiProxyInput(input);
+        const resolved = await discoveryClient(input, env);
+        return { ok: true, value: await resolved.client.callPlayApi(request) };
       } catch (error) {
         return failure(error, operationId);
       }

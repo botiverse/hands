@@ -126,6 +126,25 @@ const PlayStoreListingMultipart = z.object({
   request: z.string().openapi({ description: "PlayStoreListingPushInput as JSON text." }),
 }).catchall(z.any().openapi({ type: "string", format: "binary" })).openapi("PlayStoreListingMultipart");
 
+const PlayApiProxyInput = z.object({
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).openapi({
+    description: "HTTP method for the Google Play Android Publisher API call.",
+  }),
+  path: z.string().min(1).max(2048).openapi({
+    description:
+      "Package-scoped resource path (e.g. `edits`, `edits/{editId}/tracks/production`, `reviews`, `monetization/subscriptions`, or `/androidpublisher/v3/applications/{packageName}/...`). Paths targeting any other package or containing `..` are rejected.",
+  }),
+  query: z.record(z.string(), z.union([z.string(), z.array(z.string()), z.number(), z.boolean()])).optional().openapi({
+    description: "Optional query string parameters.",
+  }),
+  body: z.unknown().optional().openapi({
+    description: "Optional JSON request body for POST, PUT, PATCH, or DELETE calls.",
+  }),
+  note: z.string().max(500).optional().openapi({
+    description: "Optional audit/receipt note recorded for mutating calls.",
+  }),
+}).strict().openapi("PlayApiProxyInput");
+
 export function registerAndroidDistributionRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
   routes.push({
@@ -483,6 +502,26 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     responses: {
       200: success("Immutable store listing receipts.", GenericObject),
       403: error("App viewer role is required."),
+    },
+  });
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/distributions/play/api",
+    tags: ["Android distribution"],
+    summary: "Call the Google Play Android Publisher API using the app's stored credentials",
+    description:
+      "Proxies an authenticated JSON request to `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{packageName}/...` using the app's verified and enabled Google Play binding without ever exposing credentials or OAuth tokens to the caller. Read-only `GET` requests require the `viewer` app role; mutating `POST`, `PUT`, `PATCH`, and `DELETE` requests require an authenticated human or agent `publisher`, acquire the package-scoped Play edit lock, record an immutable receipt in `play_store_listing_receipts` (`mode = 'api'`), and write an audit log entry (`play_api.call`). Cross-package paths, path traversal, and media upload endpoints are rejected.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(PlayApiProxyInput), required: true },
+    },
+    responses: {
+      200: success("Google Play API response `{receipt_id, operation_id, package_name, method, path, status, data}`.", GenericObject),
+      400: error("Method, path, or request body is invalid."),
+      403: error("Insufficient app role, cross-package path, or Google Play binding is not verified and enabled."),
+      409: error("Another Hands Play edit is active, or Google Play returned 409 conflict."),
+      502: error("Google Play API or adapter returned an error; see receipt_id for mutating calls."),
     },
   });
   return routes;

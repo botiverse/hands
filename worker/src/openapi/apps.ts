@@ -218,6 +218,38 @@ export function registerAppRoutes(): RouteConfigList {
 
   routes.push({
     method: "get",
+    path: "/api/apps/{appId}/stats",
+    tags: ["Analytics"],
+    summary: "Get unified app download, active-device, and store distribution statistics",
+    description:
+      "Aggregates Hands direct-install downloads and active device telemetry (`device_pings`, `build_asset_download_events`, `release_metrics`) together with Google Play and App Store Connect release/analytics state using stored credentials.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        window_days: z.coerce.number().int().positive().max(365).optional().openapi({
+          param: { name: "window_days", in: "query" },
+          example: 30,
+        }),
+        channel: z.string().optional().openapi({
+          param: { name: "channel", in: "query" },
+          example: "main",
+        }),
+        live: z.string().optional().openapi({
+          param: { name: "live", in: "query" },
+          example: "true",
+        }),
+      }),
+    },
+    responses: {
+      200: success("Unified app statistics.", GenericObject),
+      403: error("Current principal cannot view analytics for the app."),
+      404: error("App was not found."),
+    },
+  });
+
+  routes.push({
+    method: "get",
     path: "/api/apps/{appId}/client-key",
     tags: ["Apps"],
     summary: "Read the app public client key",

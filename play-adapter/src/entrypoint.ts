@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { createPlayAdapterService } from "./index";
 import type {
   PlayAdapterEnv,
+  PlayApiProxyRpcInput,
   PlayBindingInput,
   PlayDiscoveryInput,
   PromotionRpcInput,
@@ -78,5 +79,9 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     symbolsBody: ReadableStream<Uint8Array> | null,
   ) {
     return this.service.promoteWithPriorMapping(input, symbolsBody ?? null, this.env);
+  }
+
+  callPlayApi(input: PlayApiProxyRpcInput) {
+    return this.service.callPlayApi(input, this.env);
   }
 }
