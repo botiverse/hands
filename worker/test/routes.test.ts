@@ -11606,6 +11606,262 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(killTickets[0].crash_type).toBe("system_kill");
   });
 
+  it("feedback: background system kills auto-close under SystemKill@background, aggregate by version/device, and only alert on device/version spikes", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const {
+      handlePublicFeedbackSubmit,
+      handleListCrashGroups,
+      handleListFeedback,
+      handleFeedbackStats,
+    } = await import("../src/routes/feedback");
+
+    // Register a webhook for app-scope to capture fired events.
+    const nowHook = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES (?, 'default', ?, ?, ?, ?, 1, ?, ?)`,
+    ).bind(
+      "wh-bg-kill",
+      "app-scope",
+      "https://hooks.example.test/bg-kill",
+      "sec-bg-kill",
+      JSON.stringify(["feedback:new", "crash:new_group", "crash:spike"]),
+      nowHook,
+      nowHook,
+    ).run();
+
+    const getWebhookEvents = async (): Promise<Array<{ event: string; payload: any }>> => {
+      const { results } = await env.DB.prepare(
+        "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-bg-kill' ORDER BY created_at, rowid",
+      ).all();
+      return (results as any[]).map((r) => {
+        const body = JSON.parse(r.payload_json);
+        return { event: body.event, payload: body.payload };
+      });
+    };
+
+    try {
+      let seq = 0;
+      const submit = async (device: string, meta: Record<string, unknown>) => {
+        seq += 1;
+        const form = new FormData();
+        form.set("message", "System kill: other");
+        form.set("kind", "crash");
+        form.set(
+          "metadata",
+          JSON.stringify({
+            device_id: device,
+            device_model: `Model-${device}`,
+            ...meta,
+          }),
+        );
+        const pending: Promise<unknown>[] = [];
+        const ctx = {
+          env,
+          executionCtx: { waitUntil: (p: Promise<unknown>) => pending.push(p) },
+          req: {
+            param: (n: string) => (n === "slug" ? "scope-app" : ""),
+            header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+            query: () => undefined,
+            formData: async () => form,
+            raw: { cf: { clientIp: `10.9.${Math.floor(seq / 250)}.${(seq % 250) + 1}` } },
+          },
+          json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+        } as any;
+        const resp = await handlePublicFeedbackSubmit(ctx);
+        await Promise.all(pending);
+        return resp;
+      };
+
+      // 1) Background system kill with missing top-level version_code/version_name uses fallback_version_*
+      // and is auto-closed with not_planned without firing feedback:new or crash:new_group.
+      const r1 = await submit("dev-repeat", {
+        crash_type: "system_kill",
+        crash_reason: "system_kill",
+        crash_exception_class: "SystemKill",
+        crash_top_frame: "other",
+        crash_exit_reason: "other",
+        crash_exit_reason_code: 13,
+        crash_exit_importance: 400,
+        crash_foreground: false,
+        crash_background_duration_ms: 185000,
+        fallback_version_name: "1.22.0",
+        fallback_version_code: 1022000,
+        crash_version_source: "last_process_state",
+      });
+      expect(r1.status).toBe(201);
+      const r1Json = await responseJson<any>(r1);
+      expect(r1Json).toMatchObject({
+        signature: "SystemKill@background",
+        status: "closed",
+        closure_reason: "not_planned",
+        background_system_kill: true,
+      });
+      expect(await getWebhookEvents()).toHaveLength(0);
+
+      // 2nd report on same device in 24h -> still no alert.
+      expect((await submit("dev-repeat", {
+        crash_type: "system_kill",
+        crash_exit_reason: "other",
+        crash_exit_reason_code: 13,
+        crash_exit_importance: 400,
+        fallback_version_name: "1.22.0",
+        fallback_version_code: 1022000,
+      })).status).toBe(201);
+      expect(await getWebhookEvents()).toHaveLength(0);
+
+      // 3rd report on same device in 24h -> triggers device_daily_repeat crash:spike alert once!
+      expect((await submit("dev-repeat", {
+        crash_type: "system_kill",
+        crash_exit_reason: "other",
+        crash_exit_reason_code: 13,
+        crash_exit_importance: 400,
+        fallback_version_name: "1.22.0",
+        fallback_version_code: 1022000,
+      })).status).toBe(201);
+      let webhookEvents = await getWebhookEvents();
+      expect(webhookEvents).toHaveLength(1);
+      expect(webhookEvents[0]!.event).toBe("crash:spike");
+      expect(webhookEvents[0]!.payload).toMatchObject({
+        signature: "SystemKill@background",
+        alert_reason: "device_daily_repeat",
+        device_id: "dev-repeat",
+        count_last_24h: 3,
+      });
+
+      // 4th report on same device in 24h -> deduplicated, no second device alert.
+      expect((await submit("dev-repeat", {
+        crash_type: "system_kill",
+        crash_exit_reason: "other",
+        crash_exit_reason_code: 13,
+        crash_exit_importance: 400,
+        fallback_version_name: "1.22.0",
+        fallback_version_code: 1022000,
+      })).status).toBe(201);
+      expect(await getWebhookEvents()).toHaveLength(1);
+
+      // 2) Reason 9 (excessive_resource_usage) even at importance 400 is NOT treated as benign background kill:
+      // it stays open and fires normal feedback:new + crash:new_group.
+      const rExcessive = await submit("dev-cpu", {
+        version_name: "1.22.0",
+        version_code: 1022000,
+        crash_type: "system_kill",
+        crash_exception_class: "SystemKill",
+        crash_top_frame: "excessive_resource_usage",
+        crash_exit_reason: "excessive_resource_usage",
+        crash_exit_reason_code: 9,
+        crash_exit_importance: 400,
+        crash_foreground: false,
+      });
+      expect(rExcessive.status).toBe(201);
+      const rExcessiveJson = await responseJson<any>(rExcessive);
+      expect(rExcessiveJson).toMatchObject({
+        signature: "SystemKill@excessive_resource_usage",
+        status: "open",
+      });
+      expect(rExcessiveJson.background_system_kill).toBeUndefined();
+      webhookEvents = await getWebhookEvents();
+      expect(webhookEvents.some((e) => e.event === "crash:new_group" && e.payload.signature === "SystemKill@excessive_resource_usage")).toBe(true);
+
+      // 3) Version spike: version 1.22.0 (1022000) currently has 4 background kills on 1 device (dev-repeat).
+      // Add 1 report on dev-prev2 for 1.22.0 so 1.22.0 has 5 reports across 2 devices.
+      await submit("dev-prev2", {
+        version_name: "1.22.0",
+        version_code: 1022000,
+        crash_type: "system_kill",
+        crash_exit_reason_code: 13,
+        crash_exit_importance: 400,
+      });
+
+      webhookEvents = await getWebhookEvents();
+      const spikeCountBefore = webhookEvents.filter((e) => e.event === "crash:spike").length;
+      // Now submit 10 background kills on version 1.23.0 (1023000) across 5 devices (2 each -> no single device hits 3).
+      // 10 >= 10, 5 >= 3 devices, and 10 >= 2 * 5 (previous version count) -> triggers version_spike on the 10th report!
+      for (let i = 1; i <= 5; i++) {
+        for (let j = 1; j <= 2; j++) {
+          await submit(`dev-v23-${i}`, {
+            version_name: "1.23.0",
+            version_code: 1023000,
+            crash_type: "system_kill",
+            crash_exit_reason: "other",
+            crash_exit_reason_code: 13,
+            crash_exit_importance: 400,
+          });
+        }
+      }
+      webhookEvents = await getWebhookEvents();
+      const spikeEvents = webhookEvents.filter((e) => e.event === "crash:spike");
+      expect(spikeEvents).toHaveLength(spikeCountBefore + 1);
+      const versionSpike = spikeEvents[spikeEvents.length - 1]!.payload;
+      expect(versionSpike).toMatchObject({
+        signature: "SystemKill@background",
+        alert_reason: "version_spike",
+        version_code: 1023000,
+        version_name: "1.23.0",
+        version_count: 10,
+        version_device_count: 5,
+        previous_version_code: 1022000,
+        previous_version_count: 5,
+      });
+
+      // Verify crash-groups and stats include by_version and by_device breakdowns for SystemKill@background.
+      const groupsCtx = {
+        env,
+        req: {
+          param: (n: string) => (n === "appId" ? "app-scope" : ""),
+          query: (k: string) => ({ crash_type: "system_kill" } as Record<string, string>)[k],
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      const groupsData = (await responseJson<any>(await handleListCrashGroups(groupsCtx))).groups as any[];
+      const bgGroup = groupsData.find((g) => g.signature === "SystemKill@background");
+      expect(bgGroup).toBeDefined();
+      expect(bgGroup).toMatchObject({
+        crash_type: "system_kill",
+        count: 15,
+        device_count: 7,
+        open_count: 0,
+      });
+      expect(bgGroup.by_version).toEqual([
+        { version_name: "1.23.0", version_code: 1023000, count: 10, device_count: 5 },
+        { version_name: "1.22.0", version_code: 1022000, count: 5, device_count: 2 },
+      ]);
+      expect(bgGroup.by_device[0]).toMatchObject({
+        device_id: "dev-repeat",
+        count: 4,
+        max_daily_count: 4,
+      });
+
+      const statsCtx = {
+        env,
+        req: {
+          param: (n: string) => (n === "appId" ? "app-scope" : ""),
+          query: () => undefined,
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      const statsData = await responseJson<any>(await handleFeedbackStats(statsCtx));
+      expect(statsData.background_system_kills.by_version).toHaveLength(2);
+
+      // Verify handleListFeedback supports signature=SystemKill@background and marks background_system_kill=1.
+      const listBgCtx = {
+        env,
+        req: {
+          param: (n: string) => (n === "appId" ? "app-scope" : ""),
+          query: (k: string) => ({ kind: "crash", signature: "SystemKill@background" } as Record<string, string>)[k],
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any;
+      const bgTickets = (await responseJson<any>(await handleListFeedback(listBgCtx))).tickets as any[];
+      expect(bgTickets).toHaveLength(15);
+      expect(bgTickets.every((t) => t.background_system_kill === 1 && t.status === "closed")).toBe(true);
+      expect(bgTickets.some((t) => t.version_code === 1022000 && t.version_name === "1.22.0")).toBe(true);
+    } finally {
+      // done
+    }
+  });
+
   it("parseNativeFrames bounds and shape-checks SDK input", async () => {
     const { parseNativeFrames } = await import("../src/routes/feedback");
     const frames = parseNativeFrames(JSON.stringify([

@@ -219,6 +219,9 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
         kind: z.string().regex(/^(feedback|bug|crash|error)(,(feedback|bug|crash|error))*$/)
           .openapi({ description: "One or more comma-separated ticket kinds.", example: "feedback,bug" }).optional(),
         crash_type: z.enum(["anr", "system_kill", "native", "exception"]).optional(),
+        signature: z.string().optional(),
+        device_id: z.string().optional(),
+        version_code: z.coerce.number().int().optional(),
         limit: z.coerce.number().int().optional(),
         cursor: z.string().optional(),
         build_scope: BuildScope,

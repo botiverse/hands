@@ -42,6 +42,8 @@ const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = {
   system_kill: "系统强杀",
 };
 
+export const BACKGROUND_SYSTEM_KILL_SIGNATURE = "SystemKill@background";
+
 function parseCrashType(raw: string | null): CrashType | "" {
   return raw === "anr" || raw === "system_kill" || raw === "native" || raw === "exception" ? raw : "";
 }
@@ -72,6 +74,7 @@ export function AppCrashes({ appId }: { appId: string }) {
     queryFn: () => getFeedbackStats(appId, buildScope),
   });
   const rows = groups.data?.groups ?? [];
+  const bgKillGroup = rows.find((g) => g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE);
 
   return (
     <div className="space-y-4">
@@ -155,11 +158,20 @@ export function AppCrashes({ appId }: { appId: string }) {
                 >
                   <td className="py-2 pr-3">
                     <Badge variant={CRASH_TYPE_BADGE_VARIANTS[g.crash_type] ?? CRASH_TYPE_BADGE_VARIANTS.exception}>
-                      {t(CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type, CRASH_TYPE_LABELS_ZH[g.crash_type] ?? g.crash_type)}
+                      {g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE
+                        ? t("Background system kill", "后台被系统结束")
+                        : t(CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type, CRASH_TYPE_LABELS_ZH[g.crash_type] ?? g.crash_type)}
                     </Badge>
                   </td>
                   <td className="py-2 pr-3 max-w-lg">
-                    <code className="text-xs break-all">{g.signature}</code>
+                    {g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE ? (
+                      <span>
+                        <span className="font-medium">{t("Killed by system in background", "后台被系统结束")}</span>{" "}
+                        <code className="text-xs text-foreground-muted break-all">({g.signature})</code>
+                      </span>
+                    ) : (
+                      <code className="text-xs break-all">{g.signature}</code>
+                    )}
                   </td>
                   <td className="py-2 pr-3 tabular-nums">{g.count}</td>
                   <td className="py-2 pr-3 tabular-nums">{g.device_count}</td>
@@ -179,6 +191,90 @@ export function AppCrashes({ appId }: { appId: string }) {
           </table>
         )}
         </div>
+
+      {bgKillGroup && ((bgKillGroup.by_version?.length ?? 0) > 0 || (bgKillGroup.by_device?.length ?? 0) > 0) && (
+        <div className="grid grid-cols-1 gap-4 pt-2 md:grid-cols-2">
+          {(bgKillGroup.by_version?.length ?? 0) > 0 && (
+            <div className="rounded-md border border-line-hairline p-3 space-y-2">
+              <h3 className="text-xs font-semibold text-foreground-strong">
+                {t("Background system kills by version", "后台被系统结束 · 按版本统计")}
+              </h3>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-foreground-muted border-b border-line-hairline">
+                    <th className="py-1 pr-2">{t("Version", "版本")}</th>
+                    <th className="py-1 pr-2">{t("Count", "次数")}</th>
+                    <th className="py-1 pr-2">{t("Devices", "设备")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bgKillGroup.by_version!.map((v, idx) => (
+                    <tr
+                      key={`${v.version_name}-${v.version_code ?? idx}`}
+                      className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
+                      onClick={() => {
+                        const qs = new URLSearchParams({
+                          kind: "crash",
+                          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+                          build_scope: buildScope,
+                        });
+                        if (v.version_code != null) qs.set("version_code", String(v.version_code));
+                        navigate(`/apps/${appId}/feedback?${qs.toString()}`);
+                      }}
+                    >
+                      <td className="py-1 pr-2 font-mono">
+                        {v.version_name}{v.version_code != null ? ` (${v.version_code})` : ""}
+                      </td>
+                      <td className="py-1 pr-2 tabular-nums">{v.count}</td>
+                      <td className="py-1 pr-2 tabular-nums">{v.device_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(bgKillGroup.by_device?.length ?? 0) > 0 && (
+            <div className="rounded-md border border-line-hairline p-3 space-y-2">
+              <h3 className="text-xs font-semibold text-foreground-strong">
+                {t("Background system kills by device", "后台被系统结束 · 按设备统计")}
+              </h3>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-foreground-muted border-b border-line-hairline">
+                    <th className="py-1 pr-2">{t("Device", "设备")}</th>
+                    <th className="py-1 pr-2">{t("Total", "总次数")}</th>
+                    <th className="py-1 pr-2">{t("Max / day", "单日最高")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bgKillGroup.by_device!.map((d) => (
+                    <tr
+                      key={d.device_id}
+                      className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
+                      onClick={() => {
+                        const qs = new URLSearchParams({
+                          kind: "crash",
+                          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+                          build_scope: buildScope,
+                        });
+                        if (d.device_id && d.device_id !== "unknown") qs.set("device_id", d.device_id);
+                        navigate(`/apps/${appId}/feedback?${qs.toString()}`);
+                      }}
+                    >
+                      <td className="py-1 pr-2">
+                        <span className="font-mono">{d.device_id.slice(0, 12)}</span>
+                        {d.device_model ? <span className="ml-1 text-foreground-muted">· {d.device_model}</span> : null}
+                      </td>
+                      <td className="py-1 pr-2 tabular-nums">{d.count}</td>
+                      <td className="py-1 pr-2 tabular-nums">{d.max_daily_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1901,6 +1901,8 @@ export interface FeedbackTicket {
   build_origin?: FeedbackBuildOrigin;
   /** Crash flavour for crash/error tickets (derived server-side); null otherwise. */
   crash_type?: CrashType | null;
+  /** Non-zero when classified into the aggregated background system kill bucket ("后台被系统结束"). */
+  background_system_kill?: number;
 }
 
 export type CrashType = "anr" | "system_kill" | "native" | "exception";
@@ -2175,6 +2177,19 @@ export interface CrashGroup {
   last_seen: number;
   versions: string | null;
   open_count: number;
+  by_version?: Array<{
+    version_name: string;
+    version_code: number | null;
+    count: number;
+    device_count: number;
+  }>;
+  by_device?: Array<{
+    device_id: string;
+    device_model: string | null;
+    count: number;
+    max_daily_count: number;
+    last_seen: number;
+  }>;
 }
 
 export interface DeviceAnalytics {
@@ -2283,6 +2298,11 @@ export const getVersionMetrics = (appId: string, windowDays = 30) =>
 export interface FeedbackStats {
   daily: Array<{ day: string; kind: string; n: number }>;
   crashes_by_version: Array<{ version_name: string; version_code: number | null; n: number }>;
+  background_system_kills?: {
+    signature: string;
+    by_version: Array<{ version_name: string; version_code: number | null; count: number; device_count: number }>;
+    by_device: Array<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>;
+  };
 }
 
 export const getFeedbackStats = (appId: string, buildScope?: FeedbackBuildScope) => {

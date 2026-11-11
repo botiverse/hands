@@ -444,8 +444,34 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
   cliApp: string | null, ticketId: string | null, dashboardOrigin: string | null | undefined, occurred: string | null): string {
   const presentation = PRESENTATIONS.get(event);
   const link = feedbackLink(dashboardOrigin, appId, ticketId);
-  const lines = [`${presentation?.icon ?? "⚠️"} **${app ? `${app} · ` : ""}${presentation?.title ?? "Issue report"}**${link ? ` · [View feedback](${link})` : ""}`];
-  if (typeof payload.count_last_hour === "number" && Number.isSafeInteger(payload.count_last_hour) && payload.count_last_hour >= 0) {
+  const signature = safePreview(safeValue(payload.signature), 160);
+  const alertReason = safeValue(payload.alert_reason);
+  const isBgKill = signature === "SystemKill@background"
+    || alertReason === "device_daily_repeat"
+    || alertReason === "version_spike";
+  const title = isBgKill && event === "crash:spike"
+    ? "Background system kill spike (后台被系统结束)"
+    : (presentation?.title ?? "Issue report");
+  const lines = [`${presentation?.icon ?? "⚠️"} **${app ? `${app} · ` : ""}${title}**${link ? ` · [View feedback](${link})` : ""}`];
+  if (alertReason === "device_daily_repeat") {
+    const deviceId = safePreview(safeValue(payload.device_id), 160);
+    const count24h = typeof payload.count_last_24h === "number" && Number.isSafeInteger(payload.count_last_24h)
+      ? payload.count_last_24h : null;
+    lines.push(
+      `Same device killed in background ${count24h ?? "multiple"} times in 24h${deviceId ? ` (device: ${deviceId})` : ""}`,
+    );
+  } else if (alertReason === "version_spike") {
+    const curCount = typeof payload.version_count === "number" ? payload.version_count : null;
+    const curDevices = typeof payload.version_device_count === "number" ? payload.version_device_count : null;
+    const prevName = safePreview(safeValue(payload.previous_version_name), 160);
+    const prevCode = safePreview(safeValue(payload.previous_version_code), 160);
+    const prevCount = typeof payload.previous_version_count === "number" ? payload.previous_version_count : null;
+    const prevDevices = typeof payload.previous_version_device_count === "number" ? payload.previous_version_device_count : null;
+    const prevLabel = [prevName, prevCode && prevCode !== prevName ? `(${prevCode})` : null].filter(Boolean).join(" ") || "previous version";
+    lines.push(
+      `Version background kill spike: ${curCount ?? "?"} reports across ${curDevices ?? "?"} devices vs ${prevCount ?? "?"} reports (${prevDevices ?? "?"} devices) on ${prevLabel}`,
+    );
+  } else if (typeof payload.count_last_hour === "number" && Number.isSafeInteger(payload.count_last_hour) && payload.count_last_hour >= 0) {
     lines.push(`${payload.count_last_hour} reports in the last hour`);
   }
   const version = safePreview(safeValue(payload.version_name) ?? safeValue(payload.version), 160);

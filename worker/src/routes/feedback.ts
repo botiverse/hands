@@ -416,11 +416,17 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     if (value === undefined || value === null) return null;
     return String(value).slice(0, max) || null;
   };
-  const versionCodeRaw = metadata["version_code"];
-  const versionCode =
-    typeof versionCodeRaw === "number" && Number.isFinite(versionCodeRaw)
-      ? Math.trunc(versionCodeRaw)
-      : null;
+  const parseVersionCode = (raw: unknown): number | null => {
+    if (typeof raw === "number" && Number.isFinite(raw)) return Math.trunc(raw);
+    if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return Math.trunc(Number(raw.trim()));
+    return null;
+  };
+  const versionName = meta("version_name") ?? meta("fallback_version_name");
+  const versionCode = parseVersionCode(metadata["version_code"]) ?? parseVersionCode(metadata["fallback_version_code"]);
+  const backgroundSystemKill =
+    (kind === "crash" || kind === "error") && isBackgroundSystemKill(metadata);
+  const initialStatus = backgroundSystemKill ? "closed" : "open";
+  const initialClosureReason = backgroundSystemKill ? "not_planned" : null;
 
   // Direct SDK clients are rate-limited by client IP. A trusted server proxy
   // may instead provide a stable pseudonymous reporter id, but only while
@@ -643,9 +649,12 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const externalBuild = buildOrigin === "external";
 
   // Crash and error tickets get a grouping signature from their exception
-  // class + top app frame (populated by the SDK). Other kinds have no signature.
+  // class + top app frame (populated by the SDK). Background system kills are
+  // collapsed into a single aggregated signature ("后台被系统结束").
   const signature =
-    kind === "crash" || kind === "error" ? crashSignature(metadata) : null;
+    kind === "crash" || kind === "error"
+      ? (backgroundSystemKill ? BACKGROUND_SYSTEM_KILL_SIGNATURE : crashSignature(metadata))
+      : null;
 
   const now = Date.now();
   const ticketId = crypto.randomUUID();
@@ -665,7 +674,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       app_slug: app.slug,
       kind,
       message: message.slice(0, 500),
-      version_name: meta("version_name"),
+      version_name: versionName,
       version_code: versionCode,
       attachments: attachmentRows.length,
       reporter_id: reporterId || null,
@@ -700,29 +709,31 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const statements = [
     c.env.DB.prepare(
       `INSERT INTO feedback_tickets
-       (id, app_id, kind, status, message, contact, version_name, version_code,
+       (id, app_id, kind, status, closure_reason, message, contact, version_name, version_code,
         channel, device_id, device_model, os_version, arch, locale,
         metadata_json, client_ip_hash, signature, submission_id,
         submission_fingerprint, reporter_id, reporter_integration_id, created_at, updated_at)
-       SELECT ?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-              ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
-       WHERE ?20 IS NULL OR EXISTS (
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+              ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+       WHERE ?22 IS NULL OR EXISTS (
          SELECT 1 FROM app_reporter_routes r
          JOIN apps active_app ON active_app.id = r.app_id AND active_app.archived = 0
          JOIN app_reporter_integrations active_ri
            ON active_ri.id = r.reporter_integration_id
           AND active_ri.app_id = r.app_id AND active_ri.archived_at IS NULL
-         WHERE r.app_id = ?2 AND r.reporter_integration_id = ?20
-           AND r.reporter_id = ?19
+         WHERE r.app_id = ?2 AND r.reporter_integration_id = ?22
+           AND r.reporter_id = ?21
        )
        RETURNING id`,
     ).bind(
       ticketId,
       app.id,
       kind,
+      initialStatus,
+      initialClosureReason,
       message,
       contact,
-      meta("version_name"),
+      versionName,
       versionCode,
       meta("channel"),
       meta("device_id"),
@@ -747,7 +758,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
       ).bind(a.id, ticketId, a.r2Key, a.filename, a.contentType, a.sizeBytes, now),
     ),
-    ...(submissionEventId && dedicatedSubmissionPayload
+    ...(submissionEventId && dedicatedSubmissionPayload && !backgroundSystemKill
       ? [
           ...(genericSubmissionPayload && app.org_id ? [c.env.DB.prepare(
             `INSERT INTO feedback_submission_events
@@ -895,12 +906,36 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   }
 
   // Crash alerting: fire webhooks when a signature is first seen or when it
-  // spikes (10/50/100 tickets within an hour — fires once per tier as the
-  // count crosses it, so no extra state table is needed).
+  // spikes. Background system kills skip individual new-group alerts and fire
+  // only when the same device hits >= 3 in 24h or when a version spikes >= 2x
+  // against the previous version (with >= 10 reports across >= 3 devices).
   if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id) {
     const orgId = app.org_id;
     const eventPrefix = kind === "crash" ? "crash" : "error";
+    const deviceId = meta("device_id");
     const alert = async () => {
+      const base = {
+        app_slug: app.slug,
+        signature,
+        crash_type: crashTypeOf(metadata),
+        ticket_id: ticketId,
+        message: message.slice(0, 300),
+        version_name: versionName,
+        version_code: versionCode,
+      };
+      if (backgroundSystemKill) {
+        await evaluateBackgroundSystemKillAlerts(c.env, {
+          orgId,
+          appId: app.id,
+          eventPrefix,
+          now,
+          deviceId,
+          versionName,
+          versionCode,
+          base,
+        });
+        return;
+      }
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets t
          WHERE app_id = ?1 AND signature = ?2 AND id != ?3
@@ -908,15 +943,6 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       )
         .bind(app.id, signature, ticketId)
         .first<{ n: number }>();
-      const base = {
-        app_slug: app.slug,
-        signature,
-        crash_type: crashTypeOf(metadata),
-        ticket_id: ticketId,
-        message: message.slice(0, 300),
-        version_name: meta("version_name"),
-        version_code: versionCode,
-      };
       if ((prior?.n ?? 0) === 0) {
         await emitWebhookEvent(c.env, {
           orgId,
@@ -962,7 +988,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     }
   }
 
-  if (app.org_id && !reporterIntegrationId && !externalBuild) {
+  if (app.org_id && !reporterIntegrationId && !externalBuild && !backgroundSystemKill) {
     await emitWebhookEvent(c.env, {
       orgId: app.org_id,
       appId: app.id,
@@ -973,7 +999,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         app_slug: app.slug,
         kind,
         message: message.slice(0, 500),
-        version_name: meta("version_name"),
+        version_name: versionName,
         version_code: versionCode,
         attachments: attachmentRows.length,
         reporter_id: reporterId || null,
@@ -994,8 +1020,11 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   ].join(", "));
   return feedbackNewSubmitResponse(c, app, {
     ticketId,
-    status: "open",
-    versionName: meta("version_name"),
+    status: initialStatus,
+    closureReason: initialClosureReason,
+    signature,
+    backgroundSystemKill,
+    versionName,
     versionCode,
     attachmentRefs: attachmentRows.map(({ id, filename }) => ({ id, filename })),
   });
@@ -1038,6 +1067,9 @@ function feedbackNewSubmitResponse(
   input: {
     ticketId: string;
     status: string;
+    closureReason: string | null;
+    signature: string | null;
+    backgroundSystemKill: boolean;
     versionName: string | null;
     versionCode: number | null;
     attachmentRefs: FeedbackAttachmentRef[];
@@ -1047,6 +1079,9 @@ function feedbackNewSubmitResponse(
   return c.json({
     id: input.ticketId,
     status: input.status,
+    ...(input.closureReason !== null ? { closure_reason: input.closureReason } : {}),
+    ...(input.signature !== null ? { signature: input.signature } : {}),
+    ...(input.backgroundSystemKill ? { background_system_kill: true } : {}),
     attachments: input.attachmentRefs.length,
     attachment_names: attachmentNames,
     attachment_refs: input.attachmentRefs,
@@ -2168,6 +2203,203 @@ export async function dispatchSymbolication(
   }
 }
 
+export const BACKGROUND_SYSTEM_KILL_SIGNATURE = "SystemKill@background";
+const ACTIONABLE_SYSTEM_KILL_REASON_CODES = new Set([4, 5, 6, 9]);
+const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
+  "crash",
+  "crash_native",
+  "anr",
+  "excessive_resource_usage",
+]);
+
+/**
+ * Background system kills (`crash_type = "system_kill"` with `importance >= 400`
+ * or `crash_foreground = false`, excluding `REASON_EXCESSIVE_RESOURCE_USAGE` (9)
+ * and `REASON_CRASH` / `REASON_CRASH_NATIVE` / `REASON_ANR` (4/5/6)) are routine
+ * OS background reclamations rather than foreground crashes. They are grouped
+ * into `SystemKill@background` ("后台被系统结束"), auto-closed as `not_planned`,
+ * and alerted only on per-device daily repeats or version-over-version spikes.
+ */
+export function isBackgroundSystemKill(metadata: Record<string, unknown>): boolean {
+  if (metadata["crash_type"] !== "system_kill") return false;
+  const reasonCodeRaw = metadata["crash_exit_reason_code"];
+  const reasonCode =
+    typeof reasonCodeRaw === "number" && Number.isFinite(reasonCodeRaw)
+      ? Math.trunc(reasonCodeRaw)
+      : typeof reasonCodeRaw === "string" && /^\d+$/.test(reasonCodeRaw.trim())
+        ? Math.trunc(Number(reasonCodeRaw.trim()))
+        : null;
+  if (reasonCode !== null && ACTIONABLE_SYSTEM_KILL_REASON_CODES.has(reasonCode)) {
+    return false;
+  }
+  const reason = String(metadata["crash_exit_reason"] ?? metadata["crash_reason"] ?? "")
+    .trim()
+    .toLowerCase();
+  if (ACTIONABLE_SYSTEM_KILL_REASONS.has(reason)) return false;
+
+  const importanceRaw = metadata["crash_exit_importance"];
+  const importance =
+    typeof importanceRaw === "number" && Number.isFinite(importanceRaw)
+      ? Math.trunc(importanceRaw)
+      : typeof importanceRaw === "string" && /^\d+$/.test(importanceRaw.trim())
+        ? Math.trunc(Number(importanceRaw.trim()))
+        : null;
+  if (importance !== null && importance >= 400) return true;
+  if (metadata["crash_foreground"] === false) return true;
+  const trim = String(metadata["crash_trim"] ?? "").trim().toLowerCase();
+  if (
+    trim === "ui_hidden"
+    || trim === "background"
+    || trim === "moderate"
+    || trim === "complete"
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
+  json_valid(t.metadata_json)
+  AND json_extract(t.metadata_json, '$.crash_type') = 'system_kill'
+  AND COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_reason_code') AS INTEGER), -1) NOT IN (4, 5, 6, 9)
+  AND LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), '')) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
+  AND (
+    COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER), 0) >= 400
+    OR COALESCE(json_extract(t.metadata_json, '$.crash_foreground'), 1) = 0
+    OR LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), '')) IN ('ui_hidden', 'background', 'moderate', 'complete')
+  )
+))`;
+
+const EFFECTIVE_CRASH_SIGNATURE_SQL = `CASE WHEN ${BACKGROUND_SYSTEM_KILL_SQL} THEN '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' ELSE COALESCE(t.signature, '(unsignatured)') END`;
+const EFFECTIVE_VERSION_CODE_SQL = `COALESCE(t.version_code, CASE WHEN json_valid(t.metadata_json) THEN CAST(json_extract(t.metadata_json, '$.fallback_version_code') AS INTEGER) END)`;
+const EFFECTIVE_VERSION_NAME_SQL = `COALESCE(t.version_name, CASE WHEN json_valid(t.metadata_json) THEN json_extract(t.metadata_json, '$.fallback_version_name') END)`;
+
+const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
+const BG_KILL_VERSION_MIN_COUNT = 10;
+const BG_KILL_VERSION_MIN_DEVICES = 3;
+const BG_KILL_VERSION_SPIKE_MULTIPLIER = 2;
+
+async function evaluateBackgroundSystemKillAlerts(
+  env: Env,
+  input: {
+    orgId: string;
+    appId: string;
+    eventPrefix: "crash" | "error";
+    now: number;
+    deviceId: string | null;
+    versionName: string | null;
+    versionCode: number | null;
+    base: Record<string, unknown>;
+  },
+): Promise<void> {
+  const { orgId, appId, eventPrefix, now, deviceId, versionName, versionCode, base } = input;
+  if (deviceId) {
+    const dayRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM feedback_tickets t
+       WHERE t.app_id = ?1 AND t.device_id = ?2 AND t.created_at >= ?3
+         AND t.kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause("standard")}`,
+    )
+      .bind(appId, deviceId, now - 24 * 60 * 60 * 1000)
+      .first<{ n: number }>();
+    const deviceCount24h = dayRow?.n ?? 0;
+    if (deviceCount24h >= BG_KILL_DEVICE_DAILY_THRESHOLD) {
+      const dayBucket = Math.floor(now / (24 * 60 * 60 * 1000));
+      await emitWebhookEvent(env, {
+        orgId,
+        appId,
+        event: `${eventPrefix}:spike`,
+        eventId: `${eventPrefix}:spike:${appId}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:device:${deviceId}:${dayBucket}`,
+        body: {
+          ...base,
+          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+          alert_reason: "device_daily_repeat",
+          device_id: deviceId,
+          count_last_24h: deviceCount24h,
+        },
+      });
+    }
+  }
+
+  if (versionCode !== null) {
+    const currentRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT t.device_id) AS devices
+       FROM feedback_tickets t
+       WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
+         AND t.kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause("standard")}`,
+    )
+      .bind(appId, versionCode)
+      .first<{ n: number; devices: number }>();
+    const currentCount = currentRow?.n ?? 0;
+    const currentDevices = currentRow?.devices ?? 0;
+    if (currentCount >= BG_KILL_VERSION_MIN_COUNT && currentDevices >= BG_KILL_VERSION_MIN_DEVICES) {
+      const prevVersion = await env.DB.prepare(
+        `SELECT version_code, MAX(version_name) AS version_name FROM (
+           SELECT b.version_code AS version_code, b.version_name AS version_name
+           FROM releases r
+           JOIN builds b ON b.id = r.build_id
+           WHERE r.app_id = ?1 AND r.status = 'active'
+             AND b.version_code IS NOT NULL AND b.version_code < ?2
+           UNION ALL
+           SELECT ${EFFECTIVE_VERSION_CODE_SQL} AS version_code, ${EFFECTIVE_VERSION_NAME_SQL} AS version_name
+           FROM feedback_tickets t
+           WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} IS NOT NULL
+             AND ${EFFECTIVE_VERSION_CODE_SQL} < ?2
+             AND ${feedbackBuildScopeClause("standard")}
+         )
+         GROUP BY version_code
+         ORDER BY version_code DESC
+         LIMIT 1`,
+      )
+        .bind(appId, versionCode)
+        .first<{ version_code: number; version_name: string | null }>();
+      if (prevVersion && prevVersion.version_code != null) {
+        const prevRow = await env.DB.prepare(
+          `SELECT COUNT(*) AS n, COUNT(DISTINCT t.device_id) AS devices
+           FROM feedback_tickets t
+           WHERE t.app_id = ?1 AND ${EFFECTIVE_VERSION_CODE_SQL} = ?2
+             AND t.kind IN ('crash', 'error')
+             AND ${BACKGROUND_SYSTEM_KILL_SQL}
+             AND ${feedbackBuildScopeClause("standard")}`,
+        )
+          .bind(appId, prevVersion.version_code)
+          .first<{ n: number; devices: number }>();
+        const prevCount = prevRow?.n ?? 0;
+        const prevDevices = prevRow?.devices ?? 0;
+        const countSpike = currentCount >= Math.max(BG_KILL_VERSION_MIN_COUNT, prevCount * BG_KILL_VERSION_SPIKE_MULTIPLIER);
+        const rateSpike =
+          prevDevices > 0
+          && currentDevices > 0
+          && (currentCount / currentDevices) >= (prevCount / prevDevices) * BG_KILL_VERSION_SPIKE_MULTIPLIER;
+        if (countSpike || rateSpike) {
+          await emitWebhookEvent(env, {
+            orgId,
+            appId,
+            event: `${eventPrefix}:spike`,
+            eventId: `${eventPrefix}:spike:${appId}:${BACKGROUND_SYSTEM_KILL_SIGNATURE}:version:${versionCode}`,
+            body: {
+              ...base,
+              signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+              alert_reason: "version_spike",
+              version_name: versionName,
+              version_code: versionCode,
+              version_count: currentCount,
+              version_device_count: currentDevices,
+              previous_version_name: prevVersion.version_name,
+              previous_version_code: prevVersion.version_code,
+              previous_version_count: prevCount,
+              previous_version_device_count: prevDevices,
+            },
+          });
+        }
+      }
+    }
+  }
+}
+
 /**
  * Crash flavour derived from SDK metadata (no column, no migration):
  * `anr` (Android ApplicationExitInfo REASON_ANR, `crash_type=anr`),
@@ -2213,23 +2445,87 @@ export async function handleListCrashGroups(c: AdminContext) {
   }
   const { results } = await c.env.DB.prepare(
     `SELECT
-       COALESCE(signature, '(unsignatured)') AS signature,
+       ${EFFECTIVE_CRASH_SIGNATURE_SQL} AS signature,
        MAX(${CRASH_TYPE_SQL}) AS crash_type,
        COUNT(*) AS count,
        COUNT(DISTINCT device_id) AS device_count,
        MIN(created_at) AS first_seen,
        MAX(created_at) AS last_seen,
-       GROUP_CONCAT(DISTINCT version_name) AS versions,
-       SUM(CASE WHEN status IN ('open','in_progress') THEN 1 ELSE 0 END) AS open_count
+       GROUP_CONCAT(DISTINCT ${EFFECTIVE_VERSION_NAME_SQL}) AS versions,
+       SUM(CASE WHEN status IN ('open','in_progress') AND NOT ${BACKGROUND_SYSTEM_KILL_SQL} THEN 1 ELSE 0 END) AS open_count
      FROM feedback_tickets t
      WHERE app_id = ?1 ${kindClause} ${typeClause}
        AND ${feedbackBuildScopeClause(scope)}
-     GROUP BY COALESCE(signature, '(unsignatured)')
+     GROUP BY ${EFFECTIVE_CRASH_SIGNATURE_SQL}
      ORDER BY count DESC, last_seen DESC
      LIMIT 200`,
   )
     .bind(...binds)
-    .all();
+    .all<{
+      signature: string;
+      crash_type: CrashType;
+      count: number;
+      device_count: number;
+      first_seen: number;
+      last_seen: number;
+      versions: string | null;
+      open_count: number;
+      by_version?: Array<{ version_name: string; version_code: number | null; count: number; device_count: number }>;
+      by_device?: Array<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>;
+    }>();
+
+  if (results.some((group: { signature: string }) => group.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE)) {
+    const [byVersion, byDevice] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT
+           COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
+           ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+           COUNT(*) AS count,
+           COUNT(DISTINCT t.device_id) AS device_count
+         FROM feedback_tickets t
+         WHERE t.app_id = ?1 ${kindClause}
+           AND ${BACKGROUND_SYSTEM_KILL_SQL}
+           AND ${feedbackBuildScopeClause(scope)}
+         GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
+         ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC, count DESC
+         LIMIT 20`,
+      )
+        .bind(appId)
+        .all<{ version_name: string; version_code: number | null; count: number; device_count: number }>(),
+      c.env.DB.prepare(
+        `SELECT
+           device_id,
+           MAX(device_model) AS device_model,
+           SUM(daily_count) AS count,
+           MAX(daily_count) AS max_daily_count,
+           MAX(last_seen) AS last_seen
+         FROM (
+           SELECT
+             COALESCE(t.device_id, 'unknown') AS device_id,
+             MAX(t.device_model) AS device_model,
+             strftime('%Y-%m-%d', t.created_at / 1000, 'unixepoch') AS day,
+             COUNT(*) AS daily_count,
+             MAX(t.created_at) AS last_seen
+           FROM feedback_tickets t
+           WHERE t.app_id = ?1 ${kindClause}
+             AND ${BACKGROUND_SYSTEM_KILL_SQL}
+             AND ${feedbackBuildScopeClause(scope)}
+           GROUP BY COALESCE(t.device_id, 'unknown'), day
+         )
+         GROUP BY device_id
+         ORDER BY max_daily_count DESC, count DESC, last_seen DESC
+         LIMIT 20`,
+      )
+        .bind(appId)
+        .all<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>(),
+    ]);
+    for (const group of results) {
+      if (group.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE) {
+        group.by_version = byVersion.results;
+        group.by_device = byDevice.results;
+      }
+    }
+  }
   return c.json({ groups: results });
 }
 
@@ -2239,7 +2535,7 @@ export async function handleFeedbackStats(c: AdminContext) {
   const scope = feedbackBuildScope(c.req.query("build_scope"));
   if (!scope) return c.json({ error: "invalid build_scope" }, 400);
   const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const [daily, byVersion] = await Promise.all([
+  const [daily, byVersion, bgByVersion, bgByDevice] = await Promise.all([
     c.env.DB.prepare(
       `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
               kind, COUNT(*) AS n
@@ -2252,19 +2548,68 @@ export async function handleFeedbackStats(c: AdminContext) {
       .bind(appId, since)
       .all<{ day: string; kind: string; n: number }>(),
     c.env.DB.prepare(
-      `SELECT COALESCE(version_name, 'unknown') AS version_name,
-              version_code, COUNT(*) AS n
+      `SELECT COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
+              ${EFFECTIVE_VERSION_CODE_SQL} AS version_code, COUNT(*) AS n
        FROM feedback_tickets t
        WHERE app_id = ?1 AND kind IN ('crash', 'error')
          AND ${feedbackBuildScopeClause(scope)}
-       GROUP BY COALESCE(version_name, 'unknown'), version_code
-       ORDER BY COALESCE(version_code, 0) DESC
+       GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
+       ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC
        LIMIT 12`,
     )
       .bind(appId)
       .all<{ version_name: string; version_code: number | null; n: number }>(),
+    c.env.DB.prepare(
+      `SELECT COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
+              ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+              COUNT(*) AS count,
+              COUNT(DISTINCT t.device_id) AS device_count
+       FROM feedback_tickets t
+       WHERE app_id = ?1 AND kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause(scope)}
+       GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
+       ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC
+       LIMIT 12`,
+    )
+      .bind(appId)
+      .all<{ version_name: string; version_code: number | null; count: number; device_count: number }>(),
+    c.env.DB.prepare(
+      `SELECT
+         device_id,
+         MAX(device_model) AS device_model,
+         SUM(daily_count) AS count,
+         MAX(daily_count) AS max_daily_count,
+         MAX(last_seen) AS last_seen
+       FROM (
+         SELECT
+           COALESCE(t.device_id, 'unknown') AS device_id,
+           MAX(t.device_model) AS device_model,
+           strftime('%Y-%m-%d', t.created_at / 1000, 'unixepoch') AS day,
+           COUNT(*) AS daily_count,
+           MAX(t.created_at) AS last_seen
+         FROM feedback_tickets t
+         WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
+           AND ${BACKGROUND_SYSTEM_KILL_SQL}
+           AND ${feedbackBuildScopeClause(scope)}
+         GROUP BY COALESCE(t.device_id, 'unknown'), day
+       )
+       GROUP BY device_id
+       ORDER BY max_daily_count DESC, count DESC, last_seen DESC
+       LIMIT 20`,
+    )
+      .bind(appId)
+      .all<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>(),
   ]);
-  return c.json({ daily: daily.results, crashes_by_version: byVersion.results });
+  return c.json({
+    daily: daily.results,
+    crashes_by_version: byVersion.results,
+    background_system_kills: {
+      signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+      by_version: bgByVersion.results,
+      by_device: bgByDevice.results,
+    },
+  });
 }
 
 export async function handleListFeedback(c: AdminContext) {
@@ -2301,12 +2646,16 @@ export async function handleListFeedback(c: AdminContext) {
   const versionCodeFilter = c.req.query("version_code");
   if (versionCodeFilter && /^\d+$/.test(versionCodeFilter)) {
     binds.push(Number(versionCodeFilter));
-    where += ` AND version_code = ?${binds.length}`;
+    where += ` AND ${EFFECTIVE_VERSION_CODE_SQL} = ?${binds.length}`;
   }
   const signatureFilter = c.req.query("signature");
   if (signatureFilter) {
-    binds.push(signatureFilter);
-    where += ` AND signature = ?${binds.length}`;
+    if (signatureFilter === BACKGROUND_SYSTEM_KILL_SIGNATURE) {
+      where += ` AND kind IN ('crash', 'error') AND ${BACKGROUND_SYSTEM_KILL_SQL}`;
+    } else {
+      binds.push(signatureFilter);
+      where += ` AND signature = ?${binds.length} AND NOT (kind IN ('crash', 'error') AND ${BACKGROUND_SYSTEM_KILL_SQL})`;
+    }
   }
   const crashTypeFilter = crashTypeParam(c.req.query("crash_type"));
   if (crashTypeFilter) {
@@ -2315,11 +2664,14 @@ export async function handleListFeedback(c: AdminContext) {
   }
   const { results } = await c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
-            t.assignee, t.message, t.contact, t.version_name,
-            t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
+            t.assignee, t.message, t.contact,
+            ${EFFECTIVE_VERSION_NAME_SQL} AS version_name,
+            ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+            t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at,
             ${FEEDBACK_BUILD_ORIGIN_FIELD_SQL} AS build_origin,
             CASE WHEN t.kind IN ('crash', 'error') THEN ${CRASH_TYPE_SQL} END AS crash_type,
+            CASE WHEN t.kind IN ('crash', 'error') AND ${BACKGROUND_SYSTEM_KILL_SQL} THEN 1 ELSE 0 END AS background_system_kill,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
      FROM feedback_tickets t
@@ -2345,10 +2697,14 @@ export async function handleListFeedbackMaterialDelta(c: AdminContext) {
 
   const { results } = await c.env.DB.prepare(
     `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
-            t.assignee, t.message, t.contact, t.version_name,
-            t.version_code, t.channel, t.device_id, t.device_model, t.os_version,
+            t.assignee, t.message, t.contact,
+            ${EFFECTIVE_VERSION_NAME_SQL} AS version_name,
+            ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+            t.channel, t.device_id, t.device_model, t.os_version,
             t.created_at, t.updated_at, t.material_sequence,
             ${FEEDBACK_BUILD_ORIGIN_FIELD_SQL} AS build_origin,
+            CASE WHEN t.kind IN ('crash', 'error') THEN ${CRASH_TYPE_SQL} END AS crash_type,
+            CASE WHEN t.kind IN ('crash', 'error') AND ${BACKGROUND_SYSTEM_KILL_SQL} THEN 1 ELSE 0 END AS background_system_kill,
             (SELECT COUNT(*) FROM feedback_attachments fa WHERE fa.ticket_id = t.id) AS attachment_count,
             (SELECT COUNT(*) FROM feedback_comments fc WHERE fc.ticket_id = t.id) AS comment_count
      FROM feedback_tickets t
