@@ -388,4 +388,42 @@ describe("Raft release notification cards", () => {
     expect(card.elements.footer0).toMatchObject({ props: { text: "At: 2026-02-30 12:00:00 UTC", tone: "muted" } });
     expect(content).toContain("At: 2026-02-30 12:00:00 UTC");
   });
+
+  it("formats background system kill device and version spike alerts clearly", () => {
+    const deviceSpike = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android",
+        signature: "SystemKill@background",
+        alert_reason: "device_daily_repeat",
+        device_id: "dev-abc",
+        count_last_24h: 3,
+        version_name: "1.22.0",
+        version_code: 1022000,
+        ticket_id: "t-123",
+      },
+    });
+    expect(deviceSpike).toContain("Background system kill spike (后台被系统结束)");
+    expect(deviceSpike).toContain("Same device killed in background 3 times in 24h (device: dev-abc)");
+
+    const versionSpike = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android",
+        signature: "SystemKill@background",
+        alert_reason: "version_spike",
+        version_name: "1.23.0",
+        version_code: 1023000,
+        version_count: 12,
+        version_device_count: 4,
+        previous_version_name: "1.22.0",
+        previous_version_code: 1022000,
+        previous_version_count: 5,
+        previous_version_device_count: 3,
+        ticket_id: "t-456",
+      },
+    });
+    expect(versionSpike).toContain("Background system kill spike (后台被系统结束)");
+    expect(versionSpike).toContain("Version background kill spike: 12 reports across 4 devices vs 5 reports (3 devices) on 1.22.0 (1022000)");
+  });
 });

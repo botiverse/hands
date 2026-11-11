@@ -89,8 +89,14 @@ const CRASH_SECTION_ZH: Record<string, string> = { summary: "摘要", stack: "�
 const SYMBOLICATION_ZH: Record<string, string> = { symbolicated: "已符号化", no_symbols: "没有符号文件", unsymbolicated: "未能符号化", not_applicable: "不适用", failed: "失败", pending: "等待中", not_run: "尚未运行", done: "已完成" };
 const ENVIRONMENT_ZH: Record<string, string> = {
   device_id: "设备 ID", device_model: "设备型号", platform: "平台", os_version: "系统版本",
-  version_code: "版本号", version_name: "版本名称", commit: "提交", git_commit: "Git 提交",
+  version_code: "版本号", version_name: "版本名称", fallback_version_code: "回退版本号", fallback_version_name: "回退版本名称",
+  commit: "提交", git_commit: "Git 提交",
   bundle_id: "包标识符", app_version: "应用版本", build_number: "构建号", sdk_version: "SDK 版本",
+  crash_exit_reason: "退出原因", crash_exit_reason_code: "退出原因代码", crash_exit_importance: "进程优先级 (importance)",
+  crash_exit_pss: "系统记录 PSS (KB)", crash_exit_rss: "系统记录 RSS (KB)", crash_foreground: "是否前台",
+  crash_foreground_change_age_ms: "前后台切换耗时 (ms)", crash_background_duration_ms: "退后台时长 (ms)",
+  crash_process_uptime_ms: "进程存活时长 (ms)", crash_memory_pss_kb: "采样 PSS (KB)", crash_memory_rss_kb: "采样 RSS (KB)",
+  crash_trim: "最近内存回收等级", crash_trim_level: "内存回收等级代码", crash_version_source: "版本来源",
 };
 function localizedValue(value: string, locale: Locale, dictionary: Record<string, string>): string {
   return locale === "zh-CN" ? (dictionary[value] ?? value) : value;
@@ -300,7 +306,9 @@ export function AppFeedback({ appId }: { appId: string }) {
                     )}
                     {t.crash_type === "system_kill" && (
                       <Badge variant="muted" className="mr-2">
-                        {tx("System kill", "系统强杀")}
+                        {t.background_system_kill
+                          ? tx("Killed by system in background", "后台被系统结束")
+                          : tx("System kill", "系统强杀")}
                       </Badge>
                     )}
                     {t.build_origin === "external" && <Badge variant="warning" className="mr-2">{tx("External", "外部构建")}</Badge>}
@@ -919,10 +927,25 @@ export function FeedbackTicketPage({
               } catch {
                 /* malformed metadata — fall through to empty */
               }
+              const isSystemKillKey = (k: string) =>
+                k === "crash_exit_reason" ||
+                k === "crash_exit_reason_code" ||
+                k === "crash_exit_importance" ||
+                k === "crash_exit_pss" ||
+                k === "crash_exit_rss" ||
+                k === "crash_foreground" ||
+                k === "crash_foreground_change_age_ms" ||
+                k === "crash_background_duration_ms" ||
+                k === "crash_process_uptime_ms" ||
+                k === "crash_memory_pss_kb" ||
+                k === "crash_memory_rss_kb" ||
+                k === "crash_trim" ||
+                k === "crash_trim_level" ||
+                k === "crash_version_source";
               const entries = Object.entries(meta)
                 .filter(
                   ([k, v]) =>
-                    !k.startsWith("crash_") &&
+                    (!k.startsWith("crash_") || isSystemKillKey(k)) &&
                     k !== "breadcrumbs" &&
                     k !== "stacktrace" &&
                     k !== "exception_class" &&

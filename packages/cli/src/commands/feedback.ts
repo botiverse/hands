@@ -24,6 +24,7 @@ interface TicketRow {
   comment_count: number;
   build_origin?: "configured" | "external" | "unknown" | null;
   crash_type?: "anr" | "system_kill" | "native" | "exception" | null;
+  background_system_kill?: number;
 }
 
 async function resolveAppId(slugOrId: string): Promise<string> {
@@ -48,14 +49,20 @@ export function registerFeedbackCommands(program: Command): void {
     .option("--status <status>", "Filter: open | in_progress | resolved | closed.")
     .option("--kind <kind>", "Filter: feedback | bug | crash | error.")
     .option("--crash-type <type>", "Filter crashes by type: exception | native | anr | system_kill.")
+    .option("--signature <signature>", "Filter crashes by signature (e.g. SystemKill@background).")
+    .option("--device-id <deviceId>", "Filter tickets by device_id.")
+    .option("--version-code <code>", "Filter tickets by version_code.")
     .option("--build-scope <scope>", "Filter by origin: standard | external | all.")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; crashType?: string; buildScope?: string; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { status?: string; kind?: string; crashType?: string; signature?: string; deviceId?: string; versionCode?: string; buildScope?: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
       const params = new URLSearchParams();
       if (opts.status) params.set("status", opts.status);
       if (opts.kind) params.set("kind", opts.kind);
       if (opts.crashType) params.set("crash_type", opts.crashType);
+      if (opts.signature) params.set("signature", opts.signature);
+      if (opts.deviceId) params.set("device_id", opts.deviceId);
+      if (opts.versionCode) params.set("version_code", opts.versionCode);
       if (opts.buildScope) params.set("build_scope", opts.buildScope);
       const qs = params.toString();
       const res = await apiRequest<{ tickets: TicketRow[] }>(
@@ -71,7 +78,11 @@ export function registerFeedbackCommands(program: Command): void {
       }
       for (const t of res.tickets) {
         const preview = t.message.replace(/\s+/g, " ").slice(0, 60);
-        const crashTag = t.crash_type && t.crash_type !== "exception" ? `[${t.crash_type}] ` : "";
+        const crashTag = t.background_system_kill
+          ? "[background_system_kill] "
+          : t.crash_type && t.crash_type !== "exception"
+            ? `[${t.crash_type}] `
+            : "";
         console.log(
           `${t.id}  ${t.status.padEnd(11)} ${t.kind.padEnd(8)} ` +
             `${(t.assignee ?? "-").padEnd(16)} v${t.version_name ?? "?"} ` +
