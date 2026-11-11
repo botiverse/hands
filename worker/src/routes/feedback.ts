@@ -929,6 +929,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           appId: app.id,
           eventPrefix,
           now,
+          occurredAt: effectiveOccurredAtMs(metadata, now),
           deviceId,
           versionName,
           versionCode,
@@ -2273,6 +2274,27 @@ const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIG
 const EFFECTIVE_CRASH_SIGNATURE_SQL = `CASE WHEN ${BACKGROUND_SYSTEM_KILL_SQL} THEN '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' ELSE COALESCE(t.signature, '(unsignatured)') END`;
 const EFFECTIVE_VERSION_CODE_SQL = `COALESCE(t.version_code, CASE WHEN json_valid(t.metadata_json) THEN CAST(json_extract(t.metadata_json, '$.fallback_version_code') AS INTEGER) END)`;
 const EFFECTIVE_VERSION_NAME_SQL = `COALESCE(t.version_name, CASE WHEN json_valid(t.metadata_json) THEN json_extract(t.metadata_json, '$.fallback_version_name') END)`;
+const EFFECTIVE_OCCURRED_AT_SQL = `CASE
+  WHEN json_valid(t.metadata_json)
+    AND CAST(json_extract(t.metadata_json, '$.crash_exit_timestamp') AS INTEGER) > 946684800000
+    AND CAST(json_extract(t.metadata_json, '$.crash_exit_timestamp') AS INTEGER) <= t.created_at + 86400000
+  THEN CAST(json_extract(t.metadata_json, '$.crash_exit_timestamp') AS INTEGER)
+  ELSE t.created_at
+END`;
+
+export function effectiveOccurredAtMs(metadata: Record<string, unknown>, createdAt: number): number {
+  const raw = metadata["crash_exit_timestamp"];
+  const ts =
+    typeof raw === "number" && Number.isFinite(raw)
+      ? Math.trunc(raw)
+      : typeof raw === "string" && /^\d+$/.test(raw.trim())
+        ? Math.trunc(Number(raw.trim()))
+        : null;
+  if (ts !== null && ts > 946_684_800_000 && ts <= createdAt + 86_400_000) {
+    return ts;
+  }
+  return createdAt;
+}
 
 const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
 const BG_KILL_VERSION_MIN_COUNT = 10;
@@ -2286,6 +2308,7 @@ async function evaluateBackgroundSystemKillAlerts(
     appId: string;
     eventPrefix: "crash" | "error";
     now: number;
+    occurredAt?: number;
     deviceId: string | null;
     versionName: string | null;
     versionCode: number | null;
@@ -2293,19 +2316,35 @@ async function evaluateBackgroundSystemKillAlerts(
   },
 ): Promise<void> {
   const { orgId, appId, eventPrefix, now, deviceId, versionName, versionCode, base } = input;
+  const occurredAt = input.occurredAt ?? now;
+  const dayMs = 24 * 60 * 60 * 1000;
   if (deviceId) {
-    const dayRow = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM feedback_tickets t
-       WHERE t.app_id = ?1 AND t.device_id = ?2 AND t.created_at >= ?3
-         AND t.kind IN ('crash', 'error')
-         AND ${BACKGROUND_SYSTEM_KILL_SQL}
-         AND ${feedbackBuildScopeClause("standard")}`,
-    )
-      .bind(appId, deviceId, now - 24 * 60 * 60 * 1000)
-      .first<{ n: number }>();
-    const deviceCount24h = dayRow?.n ?? 0;
+    const [occurredRow, ingestedRow] = await Promise.all([
+      env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM feedback_tickets t
+         WHERE t.app_id = ?1 AND t.device_id = ?2
+           AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?3 AND ${EFFECTIVE_OCCURRED_AT_SQL} <= ?4
+           AND t.kind IN ('crash', 'error')
+           AND ${BACKGROUND_SYSTEM_KILL_SQL}
+           AND ${feedbackBuildScopeClause("standard")}`,
+      )
+        .bind(appId, deviceId, occurredAt - dayMs, occurredAt)
+        .first<{ n: number }>(),
+      env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM feedback_tickets t
+         WHERE t.app_id = ?1 AND t.device_id = ?2
+           AND t.created_at >= ?3 AND t.created_at <= ?4
+           AND t.kind IN ('crash', 'error')
+           AND ${BACKGROUND_SYSTEM_KILL_SQL}
+           AND ${feedbackBuildScopeClause("standard")}`,
+      )
+        .bind(appId, deviceId, now - dayMs, now)
+        .first<{ n: number }>(),
+    ]);
+    const deviceCount24h = Math.max(occurredRow?.n ?? 0, ingestedRow?.n ?? 0);
     if (deviceCount24h >= BG_KILL_DEVICE_DAILY_THRESHOLD) {
-      const dayBucket = Math.floor(now / (24 * 60 * 60 * 1000));
+      const bucketAnchor = (occurredRow?.n ?? 0) >= BG_KILL_DEVICE_DAILY_THRESHOLD ? occurredAt : now;
+      const dayBucket = Math.floor(bucketAnchor / dayMs);
       await emitWebhookEvent(env, {
         orgId,
         appId,
@@ -2400,6 +2439,68 @@ async function evaluateBackgroundSystemKillAlerts(
   }
 }
 
+async function backfillBackgroundSystemKillAlerts(
+  env: Env,
+  appId: string,
+): Promise<void> {
+  const app = await env.DB.prepare(
+    `SELECT id, org_id, slug FROM apps WHERE id = ?1`,
+  )
+    .bind(appId)
+    .first<{ id: string; org_id: string | null; slug: string }>();
+  if (!app?.org_id) return;
+
+  const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, t.kind, t.message, t.device_id, t.created_at,
+            ${EFFECTIVE_VERSION_NAME_SQL} AS version_name,
+            ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+            ${EFFECTIVE_OCCURRED_AT_SQL} AS occurred_at
+     FROM feedback_tickets t
+     WHERE t.app_id = ?1
+       AND t.created_at >= ?2
+       AND t.kind IN ('crash', 'error')
+       AND ${BACKGROUND_SYSTEM_KILL_SQL}
+       AND ${feedbackBuildScopeClause("standard")}
+     ORDER BY t.created_at ASC
+     LIMIT 100`,
+  )
+    .bind(appId, since)
+    .all<{
+      id: string;
+      kind: string;
+      message: string | null;
+      device_id: string | null;
+      created_at: number;
+      version_name: string | null;
+      version_code: number | null;
+      occurred_at: number;
+    }>();
+
+  for (const row of results) {
+    const eventPrefix = row.kind === "error" ? "error" : "crash";
+    await evaluateBackgroundSystemKillAlerts(env, {
+      orgId: app.org_id,
+      appId: app.id,
+      eventPrefix,
+      now: row.created_at,
+      occurredAt: row.occurred_at,
+      deviceId: row.device_id,
+      versionName: row.version_name,
+      versionCode: row.version_code,
+      base: {
+        app_slug: app.slug,
+        signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+        crash_type: "system_kill",
+        ticket_id: row.id,
+        message: (row.message ?? "").slice(0, 300),
+        version_name: row.version_name,
+        version_code: row.version_code,
+      },
+    });
+  }
+}
+
 /**
  * Crash flavour derived from SDK metadata (no column, no migration):
  * `anr` (Android ApplicationExitInfo REASON_ANR, `crash_type=anr`),
@@ -2475,6 +2576,14 @@ export async function handleListCrashGroups(c: AdminContext) {
     }>();
 
   if (results.some((group: { signature: string }) => group.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE)) {
+    const backfillPromise = scope === "standard"
+      ? backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {})
+      : Promise.resolve();
+    try {
+      c.executionCtx.waitUntil(backfillPromise);
+    } catch {
+      await backfillPromise;
+    }
     const [byVersion, byDevice] = await Promise.all([
       c.env.DB.prepare(
         `SELECT
@@ -2503,9 +2612,9 @@ export async function handleListCrashGroups(c: AdminContext) {
            SELECT
              COALESCE(t.device_id, 'unknown') AS device_id,
              MAX(t.device_model) AS device_model,
-             strftime('%Y-%m-%d', t.created_at / 1000, 'unixepoch') AS day,
+             strftime('%Y-%m-%d', ${EFFECTIVE_OCCURRED_AT_SQL} / 1000, 'unixepoch') AS day,
              COUNT(*) AS daily_count,
-             MAX(t.created_at) AS last_seen
+             MAX(${EFFECTIVE_OCCURRED_AT_SQL}) AS last_seen
            FROM feedback_tickets t
            WHERE t.app_id = ?1 ${kindClause}
              AND ${BACKGROUND_SYSTEM_KILL_SQL}
@@ -2585,9 +2694,9 @@ export async function handleFeedbackStats(c: AdminContext) {
          SELECT
            COALESCE(t.device_id, 'unknown') AS device_id,
            MAX(t.device_model) AS device_model,
-           strftime('%Y-%m-%d', t.created_at / 1000, 'unixepoch') AS day,
+           strftime('%Y-%m-%d', ${EFFECTIVE_OCCURRED_AT_SQL} / 1000, 'unixepoch') AS day,
            COUNT(*) AS daily_count,
-           MAX(t.created_at) AS last_seen
+           MAX(${EFFECTIVE_OCCURRED_AT_SQL}) AS last_seen
          FROM feedback_tickets t
          WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
            AND ${BACKGROUND_SYSTEM_KILL_SQL}
@@ -2601,6 +2710,14 @@ export async function handleFeedbackStats(c: AdminContext) {
       .bind(appId)
       .all<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>(),
   ]);
+  if (scope === "standard" && bgByDevice.results.length > 0) {
+    const backfillPromise = backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {});
+    try {
+      c.executionCtx.waitUntil(backfillPromise);
+    } catch {
+      await backfillPromise;
+    }
+  }
   return c.json({
     daily: daily.results,
     crashes_by_version: byVersion.results,
