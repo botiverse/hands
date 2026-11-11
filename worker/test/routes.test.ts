@@ -11932,7 +11932,7 @@ describe("quiver public API v2 — scope resolution", () => {
       ).all()
     ).results as Array<{ payload_json: string }>;
     expect(deliveries).toHaveLength(1);
-    const parsed = JSON.parse(deliveries[0].payload_json);
+    const parsed = JSON.parse(deliveries[0]!.payload_json);
     expect(parsed.event).toBe("crash:spike");
     expect(parsed.payload).toMatchObject({
       signature: "SystemKill@background",

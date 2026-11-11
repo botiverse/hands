@@ -2576,7 +2576,7 @@ export async function handleListCrashGroups(c: AdminContext) {
     }>();
 
   if (results.some((group: { signature: string }) => group.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE)) {
-    const backfillPromise = scope === "standard"
+    const backfillPromise = scope === "standard" && appId
       ? backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {})
       : Promise.resolve();
     try {
@@ -2710,7 +2710,7 @@ export async function handleFeedbackStats(c: AdminContext) {
       .bind(appId)
       .all<{ device_id: string; device_model: string | null; count: number; max_daily_count: number; last_seen: number }>(),
   ]);
-  if (scope === "standard" && bgByDevice.results.length > 0) {
+  if (scope === "standard" && appId && bgByDevice.results.length > 0) {
     const backfillPromise = backfillBackgroundSystemKillAlerts(c.env, appId).catch(() => {});
     try {
       c.executionCtx.waitUntil(backfillPromise);
