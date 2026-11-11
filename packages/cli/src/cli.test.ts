@@ -2416,6 +2416,46 @@ describe("play distribution commands", () => {
     }
   });
 
+  it("play-release-notes posts track, expected_revision and note, and prints the languages", async () => {
+    const harness = await startPlayHarness({ writeExtra: {
+      track: "production",
+      release_notes: { sent: ["zh-CN", "en-US", "ja-JP"], skipped: ["fr"], previous_languages: [] },
+    } });
+    try {
+      await harness.run("releases", "play-release-notes", "raft-android", "release-1", "--note", "add 1.23 notes");
+      expect(harness.requests.filter((request) => request.method === "POST")).toEqual([{
+        method: "POST",
+        url: "/api/apps/app-1/releases/release-1/distributions/play/release-notes",
+        body: { track: "production", expected_revision: 7, approval: { note: "add 1.23 notes" } },
+      }]);
+      const text = harness.logs.join("\n");
+      expect(text).toContain("rcpt-release-notes");
+      expect(text).toContain("languages:   zh-CN, en-US, ja-JP (before: none)");
+      expect(text).toContain("skipped:     fr (no Play language mapping)");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("play-release-notes requires --note and surfaces the release_notes gate without retry", async () => {
+    const harness = await startPlayHarness({
+      writeError: {
+        status: 400,
+        error: { code: "gate_failed", gate: "release_notes", failure_code: "no_release_notes", message: "release changelog yields no Google Play release notes (no_changelog)" },
+      },
+    });
+    try {
+      await expect(harness.run("releases", "play-release-notes", "raft-android", "release-1"))
+        .rejects.toThrow("required option '--note <note>' not specified");
+      expect(harness.requests).toHaveLength(0);
+      await expect(harness.run("releases", "play-release-notes", "raft-android", "release-1", "--note", "n"))
+        .rejects.toThrow("Play release-notes blocked by gate release_notes: release changelog yields no Google Play release notes (no_changelog)");
+      expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("play-upload-symbols is a dry run by default and sends mode=commit only with --commit", async () => {
     const harness = await startPlayHarness({ writeExtra: {
       mode: "dry_run", package_name: "build.raft.app", version_on_play: true,

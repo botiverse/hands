@@ -26,6 +26,8 @@ import type {
   TrackRelease,
   TrackResource,
   ReleaseSummary,
+  UpdateReleaseNotesRequest,
+  UpdateReleaseNotesResult,
   UploadDeobfuscationRequest,
   UploadDeobfuscationResult,
 } from "./types";
@@ -243,12 +245,16 @@ function hashingBody(
  * Recognised non-review causes (e.g. MULTIPLE_COMPLETED) keep play_api_rejected.
  * Plain promote (no flag) does not use this: its errors stay as they were.
  */
-export function releaseEditStateRejection(error: unknown, what: "release" | "send_for_review" | "deobfuscation"): unknown {
+export function releaseEditStateRejection(
+  error: unknown,
+  what: "release" | "send_for_review" | "deobfuscation" | "release_notes",
+): unknown {
   if (!(error instanceof PlayAdapterError) || error.code !== "play_api_rejected") return error;
   const cause = error.cause_detail?.provider_cause;
   const subject = what === "release"
     ? "the release edit was not committed"
-    : what === "deobfuscation" ? "the deobfuscation files were not committed" : "nothing was sent for review";
+    : what === "deobfuscation" ? "the deobfuscation files were not committed"
+      : what === "release_notes" ? "the release notes were not updated" : "nothing was sent for review";
   if (cause === "EDIT_IN_REVIEW") {
     return new PlayAdapterError(409, "play_edit_in_review",
       `Another change for this app is in review on Google Play (Hands commits with ERROR_IF_IN_REVIEW and never cancels it); ${subject}. Wait for the review to finish, then run it again.`,
@@ -269,7 +275,7 @@ export function releaseEditStateRejection(error: unknown, what: "release" | "sen
   }
   if (!cause || cause === "OTHER") {
     return new PlayAdapterError(502, "play_edit_state_unknown",
-      `Google Play answered the commit in a way Hands does not recognise; ${what === "send_for_review" ? "it is not reported as sent for review" : what === "deobfuscation" ? "the deobfuscation files are not reported as committed" : "the release is not reported as committed"}. Check the app in Play Console before running it again.`,
+      `Google Play answered the commit in a way Hands does not recognise; ${what === "send_for_review" ? "it is not reported as sent for review" : what === "deobfuscation" ? "the deobfuscation files are not reported as committed" : what === "release_notes" ? "the release notes are not reported as updated" : "the release is not reported as committed"}. Check the app in Play Console before running it again.`,
       {
         stage: "commit_edit",
         provider_cause: "OTHER",
@@ -1184,6 +1190,121 @@ export class GooglePlayClient {
       lifecycle_before: lifecycleBefore,
       lifecycle_after: lifecycleAfter,
     };
+  }
+
+  /**
+   * Replace the release notes ("What's new") of the track release that already
+   * carries versionCode, without touching anything else.
+   *
+   *   edits.insert -> edits.bundles.list (versionCode held with the accepted
+   *   sha256) -> tracks.get (a release must carry versionCode) -> tracks.update
+   *   (every release carried forward as read; only that release's releaseNotes
+   *   replaced) -> edits.commit (ERROR_IF_IN_REVIEW, no changesNotSentForReview)
+   *   -> fresh edit: tracks.get readback -> edits.delete
+   *
+   * This is how notes reach a version that was promoted without them: promote
+   * refuses a versionCode that is not above the track maximum, and halting a
+   * completed release is not possible on Play. The notes become exactly the
+   * requested list (languages not listed are removed from that release). The
+   * readback must show the same status/userFraction as before and exactly the
+   * requested notes; anything else is play_readback_mismatch. Failures before the
+   * commit delete the edit. Never CANCEL_IN_REVIEW_AND_SUBMIT.
+   */
+  async updateReleaseNotes(request: UpdateReleaseNotesRequest): Promise<UpdateReleaseNotesResult> {
+    this.lastBundleLookup = null;
+    const editId = await this.createEdit(request.packageName);
+    let before: TrackRelease | undefined;
+    try {
+      const onPlay = await this.bundleAlreadyOnPlay(request.packageName, editId, request);
+      if (!onPlay) {
+        throw new PlayAdapterError(409, "play_bundle_not_on_play",
+          "Google Play holds no bundle for this versionCode; promote it first");
+      }
+      const track = await this.getTrack(request.packageName, editId, request.playTrack);
+      const releases = track.releases ?? [];
+      const index = releases.findIndex((release) =>
+        release.versionCodes?.some((value) => exactVersionCode(value) === request.versionCode));
+      if (index < 0) {
+        throw new PlayAdapterError(409, "play_release_not_on_track",
+          "The requested Play track has no release with this versionCode; no release notes were changed");
+      }
+      before = releases[index];
+      const next = releases.map(cleanRelease);
+      next[index] = {
+        ...next[index],
+        releaseNotes: request.releaseNotes.map((note) => ({ language: note.language, text: note.text })),
+      };
+      await this.requestJson<TrackResource>(
+        `${this.editRoot(request.packageName, editId)}/tracks/${encodeURIComponent(request.playTrack)}`,
+        { method: "PUT", body: JSON.stringify({ track: request.playTrack, releases: next }) },
+      );
+    } catch (error) {
+      await this.cleanupOrThrow(request.packageName, editId, error);
+    }
+    let committedId: string | null;
+    try {
+      committedId = await this.commitEdit(request.packageName, editId);
+    } catch (error) {
+      // No HTTP answer: Google may or may not have committed. Leave the edit alone.
+      if (error instanceof PlayAdapterError && error.code === "play_api_unavailable") {
+        throw new PlayAdapterError(502, "play_commit_ambiguous",
+          "Google Play did not answer the commit; check the release notes in Play Console before running it again", { stage: "commit_edit" });
+      }
+      // ERROR_IF_IN_REVIEW leaves a rejected edit valid; delete it (best effort).
+      await this.deleteEdit(request.packageName, editId).catch(() => undefined);
+      throw releaseEditStateRejection(error, "release_notes");
+    }
+    if (committedId !== null && committedId !== editId) {
+      throw new PlayAdapterError(502, "play_edit_state_unknown",
+        "Google Play answered the commit in a way Hands does not recognise; the release notes are not reported as updated. Check the app in Play Console before running it again.",
+        { stage: "commit_edit", provider_cause: "MALFORMED_RESPONSE", tried: editStatePatternsTried() });
+    }
+    const after = await this.readTrackRelease(request.packageName, request.playTrack, request.versionCode);
+    const previous = before!;
+    const sameRollout = after !== undefined
+      && after.status === previous.status
+      && after.userFraction === previous.userFraction;
+    const afterNotes = after?.releaseNotes ?? [];
+    const notesMatch = afterNotes.length === request.releaseNotes.length
+      && request.releaseNotes.every((note) =>
+        afterNotes.some((candidate) => candidate.language === note.language && candidate.text === note.text));
+    if (!sameRollout || !notesMatch) {
+      throw new PlayAdapterError(502, "play_readback_mismatch",
+        "Google Play track readback did not show the requested release notes on an unchanged release",
+        { stage: "readback" });
+    }
+    return {
+      edit_id: editId,
+      package_name: request.packageName,
+      version_code: request.versionCode,
+      track: request.handsTrack,
+      play_track: request.playTrack,
+      sha256: request.expectedSha256,
+      track_release: {
+        status: typeof previous.status === "string"
+          && ["statusUnspecified", "draft", "inProgress", "halted", "completed"].includes(previous.status) ? previous.status : null,
+        user_fraction: typeof previous.userFraction === "number" ? previous.userFraction : null,
+      },
+      previous_release_notes_languages: (previous.releaseNotes ?? [])
+        .map((note) => note?.language)
+        .filter((language): language is string => typeof language === "string"),
+      release_notes_languages: afterNotes.map((note) => note.language),
+      commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW", changes_not_sent_for_review: false },
+    };
+  }
+
+  /** Read one track in a throwaway edit and return the release carrying versionCode. */
+  private async readTrackRelease(packageName: string, playTrack: string, versionCode: number): Promise<TrackRelease | undefined> {
+    const editId = await this.createEdit(packageName);
+    let track: TrackResource;
+    try {
+      track = await this.getTrack(packageName, editId, playTrack);
+    } catch (error) {
+      await this.cleanupOrThrow(packageName, editId, error);
+    }
+    await this.deleteEdit(packageName, editId);
+    return (track!.releases ?? []).find((candidate) =>
+      candidate.versionCodes?.some((value) => exactVersionCode(value) === versionCode));
   }
 
   /**

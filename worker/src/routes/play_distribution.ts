@@ -702,6 +702,8 @@ function receiptProviderIdentifiers(value: unknown): ReceiptProviderIdentifiers 
 
 /** Google's identifiers: camelCase or UPPER_SNAKE, bounded length. */
 const IDENTIFIER_RE = /^[A-Za-z][A-Za-z0-9._]{0,60}$/;
+/** A Play language tag as Google returns it (en-US, fil, es-419); anything else is not recorded. */
+const PLAY_LANGUAGE_RE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/;
 
 async function failedPromotionReceipt(
   c: AdminContext,
@@ -712,8 +714,9 @@ async function failedPromotionReceipt(
   reason: string,
   details: unknown,
   options: {
-    action?: "promote" | "send-for-review";
+    action?: "promote" | "send-for-review" | "release-notes";
     review?: Record<string, unknown>;
+    releaseNotes?: Record<string, unknown>;
     notification?: Record<string, unknown>;
   } = {},
 ) {
@@ -735,6 +738,7 @@ async function failedPromotionReceipt(
       action,
       approvals: [{ approver: actor, at: createdAt, scope: `${track}: ${approvalNote}` }],
       ...(options.review ? { review: options.review } : {}),
+      ...(options.releaseNotes ? { release_notes: options.releaseNotes } : {}),
       play: {
         edit_id: "failed-closed",
         track,
@@ -1318,6 +1322,222 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
       version_code: artifact.version_code,
       revision: input.expected_revision + 1,
       review,
+    });
+  } finally {
+    await releaseLock(c.env.DB, operationId);
+  }
+}
+
+/**
+ * Replace the Google Play release notes ("What's new") of a release Hands already
+ * put on a track, from the release's changelog.
+ *
+ * promote is the only other way notes reach Play, and it cannot help once a
+ * versionCode is on the track: it refuses a versionCode that is not above the
+ * track maximum, and a completed release cannot be halted on Play. This edits the
+ * track release that carries the versionCode in place: same versionCodes, status,
+ * userFraction and country targeting, other releases untouched; only its
+ * releaseNotes become the changelog's (mapped exactly as promote maps them).
+ *
+ * Same gates as send-for-review, plus the release_notes gate: the changelog must
+ * be a JSON language object yielding at least one Play language (400
+ * failure_code no_release_notes otherwise, before any Play call). Commit is
+ * ERROR_IF_IN_REVIEW without changesNotSentForReview: Google reviews the change,
+ * and another change in review is a 409 edit_in_review, never cancelled. The
+ * adapter reads the track back after the commit. Every adapter outcome writes a
+ * play-promotion receipt with action "release-notes"; play_distribution_state is
+ * not touched (track and rollout do not change).
+ */
+export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const releaseId = c.req.param("releaseId") ?? "";
+  let input: PlaySendForReviewInput;
+  try {
+    input = normalizePlaySendForReviewInput(await c.req.json<PlaySendForReviewInput>());
+  } catch (error) {
+    return fail(c, 400, { code: "gate_failed", gate: "permission", message: (error as Error).message });
+  }
+  const actorType = currentActorInfo(c).type;
+  if (actorType !== "human" && actorType !== "agent") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Updating Play release notes requires an authenticated human or agent publisher" });
+  }
+  const artifact = await getReleaseArtifact(c.env.DB, appId, releaseId);
+  if (!artifact) return fail(c, 400, { code: "gate_failed", gate: "channel", message: "release does not contain an Android AAB" });
+  if (artifact.release_revision !== input.expected_revision) {
+    return fail(c, 409, { code: "version_conflict", gate: null, message: `release revision is ${artifact.release_revision}, not ${input.expected_revision}` });
+  }
+  const metadata = jsonObject(artifact.metadata_json);
+  if (artifact.bundle_state !== "ready" || metadata.upload_state !== "ready" || metadata.verified_sha256 !== artifact.file_hash || metadata.verified_size_bytes !== artifact.size_bytes) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB is not sealed to its declared exact bytes" });
+  }
+  const acceptance = await latestAcceptance(c.env.DB, appId, releaseId, artifact.asset_id);
+  if (!acceptanceMatches(artifact, acceptance)) {
+    return fail(c, 400, { code: "gate_failed", gate: "acceptance_receipt", message: "latest Hands acceptance receipt does not pass for the exact AAB" });
+  }
+  // Only a release Hands itself put on this track.
+  const state = await c.env.DB.prepare(
+    "SELECT track, version_code FROM play_distribution_state WHERE app_id = ?1 AND release_id = ?2",
+  ).bind(appId, releaseId).first<{ track: string; version_code: number }>();
+  if (!state || state.track !== input.track || state.version_code !== artifact.version_code) {
+    return fail(c, 400, { code: "gate_failed", gate: "channel", failure_code: "not_promoted_to_track", message: `release versionCode ${artifact.version_code} has not been promoted to ${input.track} through Hands` });
+  }
+  let releaseNotes: PlayReleaseNotesResult;
+  try {
+    releaseNotes = playReleaseNotesFromChangelog(artifact.release_changelog);
+  } catch (error) {
+    if (!(error instanceof PlayReleaseNotesError)) throw error;
+    return fail(c, 400, { code: "gate_failed", gate: "release_notes", failure_code: error.code, message: error.message });
+  }
+  if (!releaseNotes.present || releaseNotes.notes.length === 0) {
+    const reason = releaseNotes.present ? "no_supported_language" : releaseNotes.reason;
+    return fail(c, 400, {
+      code: "gate_failed", gate: "release_notes", failure_code: "no_release_notes",
+      message: `release changelog yields no Google Play release notes (${reason}); write it as a language object first, e.g. hands releases update --changelog-file zh=zh.md --changelog-file en=en.md`,
+    });
+  }
+  const hold = await c.env.DB.prepare(
+    "SELECT id FROM release_distribution_holds WHERE app_id = ?1 AND release_id = ?2 AND closed_at IS NULL LIMIT 1",
+  ).bind(appId, releaseId).first();
+  if (hold) return fail(c, 403, { code: "hold_active", gate: "live_hold", message: "release has an active distribution hold" });
+  if (!c.env.PLAY_RELEASE_SERVICE) {
+    return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
+  }
+  if (typeof c.env.PLAY_RELEASE_SERVICE.updateReleaseNotes !== "function") {
+    return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service does not support updating release notes yet; deploy the Play adapter first" });
+  }
+  let binding;
+  try {
+    binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
+  } catch {
+    return fail(c, 502, { code: "play_api_error", gate: "permission", message: "Google Play credentials are unavailable for this app" });
+  }
+  if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") {
+    return fail(c, 403, { code: "forbidden", gate: "permission", message: "Google Play must be bound, verified, and enabled for this app" });
+  }
+  if (binding.package_name !== artifact.package_name) {
+    return fail(c, 400, { code: "gate_failed", gate: "immutable_binding", message: "AAB package does not match this app's Google Play binding" });
+  }
+
+  const actor = currentActor(c);
+  const operationId = crypto.randomUUID();
+  const options = {
+    action: "release-notes" as const,
+    releaseNotes: receiptReleaseNotes(releaseNotes, []),
+    notification: { action: "release-notes" },
+  };
+  if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
+    return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
+  }
+  try {
+    const reserved = await c.env.DB.prepare(
+      `UPDATE releases SET revision = revision + 1, updated_at = ?1
+       WHERE app_id = ?2 AND id = ?3 AND revision = ?4`,
+    ).bind(Date.now(), appId, releaseId, input.expected_revision).run();
+    if (Number(reserved.meta?.changes ?? 0) !== 1) {
+      return fail(c, 409, { code: "version_conflict", gate: null, message: "release changed before the Play edit was reserved" });
+    }
+    let reply;
+    try {
+      reply = await c.env.PLAY_RELEASE_SERVICE.updateReleaseNotes({
+        credential: binding.credential,
+        packageName: binding.package_name,
+        tracks: binding.tracks,
+        handsTrack: input.track,
+        versionCode: artifact.version_code,
+        expectedSha256: artifact.file_hash,
+        operationId,
+        releaseNotes: releaseNotes.notes,
+      });
+    } catch {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" }, options);
+      return fail(c, 502, { code: "play_api_error", gate: null, message: "Play release notes request failed", receipt_id: receiptId });
+    }
+    if (!reply?.ok) {
+      const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
+      const cause = receiptCause(reply?.error?.cause);
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", {
+        code,
+        ...(cause ? { cause } : {}),
+      }, options);
+      const message = reply?.error?.message ?? "Play release notes update failed";
+      if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId });
+      }
+      if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId });
+      }
+      if (code === "play_release_not_on_track" || code === "play_bundle_not_on_play" || code === "aab_integrity_mismatch") {
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId });
+      }
+      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId });
+    }
+    const value = reply.value;
+    const readback: PlayReadback = {
+      edit_id: value.edit_id, package_name: value.package_name, version_code: value.version_code,
+      track: value.track, sha256: value.sha256,
+    };
+    const notesReceipt = {
+      ...receiptReleaseNotes(releaseNotes, value.release_notes_languages),
+      previous_languages: Array.isArray(value.previous_release_notes_languages)
+        ? value.previous_release_notes_languages.filter((language): language is string => typeof language === "string" && PLAY_LANGUAGE_RE.test(language))
+        : [],
+    };
+    if (typeof value.edit_id !== "string" || !value.edit_id || !playReadbackMatches(artifact, input.track, readback)
+      || notesReceipt.present !== true || "reason" in notesReceipt) {
+      const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_readback_mismatch", { readback }, {
+        ...options, releaseNotes: notesReceipt,
+      });
+      return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play release notes answer did not match package/version/track/SHA-256/languages", receipt_id: receiptId });
+    }
+    const trackStatus = value.track_release?.status;
+    const receiptId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    await insertReceipt(c.env.DB, {
+      id: receiptId, appId, releaseId, kind: "play-promotion", verdict: "success",
+      artifact, action: "release-notes", track: input.track, editId: value.edit_id,
+      notification: options.notification,
+      payload: {
+        schema_version: 1,
+        kind: "play-promotion",
+        receipt_id: receiptId,
+        created_at: createdAt,
+        artifact: receiptArtifact(artifact),
+        source: receiptSource(artifact),
+        signing: { upload_key_cert_sha256: artifact.upload_key_cert_sha256 },
+        actor,
+        action: "release-notes",
+        approvals: [{ approver: actor, at: createdAt, scope: `${input.track}: ${input.approval.note}` }],
+        release_notes: notesReceipt,
+        review: { requested: true, changes_not_sent_for_review: false, changes_in_review_behavior: "ERROR_IF_IN_REVIEW" },
+        play: {
+          edit_id: value.edit_id,
+          track: input.track,
+          play_version_code: artifact.version_code,
+          track_changed: false,
+          // The track release as read before the edit; the update keeps it as is.
+          track_release: {
+            status: typeof trackStatus === "string" && IDENTIFIER_RE.test(trackStatus) ? trackStatus : null,
+            user_fraction: typeof value.track_release?.user_fraction === "number" ? value.track_release.user_fraction : null,
+          },
+          api_readback: {
+            package: value.package_name,
+            version_code: value.version_code,
+            track: value.track,
+            sha256_match: true,
+          },
+        },
+        result: { status: "success" },
+      },
+      actor,
+    });
+    c.executionCtx.waitUntil(enqueueDueDeliveries(c.env, Date.now()).catch(() => 0));
+    return c.json({
+      receipt_id: receiptId,
+      edit_id: value.edit_id,
+      track: input.track,
+      version_code: artifact.version_code,
+      revision: input.expected_revision + 1,
+      release_notes: notesReceipt,
     });
   } finally {
     await releaseLock(c.env.DB, operationId);

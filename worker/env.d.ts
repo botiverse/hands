@@ -186,6 +186,29 @@ interface GooglePlayAdapterService {
     lifecycle_after: string | null;
   }>>;
   /**
+   * Replace the release notes of the track release carrying versionCode; nothing else
+   * on the track changes. ERROR_IF_IN_REVIEW commit, then a readback. Optional: an
+   * adapter deployed before this RPC does not have it.
+   */
+  updateReleaseNotes?(input: GooglePlayBindingInput & {
+    handsTrack: keyof GooglePlayTracks;
+    versionCode: number;
+    expectedSha256: string;
+    operationId: string;
+    releaseNotes: Array<{ language: string; text: string }>;
+  }): Promise<GooglePlayAdapterResult<{
+    edit_id: string;
+    package_name: string;
+    version_code: number;
+    track: keyof GooglePlayTracks;
+    play_track: string;
+    sha256: string;
+    track_release: { status: string | null; user_fraction: number | null };
+    previous_release_notes_languages: string[];
+    release_notes_languages: string[];
+    commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false };
+  }>>;
+  /**
    * Upload deobfuscation files for a versionCode Play already holds, in one edit of
    * their own (no track/rollout/bundle change). dry_run: insert, check, delete.
    * commit: insert, check, upload each declared file, commit. Failure deletes the edit.

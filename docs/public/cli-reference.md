@@ -306,6 +306,44 @@ API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/upload-symbol
 with `{mode?: "dry_run" | "commit", kinds?, expected_revision, approval: {note}}`
 (see OpenAPI).
 
+## Google Play: release notes for a version already on a track
+
+`play-promote` sends the release changelog as Play release notes ("What's new"),
+but only when it promotes. When a version was promoted without a changelog (or
+with the wrong one), promote cannot fix it: it refuses a versionCode that is not
+above the track maximum, and a completed release cannot be halted on Play.
+`play-release-notes` replaces the notes of the track release that already
+carries the release's versionCode, and changes nothing else.
+
+```bash
+# 1. Write the reviewed, localized changelog (keys map to Play languages:
+#    zh/zh-cn -> zh-CN, en -> en-US, ja -> ja-JP, ...; at most 500 characters each)
+hands releases update raft-android <release> \
+  --changelog-file zh=play/zh-CN.md --changelog-file en=play/en.md --changelog-file ja=play/ja.md
+
+# 2. Put those notes on the production release (track defaults to production)
+hands releases play-release-notes raft-android <release> --note "add 1.23 notes"
+```
+
+- Uses the same changelog-to-Play mapping as promote (Markdown `**` stripped,
+  unmapped keys skipped and listed, over 500 characters refused). A changelog
+  that yields no Play language fails the `release_notes` gate with
+  `no_release_notes` before any Play call.
+- The release's notes become exactly the mapped list; languages not in the
+  changelog are removed from that release. versionCodes, status, rollout
+  fraction, country targeting and other releases on the track stay as Play
+  returned them, and a readback after the commit checks that.
+- The commit is `ERROR_IF_IN_REVIEW` and sends the change for review. While
+  another change for the app is in review it fails with `edit_in_review`; wait
+  for the review to finish and run it again. Hands never cancels a review.
+- Only for a release Hands promoted to that track (`not_promoted_to_track`
+  otherwise). Needs the **publisher** role as a signed-in human or agent and the
+  per-package Play edit lock. Writes a `play-promotion` / `release-notes`
+  receipt; `play-status` (track, rollout) is unchanged.
+
+API: `POST /api/apps/:appId/releases/:releaseId/distributions/play/release-notes`
+with `{track, expected_revision, approval: {note}}` (see OpenAPI).
+
 ## Google Play Store Listing
 
 Update the Play store listing text (app name, short and full description,

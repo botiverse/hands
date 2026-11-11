@@ -128,6 +128,47 @@ export interface SendForReviewResult {
 }
 
 /**
+ * updateReleaseNotes: replace the localized release notes ("What's new") of the
+ * track release that already carries versionCode. Nothing else on the track is
+ * changed: versionCodes, status, userFraction, country targeting and the other
+ * releases are carried forward as Play returned them.
+ */
+export interface UpdateReleaseNotesRpcInput extends TrackMaximumRpcInput {
+  versionCode: number;
+  /** sha256 of the accepted AAB; the bundle Play holds for versionCode must match. */
+  expectedSha256: string;
+  operationId: string;
+  /** The complete new notes for that release, already mapped to Play BCP-47 tags. */
+  releaseNotes: LocalizedReleaseNote[];
+}
+
+export interface UpdateReleaseNotesRequest {
+  packageName: string;
+  handsTrack: HandsTrack;
+  playTrack: string;
+  versionCode: number;
+  expectedSha256: string;
+  operationId: string;
+  releaseNotes: LocalizedReleaseNote[];
+}
+
+export interface UpdateReleaseNotesResult {
+  edit_id: string;
+  package_name: string;
+  version_code: number;
+  track: HandsTrack;
+  play_track: string;
+  sha256: string;
+  /** The track release that carried versionCode, read in the edit before the update (unchanged by it). */
+  track_release: { status: string | null; user_fraction: number | null };
+  /** Languages the release carried before (Play tags). */
+  previous_release_notes_languages: string[];
+  /** Languages read back from Play after the commit; equal to the requested ones on success. */
+  release_notes_languages: string[];
+  commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false };
+}
+
+/**
  * uploadDeobfuscation: attach deobfuscation files to a versionCode Play ALREADY
  * holds, in one edit of its own. Nothing else is written in that edit (no track,
  * rollout, bundle or release notes).

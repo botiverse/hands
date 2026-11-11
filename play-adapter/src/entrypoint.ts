@@ -9,6 +9,7 @@ import type {
   StoreListingPushRpcInput,
   StoreListingReadRpcInput,
   TrackMaximumRpcInput,
+  UpdateReleaseNotesRpcInput,
   UploadDeobfuscationRpcInput,
 } from "./types";
 
@@ -45,6 +46,10 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
 
   sendForReview(input: SendForReviewRpcInput) {
     return this.service.sendForReview(input, this.env);
+  }
+
+  updateReleaseNotes(input: UpdateReleaseNotesRpcInput) {
+    return this.service.updateReleaseNotes(input, this.env);
   }
 
   uploadDeobfuscation(
