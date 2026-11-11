@@ -11862,6 +11862,95 @@ describe("quiver public API v2 — scope resolution", () => {
     }
   });
 
+  it("feedback: prioritizes crash_exit_timestamp for 24h rolling window and backfills pre-deployment background system kill alerts", async () => {
+    const env = makeEnv();
+    const { handleListCrashGroups } = await import("../src/routes/feedback");
+    const now = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES (?, 'default', 'app-scope', 'https://hooks.example.test/bg-backfill', 'sec-bg-backfill', ?, 1, ?, ?)`,
+    )
+      .bind("wh-bg-backfill", JSON.stringify(["crash:spike"]), now, now)
+      .run();
+
+    // Insert 3 pre-existing background system kill tickets on the same device:
+    // - Exit timestamps are within 22 hours of each other on the same day.
+    // - Upload (`created_at`) timestamps are spread across > 24h (e.g. delayed launch)
+    //   so only `crash_exit_timestamp` puts all 3 inside a 24h window.
+    const exitBase = now - 3 * 24 * 60 * 60 * 1000;
+    const preExisting = [
+      { id: "bg-pre-1", exitAt: exitBase + 1_000, createdAt: exitBase + 2_000 },
+      { id: "bg-pre-2", exitAt: exitBase + 3_600_000, createdAt: exitBase + 30 * 3_600_000 },
+      { id: "bg-pre-3", exitAt: exitBase + 7_200_000, createdAt: exitBase + 60 * 3_600_000 },
+    ];
+    for (const row of preExisting) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_tickets (
+           id, app_id, kind, status, closure_reason, message, signature,
+           version_name, version_code, device_id, device_model, metadata_json, created_at, updated_at
+         ) VALUES (?1, 'app-scope', 'crash', 'closed', 'not_planned', 'Process killed (reason=other)',
+                   'SystemKill@reason=other:status=0', '1.22.0', 1022000, 'dev-oppo-backfill', 'PME110', ?2, ?3, ?3)`,
+      )
+        .bind(
+          row.id,
+          JSON.stringify({
+            package_name: "build.raft.app",
+            installer_package: "com.android.vending",
+            crash_type: "system_kill",
+            crash_exit_reason: "other",
+            crash_exit_reason_code: 13,
+            crash_exit_importance: 400,
+            crash_foreground: false,
+            crash_exit_timestamp: row.exitAt,
+          }),
+          row.createdAt,
+        )
+        .run();
+    }
+
+    const groupsCtx = {
+      env,
+      req: {
+        param: (n: string) => (n === "appId" ? "app-scope" : ""),
+        query: (k: string) => ({ kind: "crash" } as Record<string, string>)[k],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any;
+    const res = await handleListCrashGroups(groupsCtx);
+    expect(res.status).toBe(200);
+    const body = await responseJson<any>(res);
+    const bgGroup = (body.groups as any[]).find((g) => g.signature === "SystemKill@background");
+    expect(bgGroup).toBeTruthy();
+    expect(bgGroup.by_device[0]).toMatchObject({
+      device_id: "dev-oppo-backfill",
+      count: 3,
+    });
+
+    const deliveries = (
+      await env.DB.prepare(
+        "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-bg-backfill'",
+      ).all()
+    ).results as Array<{ payload_json: string }>;
+    expect(deliveries).toHaveLength(1);
+    const parsed = JSON.parse(deliveries[0].payload_json);
+    expect(parsed.event).toBe("crash:spike");
+    expect(parsed.payload).toMatchObject({
+      signature: "SystemKill@background",
+      alert_reason: "device_daily_repeat",
+      device_id: "dev-oppo-backfill",
+      count_last_24h: 3,
+    });
+
+    // Re-calling crash-groups is idempotent (event_id deduplicates).
+    await handleListCrashGroups(groupsCtx);
+    const deliveriesAfterSecondCall = (
+      await env.DB.prepare(
+        "SELECT id FROM webhook_deliveries WHERE webhook_id = 'wh-bg-backfill'",
+      ).all()
+    ).results;
+    expect(deliveriesAfterSecondCall).toHaveLength(1);
+  });
+
   it("parseNativeFrames bounds and shape-checks SDK input", async () => {
     const { parseNativeFrames } = await import("../src/routes/feedback");
     const frames = parseNativeFrames(JSON.stringify([
