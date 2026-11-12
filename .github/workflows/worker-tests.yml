@@ -185,6 +185,25 @@ jobs:
       # Naming the gap rather than leaving it implied: a type error can still reach
       # main and will surface at deploy time.
 
+  feedback-react:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium for layout tests
+        run: pnpm --filter @botiverse/hands-feedback-react exec playwright install --with-deps chromium
+      - name: Test and build Feedback React
+        run: |
+          pnpm --filter @botiverse/hands-feedback-react test
+          pnpm --filter @botiverse/hands-feedback-react test:browser
+          RAFT_UI_TEST_PACKAGE=@botiverse/raft-ui-legacy pnpm --filter @botiverse/hands-feedback-react test:browser
+          pnpm --filter @botiverse/hands-feedback-react build
+
   # The deploy workflow's "Run checks" step builds the CLI (with its workspace
   # dependencies) and the admin app before touching production. Until this job
   # existed, deploy time was also the first time either build ran anywhere: PRs

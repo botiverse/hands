@@ -65,9 +65,14 @@ jobs:
           fi
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
+      - name: Install Chromium for layout tests
+        run: pnpm --filter @botiverse/hands-feedback-react exec playwright install --with-deps chromium
+
       - name: Test and build Feedback React
         run: |
           pnpm --filter @botiverse/hands-feedback-react test
+          pnpm --filter @botiverse/hands-feedback-react test:browser
+          RAFT_UI_TEST_PACKAGE=@botiverse/raft-ui-legacy pnpm --filter @botiverse/hands-feedback-react test:browser
           pnpm --filter @botiverse/hands-feedback-react build
 
       - name: Pack check

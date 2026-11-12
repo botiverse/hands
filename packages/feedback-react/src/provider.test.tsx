@@ -54,7 +54,7 @@ describe("FeedbackProvider", () => {
       resolveFeedbackLocaleFromPreferences(["fr-FR", "zh-CN", "en-US"]),
     ).toBe("zh-CN");
     expect(feedbackMessage("en", "active")).toBe("Active");
-    expect(feedbackMessage("en", "workspaceTitle")).toBe("My Feedback");
+    expect(feedbackMessage("en", "workspaceTitle")).toBe("My feedback");
     expect(feedbackMessage("zh-CN", "active")).toBe("活跃");
     expect(feedbackMessage("zh-CN", "workspaceTitle")).toBe("我的反馈");
     expect(feedbackMessage("en", "idea")).toBe("Idea");
@@ -85,7 +85,7 @@ describe("FeedbackProvider", () => {
       </FeedbackProvider>,
     );
     expect(html).not.toContain("data-hands-feedback-theme");
-    expect(html).toContain("Feedback");
+    expect(html).toContain("My feedback");
     expect(html).toContain("New feedback");
     expect(html).not.toContain("dashboard");
   });
@@ -165,11 +165,17 @@ describe("FeedbackProvider", () => {
     const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
     // Layout only: no rule reaches into a raft-ui part, and none of our own
     // colours, radii, shadows or Tailwind-shaped classes stand in for one.
-    expect(css).not.toMatch(/\[data-slot=/);
-    expect(css).not.toMatch(/\.h-16\b|\.h-40\b|\.w-full\b/);
-    expect(css).not.toMatch(/2px dashed/);
-    expect(css).not.toMatch(/--theme-shadow/);
-    expect(css).not.toMatch(/box-shadow|translate\(|border-radius/);
+    // The Base UI scroll thumb is the sole package-owned drawn primitive;
+    // strip only its explicitly named block before checking the invariant.
+    const withoutScrollbarThumb = css.replace(
+      /\.hands-feedback-scrollbar-thumb\s*\{[^}]*\}/,
+      "",
+    );
+    expect(withoutScrollbarThumb).not.toMatch(/\[data-slot=/);
+    expect(withoutScrollbarThumb).not.toMatch(/\.h-16\b|\.h-40\b|\.w-full\b/);
+    expect(withoutScrollbarThumb).not.toMatch(/2px dashed/);
+    expect(withoutScrollbarThumb).not.toMatch(/--theme-shadow/);
+    expect(withoutScrollbarThumb).not.toMatch(/box-shadow|translate\(|border-radius/);
     expect(css).not.toMatch(/\.hands-feedback-unread-count\s*\{/);
     expect(css).not.toMatch(/\.hands-feedback-unread-dot\s*\{/);
     expect(css).not.toMatch(/\.hands-feedback-problem-chip\s*\{/);

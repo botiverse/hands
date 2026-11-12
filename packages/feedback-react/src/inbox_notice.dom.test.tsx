@@ -95,8 +95,14 @@ describe("FeedbackWorkspace inboxNotice", () => {
     const toolbar = container.querySelector(".hands-feedback-toolbar")!;
     const scroll = container.querySelector("[data-feedback-list-scroll]")!;
     const list = container.querySelector("ul.hands-feedback-ticket-list")!;
+    // The viewport remains the scrolling element, preserving its ref and
+    // native position for focus restoration and pull-to-refresh.
+    expect(scroll.parentElement?.matches(".hands-feedback-list-frame")).toBe(true);
+    expect(scroll.querySelector(".hands-feedback-list-content")).not.toBeNull();
+    expect(scroll.getAttribute("tabindex")).toBe("-1");
+    expect(list.getAttribute("aria-label")).toBe("My feedback");
     // Inside the list scroll region, like the error banner.
-    expect(wrapper.parentElement).toBe(scroll);
+    expect(wrapper.closest("[data-feedback-list-scroll]")).toBe(scroll);
     expect(
       toolbar.compareDocumentPosition(wrapper) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -176,7 +182,7 @@ describe("FeedbackWorkspace inboxNotice", () => {
     await screen.findByRole("button", { name: /^A reporter-visible ticket/ });
     const wrapper = screen.getByTestId("host-notice").parentElement!;
     expect(wrapper.hasAttribute("data-feedback-inbox-notice")).toBe(true);
-    expect(wrapper.parentElement).toBe(
+    expect(wrapper.closest("[data-feedback-list-scroll]")).toBe(
       container.querySelector("[data-feedback-list-scroll]"),
     );
     expect(

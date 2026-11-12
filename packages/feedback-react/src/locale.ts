@@ -210,7 +210,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     uploadFailed: "Upload failed",
     uploadProgress: "Upload progress for {name}",
     uploadOverall: "Uploading {progress}%",
-    workspaceTitle: "My Feedback",
+    workspaceTitle: "My feedback",
     you: "You",
     closeDialogDescription: "You won’t be able to reply after it’s closed. If the problem comes back, send new feedback.",
     closeChoiceCompleted: "It works now",
