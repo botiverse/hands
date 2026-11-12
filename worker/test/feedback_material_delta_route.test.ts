@@ -359,6 +359,10 @@ describe("feedback material delta production routes", () => {
       body: "conflicting replay",
     }));
     expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "submission_id already used with a different body",
+      code: "submission_payload_mismatch",
+    });
     expect(material(sqlite, ticketId)).toBe(7);
 
     const failedForm = new FormData();

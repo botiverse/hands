@@ -501,7 +501,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   ]);
   const preflightAt = performance.now();
   if (existingSubmission && existingSubmission.reporter_id !== (reporterId || null)) {
-    return c.json({ error: "submission_id already used by a different reporter" }, 409);
+    return c.json({
+      error: "submission_id already used by a different reporter",
+      code: "submission_reporter_mismatch",
+    }, 409);
   }
   if (!existingSubmission) {
     if ((recent?.count ?? 0) >= rateLimitPerHour) {
@@ -516,7 +519,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
 
   const attachmentValidationError = (error: string, code: string) => {
     if (existingSubmission) {
-      return c.json({ error: "submission_id already used with a different payload" }, 409);
+      return submissionPayloadMismatch(c, existingSubmission, reporterId);
     }
     return c.json({ error, code }, 400);
   };
@@ -636,7 +639,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
 
   if (existingSubmission && submissionFingerprint) {
     if (existingSubmission.submission_fingerprint !== submissionFingerprint) {
-      return c.json({ error: "submission_id already used with a different payload" }, 409);
+      return submissionPayloadMismatch(c, existingSubmission, reporterId);
     }
     return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
   }
@@ -871,11 +874,16 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       );
       if (existing) {
         await cleanupInlineUploads();
-        if (
-          existing.reporter_id !== (reporterId || null)
-          || existing.submission_fingerprint !== submissionFingerprint
-        ) {
-          return c.json({ error: "submission_id already used with a different payload" }, 409);
+        if (existing.reporter_id !== (reporterId || null)) {
+          // Lost a concurrent insert race to another reporter. The legacy
+          // error text is kept; the code identifies the actual conflict.
+          return c.json({
+            error: "submission_id already used with a different payload",
+            code: "submission_reporter_mismatch",
+          }, 409);
+        }
+        if (existing.submission_fingerprint !== submissionFingerprint) {
+          return submissionPayloadMismatch(c, existing, reporterId);
         }
         return feedbackSubmitResponse(c, app, existing.id, 200, true);
       }
@@ -1074,6 +1082,27 @@ function feedbackNewSubmitResponse(
     ticket_url: `${dashboardOrigin(c.env)}/apps/${app.id}/feedback/${input.ticketId}`,
     idempotent_replay: false,
   }, 201);
+}
+
+/**
+ * 409 for a submission_id that already created a ticket with a different
+ * fingerprint. Callers must have already verified that the existing ticket
+ * belongs to the requesting reporter. The existing ticket id is disclosed only
+ * to an authenticated trusted reporter identity (X-Hands-Reporter-Id with a
+ * feedback:write token); anonymous submissions never receive it, because the
+ * submission_id alone is not proof of authorship.
+ */
+function submissionPayloadMismatch(
+  c: Context<{ Bindings: Env }>,
+  existing: { id: string; reporter_id: string | null },
+  reporterId: string,
+) {
+  const sameTrustedReporter = Boolean(reporterId) && existing.reporter_id === reporterId;
+  return c.json({
+    error: "submission_id already used with a different payload",
+    code: "submission_payload_mismatch",
+    ...(sameTrustedReporter ? { id: existing.id } : {}),
+  }, 409);
 }
 
 async function findFeedbackSubmission(

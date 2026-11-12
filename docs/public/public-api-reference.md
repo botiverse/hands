@@ -404,7 +404,7 @@ find and rotate the key in the app's Settings tab or via
 | Field | Required | Description |
 |---|---|---|
 | `message` | Yes | Feedback text (max 10,000 chars). |
-| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409`. |
+| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409` (see [`submission_id` conflicts](#submission-id-conflicts)). |
 | `kind` | No | `feedback` (default), `bug`, or `crash`. |
 | `contact` | No | Reply-to handle (email, Raft name, …). |
 | `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature). QNC2 Android native reports add `crash_native_frames` (`{ index, offset, soname, build_id, source }`), `crash_registers`, crash thread fields, and `crash_native_images`; server symbolication requires an exact per-frame BuildId match against the build's `native-symbols` asset. API 30+ reports may also include `crash_exit_*` metadata and a retained system trace attachment. |
@@ -430,6 +430,32 @@ idempotent replays return the same attachment references, for example:
   "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
 }
 ```
+
+#### `submission_id` conflicts {#submission-id-conflicts}
+
+A `409` for a reused `submission_id` carries a stable `code`. Branch on `code`,
+not on `error`; the `error` text is kept unchanged for older clients. Older
+servers may return only `error`.
+
+| Code | Cause |
+| --- | --- |
+| `submission_reporter_mismatch` | The id already created a ticket for a different reporter identity (a different `X-Hands-Reporter-Id`, or trusted versus anonymous). Use a new `submission_id`. |
+| `submission_payload_mismatch` | The id already created a ticket for this reporter, but the message, kind, contact, metadata, or attachments differ. Do not retry with the same id; use a new id for a genuinely new report. |
+
+```json
+{
+  "error": "submission_id already used with a different payload",
+  "code": "submission_payload_mismatch",
+  "id": "<existing ticket UUID>"
+}
+```
+
+`id` is present only on `submission_payload_mismatch` for an authenticated
+trusted reporter (`X-Hands-Reporter-Id` with a `feedback:write` token) whose
+reporter id owns the existing ticket. Anonymous submissions and
+`submission_reporter_mismatch` never include a ticket id. The same
+`submission_payload_mismatch` code is returned by reporter comments when a
+`submission_id` is reused with a different body or attachment set.
 
 Rate limit: 10 submissions per hour per app + client IP. Tickets appear in
 the admin Feedback tab; a `feedback:new` webhook fires for subscribed
@@ -540,7 +566,7 @@ binding return `409 route_required` before ticket or attachment persistence.
 
 Reporter comments require a client-generated UUID `submission_id`: new comments
 return `201`, exact replays return `200`, and reuse with different trimmed text
-or attachment bytes returns `409`. JSON remains supported for text-only replies.
+or attachment bytes returns `409` with code `submission_payload_mismatch`. JSON remains supported for text-only replies.
 Multipart replies use `body`, `submission_id`, and up to three `attachments`;
 each file must be GIF, JPEG, PNG, or WebP and at most 10 MiB. Original submission
 attachments and reporter-comment attachments are served with private/no-store,
@@ -663,7 +689,7 @@ partial ticket is created, even if an earlier attachment passed validation.
 If the `submission_id` has not been used, the user may remove the diagnostic
 attachment and submit again with a new `submission_id`. If that id already
 created a ticket, the same validation failure returns `409` with
-`submission_id already used with a different payload`; do not create a second
+code `submission_payload_mismatch`; do not create a second
 ticket with that id. This guarantee applies to the listed validation failures,
 not network timeouts or other responses.
 
