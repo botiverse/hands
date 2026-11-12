@@ -229,6 +229,22 @@ describe("GooglePlayConnector", () => {
     expect(screen.getByText(/Unbind deletes the credential stored by Hands/)).toBeTruthy();
   });
 
+  it("offers bare reauthorization only for an enabled Google account binding", async () => {
+    mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" }, oauth_available: true });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    await expandConnectedDetail();
+    expect(screen.getByText(/keeps the package and tracks/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Reauthorize with Google" }));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    expect(mocks.save).not.toHaveBeenCalled();
+    cleanup();
+    mocks.get.mockResolvedValue({ google_play: { credential_kind: "service_account", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "app@tenant.example", internal_track: "internal", closed_track: "closed", production_track: "production" }, oauth_available: true });
+    renderPanel();
+    await expandConnectedDetail();
+    expect(screen.queryByRole("button", { name: "Reauthorize with Google" })).toBeNull();
+  });
+
   it("shows app-scoped binding metadata and enables only through the explicit action", async () => {
     mocks.get.mockResolvedValue({
       google_play: {

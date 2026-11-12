@@ -221,7 +221,8 @@ to Google Account connections for a deliberate grant revocation.
 
 1. Enable the Google Play Android Developer API in the Google Cloud project.
 2. Configure Google Auth Platform branding, audience and consent, including the
-   androidpublisher, openid and email scopes. An external app in testing needs
+   androidpublisher, devstorage.read_only (optional, Play Console statistics
+   report download), openid and email scopes. An external app in testing needs
    the intended authorizer listed as a test user; test refresh credentials may
    expire. Use the appropriate production consent configuration before relying
    on unattended publication.
