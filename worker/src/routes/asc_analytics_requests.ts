@@ -11,7 +11,7 @@
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getAscCredentials } from "../lib/asc_credentials";
-import { AscApiError, ascRequest, resolveAscAppId } from "../lib/asc_api";
+import { AscApiError, ascRequest } from "../lib/asc_api";
 import { insertAuditLog } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -43,8 +43,13 @@ export async function handleEnableAscAnalyticsReports(c: AdminContext) {
     }, 409);
   }
 
+  const results: Array<{ access_type: AccessType; id: string; created: boolean }> = [];
   try {
-    const ascAppId = await resolveAscAppId(creds, bundleId);
+    // Compare the bundle id exactly: this is a write, so a loose filter match must
+    // never select another app on the same team key.
+    const apps = await ascRequest<{ data?: Array<{ id: string; attributes?: { bundleId?: string } }> }>(creds, "GET",
+      `/v1/apps?filter[bundleId]=${encodeURIComponent(bundleId)}&fields[apps]=bundleId&limit=50`);
+    const ascAppId = (apps.data ?? []).find((a) => a.attributes?.bundleId === bundleId)?.id ?? null;
     if (!ascAppId) {
       return c.json({ error: `no App Store Connect app has bundle id ${bundleId}`, code: "ASC_APP_NOT_FOUND" }, 404);
     }
@@ -57,7 +62,12 @@ export async function handleEnableAscAnalyticsReports(c: AdminContext) {
       stopped_due_to_inactivity: Boolean(r.attributes?.stoppedDueToInactivity),
     }));
 
-    const results: Array<{ access_type: AccessType; id: string; created: boolean }> = [];
+    // Audit each creation as it happens, so a later failure cannot hide an earlier write.
+    const audit = (id: string, accessType: AccessType) => insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "asc.analytics_report_requests.create",
+      payload: { asc_app_id: ascAppId, id, access_type: accessType },
+    });
     for (const accessType of ANALYTICS_ACCESS_TYPES) {
       // A snapshot is one-off and stays useful once made; an ONGOING request Apple
       // stopped for inactivity no longer produces reports, so it is replaced.
@@ -75,20 +85,14 @@ export async function handleEnableAscAnalyticsReports(c: AdminContext) {
         },
       });
       results.push({ access_type: accessType, id: created.data.id, created: true });
-    }
-
-    if (results.some((r) => r.created)) {
-      await insertAuditLog(c.env.DB, c, {
-        app_id: appId,
-        action: "asc.analytics_report_requests.create",
-        payload: { asc_app_id: ascAppId, created: results.filter((r) => r.created).map((r) => ({ id: r.id, access_type: r.access_type })) },
-      });
+      await audit(created.data.id, accessType);
     }
     return c.json({ asc_app_id: ascAppId, bundle_id: bundleId, requests: results });
   } catch (err) {
     if (err instanceof AscApiError) {
       return c.json({
         error: "App Store Connect rejected the request",
+        requests: results,
         code: "ASC_API_REJECTED",
         provider_status: err.status,
         provider_code: err.code,

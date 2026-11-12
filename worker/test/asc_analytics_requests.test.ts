@@ -66,20 +66,19 @@ async function harness(opts: { role?: "admin" | "publisher"; bundleId?: string |
 }
 
 type Existing = Array<{ id: string; accessType: string; stoppedDueToInactivity?: boolean }>;
-function apple(existing: Existing, opts: { postStatus?: number } = {}) {
+function apple(existing: Existing, opts: { postStatus?: number; failSecond?: boolean } = {}) {
   let n = 0;
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     if (method === "GET" && url.pathname === "/v1/apps") {
-      expect(url.searchParams.get("filter[bundleId]")).toBe("build.raft.app");
-      return Response.json({ data: [{ id: "asc-app" }] });
+      return Response.json({ data: [{ id: "other-app", attributes: { bundleId: "build.raft.app.extra" } }, { id: "asc-app", attributes: { bundleId: "build.raft.app" } }] });
     }
     if (method === "GET" && url.pathname === "/v1/apps/asc-app/analyticsReportRequests") {
       return Response.json({ data: existing.map((r) => ({ id: r.id, attributes: { accessType: r.accessType, stoppedDueToInactivity: r.stoppedDueToInactivity ?? false } })) });
     }
     if (method === "POST" && url.pathname === "/v1/analyticsReportRequests") {
-      if (opts.postStatus) return Response.json({ errors: [{ status: String(opts.postStatus), code: "FORBIDDEN_ERROR", title: "forbidden", detail: "role" }] }, { status: opts.postStatus });
+      if (opts.postStatus || (opts.failSecond && n === 1)) return Response.json({ errors: [{ status: String(opts.postStatus), code: "FORBIDDEN_ERROR", title: "forbidden", detail: "role" }] }, { status: opts.postStatus ?? 403 });
       const body = JSON.parse(String(init?.body));
       expect(body.data.relationships.app.data).toEqual({ type: "apps", id: "asc-app" });
       return Response.json({ data: { id: `new-${++n}-${body.data.attributes.accessType}` } }, { status: 201 });
@@ -100,8 +99,9 @@ describe("POST /api/apps/:appId/stats/app-store/analytics-report-requests", () =
       { access_type: "ONGOING", id: "new-1-ONGOING", created: true },
       { access_type: "ONE_TIME_SNAPSHOT", id: "new-2-ONE_TIME_SNAPSHOT", created: true }] });
     const audit = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='asc.analytics_report_requests.create'").all() as Array<{ payload: string }>;
-    expect(audit).toHaveLength(1);
-    expect(JSON.parse(audit[0]!.payload).created).toHaveLength(2);
+    expect(audit.map((a) => JSON.parse(a.payload))).toEqual([
+      { asc_app_id: "asc-app", id: "new-1-ONGOING", access_type: "ONGOING" },
+      { asc_app_id: "asc-app", id: "new-2-ONE_TIME_SNAPSHOT", access_type: "ONE_TIME_SNAPSHOT" }]);
   });
 
   it("is idempotent: existing active requests are reused and nothing is written", async () => {
@@ -142,5 +142,20 @@ describe("POST /api/apps/:appId/stats/app-store/analytics-report-requests", () =
     expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ code: "ASC_API_REJECTED", provider_status: 403 });
     expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs").get()).toEqual({ n: 0 });
+  });
+
+  it("audits and reports a creation that succeeded before a later rejection", async () => {
+    const h = await harness(); apple([], { failSecond: true });
+    const res = await h.call();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ requests: [{ access_type: "ONGOING", id: "new-1-ONGOING", created: true }] });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM audit_logs WHERE action='asc.analytics_report_requests.create'").get()).toEqual({ n: 1 });
+  });
+
+  it("does not write when no app matches the bundle id exactly", async () => {
+    const h = await harness({ bundleId: "build.raft" }); const fetch = apple([]);
+    const res = await h.call();
+    expect(res.status).toBe(404);
+    expect(posts(fetch)).toEqual([]);
   });
 });
