@@ -83,9 +83,80 @@
   flex: none;
 }
 
-.hands-feedback-list-scroll[data-feedback-empty-scroll="true"] {
+/* One content edge in the inbox: 16px for a fine primary pointer (mouse),
+   20px for a coarse or unavailable pointer (touch), at every width. */
+.hands-feedback-inbox {
+  --hf-list-inset: 20px;
+}
+
+@media (pointer: fine) {
+  .hands-feedback-inbox {
+    --hf-list-inset: 16px;
+  }
+}
+
+.hands-feedback-toolbar {
+  padding-inline: var(--hf-list-inset);
+}
+
+.hands-feedback-list-content > .hands-feedback-inset {
+  padding-inline: var(--hf-list-inset);
+}
+
+/* Keep full-width row/trigger targets, overriding raft-ui's list-cell
+   padding even if the host loads its utility stylesheet after this one. */
+.hands-feedback-inbox .hands-feedback-ticket-row {
+  padding-left: var(--hf-list-inset);
+  padding-right: var(--hf-list-inset);
+}
+
+/* The underlying Base UI ScrollArea is also used by raft-ui 0.20. Its API is
+   stable across the supported raft-ui range, unlike raft-ui's wrapper. */
+.hands-feedback-list-frame {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.hands-feedback-inbox .hands-feedback-list-scroll {
+  --scrollbar-size: 0px;
+  height: 100%;
+  min-height: 0;
+  overscroll-behavior: contain;
+  outline: none;
+  width: 100%;
+}
+
+.hands-feedback-list-content {
+  min-height: 100%;
+}
+
+.hands-feedback-list-content[data-feedback-empty-scroll="true"] {
   display: flex;
   flex-direction: column;
+}
+
+/* The track overlays the viewport; it never subtracts from content width. */
+.hands-feedback-scrollbar {
+  display: flex;
+  justify-content: center;
+  padding: 4px;
+  width: 12px;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.hands-feedback-scrollbar[data-scrolling],
+.hands-feedback-scrollbar[data-hovering] {
+  opacity: 1;
+}
+
+.hands-feedback-scrollbar-thumb {
+  background: var(--foreground-muted, #64748b);
+  border-radius: 3px;
+  opacity: 0.5;
+  width: 4px;
 }
 
 .hands-feedback-ticket-list {

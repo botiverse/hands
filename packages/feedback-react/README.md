@@ -65,6 +65,11 @@ region with the same inset as the error banner and is visible on the inbox view
 only (it stays mounted while a ticket or the new-feedback form is open, so its
 state survives Back). The prop takes a node: write `cond ? <Notice /> : null`
 rather than `cond && <Notice />`, because a falsy `0` would still render.
+The inbox uses an overlay scroll area, so the scrollbar doesn't consume content
+width. Its toolbar, notice and ticket content share one edge on both sides:
+16px for a fine primary pointer (mouse) and 20px for touch or an unavailable
+pointer, regardless of window width. The supported `@botiverse/raft-ui` peer
+range remains `>=0.20.0 <1.0.0`.
 
 All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider

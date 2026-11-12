@@ -842,7 +842,7 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: "My Feedback" }),
+      await screen.findByRole("heading", { name: "My feedback" }),
     ).toBeTruthy();
     const createButton = screen.getByRole("button", { name: "New feedback" });
     expect(createButton.closest(".hands-feedback-toolbar")).toBeTruthy();
@@ -1631,7 +1631,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       "Couldn't load feedback. Try again.",
     );
     expect(
-      screen.getByRole("heading", { name: "My Feedback" }),
+      screen.getByRole("heading", { name: "My feedback" }),
     ).toBeTruthy();
     expect(screen.queryByText(secretText)).toBeNull();
     detailView.unmount();
@@ -1802,7 +1802,7 @@ describe("FeedbackWorkspace browser behavior", () => {
       </FeedbackProvider>,
     );
     expect(
-      screen.getByRole("heading", { name: "My Feedback" }),
+      screen.getByRole("heading", { name: "My feedback" }),
     ).toBeTruthy();
     expect(
       loading.container.querySelector(".hands-feedback-skeleton-detail"),

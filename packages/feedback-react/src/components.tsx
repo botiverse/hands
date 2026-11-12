@@ -13,6 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ScrollArea as OverlayScrollArea } from "@base-ui/react/scroll-area";
 import {
   ArrowLeft,
   Bug,
@@ -1157,113 +1158,127 @@ export function FeedbackInbox({
           </Button>
         </div>
       )}
-      <div
-        className="hands-feedback-middle hands-feedback-list-scroll"
-        data-feedback-list-scroll
-        data-feedback-empty-scroll={
-          !loading && !error && visibleTickets.length === 0 ? "true" : undefined
-        }
-        ref={pullToRefresh.scrollRef}
-        tabIndex={-1}
-      >
-        <PullToRefreshIndicator
-          distance={pullToRefresh.distance}
-          label={message("refreshing")}
-          state={pullToRefresh.state}
-        />
-        {inboxNotice != null &&
-          typeof inboxNotice !== "boolean" &&
-          inboxNotice !== "" && (
-          <div
-            className="hands-feedback-inset hands-feedback-inbox-notice"
-            data-feedback-inbox-notice
+      <OverlayScrollArea.Root className="hands-feedback-list-frame">
+        <OverlayScrollArea.Viewport
+          className="hands-feedback-list-scroll"
+          data-feedback-list-scroll
+          ref={pullToRefresh.scrollRef}
+          tabIndex={-1}
+        >
+          <OverlayScrollArea.Content
+            className="hands-feedback-list-content"
+            data-feedback-empty-scroll={
+              !loading && !error && visibleTickets.length === 0
+                ? "true"
+                : undefined
+            }
           >
-            {inboxNotice}
-          </div>
-        )}
-        {loading && (
-          <div
-            className="hands-feedback-ticket-list"
-            aria-label={message("loading")}
-            aria-busy="true"
-          >
-            {["60%", "48%", "40%"].map((width) => (
-              <InboxItem key={width} aria-hidden disabled>
-                <InboxItemContent className="hands-feedback-skeleton-row">
-                  <Skeleton variant="line" style={{ width }} />
-                  <Skeleton variant="line" style={{ width: "80%" }} />
-                  <Skeleton variant="line" style={{ width: "9rem" }} />
-                </InboxItemContent>
-                <InboxItemTrailing>
-                  <Skeleton variant="line" style={{ width: "3rem" }} />
-                </InboxItemTrailing>
-              </InboxItem>
-            ))}
-          </div>
-        )}
-        {error && (
-          <div className="hands-feedback-inset">
-            <FeedbackErrorBanner
-              busy={retrying}
-              busyLabel={message("loading")}
-              error={error}
-              retryLabel={message("retry")}
-              onRetry={() => void load(retryCursor, true, true)}
+            <PullToRefreshIndicator
+              distance={pullToRefresh.distance}
+              label={message("refreshing")}
+              state={pullToRefresh.state}
             />
-          </div>
-        )}
-        {!loading && !error && visibleTickets.length === 0 && (
-          <EmptyState
-            className="hands-feedback-empty"
-            data-feedback-empty-kind={emptyKind}
-          >
-            <EmptyStateContent>
-              <EmptyStateIcon className="hands-feedback-empty-icon">
-                <MessageSquare aria-hidden="true" />
-              </EmptyStateIcon>
-              <EmptyStateTitle className="hands-feedback-empty-title">
-                {message(emptyTitleKey)}
-              </EmptyStateTitle>
-              <EmptyStateDescription className="hands-feedback-empty-description">
-                {message(emptyBodyKey)}
-              </EmptyStateDescription>
-              {emptyKind !== "all" && (
-                <Button variant="outline" onClick={() => setFilter("all")}>
-                  {message("showAll")}
-                </Button>
+            {inboxNotice != null &&
+              typeof inboxNotice !== "boolean" &&
+              inboxNotice !== "" && (
+                <div
+                  className="hands-feedback-inset hands-feedback-inbox-notice"
+                  data-feedback-inbox-notice
+                >
+                  {inboxNotice}
+                </div>
               )}
-            </EmptyStateContent>
-          </EmptyState>
-        )}
-        {visibleTickets.length > 0 && (
-          <ul
-            className="hands-feedback-ticket-list"
-            aria-label={message("workspaceTitle")}
-          >
-            {visibleTickets.map((ticket) => (
-              <FeedbackTicketRow
-                key={ticket.id}
-                ticket={ticket}
-                formatDate={formatDate}
-                locale={locale}
-                message={message}
-                onSelect={() => onSelectTicket(ticket.id, ticket)}
-              />
-            ))}
-          </ul>
-        )}
-        {cursor && (
-          <div className="hands-feedback-inset">
-            <Button
-              variant="outline"
-              disabled={loadingMore}
-              onClick={() => void load(cursor)}
-            >
-              {loadingMore ? message("loadingMore") : message("loadMore")}
-            </Button>
-          </div>
-        )}
-      </div>
+            {loading && (
+              <div
+                className="hands-feedback-ticket-list"
+                aria-label={message("loading")}
+                aria-busy="true"
+              >
+                {["60%", "48%", "40%"].map((width) => (
+                  <InboxItem key={width} aria-hidden disabled>
+                    <InboxItemContent className="hands-feedback-skeleton-row">
+                      <Skeleton variant="line" style={{ width }} />
+                      <Skeleton variant="line" style={{ width: "80%" }} />
+                      <Skeleton variant="line" style={{ width: "9rem" }} />
+                    </InboxItemContent>
+                    <InboxItemTrailing>
+                      <Skeleton variant="line" style={{ width: "3rem" }} />
+                    </InboxItemTrailing>
+                  </InboxItem>
+                ))}
+              </div>
+            )}
+            {error && (
+              <div className="hands-feedback-inset">
+                <FeedbackErrorBanner
+                  busy={retrying}
+                  busyLabel={message("loading")}
+                  error={error}
+                  retryLabel={message("retry")}
+                  onRetry={() => void load(retryCursor, true, true)}
+                />
+              </div>
+            )}
+            {!loading && !error && visibleTickets.length === 0 && (
+              <EmptyState
+                className="hands-feedback-empty"
+                data-feedback-empty-kind={emptyKind}
+              >
+                <EmptyStateContent>
+                  <EmptyStateIcon className="hands-feedback-empty-icon">
+                    <MessageSquare aria-hidden="true" />
+                  </EmptyStateIcon>
+                  <EmptyStateTitle className="hands-feedback-empty-title">
+                    {message(emptyTitleKey)}
+                  </EmptyStateTitle>
+                  <EmptyStateDescription className="hands-feedback-empty-description">
+                    {message(emptyBodyKey)}
+                  </EmptyStateDescription>
+                  {emptyKind !== "all" && (
+                    <Button variant="outline" onClick={() => setFilter("all")}>
+                      {message("showAll")}
+                    </Button>
+                  )}
+                </EmptyStateContent>
+              </EmptyState>
+            )}
+            {visibleTickets.length > 0 && (
+              <ul
+                className="hands-feedback-ticket-list"
+                aria-label={message("workspaceTitle")}
+              >
+                {visibleTickets.map((ticket) => (
+                  <FeedbackTicketRow
+                    key={ticket.id}
+                    ticket={ticket}
+                    formatDate={formatDate}
+                    locale={locale}
+                    message={message}
+                    onSelect={() => onSelectTicket(ticket.id, ticket)}
+                  />
+                ))}
+              </ul>
+            )}
+            {cursor && (
+              <div className="hands-feedback-inset">
+                <Button
+                  variant="outline"
+                  disabled={loadingMore}
+                  onClick={() => void load(cursor)}
+                >
+                  {loadingMore ? message("loadingMore") : message("loadMore")}
+                </Button>
+              </div>
+            )}
+          </OverlayScrollArea.Content>
+        </OverlayScrollArea.Viewport>
+        <OverlayScrollArea.Scrollbar
+          className="hands-feedback-scrollbar"
+          data-feedback-list-scrollbar
+        >
+          <OverlayScrollArea.Thumb className="hands-feedback-scrollbar-thumb" />
+        </OverlayScrollArea.Scrollbar>
+      </OverlayScrollArea.Root>
       <div className="hands-feedback-live" aria-live="polite">
         {pullToRefresh.refreshing
           ? message("refreshing")

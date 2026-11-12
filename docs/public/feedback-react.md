@@ -393,7 +393,11 @@ visible only on the inbox view. Like the rest of the inbox it stays mounted,
 hidden, while a ticket or New feedback is open, so its state survives Back.
 `null`, `undefined`, booleans and `""` render nothing (no wrapper); pass
 `cond ? <Notice /> : null` rather than `cond && <Notice />`, since `0` would
-render. `FeedbackInbox` accepts the same prop.
+render. `FeedbackInbox` accepts the same prop. The list uses an overlay scroll
+area, so scrollbars do not consume content width. The toolbar, notice and
+ticket content align at both edges: 16px for a fine primary pointer (mouse) and
+20px for touch or an unavailable pointer, regardless of window width. The
+supported `@botiverse/raft-ui` peer range remains `>=0.20.0 <1.0.0`.
 
 ```tsx
 <FeedbackWorkspace
