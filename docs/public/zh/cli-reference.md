@@ -708,6 +708,30 @@ hands api POST /api/apps/<appId>/stats/app-store/analytics-report-requests
 
 Hands 按 main 渠道的 bundle id 找到对应的 App Store Connect 应用，创建持续每日生成的 `ONGOING` 请求和回溯历史的 `ONE_TIME_SNAPSHOT` 请求。已有的请求会直接复用，重复执行是安全的；被 Apple 因长期未下载而停止的 `ONGOING` 请求会重新创建。返回结果列出每个请求以及是否新建。Apple 一般在一到两天内生成第一批报表。App Store Connect API 密钥需要能读取分析报表的角色，例如「管理」。
 
+报表生成后，Hands 会自动下载：定时任务每隔几小时检查一次配置了 App Store Connect 密钥的应用，每份新的每日报表只读取一次。应用管理员也可以立即执行一次同样有上限的读取：
+
+```bash
+hands api POST /api/apps/<appId>/stats/app-store/ingest
+```
+
+之后 `hands stats <app>` 会显示一行 App Store Analytics 汇总以及最近若干天的表格；`hands stats <app> --json`（或 `GET /api/apps/<appId>/stats`）在 `stores.app_store.daily`、`stores.app_store.totals`、`stores.app_store.analytics_ingest` 和 `stores.app_store.analytics_note` 中返回这些数据。数据来自 Hands 自己的存储，所以使用 `--no-live` 时同样会返回。
+
+| 字段 | Apple 报表 | 含义 |
+|---|---|---|
+| `downloads_first_time` | App Downloads Standard | 首次下载（`Download Type` 为 First-time download） |
+| `downloads_redownload` | App Downloads Standard | 曾经拥有该应用的用户重新下载。更新和恢复不计入 |
+| `installations` / `deletions` | App Store Installation and Deletion Standard | 安装与删除事件 |
+| `sessions` | App Sessions Standard | 应用会话数 |
+| `active_devices` | App Sessions Standard | 报表各行 Apple `Unique Devices` 的合计 |
+
+这些数字的含义与局限：
+
+- **数字偏低。** 安装、删除、会话和设备数只包含同意与开发者共享分析数据的用户；低于 Apple 隐私阈值的行（如小地区、少见版本）会被 Apple 去掉。因此会低于 App Store Connect 自己显示的总数。
+- **数据有延迟。** Apple 在一到两天后才发布某一天的报表，最近几天一开始会缺失。
+- **`active_devices` 是估计值。** 同一天出现在多行中的设备（例如使用了两个应用版本）会被重复计算，且不能跨天相加。因此 `totals` 给出的是单日最高值 `active_devices_peak_daily`，而不是合计。需要集成了 Hands SDK 的构建的精确活跃设备数时，请看 `direct.devices`。
+- **缺失值是 `null` 而不是 0**：表示当天没有报表覆盖该指标。
+- 如果 Apple 改变了报表的列，Hands 会在 `analytics_ingest.warnings` 中记录警告（例如 `missing_column Unique Devices`），并让该指标留空，而不是猜测。
+
 ## CI 环境变量
 
 每个变量先读取 `HANDS_<name>`，再读取旧版 `QUIVER_<name>`，因此现有 CI 无需更改。

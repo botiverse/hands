@@ -1,6 +1,7 @@
 import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
 import { pollGooglePlayReleases } from "./lib/play_release_poll";
+import { pollAscAnalytics } from "./lib/asc_analytics_ingest";
 import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook, handleRegisterAppleWebhook } from "./routes/apple_webhooks";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
@@ -125,7 +126,7 @@ import {
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleAppStats } from "./routes/stats";
-import { handleEnableAscAnalyticsReports } from "./routes/asc_analytics_requests";
+import { handleEnableAscAnalyticsReports, handleIngestAscAnalytics } from "./routes/asc_analytics_requests";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
   handlePublicAppHistory,
@@ -1209,6 +1210,7 @@ bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer")
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 bindAdmin("get", "/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
 bindAdmin("post", "/api/apps/:appId/stats/app-store/analytics-report-requests", requireAppRole("admin"), handleEnableAscAnalyticsReports);
+bindAdmin("post", "/api/apps/:appId/stats/app-store/ingest", requireAppRole("admin"), handleIngestAscAnalytics);
 bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
 bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
 bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);
@@ -1523,6 +1525,7 @@ export async function scheduled(
     dailyBgKillSummary,
     pollGooglePlayReleases(env),
     pollAgcInvitations(env),
+    pollAscAnalytics(env).catch(() => undefined),
     cleanupReporterFeedbackData(env),
     cleanupExpiredBuildAssetUploads(env),
   ]).then(() => undefined));

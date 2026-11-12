@@ -124,8 +124,76 @@ export interface AppStatsResponse {
         note: string | null;
       } | null;
       live_error?: string | null;
+      /** Daily metrics Hands ingested from App Store Connect Analytics Reports (oldest first). */
+      daily?: AppStoreDailyRow[];
+      totals?: {
+        downloads_first_time: number | null;
+        downloads_redownload: number | null;
+        installations: number | null;
+        deletions: number | null;
+        sessions: number | null;
+        active_devices_peak_daily: number | null;
+      } | null;
+      analytics_ingest?: {
+        instances_processed: number;
+        last_processed_at: number | null;
+        latest_processing_date: string | null;
+        last_run_at: number | null;
+        last_error_code: string | null;
+        warnings: Array<{ report_name: string; code: string; column?: string; metric?: string; values?: string[]; count?: number }>;
+      } | null;
+      analytics_note?: string | null;
     } | null;
   };
+}
+
+export interface AppStoreDailyRow {
+  date: string;
+  downloads_first_time: number | null;
+  downloads_redownload: number | null;
+  installations: number | null;
+  deletions: number | null;
+  sessions: number | null;
+  active_devices: number | null;
+}
+
+const num = (v: number | null | undefined) => (v === null || v === undefined ? "-" : String(v));
+
+/** App Store Analytics Reports section of `hands stats`; empty when nothing was ingested. */
+export function formatAppStoreAnalytics(asc: NonNullable<AppStatsResponse["stores"]["app_store"]>, windowDays: number): string[] {
+  const lines: string[] = [];
+  const daily = asc.daily ?? [];
+  const ingest = asc.analytics_ingest;
+  if (daily.length === 0) {
+    if (ingest && ingest.instances_processed === 0) {
+      lines.push("  - App Store Analytics: no reports ingested yet" +
+        (ingest.last_error_code ? ` (last run: ${ingest.last_error_code})` : ""));
+    }
+    return lines;
+  }
+  const t = asc.totals;
+  if (t) {
+    lines.push(
+      `  - App Store Analytics (${windowDays}d): ${num(t.downloads_first_time)} first-time downloads, ${num(t.downloads_redownload)} redownloads | ` +
+        `${num(t.installations)} installations, ${num(t.deletions)} deletions | ${num(t.sessions)} sessions | ` +
+        `peak ${num(t.active_devices_peak_daily)} active devices/day`,
+    );
+  }
+  lines.push("    Date        1st-DL  Re-DL  Install  Delete  Sessions  Devices");
+  for (const d of daily.slice(-14)) {
+    lines.push(
+      `    ${d.date}  ${num(d.downloads_first_time).padStart(6)}  ${num(d.downloads_redownload).padStart(5)}  ` +
+        `${num(d.installations).padStart(7)}  ${num(d.deletions).padStart(6)}  ${num(d.sessions).padStart(8)}  ${num(d.active_devices).padStart(7)}`,
+    );
+  }
+  if (daily.length > 14) lines.push(`    (${daily.length - 14} earlier days in --json)`);
+  for (const w of ingest?.warnings ?? []) {
+    const detail = w.column ? ` ${w.column}` : "";
+    const values = w.values?.length ? ` [${w.values.join(", ")}]` : "";
+    lines.push(`    Warning: ${w.report_name}: ${w.code}${detail}${values}`);
+  }
+  if (asc.analytics_note) lines.push(`    Note: ${asc.analytics_note}`);
+  return lines;
 }
 
 async function resolveTargetApps(appIdOrSlug: string | undefined, all: boolean): Promise<AppRow[]> {
@@ -223,6 +291,7 @@ export function formatAppStatsReport(stats: AppStatsResponse): string {
         lines.push(`  - Analytics Reports: ${asc.analytics_reports.note}`);
       }
     }
+    lines.push(...formatAppStoreAnalytics(asc, window_days));
     if (asc.live_error) {
       lines.push(`  - ASC live query warning: ${asc.live_error}`);
     }

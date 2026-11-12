@@ -1,0 +1,402 @@
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { Hono } from "hono";
+import { exportPKCS8, generateKeyPair } from "jose";
+import { storeAscCredentials } from "../src/lib/asc_credentials";
+import { requireAppRole } from "../src/lib/permissions";
+import {
+  ASC_ANALYTICS_REPORTS,
+  ReportAggregator,
+  ingestAscAnalyticsForApp,
+  parseTsvStream,
+  pollAscAnalytics,
+  queryAscAnalyticsDaily,
+  segmentUrlHost,
+  type IngestBudget,
+} from "../src/lib/asc_analytics_ingest";
+import { handleIngestAscAnalytics } from "../src/routes/asc_analytics_requests";
+import { handleAppStats } from "../src/routes/stats";
+
+const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
+const ASC = "https://api.appstoreconnect.apple.com";
+const SEG = "https://analytics-segments.apple.com/seg";
+const BUDGET: IngestBudget = { maxInstances: 20, maxSegmentsPerInstance: 8, maxPages: 10 };
+
+let p8: string;
+beforeAll(async () => {
+  p8 = await exportPKCS8((await generateKeyPair("ES256", { extractable: true })).privateKey);
+});
+afterEach(() => vi.restoreAllMocks());
+
+function d1(sqlite: Database.Database): D1Database {
+  const prepare = (sql: string) => {
+    const indexes: number[] = [];
+    const statement = sqlite.prepare(sql.replace(/\?(\d+)/g, (_m, index) => { indexes.push(Number(index)); return "?"; }));
+    const bind = (...parameters: unknown[]) => {
+      const expanded = indexes.length ? indexes.map((index) => parameters[index - 1]) : parameters;
+      const run = () => ({ success: true, meta: { changes: statement.reader ? 0 : statement.run(...expanded).changes } });
+      return {
+        exec: run,
+        run: async () => run(),
+        all: async () => ({ success: true, results: statement.all(...expanded) }),
+        first: async (column?: string) => {
+          const row = statement.get(...expanded) as Record<string, unknown> | undefined;
+          return column ? row?.[column] ?? null : row ?? null;
+        },
+      };
+    };
+    return { bind, run: () => bind().run(), all: () => bind().all(), first: () => bind().first() };
+  };
+  const batch = async (statements: Array<{ exec: () => unknown }>) => sqlite.transaction(() => statements.map((s) => s.exec()))();
+  return { prepare, batch } as unknown as D1Database;
+}
+
+async function harness(opts: { role?: "admin" | "publisher"; bundleId?: string | null } = {}) {
+  const sqlite = new Database(":memory:");
+  sqlite.pragma("foreign_keys = ON");
+  for (const name of readdirSync(migrationDir).sort()) if (name.endsWith(".sql")) sqlite.exec(readFileSync(`${migrationDir}${name}`, "utf8"));
+  const now = Date.now();
+  sqlite.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('app', 'raft-ios', 'Raft iOS', 'ios', ?)").run(now);
+  sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('ch', 'app', 'main', 'Main', ?, ?)")
+    .run(opts.bundleId === undefined ? "build.raft.app" : opts.bundleId, now);
+  sqlite.prepare(`INSERT INTO raft_accounts (id, provider, provider_subject, server_id, server_slug, principal_type, server_role,
+      username, display_name, avatar_url, raw_profile, created_at, updated_at, last_login_at)
+      VALUES ('acct', 'raft', 'acct', 'server', 'test', 'human', 'member', 'acct', 'Acct', NULL, '{}', ?, ?, ?)`).run(now, now, now);
+  sqlite.prepare("INSERT INTO app_members (id, app_id, account_id, app_role, joined_at) VALUES ('m', 'app', 'acct', ?, ?)").run(opts.role ?? "admin", now);
+  const env = { DB: d1(sqlite), ENVIRONMENT: "development", ASC_CRED_ENC_KEY: "test-key" } as unknown as Env;
+  await storeAscCredentials(env.DB, "test-key", { app_id: "app", key_id: "KEY123", issuer_id: "issuer", p8, actor: "raft:acct@test" });
+  const app = new Hono<{ Bindings: Env; Variables: { admin_account: any; admin_actor: string } }>();
+  app.use("*", async (c, next) => {
+    c.set("admin_account", { id: "acct", provider: "raft", provider_subject: "acct", server_id: "server", server_slug: "test",
+      principal_type: "human", server_role: "member", username: "acct", display_name: "Acct", avatar_url: null, raw_profile: "{}",
+      created_at: 1, updated_at: 1, last_login_at: 1 });
+    c.set("admin_actor", "raft:acct@test");
+    await next();
+  });
+  app.post("/api/apps/:appId/stats/app-store/ingest", requireAppRole("admin"), handleIngestAscAnalytics as any);
+  app.get("/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats as any);
+  const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext;
+  const call = (path: string, method = "GET") => app.fetch(new Request(`https://hands.test${path}`, { method }), env, ctx);
+  return { sqlite, env, call };
+}
+
+const tsv = (rows: string[][]) => rows.map((r) => r.join("\t")).join("\n") + "\n";
+const DL_HEADER = ["Date", "App Name", "App Apple Identifier", "Download Type", "App Version", "Device", "Platform Version", "Source Type", "Territory", "Counts"];
+const downloads = tsv([
+  DL_HEADER,
+  ["2026-11-10", "Raft", "1", "First-time download", "1.0", "iPhone", "iOS 26", "App Store search", "US", "5"],
+  ["2026-11-10", "Raft", "1", "First-time download", "1.0", "iPad", "iOS 26", "App Store browse", "US", "2"],
+  ["2026-11-10", "Raft", "1", "Redownload", "1.0", "iPhone", "iOS 26", "App Store search", "JP", "3"],
+  ["2026-11-10", "Raft", "1", "Auto-update", "1.0", "iPhone", "iOS 26", "App Store search", "US", "40"],
+]);
+const installs = tsv([
+  ["Date", "App Name", "App Apple Identifier", "Event", "Download Type", "App Version", "Territory", "Counts", "Unique Devices"],
+  ["2026-11-10", "Raft", "1", "Install", "First-time download", "1.0", "US", "6", "6"],
+  ["2026-11-10", "Raft", "1", "Delete", "", "1.0", "US", "1", "1"],
+]);
+const SESS_HEADER = ["Date", "App Name", "App Apple Identifier", "App Version", "Device", "Territory", "Sessions", "Total Session Duration", "Unique Devices"];
+const sessionsA = tsv([SESS_HEADER, ["2026-11-10", "Raft", "1", "1.0", "iPhone", "US", "10", "500", "4"]]);
+const sessionsB = tsv([SESS_HEADER, ["2026-11-10", "Raft", "1", "1.1", "iPhone", "JP", "5", "100", "2"]]);
+const sessionsOlder = tsv([SESS_HEADER, ["2026-11-09", "Raft", "1", "1.0", "iPhone", "US", "8", "300", "3"]]);
+
+type World = {
+  requests: string[];
+  reports: Record<string, Array<{ id: string; name: string }>>;
+  instances: Record<string, Array<{ id: string; processingDate: string }>>;
+  segments: Record<string, string[]>;
+  files: Record<string, string>;
+  redirects?: Record<string, string>;
+};
+
+function world(): World {
+  return {
+    requests: ["req-ongoing", "req-snapshot"],
+    reports: {
+      "req-ongoing": [
+        { id: "r-crash", name: "App Crashes" },
+        { id: "r-dl", name: "App Downloads Standard" },
+        { id: "r-inst", name: "App Store Installation and Deletion Standard" },
+        { id: "r-sess", name: "App Sessions Standard" },
+        { id: "r-sess-detail", name: "App Sessions Detailed" },
+      ],
+      "req-snapshot": [{ id: "r-snap-sess", name: "App Sessions Standard" }],
+    },
+    instances: {
+      "r-dl": [{ id: "i-dl", processingDate: "2026-11-10" }],
+      "r-inst": [{ id: "i-inst", processingDate: "2026-11-10" }],
+      "r-sess": [{ id: "i-sess", processingDate: "2026-11-10" }],
+      // The snapshot repeats 2026-11-10 (must not double count) and adds 2026-11-09.
+      "r-snap-sess": [{ id: "i-snap-10", processingDate: "2026-11-10" }, { id: "i-snap-09", processingDate: "2026-11-09" }],
+    },
+    segments: {
+      "i-dl": [`${SEG}/dl.gz?X-Amz-Signature=secret`],
+      "i-inst": [`${SEG}/inst.gz?X-Amz-Signature=secret`],
+      "i-sess": [`${SEG}/sess-a.gz?sig=1`, `${SEG}/sess-b.gz?sig=1`],
+      "i-snap-10": [`${SEG}/snap-a.gz?sig=1`, `${SEG}/snap-b.gz?sig=1`],
+      "i-snap-09": [`${SEG}/snap-09.gz?sig=1`],
+    },
+    files: {
+      [`${SEG}/dl.gz?X-Amz-Signature=secret`]: downloads,
+      [`${SEG}/inst.gz?X-Amz-Signature=secret`]: installs,
+      [`${SEG}/sess-a.gz?sig=1`]: sessionsA,
+      [`${SEG}/sess-b.gz?sig=1`]: sessionsB,
+      [`${SEG}/snap-a.gz?sig=1`]: sessionsA,
+      [`${SEG}/snap-b.gz?sig=1`]: sessionsB,
+      [`${SEG}/snap-09.gz?sig=1`]: sessionsOlder,
+    },
+  };
+}
+
+/** Serves every collection one item per page so links.next is always exercised. */
+function apple(w: World) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const href = String(input);
+    const url = new URL(href);
+    if (url.origin === ASC) {
+      expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer /);
+      const page = <T,>(items: T[], map: (t: T) => unknown) => {
+        const cursor = Number(url.searchParams.get("cursor") ?? 0);
+        const next = new URL(href);
+        next.searchParams.set("cursor", String(cursor + 1));
+        return Response.json({
+          data: items.slice(cursor, cursor + 1).map(map),
+          links: cursor + 1 < items.length ? { next: next.toString() } : {},
+        });
+      };
+      const p = url.pathname;
+      if (p === "/v1/apps") return Response.json({ data: [{ id: "asc-app", attributes: { bundleId: "build.raft.app" } }] });
+      if (p === "/v1/apps/asc-app/analyticsReportRequests") return page(w.requests, (id) => ({ id, attributes: {} }));
+      let m = p.match(/^\/v1\/analyticsReportRequests\/([^/]+)\/reports$/);
+      if (m) {
+        expect(url.searchParams.get("filter[category]")).toContain("APP_USAGE");
+        return page(w.reports[m[1]!] ?? [], (r) => ({ id: r.id, attributes: { name: r.name } }));
+      }
+      m = p.match(/^\/v1\/analyticsReports\/([^/]+)\/instances$/);
+      if (m) {
+        expect(url.searchParams.get("filter[granularity]")).toBe("DAILY");
+        return page(w.instances[m[1]!] ?? [], (i) => ({ id: i.id, attributes: { granularity: "DAILY", processingDate: i.processingDate } }));
+      }
+      m = p.match(/^\/v1\/analyticsReportInstances\/([^/]+)\/segments$/);
+      if (m) return page(w.segments[m[1]!] ?? [], (u) => ({ id: `seg-${u}`, attributes: { url: u, checksum: "x", sizeInBytes: 1 } }));
+      throw new Error(`unexpected ASC call ${p}`);
+    }
+    const redirect = w.redirects?.[href];
+    if (redirect) return new Response(null, { status: 302, headers: { location: redirect } });
+    const file = w.files[href];
+    if (file === undefined) return new Response("missing", { status: 404 });
+    return new Response(gzipSync(Buffer.from(file)), { status: 200 });
+  });
+}
+const segmentCalls = (fetch: ReturnType<typeof apple>) =>
+  fetch.mock.calls.filter(([input]) => !String(input).startsWith(ASC));
+const dailyRows = (sqlite: Database.Database) =>
+  sqlite.prepare("SELECT instance_id, date, metric, dimension_key, value FROM asc_analytics_daily ORDER BY instance_id, date, metric, dimension_key").all();
+
+describe("App Store analytics ingest", () => {
+  it("ingests the whole chain, keeps first-time and redownloads apart, and never double counts overlapping instances", async () => {
+    const h = await harness();
+    const fetch = apple(world());
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(summary).toMatchObject({ status: "ok", asc_app_id: "asc-app", requests: 2, instances_seen: 5, instances_processed: 5, instances_failed: [] });
+    expect(summary.reports_matched.map((r) => r.name).sort()).toEqual([
+      "App Downloads Standard", "App Sessions Standard", "App Sessions Standard", "App Store Installation and Deletion Standard"]);
+
+    const result = await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01");
+    expect(result.daily).toEqual([
+      { date: "2026-11-09", downloads_first_time: null, downloads_redownload: null, installations: null, deletions: null, sessions: 8, active_devices: 3 },
+      { date: "2026-11-10", downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 15, active_devices: 6 },
+    ]);
+    expect(result.totals).toEqual({ downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 23, active_devices_peak_daily: 6 });
+    expect(result.ingest.instances_processed).toBe(5);
+    expect(result.note).toMatch(/agreed to share analytics/);
+    // Territory is kept as the dimension.
+    expect(h.sqlite.prepare("SELECT dimension_key, value FROM asc_analytics_daily WHERE instance_id='i-sess' AND metric='sessions' ORDER BY dimension_key").all())
+      .toEqual([{ dimension_key: "JP", value: 5 }, { dimension_key: "US", value: 10 }]);
+
+    // The pre-signed URL never receives the ASC JWT.
+    expect(segmentCalls(fetch)).toHaveLength(7);
+    for (const [input, init] of segmentCalls(fetch)) {
+      expect(String(input).startsWith(SEG)).toBe(true);
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      expect(init?.redirect).toBe("manual");
+    }
+  });
+
+  it("is idempotent: a second run downloads nothing and adds nothing", async () => {
+    const h = await harness();
+    apple(world());
+    await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    const before = dailyRows(h.sqlite);
+    vi.restoreAllMocks();
+    const fetch = apple(world());
+    const again = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(again).toMatchObject({ instances_processed: 0, instances_already_processed: 5, rows_written: 0 });
+    expect(segmentCalls(fetch)).toHaveLength(0);
+    expect(dailyRows(h.sqlite)).toEqual(before);
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).totals.sessions).toBe(23);
+  });
+
+  it("re-ingesting an instance (lost processed marker, overlapping run) replaces its rows instead of adding", async () => {
+    const h = await harness();
+    apple(world());
+    await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    const before = dailyRows(h.sqlite);
+    h.sqlite.prepare("DELETE FROM asc_analytics_instances WHERE instance_id IN ('i-dl', 'i-sess')").run();
+    const again = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(again.instances_processed).toBe(2);
+    expect(dailyRows(h.sqlite)).toEqual(before);
+  });
+
+  it("respects the instance budget, newest first, and reports more pending", async () => {
+    const h = await harness();
+    apple(world());
+    const first = await ingestAscAnalyticsForApp(h.env, "app", { ...BUDGET, maxInstances: 2 });
+    expect(first).toMatchObject({ instances_processed: 2, more_pending: true });
+    const ids = h.sqlite.prepare("SELECT processing_date FROM asc_analytics_instances").all() as Array<{ processing_date: string }>;
+    expect(ids.every((r) => r.processing_date === "2026-11-10")).toBe(true);
+    const rest = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(rest).toMatchObject({ instances_processed: 3, more_pending: false });
+  });
+
+  it("records a missing column as a warning and still ingests the columns that exist", async () => {
+    const h = await harness();
+    const w = world();
+    const noDevices = tsv([["Date", "App Version", "Territory", "Sessions"], ["2026-11-10", "1.0", "US", "10"]]);
+    w.requests = ["req-ongoing"];
+    w.reports["req-ongoing"] = [{ id: "r-sess", name: "App Sessions Standard" }];
+    w.segments["i-sess"] = [`${SEG}/nodev.gz`];
+    w.files[`${SEG}/nodev.gz`] = noDevices;
+    apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(summary.warnings).toEqual([
+      { instance_id: "i-sess", report_name: "App Sessions Standard", code: "missing_column", column: "Unique Devices", metric: "active_devices" }]);
+    const result = await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01");
+    expect(result.daily).toEqual([expect.objectContaining({ date: "2026-11-10", sessions: 10, active_devices: null })]);
+    expect(result.ingest.warnings).toEqual([expect.objectContaining({ code: "missing_column", column: "Unique Devices" })]);
+  });
+
+  it("rejects a segment URL outside Apple hosts without fetching it or marking the instance done", async () => {
+    const h = await harness();
+    const w = world();
+    w.requests = ["req-ongoing"];
+    w.reports["req-ongoing"] = [{ id: "r-dl", name: "App Downloads Standard" }];
+    w.segments["i-dl"] = ["https://reports.apple.com.evil.example/dl.gz?sig=1"];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetch = apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed" }]);
+    expect(segmentCalls(fetch)).toHaveLength(0);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_instances").get()).toEqual({ n: 0 });
+    // The log names the host and identifiers only, never the signed URL.
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("reports.apple.com.evil.example");
+    expect(logged).not.toContain("sig=1");
+  });
+
+  it("does not follow a redirect off Apple hosts", async () => {
+    const h = await harness();
+    const w = world();
+    w.requests = ["req-ongoing"];
+    w.reports["req-ongoing"] = [{ id: "r-dl", name: "App Downloads Standard" }];
+    w.redirects = { [`${SEG}/dl.gz?X-Amz-Signature=secret`]: "https://attacker.example/steal" };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetch = apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed" }]);
+    expect(segmentCalls(fetch).map(([u]) => new URL(String(u)).hostname)).toEqual(["analytics-segments.apple.com"]);
+  });
+
+  it("allows only https Apple hosts for segments", () => {
+    expect(segmentUrlHost("https://analytics.apple.com/x?sig=1").ok).toBe(true);
+    expect(segmentUrlHost("https://apple.com/x").ok).toBe(true);
+    for (const bad of ["http://analytics.apple.com/x", "https://apple.com.evil.example/x", "https://evilapple.com/x",
+      "https://user:pw@analytics.apple.com/x", "https://analytics.apple.com:8443/x", "not a url"]) {
+      expect(segmentUrlHost(bad).ok).toBe(false);
+    }
+  });
+});
+
+describe("report column mapping", () => {
+  const stream = (text: string) => new ReadableStream<string>({ start(c) { c.enqueue(text); c.close(); } });
+  const mapping = (name: string) => ASC_ANALYTICS_REPORTS.find((r) => r.name === name)!;
+
+  it("ignores known update types silently and warns on unknown download types", async () => {
+    const agg = new ReportAggregator(mapping("App Downloads Standard"));
+    await parseTsvStream(stream(tsv([DL_HEADER.slice(), ["2026-11-10", "", "", "Pre-order", "", "", "", "", "US", "4"],
+      ["2026-11-10", "", "", "Restore", "", "", "", "", "US", "9"], ["2026-11-10", "", "", "Redownload", "", "", "", "", "US", "1"]])), agg);
+    expect([...agg.values]).toEqual([["2026-11-10\tdownloads_redownload\tUS", 1]]);
+    expect(agg.warningList()).toEqual([{ code: "unmapped_value", column: "Download Type", values: ["Pre-order"] }]);
+  });
+
+  it("matches headers case-insensitively, tolerates CRLF, and counts bad rows", async () => {
+    const agg = new ReportAggregator(mapping("App Store Installation and Deletion Standard"));
+    await parseTsvStream(stream("date\tevent\tterritory\tcounts\r\n2026-11-10\tinstall\tUS\t3\r\nbad-date\tInstall\tUS\t1\r\n2026-11-10\tDelete\tUS\tn/a\r\n"), agg);
+    expect([...agg.values]).toEqual([["2026-11-10\tinstallations\tUS", 3]]);
+    expect(agg.warningList()).toEqual([{ code: "invalid_rows", count: 2 }]);
+  });
+
+  it("produces nothing and warns when the classifier or count column is missing", async () => {
+    const agg = new ReportAggregator(mapping("App Store Installation and Deletion Standard"));
+    await parseTsvStream(stream("Date\tTerritory\tCounts\n2026-11-10\tUS\t3\n"), agg);
+    expect(agg.values.size).toBe(0);
+    expect(agg.warningList()).toEqual([{ code: "missing_column", column: "Event" }]);
+  });
+
+  it("keeps rows without a Territory column under an empty dimension and warns", async () => {
+    const agg = new ReportAggregator(mapping("App Sessions Standard"));
+    await parseTsvStream(stream("Date\tSessions\tUnique Devices\n2026-11-10\t4\t2\n"), agg);
+    expect([...agg.values]).toEqual([["2026-11-10\tsessions\t", 4], ["2026-11-10\tactive_devices\t", 2]]);
+    expect(agg.warningList()).toEqual([{ code: "missing_column", column: "Territory" }]);
+  });
+});
+
+describe("scheduled ingest and routes", () => {
+  it("cron ingests each app in isolation and records only error codes", async () => {
+    const h = await harness();
+    const now = Date.now();
+    h.sqlite.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('broken', 'broken', 'Broken', 'ios', ?)").run(now);
+    await storeAscCredentials(h.env.DB, "test-key", { app_id: "broken", key_id: "K2", issuer_id: "i", p8, actor: "raft:acct@test" });
+    apple(world());
+    await pollAscAnalytics(h.env, now);
+    const schedule = h.sqlite.prepare("SELECT app_id, last_error_code, next_run_at FROM asc_analytics_ingest_schedule ORDER BY app_id").all() as
+      Array<{ app_id: string; last_error_code: string | null; next_run_at: number }>;
+    expect(schedule.map((s) => [s.app_id, s.last_error_code])).toEqual([["app", null], ["broken", "bundle_id_missing"]]);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_instances WHERE app_id='app'").get()).toEqual({ n: 5 });
+    expect(schedule.every((s) => s.next_run_at > now)).toBe(true);
+    // Not due again: a second tick at the same time does nothing.
+    vi.restoreAllMocks();
+    const fetch = apple(world());
+    await pollAscAnalytics(h.env, now);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("manual ingest is app-admin only", async () => {
+    const publisher = await harness({ role: "publisher" });
+    const fetch = apple(world());
+    expect((await publisher.call("/api/apps/app/stats/app-store/ingest", "POST")).status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+    const admin = await harness();
+    const res = await admin.call("/api/apps/app/stats/app-store/ingest", "POST");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "ok", instances_processed: 5, note: expect.stringMatching(/privacy/) });
+  });
+
+  it("GET /stats exposes daily App Store metrics, totals and the privacy note without a live call", async () => {
+    const h = await harness();
+    apple(world());
+    await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    vi.restoreAllMocks();
+    const fetch = vi.spyOn(globalThis, "fetch");
+    const res = await h.call("/api/apps/app/stats?window_days=365&live=false");
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(fetch).not.toHaveBeenCalled();
+    expect(body.stores.app_store.daily.map((d: any) => [d.date, d.sessions])).toEqual([["2026-11-09", 8], ["2026-11-10", 15]]);
+    expect(body.stores.app_store.totals).toMatchObject({ downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1 });
+    expect(body.stores.app_store.analytics_note).toMatch(/privacy thresholds/);
+    expect(body.stores.app_store.analytics_ingest).toMatchObject({ instances_processed: 5 });
+  });
+});

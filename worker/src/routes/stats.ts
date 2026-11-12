@@ -7,13 +7,15 @@
  * 2. Google Play distribution state & live track/release status via the app's stored
  *    Google Play binding (without exposing credentials).
  * 3. App Store Connect live versions, TestFlight builds, and Analytics Report Requests
- *    via the app's stored ASC credentials (without exposing credentials).
+ *    via the app's stored ASC credentials (without exposing credentials), plus the
+ *    daily App Store metrics Hands ingested from Analytics Reports (D1, no live call).
  */
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { getAscCredentials, getAscCredentialsMeta } from "../lib/asc_credentials";
 import { ascRequest, resolveAscAppId, type AscApiCredentials } from "../lib/asc_api";
+import { queryAscAnalyticsDaily } from "../lib/asc_analytics_ingest";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -350,6 +352,27 @@ async function queryAppStoreStats(
   appId: string,
   appPlatform: string | null,
   includeStoreLive: boolean,
+  since: number,
+) {
+  const live = await queryAppStoreLiveStats(c, appId, appPlatform, includeStoreLive);
+  if (!live) return null;
+  // Ingested daily metrics come from D1, so they are shown with or without `live`.
+  const analytics = await queryAscAnalyticsDaily(c.env.DB, appId, new Date(since).toISOString().slice(0, 10))
+    .catch(() => null);
+  return {
+    ...live,
+    daily: analytics?.daily ?? [],
+    totals: analytics?.totals ?? null,
+    analytics_ingest: analytics?.ingest ?? null,
+    analytics_note: analytics?.note ?? null,
+  };
+}
+
+async function queryAppStoreLiveStats(
+  c: AdminContext,
+  appId: string,
+  appPlatform: string | null,
+  includeStoreLive: boolean,
 ) {
   const meta = await getAscCredentialsMeta(c.env.DB, appId).catch(() => null);
   const mainChannel = await c.env.DB.prepare(
@@ -595,7 +618,7 @@ export async function handleAppStats(c: AdminContext) {
   const [direct, googlePlay, appStore] = await Promise.all([
     queryDirectStats(c.env.DB, appId, since, channelFilter),
     queryGooglePlayStats(c, appId, app.platform, includeStoreLive),
-    queryAppStoreStats(c, appId, app.platform, includeStoreLive),
+    queryAppStoreStats(c, appId, app.platform, includeStoreLive, since),
   ]);
 
   return c.json({
