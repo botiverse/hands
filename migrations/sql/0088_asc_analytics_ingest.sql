@@ -1,6 +1,6 @@
 -- App Store Connect Analytics Reports ingestion.
 --
--- Each Apple report instance is ingested at most once. Its parsed rows are
+-- Each Apple report instance is ingested until it is complete. Its parsed rows are
 -- stored per instance, so writing an instance again replaces its own rows
 -- instead of adding to them. Readers pick one instance per (report, date):
 -- an ONGOING and a ONE_TIME_SNAPSHOT request can both cover the same day, and
@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS asc_analytics_instances (
   -- JSON array of {code, column?, values?, count?}; never URLs or credentials.
   warnings_json TEXT NOT NULL DEFAULT '[]',
   processed_at INTEGER NOT NULL,
+  -- complete: never read again. incomplete: rows written but a required column
+  -- was missing or values were unmapped. failed: nothing written. Incomplete and
+  -- failed instances are retried once next_attempt_at has passed.
+  status TEXT NOT NULL DEFAULT 'complete' CHECK (status IN ('complete', 'incomplete', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 1,
+  -- Whitelisted code only (e.g. missing_column:Unique Devices, segment_checksum_mismatch).
+  last_error TEXT,
+  next_attempt_at INTEGER,
   PRIMARY KEY (app_id, instance_id)
 );
 

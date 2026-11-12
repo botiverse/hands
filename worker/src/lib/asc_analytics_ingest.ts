@@ -12,10 +12,13 @@
  * only over https to an Apple host, and redirects are re-checked against the
  * same allowlist. URLs are never logged or stored.
  *
- * Each instance is written once, atomically, as per-instance rows; readers pick
- * one instance per (report, date), so re-running or overlapping ONGOING and
- * ONE_TIME_SNAPSHOT instances never double count.
+ * Each instance is written atomically as per-instance rows; readers pick one
+ * instance per (report, date), so re-running or overlapping ONGOING and
+ * ONE_TIME_SNAPSHOT instances never double count. A complete instance is never
+ * read again; an incomplete (mapping lost data) or failed one is retried at
+ * most every INSTANCE_RETRY_MS.
  */
+import { createHash } from "node:crypto";
 import { ASC_API_BASE, AscApiError, ascRequest, type AscApiCredentials } from "./asc_api";
 import { getAscCredentials } from "./asc_credentials";
 
@@ -107,7 +110,7 @@ export const ASC_ANALYTICS_REPORTS: AscReportMapping[] = [
 const REPORT_CATEGORIES = "APP_USAGE,APP_STORE_COMMERCE,APP_STORE_ENGAGEMENT";
 
 export type IngestWarning = {
-  code: "missing_column" | "unmapped_value" | "invalid_rows";
+  code: "missing_column" | "unmapped_value" | "invalid_rows" | "checksum_missing" | "checksum_unverified";
   column?: string;
   metric?: string;
   values?: string[];
@@ -213,6 +216,11 @@ export class ReportAggregator {
     };
   }
 
+  /** Segment-level warnings (e.g. a checksum Hands could not check). */
+  note(w: IngestWarning) {
+    this.warn(w);
+  }
+
   warningList(): IngestWarning[] {
     const out = [...this.warnings.values()];
     for (const [column, values] of this.unmapped) out.push({ code: "unmapped_value", column, values: [...values] });
@@ -277,10 +285,33 @@ export function segmentUrlHost(raw: string): { ok: true; url: URL } | { ok: fals
 const MAX_REDIRECTS = 3;
 
 /**
+ * How to check Apple's segment `checksum`. Apple documents it as the checksum
+ * of the downloaded (still gzip-compressed) file; a 32-hex-digit value is read
+ * as MD5 and a 64-hex-digit one as SHA-256. Any other shape is not guessed:
+ * it is recorded as `checksum_unverified`, and an absent value as
+ * `checksum_missing`, so an unchecked segment is never silent.
+ */
+export function checksumAlgorithm(checksum: string | null | undefined): "md5" | "sha256" | "missing" | "unknown" {
+  const v = (checksum ?? "").trim();
+  if (!v) return "missing";
+  if (/^[0-9a-f]{32}$/i.test(v)) return "md5";
+  if (/^[0-9a-f]{64}$/i.test(v)) return "sha256";
+  return "unknown";
+}
+
+/**
  * Download a pre-signed segment with no credentials. Redirects are followed by
  * hand so every hop is checked against the host allowlist.
  */
-export async function fetchSegmentInto(rawUrl: string, agg: ReportAggregator, maxChars?: number): Promise<void> {
+export async function fetchSegmentInto(
+  rawUrl: string,
+  agg: ReportAggregator,
+  maxChars?: number,
+  checksum?: string | null,
+): Promise<void> {
+  const algorithm = checksumAlgorithm(checksum);
+  if (algorithm === "missing") agg.note({ code: "checksum_missing" });
+  if (algorithm === "unknown") agg.note({ code: "checksum_unverified" });
   let current = rawUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const checked = segmentUrlHost(current);
@@ -297,7 +328,17 @@ export async function fetchSegmentInto(rawUrl: string, agg: ReportAggregator, ma
       await res.body?.cancel().catch(() => undefined);
       throw new AscIngestError(`segment_http_${res.status}`, checked.url.hostname);
     }
-    const text = res.body
+    // Hash the compressed bytes as they stream past, then compare once the body is read.
+    const hash = algorithm === "md5" || algorithm === "sha256" ? createHash(algorithm) : null;
+    const hashed = hash
+      ? res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            hash.update(chunk);
+            controller.enqueue(chunk);
+          },
+        }))
+      : res.body;
+    const text = hashed
       .pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>)
       .pipeThrough(new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>);
     try {
@@ -305,6 +346,9 @@ export async function fetchSegmentInto(rawUrl: string, agg: ReportAggregator, ma
     } catch (err) {
       if (err instanceof AscIngestError) throw err;
       throw new AscIngestError("segment_decode_failed", checked.url.hostname);
+    }
+    if (hash && hash.digest("hex") !== (checksum ?? "").trim().toLowerCase()) {
+      throw new AscIngestError("segment_checksum_mismatch", checked.url.hostname);
     }
     return;
   }
@@ -325,8 +369,15 @@ export async function ascGetAll<T>(creds: AscApiCredentials, path: string, maxPa
     const link = res.links?.next;
     next = null;
     if (link) {
-      if (!link.startsWith(`${ASC_API_BASE}/`)) throw new AscIngestError("asc_next_link_invalid");
-      next = link.slice(ASC_API_BASE.length);
+      // Parse and compare the origin exactly: the JWT must only ever go to the ASC API.
+      let parsed: URL;
+      try {
+        parsed = new URL(link);
+      } catch {
+        throw new AscIngestError("asc_next_link_invalid");
+      }
+      if (parsed.origin !== new URL(ASC_API_BASE).origin) throw new AscIngestError("asc_next_link_invalid");
+      next = `${parsed.pathname}${parsed.search}`;
     }
   }
   return { items, truncated: next !== null };
@@ -350,7 +401,11 @@ export type IngestSummary = {
   reports_matched: Array<{ report_id: string; name: string }>;
   instances_seen: number;
   instances_already_processed: number;
+  /** Instances skipped because they are still waiting for their retry time. */
+  instances_deferred: number;
   instances_processed: number;
+  /** Written, but missing a required column or holding unmapped values: retried later. */
+  instances_incomplete: Array<{ instance_id: string; code: string }>;
   instances_failed: Array<{ instance_id: string; code: string }>;
   rows_written: number;
   more_pending: boolean;
@@ -376,6 +431,22 @@ async function resolveExactAscApp(creds: AscApiCredentials, bundleId: string): P
 
 const INSERT_CHUNK = 500;
 
+/** An incomplete or failed instance is retried at most this often. */
+export const INSTANCE_RETRY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Warnings that mean the mapping lost data for this report: a required column
+ * is absent (anything but Territory, which only drops the breakdown) or rows
+ * carried values Hands does not recognise. Such an instance stays retryable,
+ * so a later mapping fix re-ingests it without a manual reprocess.
+ */
+export function blockingWarning(w: IngestWarning, mapping: AscReportMapping): boolean {
+  if (w.code === "unmapped_value") return true;
+  if (w.code !== "missing_column") return false;
+  const territory = mapping.territory.map((n) => n.toLowerCase());
+  return !territory.includes((w.column ?? "").toLowerCase());
+}
+
 /** Ingest new DAILY instances of the mapped reports for one Hands app. */
 export async function ingestAscAnalyticsForApp(
   env: Pick<Env, "DB" | "ASC_CRED_ENC_KEY">,
@@ -390,7 +461,9 @@ export async function ingestAscAnalyticsForApp(
     reports_matched: [],
     instances_seen: 0,
     instances_already_processed: 0,
+    instances_deferred: 0,
     instances_processed: 0,
+    instances_incomplete: [],
     instances_failed: [],
     rows_written: 0,
     more_pending: false,
@@ -437,17 +510,24 @@ export async function ingestAscAnalyticsForApp(
   }
   summary.instances_seen = instances.length;
 
-  const done = new Set((await env.DB.prepare("SELECT instance_id FROM asc_analytics_instances WHERE app_id = ?1")
-    .bind(appId).all<{ instance_id: string }>()).results.map((r) => r.instance_id));
-  const pending = instances.filter((i) => !done.has(i.id));
-  summary.instances_already_processed = instances.length - pending.length;
+  // Complete instances are never read again; incomplete or failed ones wait for next_attempt_at.
+  const known = new Map((await env.DB.prepare(
+    `SELECT instance_id, status FROM asc_analytics_instances
+     WHERE app_id = ?1 AND (status = 'complete' OR next_attempt_at > ?2)`,
+  ).bind(appId, now).all<{ instance_id: string; status: string }>()).results.map((r) => [r.instance_id, r.status]));
+  const pending = instances.filter((i) => !known.has(i.id));
+  for (const i of instances) {
+    const status = known.get(i.id);
+    if (status === "complete") summary.instances_already_processed++;
+    else if (status) summary.instances_deferred++;
+  }
   // Newest first, so a fresh connection fills the recent window before history.
   pending.sort((a, b) => b.processingDate.localeCompare(a.processingDate) || b.id.localeCompare(a.id));
   if (pending.length > budget.maxInstances) summary.more_pending = true;
 
   for (const inst of pending.slice(0, budget.maxInstances)) {
     try {
-      const segments = await ascGetAll<{ id: string; attributes?: { url?: string } }>(creds,
+      const segments = await ascGetAll<{ id: string; attributes?: { url?: string; checksum?: string } }>(creds,
         `/v1/analyticsReportInstances/${encodeURIComponent(inst.id)}/segments?limit=200`, budget.maxPages);
       if (segments.items.length > budget.maxSegmentsPerInstance || segments.truncated) {
         throw new AscIngestError("too_many_segments");
@@ -456,13 +536,16 @@ export async function ingestAscAnalyticsForApp(
       for (const segment of segments.items) {
         const url = segment.attributes?.url;
         if (!url) throw new AscIngestError("segment_url_missing");
-        await fetchSegmentInto(url, agg, budget.maxSegmentChars);
+        await fetchSegmentInto(url, agg, budget.maxSegmentChars, segment.attributes?.checksum);
       }
       const rows = [...agg.values].map(([key, value]) => {
         const [date, metric, territory] = key.split("\t");
         return { d: date, m: metric, t: territory, v: value };
       });
       const warnings = agg.warningList();
+      const blocking = warnings.find((w) => blockingWarning(w, inst.mapping));
+      const status = blocking ? "incomplete" : "complete";
+      const lastError = blocking ? `${blocking.code}${blocking.column ? `:${blocking.column}` : ""}` : null;
       const statements = [
         env.DB.prepare("DELETE FROM asc_analytics_daily WHERE app_id = ?1 AND instance_id = ?2").bind(appId, inst.id),
       ];
@@ -474,21 +557,46 @@ export async function ingestAscAnalyticsForApp(
            FROM json_each(?5) j`,
         ).bind(appId, inst.id, inst.mapping.name, inst.processingDate, JSON.stringify(rows.slice(i, i + INSERT_CHUNK))));
       }
+      // Partial rows of an incomplete instance are kept (and shown with its warning);
+      // the next attempt replaces them.
       statements.push(env.DB.prepare(
         `INSERT INTO asc_analytics_instances (app_id, instance_id, report_id, report_name, granularity, processing_date,
-           segment_count, row_count, warnings_json, processed_at)
-         VALUES (?1, ?2, ?3, ?4, 'DAILY', ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(app_id, instance_id) DO NOTHING`,
+           segment_count, row_count, warnings_json, processed_at, status, attempts, last_error, next_attempt_at)
+         VALUES (?1, ?2, ?3, ?4, 'DAILY', ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?12)
+         ON CONFLICT(app_id, instance_id) DO UPDATE SET
+           processing_date = excluded.processing_date, segment_count = excluded.segment_count,
+           row_count = excluded.row_count, warnings_json = excluded.warnings_json, processed_at = excluded.processed_at,
+           status = excluded.status, attempts = asc_analytics_instances.attempts + 1,
+           last_error = excluded.last_error, next_attempt_at = excluded.next_attempt_at
+         WHERE asc_analytics_instances.status <> 'complete'`,
       ).bind(appId, inst.id, inst.reportId, inst.mapping.name, inst.processingDate, segments.items.length, agg.rows,
-        JSON.stringify(warnings), now));
+        JSON.stringify(warnings), now, status, lastError, blocking ? now + INSTANCE_RETRY_MS : null));
       await env.DB.batch(statements);
-      summary.instances_processed++;
+      if (blocking) {
+        summary.instances_incomplete.push({ instance_id: inst.id, code: lastError ?? blocking.code });
+        logFailure(appId, blocking.code, { instance_id: inst.id });
+      } else {
+        summary.instances_processed++;
+      }
       summary.rows_written += rows.length;
       for (const w of warnings) summary.warnings.push({ instance_id: inst.id, report_name: inst.mapping.name, ...w });
     } catch (err) {
       const code = errorCode(err);
       summary.instances_failed.push({ instance_id: inst.id, code });
       logFailure(appId, code, { instance_id: inst.id, host: err instanceof AscIngestError ? err.host : undefined });
+      // Record the attempt so a permanently broken instance is retried every few hours,
+      // not on every run; its earlier rows (if any) are left as they were.
+      await env.DB.prepare(
+        `INSERT INTO asc_analytics_instances (app_id, instance_id, report_id, report_name, granularity, processing_date,
+           processed_at, status, attempts, last_error, next_attempt_at)
+         VALUES (?1, ?2, ?3, ?4, 'DAILY', ?5, ?6, 'failed', 1, ?7, ?8)
+         ON CONFLICT(app_id, instance_id) DO UPDATE SET
+           status = CASE WHEN asc_analytics_instances.status = 'incomplete' THEN 'incomplete' ELSE 'failed' END,
+           attempts = asc_analytics_instances.attempts + 1,
+           last_error = excluded.last_error, next_attempt_at = excluded.next_attempt_at
+         WHERE asc_analytics_instances.status <> 'complete'`,
+      ).bind(appId, inst.id, inst.reportId, inst.mapping.name, inst.processingDate, now, code, now + INSTANCE_RETRY_MS)
+        .run().catch(() => undefined);
     }
   }
   return summary;
@@ -515,7 +623,7 @@ export async function pollAscAnalytics(env: Env, now = Date.now()) {
     try {
       const summary = await ingestAscAnalyticsForApp(env, row.app_id, SCHEDULED_BUDGET, now);
       if (summary.status !== "ok") code = summary.status;
-      else code = summary.instances_failed[0]?.code ?? null;
+      else code = summary.instances_failed[0]?.code ?? summary.instances_incomplete[0]?.code ?? null;
       // Backlog left: continue on the next five-minute slot instead of in six hours.
       if (summary.more_pending && summary.instances_processed > 0) next = (Math.floor(now / 300_000) + 1) * 300_000;
     } catch (err) {
@@ -569,9 +677,14 @@ export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinc
   totals.active_devices_peak_daily = devices.length ? Math.max(...devices) : null;
 
   const ingest = await db.prepare(
-    `SELECT COUNT(*) AS instances, MAX(processed_at) AS last_processed_at, MAX(processing_date) AS latest_processing_date
+    `SELECT SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS instances,
+            SUM(CASE WHEN status = 'incomplete' THEN 1 ELSE 0 END) AS incomplete,
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+            MAX(CASE WHEN status <> 'failed' THEN processed_at END) AS last_processed_at,
+            MAX(CASE WHEN status <> 'failed' THEN processing_date END) AS latest_processing_date
      FROM asc_analytics_instances WHERE app_id = ?1`,
-  ).bind(appId).first<{ instances: number; last_processed_at: number | null; latest_processing_date: string | null }>();
+  ).bind(appId).first<{ instances: number | null; incomplete: number | null; failed: number | null;
+    last_processed_at: number | null; latest_processing_date: string | null }>();
   const warned = await db.prepare(
     `SELECT report_name, warnings_json FROM asc_analytics_instances
      WHERE app_id = ?1 AND warnings_json <> '[]' ORDER BY processed_at DESC LIMIT 20`,
@@ -591,6 +704,10 @@ export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinc
     totals,
     ingest: {
       instances_processed: Number(ingest?.instances ?? 0),
+      /** Written with a blocking warning; retried automatically. */
+      instances_incomplete: Number(ingest?.incomplete ?? 0),
+      /** Not written (download, checksum or API failure); retried automatically. */
+      instances_failed: Number(ingest?.failed ?? 0),
       last_processed_at: ingest?.last_processed_at ?? null,
       latest_processing_date: ingest?.latest_processing_date ?? null,
       last_run_at: schedule?.last_run_at ?? null,

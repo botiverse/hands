@@ -1106,7 +1106,16 @@ What these numbers can and cannot tell you:
   day.
 - If Apple changes a report's columns, Hands records a warning (for example
   `missing_column Unique Devices`) in `analytics_ingest.warnings` and leaves
-  that metric empty rather than guessing.
+  that metric empty rather than guessing. Reports with a missing required
+  column or an unrecognised value are counted in
+  `analytics_ingest.instances_incomplete` and read again every six hours, so
+  they fill in by themselves once Hands supports the new layout. Reports that
+  could not be downloaded (`instances_failed`) are retried on the same
+  schedule.
+- Each downloaded file is checked against the checksum Apple publishes for it
+  and rejected if it does not match. If Apple sends no checksum, or one in a
+  format Hands cannot check, the file is used and the warning
+  `checksum_missing` or `checksum_unverified` is shown.
 
 ## CI Environment Variables
 

@@ -215,7 +215,7 @@ describe("hands play api & hands stats CLI", () => {
         { date: "2026-11-10", downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 15, active_devices: 6 },
       ],
       totals: { downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 23, active_devices_peak_daily: 6 },
-      analytics_ingest: { instances_processed: 5, last_processed_at: 1, latest_processing_date: "2026-11-10", last_run_at: 1, last_error_code: null,
+      analytics_ingest: { instances_processed: 5, instances_incomplete: 1, instances_failed: 0, last_processed_at: 1, latest_processing_date: "2026-11-10", last_run_at: 1, last_error_code: "missing_column:Unique Devices",
         warnings: [{ report_name: "App Sessions Standard", code: "missing_column", column: "Unique Devices" }] },
       analytics_note: "Only users who agreed to share analytics.",
     }, 30);
@@ -224,6 +224,7 @@ describe("hands play api & hands stats CLI", () => {
     expect(text).toMatch(/2026-11-09\s+-\s+-\s+-\s+-\s+8\s+3/);
     expect(text).toMatch(/2026-11-10\s+7\s+3\s+6\s+1\s+15\s+6/);
     expect(text).toContain("Warning: App Sessions Standard: missing_column Unique Devices");
+    expect(text).toContain("Retrying: 1 incomplete, 0 failed report instances (last: missing_column:Unique Devices)");
     expect(text).toContain("Note: Only users who agreed to share analytics.");
   });
 

@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { exportPKCS8, generateKeyPair } from "jose";
 import { storeAscCredentials } from "../src/lib/asc_credentials";
@@ -22,6 +23,8 @@ import { handleAppStats } from "../src/routes/stats";
 
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const ASC = "https://api.appstoreconnect.apple.com";
+const ASC_ORIGIN = new URL(ASC).origin;
+const isAsc = (input: unknown) => new URL(String(input)).origin === ASC_ORIGIN;
 const SEG = "https://analytics-segments.apple.com/seg";
 const BUDGET: IngestBudget = { maxInstances: 20, maxSegmentsPerInstance: 8, maxPages: 10 };
 
@@ -109,7 +112,11 @@ type World = {
   segments: Record<string, string[]>;
   files: Record<string, string>;
   redirects?: Record<string, string>;
+  /** Per-URL checksum override; default is the MD5 of the served gzip bytes. */
+  checksums?: Record<string, string | undefined>;
 };
+const gz = (text: string) => gzipSync(Buffer.from(text));
+const md5 = (bytes: Uint8Array) => createHash("md5").update(bytes).digest("hex");
 
 function world(): World {
   return {
@@ -155,7 +162,7 @@ function apple(w: World) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const href = String(input);
     const url = new URL(href);
-    if (url.origin === ASC) {
+    if (url.origin === ASC_ORIGIN) {
       expect(new Headers(init?.headers).get("authorization")).toMatch(/^Bearer /);
       const page = <T,>(items: T[], map: (t: T) => unknown) => {
         const cursor = Number(url.searchParams.get("cursor") ?? 0);
@@ -180,18 +187,21 @@ function apple(w: World) {
         return page(w.instances[m[1]!] ?? [], (i) => ({ id: i.id, attributes: { granularity: "DAILY", processingDate: i.processingDate } }));
       }
       m = p.match(/^\/v1\/analyticsReportInstances\/([^/]+)\/segments$/);
-      if (m) return page(w.segments[m[1]!] ?? [], (u) => ({ id: `seg-${u}`, attributes: { url: u, checksum: "x", sizeInBytes: 1 } }));
+      if (m) return page(w.segments[m[1]!] ?? [], (u) => ({ id: `seg-${u}`, attributes: {
+        url: u,
+        checksum: w.checksums && u in w.checksums ? w.checksums[u] : w.files[u] === undefined ? "0".repeat(32) : md5(gz(w.files[u]!)),
+        sizeInBytes: 1 } }));
       throw new Error(`unexpected ASC call ${p}`);
     }
     const redirect = w.redirects?.[href];
     if (redirect) return new Response(null, { status: 302, headers: { location: redirect } });
     const file = w.files[href];
     if (file === undefined) return new Response("missing", { status: 404 });
-    return new Response(gzipSync(Buffer.from(file)), { status: 200 });
+    return new Response(gz(file), { status: 200 });
   });
 }
 const segmentCalls = (fetch: ReturnType<typeof apple>) =>
-  fetch.mock.calls.filter(([input]) => !String(input).startsWith(ASC));
+  fetch.mock.calls.filter(([input]) => !isAsc(input));
 const dailyRows = (sqlite: Database.Database) =>
   sqlite.prepare("SELECT instance_id, date, metric, dimension_key, value FROM asc_analytics_daily ORDER BY instance_id, date, metric, dimension_key").all();
 
@@ -219,7 +229,7 @@ describe("App Store analytics ingest", () => {
     // The pre-signed URL never receives the ASC JWT.
     expect(segmentCalls(fetch)).toHaveLength(7);
     for (const [input, init] of segmentCalls(fetch)) {
-      expect(String(input).startsWith(SEG)).toBe(true);
+      expect(new URL(String(input)).hostname).toBe("analytics-segments.apple.com");
       expect(new Headers(init?.headers).has("authorization")).toBe(false);
       expect(init?.redirect).toBe("manual");
     }
@@ -278,7 +288,7 @@ describe("App Store analytics ingest", () => {
     expect(result.ingest.warnings).toEqual([expect.objectContaining({ code: "missing_column", column: "Unique Devices" })]);
   });
 
-  it("rejects a segment URL outside Apple hosts without fetching it or marking the instance done", async () => {
+  it("rejects a segment URL outside Apple hosts without fetching it or marking the instance complete", async () => {
     const h = await harness();
     const w = world();
     w.requests = ["req-ongoing"];
@@ -289,7 +299,10 @@ describe("App Store analytics ingest", () => {
     const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
     expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed" }]);
     expect(segmentCalls(fetch)).toHaveLength(0);
-    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_instances").get()).toEqual({ n: 0 });
+    // Recorded as a failed attempt (no rows), retried only after the back-off.
+    expect(h.sqlite.prepare("SELECT status, attempts, last_error FROM asc_analytics_instances").all())
+      .toEqual([{ status: "failed", attempts: 1, last_error: "segment_host_not_allowed" }]);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).toEqual({ n: 0 });
     // The log names the host and identifiers only, never the signed URL.
     const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(logged).toContain("reports.apple.com.evil.example");
@@ -315,6 +328,128 @@ describe("App Store analytics ingest", () => {
     for (const bad of ["http://analytics.apple.com/x", "https://apple.com.evil.example/x", "https://evilapple.com/x",
       "https://user:pw@analytics.apple.com/x", "https://analytics.apple.com:8443/x", "not a url"]) {
       expect(segmentUrlHost(bad).ok).toBe(false);
+    }
+  });
+});
+
+const HOUR = 60 * 60 * 1000;
+const T0 = Date.UTC(2026, 10, 12);
+function sessionsOnly(file: string): World {
+  const w = world();
+  w.requests = ["req-ongoing"];
+  w.reports["req-ongoing"] = [{ id: "r-sess", name: "App Sessions Standard" }];
+  w.segments["i-sess"] = [`${SEG}/one.gz`];
+  w.files[`${SEG}/one.gz`] = file;
+  return w;
+}
+const instanceRow = (sqlite: Database.Database, id: string) =>
+  sqlite.prepare("SELECT status, attempts, last_error, next_attempt_at FROM asc_analytics_instances WHERE instance_id = ?").get(id);
+
+describe("incomplete and failed instances stay retryable, with back-off", () => {
+  it("a missing required column leaves the instance retryable and a fixed report completes it", async () => {
+    const h = await harness();
+    let fetch = apple(sessionsOnly(tsv([["Date", "Territory", "Sessions"], ["2026-11-10", "US", "10"]])));
+    const first = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(first).toMatchObject({ instances_processed: 0, instances_incomplete: [{ instance_id: "i-sess", code: "missing_column:Unique Devices" }] });
+    expect(instanceRow(h.sqlite, "i-sess")).toEqual({ status: "incomplete", attempts: 1, last_error: "missing_column:Unique Devices", next_attempt_at: T0 + 6 * HOUR });
+    // Partial data stays visible with its warning.
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).ingest).toMatchObject({ instances_processed: 0, instances_incomplete: 1 });
+
+    // Within the back-off: not downloaded again, not counted against the budget.
+    vi.restoreAllMocks();
+    fetch = apple(sessionsOnly(tsv([SESS_HEADER, ["2026-11-10", "Raft", "1", "1.0", "iPhone", "US", "10", "500", "4"]])));
+    const early = await ingestAscAnalyticsForApp(h.env, "app", { ...BUDGET, maxInstances: 1 }, T0 + 5 * HOUR);
+    expect(early).toMatchObject({ instances_deferred: 1, instances_processed: 0, more_pending: false });
+    expect(segmentCalls(fetch)).toHaveLength(0);
+
+    // After the back-off the (now complete) report is re-ingested and replaces the partial rows.
+    const later = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + 6 * HOUR + 1);
+    expect(later).toMatchObject({ instances_processed: 1, instances_incomplete: [] });
+    expect(instanceRow(h.sqlite, "i-sess")).toEqual({ status: "complete", attempts: 2, last_error: null, next_attempt_at: null });
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).daily)
+      .toEqual([expect.objectContaining({ date: "2026-11-10", sessions: 10, active_devices: 4 })]);
+
+    // Complete is final: never read again, even long after.
+    const after = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + 100 * HOUR);
+    expect(after).toMatchObject({ instances_already_processed: 1, instances_processed: 0 });
+  });
+
+  it("an unrecognised classifier value keeps the instance retryable", async () => {
+    const h = await harness();
+    const w = world();
+    w.requests = ["req-ongoing"];
+    w.reports["req-ongoing"] = [{ id: "r-dl", name: "App Downloads Standard" }];
+    w.files[`${SEG}/dl.gz?X-Amz-Signature=secret`] = tsv([DL_HEADER,
+      ["2026-11-10", "Raft", "1", "First-time download", "1.0", "iPhone", "iOS 26", "Search", "US", "5"],
+      ["2026-11-10", "Raft", "1", "Gifted download", "1.0", "iPhone", "iOS 26", "Search", "US", "2"]]);
+    apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(summary.instances_incomplete).toEqual([{ instance_id: "i-dl", code: "unmapped_value:Download Type" }]);
+    expect(instanceRow(h.sqlite, "i-dl")).toMatchObject({ status: "incomplete" });
+  });
+
+  it("a missing Territory column only drops the breakdown and completes", async () => {
+    const h = await harness();
+    apple(sessionsOnly(tsv([["Date", "Sessions", "Unique Devices"], ["2026-11-10", "4", "2"]])));
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(summary).toMatchObject({ instances_processed: 1, instances_incomplete: [] });
+    expect(summary.warnings).toEqual([expect.objectContaining({ code: "missing_column", column: "Territory" })]);
+    expect(instanceRow(h.sqlite, "i-sess")).toMatchObject({ status: "complete" });
+  });
+
+  it("a failed instance is retried only after the back-off, with attempts counted", async () => {
+    const h = await harness();
+    const w = sessionsOnly(sessionsA);
+    w.segments["i-sess"] = ["https://evil.example/one.gz"];
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    apple(w);
+    await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(instanceRow(h.sqlite, "i-sess")).toEqual({ status: "failed", attempts: 1, last_error: "segment_host_not_allowed", next_attempt_at: T0 + 6 * HOUR });
+    const early = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + HOUR);
+    expect(early).toMatchObject({ instances_deferred: 1, instances_failed: [] });
+    const later = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + 6 * HOUR + 1);
+    expect(later.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_host_not_allowed" }]);
+    expect(instanceRow(h.sqlite, "i-sess")).toMatchObject({ status: "failed", attempts: 2 });
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).ingest).toMatchObject({ instances_failed: 1, instances_processed: 0 });
+  });
+});
+
+describe("segment checksum", () => {
+  const url = `${SEG}/one.gz`;
+  it("rejects a segment whose MD5 does not match and writes nothing", async () => {
+    const h = await harness();
+    const w = sessionsOnly(sessionsA);
+    w.checksums = { [url]: md5(gz(sessionsB)) };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_checksum_mismatch" }]);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).toEqual({ n: 0 });
+  });
+
+  it("accepts a matching MD5 in any case and a matching SHA-256", async () => {
+    for (const checksum of [md5(gz(sessionsA)).toUpperCase(), createHash("sha256").update(gz(sessionsA)).digest("hex")]) {
+      const h = await harness();
+      const w = sessionsOnly(sessionsA);
+      w.checksums = { [url]: checksum };
+      apple(w);
+      const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+      expect(summary).toMatchObject({ instances_processed: 1, instances_failed: [], warnings: [] });
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("records a warning, never a silent pass, when the checksum is absent or of an unknown format", async () => {
+    for (const [checksum, code] of [[undefined, "checksum_missing"], ["abc==", "checksum_unverified"]] as const) {
+      const h = await harness();
+      const w = sessionsOnly(sessionsA);
+      w.checksums = { [url]: checksum };
+      apple(w);
+      const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+      expect(summary.instances_processed).toBe(1);
+      expect(summary.warnings).toEqual([{ instance_id: "i-sess", report_name: "App Sessions Standard", code }]);
+      expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).ingest.warnings).toEqual([expect.objectContaining({ code })]);
+      vi.restoreAllMocks();
     }
   });
 });
@@ -371,6 +506,17 @@ describe("scheduled ingest and routes", () => {
     const fetch = apple(world());
     await pollAscAnalytics(h.env, now);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("overlapping cron ticks claim each app once", async () => {
+    const h = await harness();
+    const now = Date.now();
+    const fetch = apple(world());
+    await Promise.all([pollAscAnalytics(h.env, now), pollAscAnalytics(h.env, now), pollAscAnalytics(h.env, now)]);
+    // One run's worth of work: 7 segment downloads and one call resolving the app.
+    expect(segmentCalls(fetch)).toHaveLength(7);
+    expect(fetch.mock.calls.filter(([u]) => new URL(String(u)).pathname === "/v1/apps")).toHaveLength(1);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_instances WHERE status = 'complete'").get()).toEqual({ n: 5 });
   });
 
   it("manual ingest is app-admin only", async () => {
