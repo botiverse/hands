@@ -471,7 +471,9 @@ describe("feedback material delta production routes", () => {
     expect(deliveryPayloads.length).toBeGreaterThan(0);
     expect(JSON.stringify(deliveryPayloads)).not.toMatch(/material_sequence|material-v1/);
     const reporterSchema = Object.fromEntries(Object.entries(openApiDocument.paths ?? {})
-      .filter(([path]) => path.includes("reporter-feedback")));
+      .filter(([path]) => path.includes("reporter-feedback") && !path.endsWith("/changes")));
+    // The new integration-only endpoint has a separate encrypted cursor; all
+    // per-reporter endpoints still must not expose the app-wide cursor family.
     expect(JSON.stringify(reporterSchema)).not.toMatch(/material_sequence|material-v1/);
     for (const source of ["reporter_feedback.ts", "reporter_sessions.ts"]) {
       expect(readFileSync(new URL(`../src/routes/${source}`, import.meta.url), "utf8"))

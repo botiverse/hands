@@ -15,8 +15,11 @@ export const httpResponseTelemetry: MiddlewareHandler = async (c, next) => {
   const ray = c.req.header("cf-ray") ?? "";
   const traceId = c.req.header("x-trace-id") ?? "";
   const requestId = /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null;
+  const isReporterChanges = c.req.method === "GET"
+    && /^\/api\/apps\/[^/]+\/reporter-feedback\/changes$/.test(c.req.path);
   const isReporterFailure = c.res.status >= 500 && (
-    (c.req.method === "GET" && route === "/api/apps/:appId/reporter-feedback")
+    isReporterChanges
+    || (c.req.method === "GET" && route === "/api/apps/:appId/reporter-feedback")
     || (c.req.method === "PUT" && route === "/api/apps/:appId/reporter-feedback/route-subject")
   );
   const diagnostic = isReporterFailure ? reporterFailureDiagnostic(c, c.error) : {};
@@ -42,7 +45,7 @@ export const reporterErrorHandler: ErrorHandler = (error, c) => {
     return c.newResponse(response.body, response);
   }
   const path = c.req.path;
-  const reporter = (c.req.method === "GET" && /^\/api\/apps\/[^/]+\/reporter-feedback$/.test(path))
+  const reporter = (c.req.method === "GET" && /^\/api\/apps\/[^/]+\/reporter-feedback(?:\/changes)?$/.test(path))
     || (c.req.method === "PUT" && /^\/api\/apps\/[^/]+\/reporter-feedback\/route-subject$/.test(path));
   if (reporter && isReporterDatabaseStage(c) && isTransientD1LookupError(error)) {
     // Cover later database stages too, without replaying an ambiguous write.

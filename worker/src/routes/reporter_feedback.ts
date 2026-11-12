@@ -560,6 +560,10 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   const authorizedAt = performance.now();
   const ticketId = fullUuid(c.req.param("ticketId"));
   if (!ticketId) return ticketNotFound(c);
+  const markRead = c.req.query("mark_read");
+  if (markRead !== undefined && markRead !== "true" && markRead !== "false") {
+    return c.json({ error: "mark_read must be true or false" }, 400);
+  }
   const commentLimit = Math.min(100, Math.max(1, Number(c.req.query("comment_limit") ?? "50") || 50));
   const commentCursor = decodeCommentCursor(c.req.query("comment_cursor"));
   if (!commentCursor) return c.json({ error: "invalid comment cursor" }, 400);
@@ -633,7 +637,7 @@ export async function handleGetReporterFeedback(c: ReporterContext) {
   // reporter_sequence, so a single high-water receipt cannot represent it
   // without false-reading unseen rows. Legacy sessions paginate only; the next
   // fresh sequence session advances the authoritative receipt.
-  const readWatermark = commentCursor.mode === "sequence"
+  const readWatermark = markRead !== "false" && commentCursor.mode === "sequence"
     ? [...commentPage].reverse().find((comment) =>
         (comment.author_type === "staff" || comment.author_type === "system")
         && typeof comment.reporter_sequence === "number"

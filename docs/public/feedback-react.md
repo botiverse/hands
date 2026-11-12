@@ -217,9 +217,10 @@ returns `200` with `changed: false`. A different subject for the same
 app/integration/reporter tuple returns `409`; stop and investigate instead of
 silently replacing it.
 
-The route subject is carried only in the dedicated, signed reporter webhook
-flow. It lets your backend route an event without exposing the reporter id or
-maintaining user data in the webhook configuration.
+The route subject is carried in the dedicated signed reporter webhook flow and
+the server-only integration changes feed. It lets your backend route a signal
+without exposing the reporter id or maintaining user data in the webhook
+configuration.
 
 ## Proxy the Hands reporter API
 
