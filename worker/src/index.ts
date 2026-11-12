@@ -145,6 +145,11 @@ import {
   handleRevokeAppDeployToken,
 } from "./routes/deploy_tokens";
 import {
+  handleCreateOrgAccessToken,
+  handleListOrgAccessTokens,
+  handleRevokeOrgAccessToken,
+} from "./routes/org_access_tokens";
+import {
   handleCreateReporterIntegration,
   handleListReporterIntegrations,
   handleUpdateReporterIntegration,
@@ -891,6 +896,7 @@ export const admin = new OpenAPIHono<{
   Variables: {
     admin_account?: import("./middleware/auth").AdminAccount;
     admin_deploy_token?: import("./lib/deploy_tokens").AppDeployToken;
+    admin_org_token_id?: string;
     admin_actor?: string;
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
@@ -1001,6 +1007,10 @@ bindAdmin("post", "/api/orgs/:orgId/invites", requireOrgRole("orgId", "admin"), 
 bindAdmin("post", "/api/orgs/:orgId/invites/:inviteId/resend", requireOrgRole("orgId", "admin"), handleResendOrgInvite);
 bindAdmin("delete", "/api/orgs/:orgId/invites/:inviteId", requireOrgRole("orgId", "admin"), handleRevokeOrgInvite);
 bindAdmin("get", "/api/orgs/:orgId/audit-logs", requireOrgRole("orgId", "member"), handleListOrgAuditLogs);
+// Org-level fine-grained access tokens. Org admin, session principals only.
+bindAdmin("get", "/api/orgs/:orgId/access-tokens", requireOrgRole("orgId", "admin"), handleListOrgAccessTokens);
+bindAdmin("post", "/api/orgs/:orgId/access-tokens", requireOrgRole("orgId", "admin"), handleCreateOrgAccessToken);
+bindAdmin("delete", "/api/orgs/:orgId/access-tokens/:tokenId", requireOrgRole("orgId", "admin"), handleRevokeOrgAccessToken);
 
 // Webhooks (P2.5.8)
 bindAdmin("get", "/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"), handleListWebhooks);

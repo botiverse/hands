@@ -73,6 +73,23 @@ hands deploy-tokens revoke raft-android <tokenId>
 
 The created token is what you set as `HANDS_BEARER_TOKEN` in CI. The server stores only a hash, so a lost token can only be revoked and re-minted, never recovered.
 
+## Org Access Tokens
+
+Read-only, fine-grained tokens for one organization: pick the apps (or `--all-apps`, which also covers apps created later) and the scopes (`app:read`, `feedback:read`). The token works only on `/api/apps/<appId>/...` for apps it covers. Managing them requires **org admin** from a signed-in session; `--org` defaults to your current org.
+
+`app:read` grants everything an app **viewer** can read, including builds and their public share links, members, audit logs and read-only Google Play calls through Hands; `feedback:read` grants only feedback tickets (including internal notes, marked `internal`). Prefer `feedback:read` alone when that is all a consumer needs. A token covers at most 200 apps and can be valid for at most 3650 days.
+
+```bash
+# Feedback reader for two apps (printed ONCE — capture it immediately)
+hands org-tokens create --name feedback-sync --scope feedback:read --app raft-android raft-ios
+
+# Every app in the org, both scopes, 90-day expiry
+hands org-tokens create --org <orgId> --name dashboard --scope app:read feedback:read --all-apps --expires-in-days 90
+
+hands org-tokens list [--include-revoked]
+hands org-tokens revoke <tokenId>
+```
+
 ## Basic Commands
 
 Show the installed version:

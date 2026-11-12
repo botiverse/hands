@@ -21,6 +21,11 @@ import {
   sha256Hex,
   type AppDeployToken,
 } from "../lib/deploy_tokens";
+import {
+  isOrgAccessTokenBearer,
+  orgTokenTargetAppId,
+  resolveOrgAccessToken,
+} from "../lib/org_access_tokens";
 
 // Session cookie carrying the Hands auth token. Set on the stateless agent-login
 // callback (routes/auth) so the raft CLI's Agent Login — which stores/replays a
@@ -63,6 +68,11 @@ export type AdminEnv = {
     // grant issuance) read this, NOT the org-switchable admin_account.
     authenticated_account?: AdminAccount;
     admin_deploy_token?: AppDeployToken;
+    // Set when the bearer is an org access token (qvot_). admin_deploy_token
+    // then holds a synthetic, role-free grant for the single app in the path,
+    // so every app permission check applies unchanged; this flag lets code tell
+    // the two apart (e.g. for actor naming and audit payloads).
+    admin_org_token_id?: string;
     admin_actor?: string;
     org_id?: string;
     org_role?: "owner" | "admin" | "member" | "viewer";
@@ -82,6 +92,10 @@ export function accountActor(account: AdminAccount): string {
   const handle = account.username || account.display_name || account.provider_subject;
   const server = account.server_slug || account.server_id;
   return `raft:${handle}@${server}`;
+}
+
+export function orgTokenActor(token: Pick<AppDeployToken, "name" | "app_slug">): string {
+  return `org-token:${token.name}@${token.app_slug}`;
 }
 
 export function currentActor(c: Context<any>): string {
@@ -106,7 +120,9 @@ export function currentActorInfo(c: Context<any>): {
     return {
       id: deployToken.id,
       type: "agent",
-      display_name: `deploy-token:${deployToken.name}@${deployToken.app_slug}`,
+      display_name: c.get("admin_org_token_id")
+        ? orgTokenActor(deployToken)
+        : `deploy-token:${deployToken.name}@${deployToken.app_slug}`,
     };
   }
   return {
@@ -210,7 +226,36 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
       return;
     }
 
-    if (bearerToken) {
+    if (isOrgAccessTokenBearer(bearerToken)) {
+      // Org access token: confined to /api/apps/<appId>[/...] for an app the
+      // token covers. Validity and coverage are resolved in one lookup; an
+      // unknown/revoked/expired token falls through to the plain 401 below.
+      const pathname = new URL(c.req.url).pathname;
+      const appId = orgTokenTargetAppId(pathname);
+      const resolved = await resolveOrgAccessToken(c.env, bearerToken, appId ?? "");
+      if (resolved.kind === "not_covered") {
+        // Echo only the requested app id; never which apps the token covers.
+        return c.json({ error: "org_token_app_boundary", app_id: appId }, 403);
+      }
+      if (resolved.kind === "ok") {
+        if (resolveDeployTokenPermissions(resolved.token).size === 0) {
+          return c.json(
+            {
+              error: "invalid_deploy_token_grant",
+              code: "INVALID_DEPLOY_TOKEN_GRANT",
+              current_permissions: [],
+              app_id: resolved.token.app_id,
+            },
+            403,
+          );
+        }
+        c.set("admin_deploy_token", resolved.token);
+        c.set("admin_org_token_id", resolved.token.id);
+        c.set("admin_actor", orgTokenActor(resolved.token));
+        await next();
+        return;
+      }
+    } else if (bearerToken) {
       const deployToken = await loadDeployToken(c.env, bearerToken);
       if (deployToken) {
         const effectivePermissions = resolveDeployTokenPermissions(deployToken);

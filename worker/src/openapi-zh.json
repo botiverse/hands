@@ -834,5 +834,18 @@
   "Integration rate limit exceeded.": "超过集成速率限制。",
   "Reporter backend or audit configuration unavailable.": "报告者后端或审计配置不可用。",
   "Use false for background reads that must not advance the reporter's read receipt; omitted defaults to true.": "后台读取不应推进报告者已读回执时使用 false；不填默认为 true。",
-  "Reporter-owned feedback details; successful reads advance the authoritative receipt unless mark_read=false.": "报告者自己的反馈详情；成功读取会推进权威回执，除非设置 mark_read=false。"
+  "Reporter-owned feedback details; successful reads advance the authoritative receipt unless mark_read=false.": "报告者自己的反馈详情；成功读取会推进权威回执，除非设置 mark_read=false。",
+  "List organization access tokens": "列出组织访问令牌",
+  "Org admin only, from a signed-in session. Raw token values and hashes are never returned.": "仅限组织管理员，且须通过已登录会话调用。永不返回原始令牌值或哈希。",
+  "Organization access token list.": "组织访问令牌列表。",
+  "Current principal cannot manage organization access tokens.": "当前主体无权管理组织访问令牌。",
+  "Create an organization access token": "创建组织访问令牌",
+  "Creates a read-only, fine-grained token over selected apps of this organization (app_ids) or all of them (all_apps). Allowed scopes are app:read and feedback:read. The token only works on /api/apps/{appId} paths for apps it covers. The raw token is returned once in this response; store it directly in a secret manager.": "为本组织中选定的应用（app_ids）或全部应用（all_apps）创建只读的细粒度令牌。允许的权限范围为 app:read 和 feedback:read。该令牌只能用于其覆盖应用的 /api/apps/{appId} 路径。原始令牌仅在此响应中返回一次，请直接存入密钥管理器。",
+  "Created organization access token. token is shown once.": "已创建组织访问令牌。token 只显示一次。",
+  "Revoke an organization access token": "撤销组织访问令牌",
+  "Revoked organization access token.": "已撤销组织访问令牌。",
+  "Organization access token was not found.": "未找到组织访问令牌。",
+  "Selected apps. Empty when all_apps is true.": "选定的应用。all_apps 为 true 时为空。",
+  "Apps the token may read. Every app must belong to this organization. Provide exactly one of app_ids or all_apps.": "令牌可读取的应用。每个应用都必须属于本组织。app_ids 与 all_apps 必须且只能提供其一。",
+  "Cover every app in the organization, including apps created later.": "覆盖组织内的所有应用，包括之后创建的应用。"
 }

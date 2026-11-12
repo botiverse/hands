@@ -23,6 +23,7 @@ import { registerLoginCommands } from "./commands/login.js";
 import { registerReleaseCommands } from "./commands/releases.js";
 import { registerFeedbackCommands } from "./commands/feedback.js";
 import { registerDeployTokenCommands } from "./commands/deploy_tokens.js";
+import { registerOrgTokenCommands } from "./commands/org_tokens.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerDeviceIdCommand } from "./commands/device_id.js";
 import { registerLogsCommands } from "./commands/logs.js";
@@ -151,6 +152,7 @@ registerPlayCommands(program);
 registerStatsCommands(program);
 registerFeedbackCommands(program);
 registerDeployTokenCommands(program);
+registerOrgTokenCommands(program);
 registerLogsCommands(program);
 registerApiCommand(program);
 

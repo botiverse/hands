@@ -3025,7 +3025,7 @@ describe("quiver operation retry — legacy publish is not replayed", () => {
     const { handleRetryOperation } = await import("../src/routes/operations");
     const response = await handleRetryOperation({
       env,
-      req: { param: (name: string) => (name === "opId" ? "op-publish" : "") },
+      req: { param: (name: string) => (name === "opId" ? "op-publish" : name === "appId" ? "a1" : "") },
       json: (body: unknown, status = 200) =>
         new Response(JSON.stringify(body), { status }),
     } as any);
@@ -3082,7 +3082,7 @@ describe("quiver operation retry — legacy publish is not replayed", () => {
     const { handleDeleteOperation, handleRetryOperation } = await import("../src/routes/operations");
     const context = {
       env,
-      req: { param: (name: string) => (name === "opId" ? "op-expire" : "") },
+      req: { param: (name: string) => (name === "opId" ? "op-expire" : name === "appId" ? "a1" : "") },
       json: (body: unknown, status = 200) =>
         new Response(JSON.stringify(body), { status }),
     } as any;
