@@ -1111,7 +1111,9 @@ What these numbers can and cannot tell you:
   `analytics_ingest.instances_incomplete` and read again every six hours, so
   they fill in by themselves once Hands supports the new layout. Reports that
   could not be downloaded (`instances_failed`) are retried on the same
-  schedule.
+  schedule. A report larger than Hands reads at once (more than 50 files or
+  32 MiB compressed for one day) is counted in `instances_over_limit`, with
+  the reason in `last_error_code`; it is also checked again every six hours.
 - Each downloaded file is checked against the checksum Apple publishes for it
   and rejected if it does not match. If Apple sends no checksum, or one in a
   format Hands cannot check, the file is used and the warning

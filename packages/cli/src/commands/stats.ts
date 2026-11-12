@@ -138,6 +138,7 @@ export interface AppStatsResponse {
         instances_processed: number;
         instances_incomplete?: number;
         instances_failed?: number;
+        instances_over_limit?: number;
         last_processed_at: number | null;
         latest_processing_date: string | null;
         last_run_at: number | null;
@@ -194,9 +195,10 @@ export function formatAppStoreAnalytics(asc: NonNullable<AppStatsResponse["store
     const values = w.values?.length ? ` [${w.values.join(", ")}]` : "";
     lines.push(`    Warning: ${w.report_name}: ${w.code}${detail}${values}`);
   }
-  const retrying = (ingest?.instances_incomplete ?? 0) + (ingest?.instances_failed ?? 0);
+  const retrying = (ingest?.instances_incomplete ?? 0) + (ingest?.instances_failed ?? 0) + (ingest?.instances_over_limit ?? 0);
   if (retrying > 0) {
-    lines.push(`    Retrying: ${ingest?.instances_incomplete ?? 0} incomplete, ${ingest?.instances_failed ?? 0} failed report instances` +
+    lines.push(`    Retrying: ${ingest?.instances_incomplete ?? 0} incomplete, ${ingest?.instances_failed ?? 0} failed, ` +
+      `${ingest?.instances_over_limit ?? 0} over size limit report instances` +
       (ingest?.last_error_code ? ` (last: ${ingest.last_error_code})` : ""));
   }
   if (asc.analytics_note) lines.push(`    Note: ${asc.analytics_note}`);

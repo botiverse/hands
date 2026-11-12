@@ -10,11 +10,13 @@ import { storeAscCredentials } from "../src/lib/asc_credentials";
 import { requireAppRole } from "../src/lib/permissions";
 import {
   ASC_ANALYTICS_REPORTS,
+  ASC_DAILY_SQL,
   ReportAggregator,
   ingestAscAnalyticsForApp,
   parseTsvStream,
   pollAscAnalytics,
   queryAscAnalyticsDaily,
+  SCHEDULED_BUDGET,
   segmentUrlHost,
   type IngestBudget,
 } from "../src/lib/asc_analytics_ingest";
@@ -26,7 +28,7 @@ const ASC = "https://api.appstoreconnect.apple.com";
 const ASC_ORIGIN = new URL(ASC).origin;
 const isAsc = (input: unknown) => new URL(String(input)).origin === ASC_ORIGIN;
 const SEG = "https://analytics-segments.apple.com/seg";
-const BUDGET: IngestBudget = { maxInstances: 20, maxSegmentsPerInstance: 8, maxPages: 10 };
+const BUDGET: IngestBudget = { ...SCHEDULED_BUDGET, maxInstances: 20 };
 
 let p8: string;
 beforeAll(async () => {
@@ -114,6 +116,8 @@ type World = {
   redirects?: Record<string, string>;
   /** Per-URL checksum override; default is the MD5 of the served gzip bytes. */
   checksums?: Record<string, string | undefined>;
+  /** Per-URL declared sizeInBytes override (default 1). */
+  sizes?: Record<string, number>;
 };
 const gz = (text: string) => gzipSync(Buffer.from(text));
 const md5 = (bytes: Uint8Array) => createHash("md5").update(bytes).digest("hex");
@@ -190,7 +194,7 @@ function apple(w: World) {
       if (m) return page(w.segments[m[1]!] ?? [], (u) => ({ id: `seg-${u}`, attributes: {
         url: u,
         checksum: w.checksums && u in w.checksums ? w.checksums[u] : w.files[u] === undefined ? "0".repeat(32) : md5(gz(w.files[u]!)),
-        sizeInBytes: 1 } }));
+        sizeInBytes: w.sizes?.[u] ?? 1 } }));
       throw new Error(`unexpected ASC call ${p}`);
     }
     const redirect = w.redirects?.[href];
@@ -202,8 +206,10 @@ function apple(w: World) {
 }
 const segmentCalls = (fetch: ReturnType<typeof apple>) =>
   fetch.mock.calls.filter(([input]) => !isAsc(input));
-const dailyRows = (sqlite: Database.Database) =>
-  sqlite.prepare("SELECT instance_id, date, metric, dimension_key, value FROM asc_analytics_daily ORDER BY instance_id, date, metric, dimension_key").all();
+const dailyRows = (sqlite: Database.Database) => [
+  sqlite.prepare("SELECT instance_id, date, metric, dimension_key, value FROM asc_analytics_daily ORDER BY instance_id, date, metric, dimension_key").all(),
+  sqlite.prepare("SELECT instance_id, date, metric, value FROM asc_analytics_daily_totals ORDER BY instance_id, date, metric").all(),
+];
 
 describe("App Store analytics ingest", () => {
   it("ingests the whole chain, keeps first-time and redownloads apart, and never double counts overlapping instances", async () => {
@@ -222,6 +228,10 @@ describe("App Store analytics ingest", () => {
     expect(result.totals).toEqual({ downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 23, active_devices_peak_daily: 6 });
     expect(result.ingest.instances_processed).toBe(5);
     expect(result.note).toMatch(/agreed to share analytics/);
+    // The totals the stats read uses equal the territory rows summed, per instance.
+    expect(h.sqlite.prepare("SELECT instance_id, date, metric, value FROM asc_analytics_daily_totals ORDER BY 1, 2, 3").all())
+      .toEqual(h.sqlite.prepare(`SELECT instance_id, date, metric, SUM(value) AS value FROM asc_analytics_daily
+        GROUP BY instance_id, date, metric ORDER BY 1, 2, 3`).all());
     // Territory is kept as the dimension.
     expect(h.sqlite.prepare("SELECT dimension_key, value FROM asc_analytics_daily WHERE instance_id='i-sess' AND metric='sessions' ORDER BY dimension_key").all())
       .toEqual([{ dimension_key: "JP", value: 5 }, { dimension_key: "US", value: 10 }]);
@@ -454,6 +464,129 @@ describe("segment checksum", () => {
   });
 });
 
+describe("limits and CPU bounds", () => {
+  const manySegments = (n: number) => {
+    const w = sessionsOnly(sessionsA);
+    w.segments["i-sess"] = Array.from({ length: n }, (_, i) => `${SEG}/part-${i}.gz`);
+    for (const u of w.segments["i-sess"]!) w.files[u] = sessionsA;
+    return w;
+  };
+
+  it("ingests an instance with more segments than the old cap of 8", async () => {
+    const h = await harness();
+    apple(manySegments(12));
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(summary).toMatchObject({ instances_processed: 1, instances_over_limit: [] });
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).daily[0]).toMatchObject({ sessions: 120 });
+  });
+
+  it("an instance over the segment cap ends over_limit without downloading, and is visible", async () => {
+    const h = await harness();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const fetch = apple(manySegments(51));
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
+    expect(summary).toMatchObject({ instances_processed: 0, instances_failed: [], instances_over_limit: [{ instance_id: "i-sess", code: "segment_limit" }] });
+    expect(segmentCalls(fetch)).toHaveLength(0);
+    expect(instanceRow(h.sqlite, "i-sess")).toEqual({ status: "over_limit", attempts: 1, last_error: "segment_limit", next_attempt_at: T0 + 6 * HOUR });
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).ingest).toMatchObject({ instances_over_limit: 1, instances_failed: 0 });
+  });
+
+  it("checks Apple's declared sizes before downloading, and actual bytes while streaming", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const declared = await harness();
+    const w = sessionsOnly(sessionsA);
+    w.sizes = { [`${SEG}/one.gz`]: 33 * 1024 * 1024 };
+    let fetch = apple(w);
+    const a = await ingestAscAnalyticsForApp(declared.env, "app", BUDGET, T0);
+    expect(a.instances_over_limit).toEqual([{ instance_id: "i-sess", code: "segment_bytes_limit" }]);
+    expect(segmentCalls(fetch)).toHaveLength(0);
+    vi.restoreAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const actual = await harness();
+    fetch = apple(sessionsOnly(sessionsA));
+    const b = await ingestAscAnalyticsForApp(actual.env, "app", { ...BUDGET, maxInstanceBytes: 10 }, T0);
+    expect(b.instances_over_limit).toEqual([{ instance_id: "i-sess", code: "segment_bytes_limit" }]);
+    expect(actual.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).toEqual({ n: 0 });
+
+    const text = await harness();
+    const c = await ingestAscAnalyticsForApp(text.env, "app", { ...BUDGET, maxInstanceChars: 20 }, T0);
+    expect(c.instances_over_limit).toEqual([{ instance_id: "i-sess", code: "segment_text_limit" }]);
+  });
+
+  it("stops taking new instances once the run's text budget is spent", async () => {
+    const h = await harness();
+    apple(world());
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", { ...BUDGET, maxRunChars: 1 }, T0);
+    expect(summary).toMatchObject({ instances_processed: 1, more_pending: true });
+  });
+
+  it("parses lines split across stream chunks", async () => {
+    const agg = new ReportAggregator(ASC_ANALYTICS_REPORTS.find((r) => r.name === "App Sessions Standard")!);
+    const text = "Date\tTerritory\tSessions\tUnique Devices\n2026-11-10\tUS\t3\t1\n2026-11-10\tJP\t4\t2\n2026-11-11\tUS\t5\t1";
+    const chunks = ["Da", "te\tTerritory\tSess", "ions\tUnique Devices\n2026-11-10\tU", "S\t3\t1\n2026-11-10\tJP\t4\t2\n", "2026-11-11\tUS\t5", "\t1"];
+    expect(chunks.join("")).toBe(text);
+    await parseTsvStream(new ReadableStream<string>({ start(c) { for (const k of chunks) c.enqueue(k); c.close(); } }), agg);
+    expect(Object.fromEntries(agg.values)).toEqual({
+      "2026-11-10\tsessions\tUS": 3, "2026-11-10\tactive_devices\tUS": 1, "2026-11-10\tsessions\tJP": 4,
+      "2026-11-10\tactive_devices\tJP": 2, "2026-11-11\tsessions\tUS": 5, "2026-11-11\tactive_devices\tUS": 1 });
+  });
+});
+
+describe("stats read at realistic volume", () => {
+  it("picks one instance per (report, date) over 365 days x 150 territories x 3 reports, fast and without a correlated subquery", async () => {
+    const h = await harness();
+    const reports: Array<[string, string, string]> = [
+      ["App Downloads Standard", "downloads_first_time", "downloads_redownload"],
+      ["App Store Installation and Deletion Standard", "installations", "deletions"],
+      ["App Sessions Standard", "sessions", "active_devices"],
+    ];
+    const day = (i: number) => new Date(Date.UTC(2025, 10, 11) + i * 86_400_000).toISOString().slice(0, 10);
+    const territories = Array.from({ length: 150 }, (_, i) => `T${i}`);
+    const insert = h.sqlite.prepare(`INSERT INTO asc_analytics_daily
+      (app_id, instance_id, report_name, processing_date, date, metric, dimension_key, value) VALUES ('app', ?, ?, ?, ?, ?, ?, ?)`);
+    h.sqlite.transaction(() => {
+      for (let i = 0; i < 365; i++) {
+        const date = day(i);
+        for (const [name, m1, m2] of reports) {
+          // Two overlapping instances per date: an older one (value 1) and a later restatement (value 2).
+          for (const [suffix, processing, value] of [["old", date, 1], ["new", day(i + 1), 2]] as const) {
+            const id = `${name}-${date}-${suffix}`;
+            for (const t of territories) {
+              insert.run(id, name, processing, date, m1, t, value);
+              insert.run(id, name, processing, date, m2, t, value);
+            }
+          }
+        }
+      }
+    })();
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).toEqual({ n: 365 * 150 * 3 * 2 * 2 });
+    // The write path stores per-instance totals alongside the territory rows; derive them the same way.
+    h.sqlite.exec(`INSERT INTO asc_analytics_daily_totals (app_id, instance_id, report_name, processing_date, date, metric, value)
+      SELECT app_id, instance_id, report_name, processing_date, date, metric, SUM(value) FROM asc_analytics_daily
+      GROUP BY app_id, instance_id, report_name, processing_date, date, metric`);
+    h.sqlite.exec("ANALYZE");
+
+    const plan = (h.sqlite.prepare(`EXPLAIN QUERY PLAN ${ASC_DAILY_SQL.replace(/\?(\d+)/g, "?")}`).all("app", day(0), "app") as Array<{ detail: string }>)
+      .map((r) => r.detail).join("\n");
+    expect(plan).not.toMatch(/CORRELATED/);
+
+    const started = performance.now();
+    const result = await queryAscAnalyticsDaily(h.env.DB, "app", day(0));
+    const elapsed = performance.now() - started;
+    console.info(`asc stats read: ${elapsed.toFixed(1)} ms for 365 days\n${plan}`);
+    expect(result.daily).toHaveLength(365);
+    expect(result.daily.every((d) => d.sessions === 300 && d.downloads_first_time === 300 && d.active_devices === 300)).toBe(true);
+    expect(result.totals).toMatchObject({ downloads_first_time: 365 * 300, deletions: 365 * 300, sessions: 365 * 300, active_devices_peak_daily: 300 });
+    // Generous bound so CI noise cannot flake; the measured time is printed above.
+    expect(elapsed).toBeLessThan(100);
+
+    const window = performance.now();
+    await queryAscAnalyticsDaily(h.env.DB, "app", day(365 - 56));
+    console.info(`asc stats read: ${(performance.now() - window).toFixed(1)} ms for 56 days`);
+  }, 60_000);
+});
+
 describe("report column mapping", () => {
   const stream = (text: string) => new ReadableStream<string>({ start(c) { c.enqueue(text); c.close(); } });
   const mapping = (name: string) => ASC_ANALYTICS_REPORTS.find((r) => r.name === name)!;
@@ -489,12 +622,15 @@ describe("report column mapping", () => {
 });
 
 describe("scheduled ingest and routes", () => {
-  it("cron ingests each app in isolation and records only error codes", async () => {
+  it("cron ingests one app per tick, each in isolation, and records only error codes", async () => {
     const h = await harness();
     const now = Date.now();
     h.sqlite.prepare("INSERT INTO apps (id, slug, name, platform, created_at) VALUES ('broken', 'broken', 'Broken', 'ios', ?)").run(now);
     await storeAscCredentials(h.env.DB, "test-key", { app_id: "broken", key_id: "K2", issuer_id: "i", p8, actor: "raft:acct@test" });
     apple(world());
+    // One app per tick: the first tick only touches "app".
+    await pollAscAnalytics(h.env, now);
+    expect(h.sqlite.prepare("SELECT app_id FROM asc_analytics_ingest_schedule WHERE last_run_at IS NOT NULL").all()).toEqual([{ app_id: "app" }]);
     await pollAscAnalytics(h.env, now);
     const schedule = h.sqlite.prepare("SELECT app_id, last_error_code, next_run_at FROM asc_analytics_ingest_schedule ORDER BY app_id").all() as
       Array<{ app_id: string; last_error_code: string | null; next_run_at: number }>;

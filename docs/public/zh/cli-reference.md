@@ -730,7 +730,7 @@ hands api POST /api/apps/<appId>/stats/app-store/ingest
 - **数据有延迟。** Apple 在一到两天后才发布某一天的报表，最近几天一开始会缺失。
 - **`active_devices` 是估计值。** 同一天出现在多行中的设备（例如使用了两个应用版本）会被重复计算，且不能跨天相加。因此 `totals` 给出的是单日最高值 `active_devices_peak_daily`，而不是合计。需要集成了 Hands SDK 的构建的精确活跃设备数时，请看 `direct.devices`。
 - **缺失值是 `null` 而不是 0**：表示当天没有报表覆盖该指标。
-- 如果 Apple 改变了报表的列，Hands 会在 `analytics_ingest.warnings` 中记录警告（例如 `missing_column Unique Devices`），并让该指标留空，而不是猜测。缺少必需列或含有无法识别取值的报表计入 `analytics_ingest.instances_incomplete`，每六小时重新读取一次，Hands 支持新格式后会自动补全。下载失败的报表（`instances_failed`）按同样的间隔重试。
+- 如果 Apple 改变了报表的列，Hands 会在 `analytics_ingest.warnings` 中记录警告（例如 `missing_column Unique Devices`），并让该指标留空，而不是猜测。缺少必需列或含有无法识别取值的报表计入 `analytics_ingest.instances_incomplete`，每六小时重新读取一次，Hands 支持新格式后会自动补全。下载失败的报表（`instances_failed`）按同样的间隔重试。超过 Hands 单次读取上限的报表（同一天超过 50 个文件或压缩后超过 32 MiB）计入 `instances_over_limit`，原因见 `last_error_code`，同样每六小时重新检查一次。
 - 每个下载的文件都会与 Apple 提供的校验值比对，不一致即拒绝。如果 Apple 没有提供校验值，或格式无法校验，文件仍会使用，并显示警告 `checksum_missing` 或 `checksum_unverified`。
 
 ## CI 环境变量

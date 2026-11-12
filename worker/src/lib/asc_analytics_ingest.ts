@@ -14,7 +14,8 @@
  *
  * Each instance is written atomically as per-instance rows; readers pick one
  * instance per (report, date), so re-running or overlapping ONGOING and
- * ONE_TIME_SNAPSHOT instances never double count. A complete instance is never
+ * ONE_TIME_SNAPSHOT instances never double count. That rule assumes each
+ * instance fully restates the dates it contains (see queryAscAnalyticsDaily). A complete instance is never
  * read again; an incomplete (mapping lost data) or failed one is retried at
  * most every INSTANCE_RETRY_MS.
  */
@@ -229,15 +230,27 @@ export class ReportAggregator {
   }
 }
 
-/** Parse one decompressed TSV text stream (header row first) into the aggregator. */
+/**
+ * Byte accounting shared by every segment of one instance, so the limits bound
+ * the whole instance and not each file separately.
+ */
+export type ByteMeter = { compressed: number; text: number; maxCompressed: number; maxText: number };
+export const newMeter = (maxCompressed: number, maxText: number): ByteMeter => ({ compressed: 0, text: 0, maxCompressed, maxText });
+
+/** Codes that mean an instance is larger than Hands will read, not that it is broken. */
+export const LIMIT_CODES = new Set(["segment_limit", "segment_bytes_limit", "segment_text_limit"]);
+
+/**
+ * Parse one decompressed TSV text stream (header row first) into the aggregator,
+ * line by line: only the current chunk and one partial line are held in memory.
+ */
 export async function parseTsvStream(
   text: ReadableStream<string>,
   agg: ReportAggregator,
-  maxChars = 64 * 1024 * 1024,
+  meter: ByteMeter = newMeter(Infinity, 64 * 1024 * 1024),
 ): Promise<void> {
   let buffer = "";
   let consume: ((fields: string[]) => void) | null | undefined;
-  let total = 0;
   const line = (raw: string) => {
     const l = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (l === "") return;
@@ -249,17 +262,19 @@ export async function parseTsvStream(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    total += value.length;
-    if (total > maxChars) {
+    meter.text += value.length;
+    if (meter.text > meter.maxText) {
       await reader.cancel().catch(() => undefined);
-      throw new AscIngestError("segment_too_large");
+      throw new AscIngestError("segment_text_limit");
     }
-    buffer += value;
+    const chunk = buffer + value;
+    let start = 0;
     let nl: number;
-    while ((nl = buffer.indexOf("\n")) >= 0) {
-      line(buffer.slice(0, nl));
-      buffer = buffer.slice(nl + 1);
+    while ((nl = chunk.indexOf("\n", start)) >= 0) {
+      line(chunk.slice(start, nl));
+      start = nl + 1;
     }
+    buffer = chunk.slice(start);
   }
   line(buffer);
 }
@@ -306,7 +321,7 @@ export function checksumAlgorithm(checksum: string | null | undefined): "md5" | 
 export async function fetchSegmentInto(
   rawUrl: string,
   agg: ReportAggregator,
-  maxChars?: number,
+  meter: ByteMeter,
   checksum?: string | null,
 ): Promise<void> {
   const algorithm = checksumAlgorithm(checksum);
@@ -329,22 +344,25 @@ export async function fetchSegmentInto(
       throw new AscIngestError(`segment_http_${res.status}`, checked.url.hostname);
     }
     // Hash the compressed bytes as they stream past, then compare once the body is read.
+    // The same pass counts compressed bytes against the instance limit.
     const hash = algorithm === "md5" || algorithm === "sha256" ? createHash(algorithm) : null;
-    const hashed = hash
-      ? res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            hash.update(chunk);
-            controller.enqueue(chunk);
-          },
-        }))
-      : res.body;
+    const hashed = res.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        meter.compressed += chunk.byteLength;
+        if (meter.compressed > meter.maxCompressed) throw new AscIngestError("segment_bytes_limit");
+        hash?.update(chunk);
+        controller.enqueue(chunk);
+      },
+    }));
     const text = hashed
       .pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>)
       .pipeThrough(new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>);
     try {
-      await parseTsvStream(text, agg, maxChars);
+      await parseTsvStream(text, agg, meter);
     } catch (err) {
       if (err instanceof AscIngestError) throw err;
+      // An error thrown in the counting transform reaches us wrapped by the pipe.
+      if (meter.compressed > meter.maxCompressed) throw new AscIngestError("segment_bytes_limit");
       throw new AscIngestError("segment_decode_failed", checked.url.hostname);
     }
     if (hash && hash.digest("hex") !== (checksum ?? "").trim().toLowerCase()) {
@@ -388,11 +406,24 @@ export type IngestBudget = {
   maxInstances: number;
   /** An instance with more segments than this is skipped this run (recorded as failed). */
   maxSegmentsPerInstance: number;
+  /** Compressed bytes per instance (Apple's sizeInBytes is checked first, then actual bytes). */
+  maxInstanceBytes: number;
+  /** Decompressed characters per instance. */
+  maxInstanceChars: number;
+  /** Decompressed characters per call: once spent, remaining instances wait for the next run. */
+  maxRunChars: number;
   maxPages: number;
-  maxSegmentChars?: number;
 };
 
-export const SCHEDULED_BUDGET: IngestBudget = { maxInstances: 6, maxSegmentsPerInstance: 8, maxPages: 10 };
+const MiB = 1024 * 1024;
+export const SCHEDULED_BUDGET: IngestBudget = {
+  maxInstances: 6,
+  maxSegmentsPerInstance: 50,
+  maxInstanceBytes: 32 * MiB,
+  maxInstanceChars: 128 * MiB,
+  maxRunChars: 192 * MiB,
+  maxPages: 10,
+};
 
 export type IngestSummary = {
   status: "ok" | "not_configured" | "bundle_id_missing" | "asc_app_not_found";
@@ -407,6 +438,8 @@ export type IngestSummary = {
   /** Written, but missing a required column or holding unmapped values: retried later. */
   instances_incomplete: Array<{ instance_id: string; code: string }>;
   instances_failed: Array<{ instance_id: string; code: string }>;
+  /** Larger than the per-instance limits: nothing written, status over_limit. */
+  instances_over_limit: Array<{ instance_id: string; code: string }>;
   rows_written: number;
   more_pending: boolean;
   warnings: Array<{ instance_id: string; report_name: string } & IngestWarning>;
@@ -464,6 +497,7 @@ export async function ingestAscAnalyticsForApp(
     instances_deferred: 0,
     instances_processed: 0,
     instances_incomplete: [],
+    instances_over_limit: [],
     instances_failed: [],
     rows_written: 0,
     more_pending: false,
@@ -525,18 +559,34 @@ export async function ingestAscAnalyticsForApp(
   pending.sort((a, b) => b.processingDate.localeCompare(a.processingDate) || b.id.localeCompare(a.id));
   if (pending.length > budget.maxInstances) summary.more_pending = true;
 
+  let runChars = 0;
   for (const inst of pending.slice(0, budget.maxInstances)) {
+    // Bound CPU per call: once the decompressed-text budget is spent, the rest waits.
+    if (runChars >= budget.maxRunChars) {
+      summary.more_pending = true;
+      break;
+    }
+    const meter = newMeter(budget.maxInstanceBytes, budget.maxInstanceChars);
     try {
-      const segments = await ascGetAll<{ id: string; attributes?: { url?: string; checksum?: string } }>(creds,
-        `/v1/analyticsReportInstances/${encodeURIComponent(inst.id)}/segments?limit=200`, budget.maxPages);
+      const segments = await ascGetAll<{ id: string; attributes?: { url?: string; checksum?: string; sizeInBytes?: number } }>(creds,
+        `/v1/analyticsReportInstances/${encodeURIComponent(inst.id)}/segments?limit=200`,
+        // Enough pages to see the whole cap however Apple pages it; truncation then really means over the cap.
+        Math.max(budget.maxPages, budget.maxSegmentsPerInstance + 1));
+      // Check Apple's declared sizes before downloading anything.
       if (segments.items.length > budget.maxSegmentsPerInstance || segments.truncated) {
-        throw new AscIngestError("too_many_segments");
+        throw new AscIngestError("segment_limit");
       }
+      const declared = segments.items.reduce((sum, seg) => sum + (Number(seg.attributes?.sizeInBytes) || 0), 0);
+      if (declared > budget.maxInstanceBytes) throw new AscIngestError("segment_bytes_limit");
       const agg = new ReportAggregator(inst.mapping);
-      for (const segment of segments.items) {
-        const url = segment.attributes?.url;
-        if (!url) throw new AscIngestError("segment_url_missing");
-        await fetchSegmentInto(url, agg, budget.maxSegmentChars, segment.attributes?.checksum);
+      try {
+        for (const segment of segments.items) {
+          const url = segment.attributes?.url;
+          if (!url) throw new AscIngestError("segment_url_missing");
+          await fetchSegmentInto(url, agg, meter, segment.attributes?.checksum);
+        }
+      } finally {
+        runChars += meter.text;
       }
       const rows = [...agg.values].map(([key, value]) => {
         const [date, metric, territory] = key.split("\t");
@@ -546,9 +596,25 @@ export async function ingestAscAnalyticsForApp(
       const blocking = warnings.find((w) => blockingWarning(w, inst.mapping));
       const status = blocking ? "incomplete" : "complete";
       const lastError = blocking ? `${blocking.code}${blocking.column ? `:${blocking.column}` : ""}` : null;
+      const totals = new Map<string, { d: string; m: string; v: number }>();
+      for (const r of rows) {
+        const key = `${r.d}\t${r.m}`;
+        const t = totals.get(key) ?? { d: r.d!, m: r.m!, v: 0 };
+        t.v += r.v;
+        totals.set(key, t);
+      }
       const statements = [
         env.DB.prepare("DELETE FROM asc_analytics_daily WHERE app_id = ?1 AND instance_id = ?2").bind(appId, inst.id),
+        env.DB.prepare("DELETE FROM asc_analytics_daily_totals WHERE app_id = ?1 AND instance_id = ?2").bind(appId, inst.id),
       ];
+      const totalRows = [...totals.values()];
+      for (let i = 0; i < totalRows.length; i += INSERT_CHUNK) {
+        statements.push(env.DB.prepare(
+          `INSERT INTO asc_analytics_daily_totals (app_id, instance_id, report_name, processing_date, date, metric, value)
+           SELECT ?1, ?2, ?3, ?4, json_extract(j.value, '$.d'), json_extract(j.value, '$.m'), json_extract(j.value, '$.v')
+           FROM json_each(?5) j`,
+        ).bind(appId, inst.id, inst.mapping.name, inst.processingDate, JSON.stringify(totalRows.slice(i, i + INSERT_CHUNK))));
+      }
       for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
         statements.push(env.DB.prepare(
           `INSERT INTO asc_analytics_daily (app_id, instance_id, report_name, processing_date, date, metric, dimension_key, value)
@@ -582,20 +648,25 @@ export async function ingestAscAnalyticsForApp(
       for (const w of warnings) summary.warnings.push({ instance_id: inst.id, report_name: inst.mapping.name, ...w });
     } catch (err) {
       const code = errorCode(err);
-      summary.instances_failed.push({ instance_id: inst.id, code });
       logFailure(appId, code, { instance_id: inst.id, host: err instanceof AscIngestError ? err.host : undefined });
-      // Record the attempt so a permanently broken instance is retried every few hours,
-      // not on every run; its earlier rows (if any) are left as they were.
+      // Record the attempt so a permanently broken or oversized instance is retried
+      // every few hours, not on every run; its earlier rows (if any) are left as they were.
+      // Oversized instances get their own status so they are visible, not a silent loop.
+      const overLimit = LIMIT_CODES.has(code);
+      if (overLimit) summary.instances_over_limit.push({ instance_id: inst.id, code });
+      else summary.instances_failed.push({ instance_id: inst.id, code });
       await env.DB.prepare(
         `INSERT INTO asc_analytics_instances (app_id, instance_id, report_id, report_name, granularity, processing_date,
            processed_at, status, attempts, last_error, next_attempt_at)
-         VALUES (?1, ?2, ?3, ?4, 'DAILY', ?5, ?6, 'failed', 1, ?7, ?8)
+         VALUES (?1, ?2, ?3, ?4, 'DAILY', ?5, ?6, ?9, 1, ?7, ?8)
          ON CONFLICT(app_id, instance_id) DO UPDATE SET
-           status = CASE WHEN asc_analytics_instances.status = 'incomplete' THEN 'incomplete' ELSE 'failed' END,
+           status = CASE WHEN ?9 = 'over_limit' THEN 'over_limit'
+                         WHEN asc_analytics_instances.status = 'incomplete' THEN 'incomplete' ELSE 'failed' END,
            attempts = asc_analytics_instances.attempts + 1,
            last_error = excluded.last_error, next_attempt_at = excluded.next_attempt_at
          WHERE asc_analytics_instances.status <> 'complete'`,
-      ).bind(appId, inst.id, inst.reportId, inst.mapping.name, inst.processingDate, now, code, now + INSTANCE_RETRY_MS)
+      ).bind(appId, inst.id, inst.reportId, inst.mapping.name, inst.processingDate, now, code, now + INSTANCE_RETRY_MS,
+        overLimit ? "over_limit" : "failed")
         .run().catch(() => undefined);
     }
   }
@@ -603,7 +674,8 @@ export async function ingestAscAnalyticsForApp(
 }
 
 const RUN_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const APPS_PER_TICK = 2;
+/** One app per five-minute tick, so one tenant's reports never share a tick's CPU with another's. */
+const APPS_PER_TICK = 1;
 
 /** Cron entry: a few apps per tick, each isolated; persisted rotation like the Play poll. */
 export async function pollAscAnalytics(env: Env, now = Date.now()) {
@@ -623,7 +695,8 @@ export async function pollAscAnalytics(env: Env, now = Date.now()) {
     try {
       const summary = await ingestAscAnalyticsForApp(env, row.app_id, SCHEDULED_BUDGET, now);
       if (summary.status !== "ok") code = summary.status;
-      else code = summary.instances_failed[0]?.code ?? summary.instances_incomplete[0]?.code ?? null;
+      else code = summary.instances_failed[0]?.code ?? summary.instances_over_limit[0]?.code
+        ?? summary.instances_incomplete[0]?.code ?? null;
       // Backlog left: continue on the next five-minute slot instead of in six hours.
       if (summary.more_pending && summary.instances_processed > 0) next = (Math.floor(now / 300_000) + 1) * 300_000;
     } catch (err) {
@@ -642,20 +715,39 @@ export type AscDailyRow = { date: string } & Record<AscAnalyticsMetric, number |
 const ADDITIVE: AscAnalyticsMetric[] = ["downloads_first_time", "downloads_redownload", "installations", "deletions", "sessions"];
 
 /**
+ * Reads the per-instance daily totals (already summed over territories). The
+ * winner is chosen once per (report, date) with a window function over a
+ * covering-index scan, then joined back on the primary key; no correlated
+ * subquery. ?1 = app id, ?2 = first date.
+ */
+export const ASC_DAILY_SQL = `WITH winners AS (
+  SELECT report_name, date, instance_id FROM (
+    SELECT report_name, date, instance_id,
+           ROW_NUMBER() OVER (PARTITION BY report_name, date ORDER BY processing_date DESC, instance_id DESC) AS rn
+    FROM (SELECT DISTINCT report_name, date, instance_id, processing_date
+          FROM asc_analytics_daily_totals WHERE app_id = ?1 AND date >= ?2))
+  WHERE rn = 1
+)
+SELECT t.date AS date, t.metric AS metric, SUM(t.value) AS value
+FROM winners w
+JOIN asc_analytics_daily_totals t ON t.app_id = ?1 AND t.instance_id = w.instance_id AND t.date = w.date
+GROUP BY t.date, t.metric
+ORDER BY t.date`;
+
+/**
  * Daily App Store metrics since `sinceDate` (YYYY-MM-DD, inclusive). For each
  * (report, date) only the instance with the latest processing date counts.
+ *
+ * ASSUMPTION (verify against the first real instances): an instance that
+ * contains a date restates that whole date for its report, so the latest
+ * instance can replace earlier ones for that date. If Apple instead split one
+ * date across several instances (each holding only part of the rows), this
+ * rule would undercount that date, and the selection would have to become a
+ * union of instances per date.
  */
 export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinceDate: string) {
   const { results } = await db.prepare(
-    `SELECT d.date AS date, d.metric AS metric, SUM(d.value) AS value
-     FROM asc_analytics_daily d
-     WHERE d.app_id = ?1 AND d.date >= ?2
-       AND d.instance_id = (
-         SELECT d2.instance_id FROM asc_analytics_daily d2
-         WHERE d2.app_id = d.app_id AND d2.report_name = d.report_name AND d2.date = d.date
-         ORDER BY d2.processing_date DESC, d2.instance_id DESC LIMIT 1)
-     GROUP BY d.date, d.metric
-     ORDER BY d.date`,
+    ASC_DAILY_SQL,
   ).bind(appId, sinceDate).all<{ date: string; metric: string; value: number }>();
   const byDate = new Map<string, AscDailyRow>();
   for (const r of results) {
@@ -680,10 +772,11 @@ export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinc
     `SELECT SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS instances,
             SUM(CASE WHEN status = 'incomplete' THEN 1 ELSE 0 END) AS incomplete,
             SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-            MAX(CASE WHEN status <> 'failed' THEN processed_at END) AS last_processed_at,
-            MAX(CASE WHEN status <> 'failed' THEN processing_date END) AS latest_processing_date
+            SUM(CASE WHEN status = 'over_limit' THEN 1 ELSE 0 END) AS over_limit,
+            MAX(CASE WHEN status IN ('complete', 'incomplete') THEN processed_at END) AS last_processed_at,
+            MAX(CASE WHEN status IN ('complete', 'incomplete') THEN processing_date END) AS latest_processing_date
      FROM asc_analytics_instances WHERE app_id = ?1`,
-  ).bind(appId).first<{ instances: number | null; incomplete: number | null; failed: number | null;
+  ).bind(appId).first<{ instances: number | null; incomplete: number | null; failed: number | null; over_limit: number | null;
     last_processed_at: number | null; latest_processing_date: string | null }>();
   const warned = await db.prepare(
     `SELECT report_name, warnings_json FROM asc_analytics_instances
@@ -708,6 +801,8 @@ export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinc
       instances_incomplete: Number(ingest?.incomplete ?? 0),
       /** Not written (download, checksum or API failure); retried automatically. */
       instances_failed: Number(ingest?.failed ?? 0),
+      /** Larger than Hands reads per instance (segments or bytes); last_error says which. */
+      instances_over_limit: Number(ingest?.over_limit ?? 0),
       last_processed_at: ingest?.last_processed_at ?? null,
       latest_processing_date: ingest?.latest_processing_date ?? null,
       last_run_at: schedule?.last_run_at ?? null,
