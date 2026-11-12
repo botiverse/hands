@@ -7,6 +7,7 @@ import {
   InviteTokenParam,
   OrgIdParam,
   OrgRole,
+  TokenIdParam,
   WebhookIdParam,
   auth,
   error,
@@ -20,6 +21,57 @@ const OrgMemberParams = OrgIdParam.merge(AccountIdParam);
 const OrgInviteParams = OrgIdParam.merge(InviteIdParam);
 const OrgWebhookParams = OrgIdParam.merge(WebhookIdParam);
 const AppWebhookParams = AppIdParam.merge(WebhookIdParam);
+const OrgAccessTokenParams = OrgIdParam.merge(TokenIdParam);
+
+const OrgAccessTokenScope = z.enum(["app:read", "feedback:read"]);
+
+const OrgAccessToken = z
+  .object({
+    id: z.string(),
+    org_id: z.string(),
+    name: z.string(),
+    token_prefix: z.string(),
+    scopes: z.array(OrgAccessTokenScope),
+    all_apps: z.boolean(),
+    apps: z.array(z.object({ id: z.string(), slug: z.string(), name: z.string() })).openapi({
+      description: "Selected apps. Empty when all_apps is true.",
+    }),
+    created_by: z.string().nullable(),
+    created_by_actor: z.string(),
+    created_at: z.number().int(),
+    expires_at: z.number().int().nullable(),
+    last_used_at: z.number().int().nullable(),
+    revoked_at: z.number().int().nullable(),
+  })
+  .openapi("OrgAccessToken");
+
+const CreateOrgAccessTokenRequest = z
+  .object({
+    name: z.string().min(1).max(80),
+    scopes: z.array(OrgAccessTokenScope).min(1),
+    app_ids: z.array(z.string()).min(1).optional().openapi({
+      description: "Apps the token may read. Every app must belong to this organization. Provide exactly one of app_ids or all_apps.",
+    }),
+    all_apps: z.literal(true).optional().openapi({
+      description: "Cover every app in the organization, including apps created later.",
+    }),
+    expires_in_days: z.number().positive().max(3650).optional(),
+    expires_at: z.number().int().optional().openapi({
+      description:
+        "Optional absolute expiry as unix timestamp in milliseconds. Must be at least 60 seconds in the future.",
+    }),
+  })
+  .openapi("CreateOrgAccessTokenRequest");
+
+const CreateOrgAccessTokenResponse = z
+  .object({
+    token: z.string().openapi({
+      description:
+        "Raw bearer token. It is returned only once and should be stored directly in a secret manager.",
+    }),
+    access_token: OrgAccessToken,
+  })
+  .openapi("CreateOrgAccessTokenResponse");
 
 const InviteInput = z
   .object({
@@ -160,6 +212,62 @@ export function registerOrgRoutes(): RouteConfigList {
     responses: {
       200: success("Audit log list.", z.object({ audit_logs: z.array(GenericObject) }).catchall(z.unknown())),
       403: error("Current principal cannot view org audit logs."),
+    },
+  });
+
+  routes.push({
+    method: "get",
+    path: "/api/orgs/{orgId}/access-tokens",
+    tags: ["Organizations"],
+    summary: "List organization access tokens",
+    description: "Org admin only, from a signed-in session. Raw token values and hashes are never returned.",
+    security: auth,
+    request: {
+      params: OrgIdParam,
+      query: z.object({ include_revoked: z.enum(["1"]).optional() }),
+    },
+    responses: {
+      200: success("Organization access token list.", z.object({ access_tokens: z.array(OrgAccessToken) })),
+      401: error("Missing or invalid authentication."),
+      403: error("Current principal cannot manage organization access tokens."),
+    },
+  });
+
+  routes.push({
+    method: "post",
+    path: "/api/orgs/{orgId}/access-tokens",
+    tags: ["Organizations"],
+    summary: "Create an organization access token",
+    description:
+      "Creates a read-only, fine-grained token over selected apps of this organization (app_ids) or all of them (all_apps). Allowed scopes are app:read and feedback:read. The token only works on /api/apps/{appId} paths for apps it covers. The raw token is returned once in this response; store it directly in a secret manager.",
+    security: auth,
+    request: {
+      params: OrgIdParam,
+      body: { content: json(CreateOrgAccessTokenRequest), required: true },
+    },
+    responses: {
+      201: success("Created organization access token. token is shown once.", CreateOrgAccessTokenResponse),
+      400: error("Invalid request."),
+      401: error("Missing or invalid authentication."),
+      403: error("Current principal cannot manage organization access tokens."),
+    },
+  });
+
+  routes.push({
+    method: "delete",
+    path: "/api/orgs/{orgId}/access-tokens/{tokenId}",
+    tags: ["Organizations"],
+    summary: "Revoke an organization access token",
+    security: auth,
+    request: { params: OrgAccessTokenParams },
+    responses: {
+      200: success(
+        "Revoked organization access token.",
+        z.object({ ok: z.literal(true), id: z.string(), revoked_at: z.number().int() }),
+      ),
+      401: error("Missing or invalid authentication."),
+      403: error("Current principal cannot manage organization access tokens."),
+      404: error("Organization access token was not found."),
     },
   });
 

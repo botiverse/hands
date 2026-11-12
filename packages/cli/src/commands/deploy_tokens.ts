@@ -29,7 +29,7 @@ interface DeployToken {
   revoked_at: number | null;
 }
 
-async function resolveAppId(appIdOrSlug: string): Promise<string> {
+export async function resolveAppId(appIdOrSlug: string): Promise<string> {
   const isUuid =
     appIdOrSlug.length === 36 && appIdOrSlug.split("-").length === 5;
   if (isUuid) return appIdOrSlug;

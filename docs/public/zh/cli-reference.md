@@ -64,6 +64,21 @@ hands deploy-tokens revoke raft-android <tokenId>
 
 创建的令牌应在 CI 中设置为 `HANDS_BEARER_TOKEN`。服务端只保存哈希，因此令牌丢失后只能撤销并重新创建，无法恢复原值。
 
+## 组织访问令牌
+
+面向单个组织的只读细粒度令牌：选择应用（或使用 `--all-apps`，同时覆盖之后创建的应用）和权限范围（`app:read`、`feedback:read`）。令牌只能用于其覆盖应用的 `/api/apps/<appId>/...`。管理令牌需要通过已登录会话且具备**组织管理员**权限；`--org` 默认为当前组织。
+
+```bash
+# 为两个应用创建反馈读取令牌（仅显示一次，请立即保存）
+hands org-tokens create --name feedback-sync --scope feedback:read --app raft-android raft-ios
+
+# 组织内全部应用、两个权限范围、90 天后过期
+hands org-tokens create --org <orgId> --name dashboard --scope app:read feedback:read --all-apps --expires-in-days 90
+
+hands org-tokens list [--include-revoked]
+hands org-tokens revoke <tokenId>
+```
+
 ## 基本命令
 
 显示安装版本：

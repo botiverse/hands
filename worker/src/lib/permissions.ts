@@ -7,6 +7,7 @@ import {
 } from "./deploy_tokens";
 import {
   APP_PERMISSION_MINIMUM_ROLE,
+  APP_ROLE_REQUIRED_PERMISSION,
   isAppAtLeast,
   isAppRole,
   strongestAppRole,
@@ -389,6 +390,19 @@ export async function ensureOrgRole(c: AdminContext, orgId: string, minimum: Org
   return { ok: true as const, role };
 }
 
+/**
+ * An org access token is role-free by design, but its `app:read` scope must
+ * mean something: viewer-tier routes are gated by role, and `app:read` is
+ * exactly the permission the viewer role stands for. Only org tokens get this
+ * reading — role-free app deploy tokens keep their existing behaviour.
+ */
+function orgTokenReadGrant(c: AdminContext, token: AppDeployToken, minimum: AppRole): boolean {
+  return Boolean(c.get("admin_org_token_id"))
+    && minimum === "viewer"
+    && token.app_role === null
+    && resolveDeployTokenPermissions(token).has(APP_ROLE_REQUIRED_PERMISSION.viewer);
+}
+
 export async function ensureAppRole(
   c: AdminContext,
   appId: string,
@@ -403,7 +417,7 @@ export async function ensureAppRole(
     if (
       deployToken.app_id !== appId
       || resolveDeployTokenPermissions(deployToken).size === 0
-      || !isAppAtLeast(deployToken.app_role, minimum)
+      || !(isAppAtLeast(deployToken.app_role, minimum) || orgTokenReadGrant(c, deployToken, minimum))
     ) {
       return {
         ok: false as const,
@@ -647,7 +661,14 @@ export async function insertAuditLog(
   const deployToken = c.get("admin_deploy_token") as AppDeployToken | undefined;
   const payload =
     deployToken && !accountId
-      ? { ...(input.payload as Record<string, unknown> | null ?? {}), deploy_token_prefix: deployToken.token_prefix }
+      ? {
+          ...(input.payload as Record<string, unknown> | null ?? {}),
+          // An org access token is surfaced as a synthetic deploy token; name the
+          // credential kind correctly so an auditor looks in the right table.
+          ...(c.get("admin_org_token_id")
+            ? { org_access_token_prefix: deployToken.token_prefix }
+            : { deploy_token_prefix: deployToken.token_prefix }),
+        }
       : input.payload;
   await db
     .prepare(
