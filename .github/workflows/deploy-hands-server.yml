@@ -433,6 +433,9 @@ jobs:
             echo "This deploy will apply:"
             echo "$before"
           fi
+          # The readback scopes its foreign-key check to what these files touch.
+          applied_files=$(grep -oE '[0-9]{4}_[A-Za-z0-9_]+\.sql' <<<"$before" | sort -u | tr '\n' ' ' || true)
+          echo "applied_files=${applied_files}" >> "$GITHUB_OUTPUT"
 
           pnpm exec wrangler d1 migrations apply "${HANDS_D1_DATABASE_NAME}" --remote --config wrangler.hands.generated.jsonc
 
@@ -459,6 +462,7 @@ jobs:
           # Whether this run actually applied migrations. `apply` sets this before it
           # runs, so it is known even when the apply later fails.
           MIGRATIONS_APPLIED: ${{ steps.apply.outputs.changes_schema }}
+          APPLIED_FILES: ${{ steps.apply.outputs.applied_files }}
           # Bump this only together with re-measuring the failure behaviour on the new
           # version. The number is a claim about what was tested, not a preference.
           MEASURED_WRANGLER: "4.105.0"
@@ -594,7 +598,17 @@ jobs:
           # let a later reader believe foreign-key checking still runs on every deploy.
           if [[ "${MIGRATIONS_APPLIED}" != "true" ]]; then
             skip "foreign_key_check is empty" "no migration applied this run, so no row can have changed"
-          elif orphans=$(q "PRAGMA foreign_key_check" 2>/tmp/fkc.err | jq -r 'length'); then
+          elif ! fk_tables=$(node ../scripts/migration-fk-scope.mjs tables ../migrations/sql ${APPLIED_FILES}); then
+            cannot_run "foreign_key_check is empty" "could not derive the tables the applied migrations touch"
+          elif [[ -z "${fk_tables}" ]]; then
+            skip "foreign_key_check is empty" "the applied migrations write no table"
+          elif fk_scope=$(q "$(node ../scripts/migration-fk-scope.mjs referencing-sql ${fk_tables})" 2>/tmp/fkc.err | jq -r '[.[].name] | unique | join(" ")') \
+            && orphans=$(for t in ${fk_scope}; do q "PRAGMA foreign_key_check(\"${t}\")" 2>>/tmp/fkc.err | jq -r 'length' || echo ERR; done \
+              | awk '$1=="ERR"{e=1} {s+=$1} END{if(e) exit 1; print s+0}'); then
+            # A full-database PRAGMA foreign_key_check scans every table and has overloaded
+            # production D1 (7429). Only the tables the applied migrations write, and the
+            # tables whose foreign keys point at them, can have gained an orphan.
+            echo "  foreign_key_check scope: ${fk_scope:-none}"
             check "foreign_key_check is empty" "$orphans" "0"
           else
             # Not `check ... FAIL`: nothing was measured, so there is no violation to
