@@ -666,6 +666,16 @@ describe("scheduled ingest and routes", () => {
     expect(await res.json()).toMatchObject({ status: "ok", instances_processed: 5, note: expect.stringMatching(/privacy/) });
   });
 
+  it("manual ingest returns Apple's error source and detail when Apple rejects a call", async () => {
+    const admin = await harness();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ errors: [{ status: "400", code: "PARAMETER_ERROR.INVALID",
+      title: "A parameter has an invalid value", detail: "'APP_STORE_X' is not a valid value", source: { parameter: "filter[category]" } }] }, { status: 400 }));
+    const res = await admin.call("/api/apps/app/stats/app-store/ingest", "POST");
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: "ASC_API_REJECTED", provider_code: "PARAMETER_ERROR.INVALID",
+      provider_source: "filter[category]", detail: expect.stringContaining("not a valid value") });
+  });
+
   it("GET /stats exposes daily App Store metrics, totals and the privacy note without a live call", async () => {
     const h = await harness();
     apple(world());
