@@ -846,6 +846,6 @@
   "Revoked organization access token.": "已撤销组织访问令牌。",
   "Organization access token was not found.": "未找到组织访问令牌。",
   "Selected apps. Empty when all_apps is true.": "选定的应用。all_apps 为 true 时为空。",
-  "Apps the token may read. Every app must belong to this organization. Provide exactly one of app_ids or all_apps.": "令牌可读取的应用。每个应用都必须属于本组织。app_ids 与 all_apps 必须且只能提供其一。",
-  "Cover every app in the organization, including apps created later.": "覆盖组织内的所有应用，包括之后创建的应用。"
+  "Apps the token may read. Every app must be owned by this organization or co-owned by it as an owner server; access to a co-owned app ends when the co-ownership is removed. Provide exactly one of app_ids or all_apps.": "令牌可读取的应用。每个应用都必须属于本组织，或由本组织作为所有者服务器共同拥有；共同所有权移除后，对该应用的访问随即终止。app_ids 与 all_apps 必须且只能提供其一。",
+  "Cover every app the organization owns or co-owns as an owner server, including apps added later.": "覆盖组织拥有或以所有者服务器身份共同拥有的所有应用，包括之后加入的应用。"
 }

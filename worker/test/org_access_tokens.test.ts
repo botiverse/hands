@@ -505,3 +505,176 @@ describe("org access token: hardening", () => {
     expect((await call(h, token, "/api/apps/app-b/operations/op-b")).status).toBe(200);
   });
 });
+
+describe("org access token: co-owned apps (owner-server grants)", () => {
+  // app-x lives in other-org. "org" maps to Raft server "server"; these grants
+  // make it a co-owner of app-x (or, for legacy_role, deliberately do not).
+  const grant = (
+    h: Harness,
+    opts: { app?: string; serverId?: string | null; serverSlug?: string | null; model: "owner_server" | "legacy_role" },
+  ) => {
+    const id = crypto.randomUUID();
+    h.sqlite.prepare(
+      `INSERT INTO app_server_grants (id, app_id, server_id, server_slug, app_role, access_model, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'viewer', ?, 1, 1)`,
+    ).run(id, opts.app ?? "app-x", opts.serverId ?? null, opts.serverSlug ?? null, opts.model);
+    return id;
+  };
+  const accountWithSlug = (h: Harness, id: string, serverId: string, slug: string) =>
+    h.sqlite.prepare(
+      `INSERT INTO raft_accounts
+         (id, provider_subject, server_id, server_slug, principal_type, display_name, raw_profile,
+          created_at, updated_at, last_login_at)
+       VALUES (?, ?, ?, ?, 'human', ?, '{}', 1, 1, 1)`,
+    ).run(id, id, serverId, slug, id);
+  const create = (h: Harness, body: unknown) =>
+    call(h, ADMIN_SESSION, "/api/orgs/org/access-tokens", { method: "POST", body });
+  const listedApps = async (h: Harness) => {
+    const response = await call(h, ADMIN_SESSION, "/api/orgs/org/access-tokens");
+    const { access_tokens } = await response.json() as { access_tokens: Array<{ apps: Array<{ id: string }> }> };
+    return access_tokens.flatMap((t) => t.apps.map((a) => a.id)).sort();
+  };
+
+  it("selects and reads an app co-owned through an owner_server grant by server id", async () => {
+    const h = await environment();
+    grant(h, { serverId: "server", model: "owner_server" });
+    const { token, access_token } = await mint(h, { name: "co", scopes: ["app:read", "feedback:read"], app_ids: ["app-a", "app-x"] });
+    expect(access_token.apps.map((a) => a.id).sort()).toEqual(["app-a", "app-x"]);
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(200);
+    expect((await call(h, token, "/api/apps/app-x")).status).toBe(200);
+    expect(await listedApps(h)).toEqual(["app-a", "app-x"]);
+    // Audit rows land on the co-owned app too (audit_logs is app-scoped).
+    const audited = h.sqlite.prepare(
+      "SELECT app_id FROM audit_logs WHERE action = 'org_access_token.create' ORDER BY app_id",
+    ).all() as { app_id: string }[];
+    expect(audited.map((r) => r.app_id)).toEqual(["app-a", "app-x"]);
+  });
+
+  it("selects and reads an app co-owned through a slug grant matching an account of this org's server", async () => {
+    const h = await environment();
+    accountWithSlug(h, "acct-slugged", "server", "botiverse");
+    grant(h, { serverSlug: "botiverse", model: "owner_server" });
+    const { token } = await mint(h, { name: "co-slug", scopes: ["feedback:read"], app_ids: ["app-x"] });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(200);
+  });
+
+  it.each([
+    ["by server id", { serverId: "server" }],
+    ["by slug", { serverSlug: "botiverse" }],
+  ])("a legacy_role grant (%s) never makes an app eligible", async (_label, where) => {
+    const h = await environment();
+    accountWithSlug(h, "acct-slugged", "server", "botiverse");
+    grant(h, { ...where, model: "legacy_role" });
+    const created = await create(h, { name: "x", scopes: ["feedback:read"], app_ids: ["app-x"] });
+    expect(created.status).toBe(400);
+    expect(await created.json()).toMatchObject({ app_ids: ["app-x"] });
+    const token = await insertToken(h, { apps: ["app-x"] });
+    const denied = await call(h, token, "/api/apps/app-x/feedback");
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: "org_token_app_boundary", app_id: "app-x" });
+  });
+
+  it("a slug grant whose slug belongs only to accounts of a different server does not count", async () => {
+    const h = await environment();
+    accountWithSlug(h, "acct-foreign", "other-server", "foreign");
+    grant(h, { serverSlug: "foreign", model: "owner_server" });
+    expect((await create(h, { name: "x", scopes: ["feedback:read"], app_ids: ["app-x"] })).status).toBe(400);
+    const token = await insertToken(h, { apps: ["app-x"] });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(403);
+    const everything = await insertToken(h, { allApps: true });
+    expect((await call(h, everything, "/api/apps/app-x/feedback")).status).toBe(403);
+    // The same slug grant does make app-x eligible for the org of that server.
+    const otherOrgToken = await insertToken(h, { org: "other-org", apps: ["app-x"] });
+    expect((await call(h, otherOrgToken, "/api/apps/app-x/feedback")).status).toBe(200);
+  });
+
+  it.each([
+    ["deleted", (h: Harness, id: string) => h.sqlite.prepare("DELETE FROM app_server_grants WHERE id = ?").run(id)],
+    ["flipped to legacy_role", (h: Harness, id: string) =>
+      h.sqlite.prepare("UPDATE app_server_grants SET access_model = 'legacy_role' WHERE id = ?").run(id)],
+  ])("access ends on the next request once the grant is %s", async (_label, end) => {
+    const h = await environment();
+    accountWithSlug(h, "acct-slugged", "server", "botiverse");
+    const byId = grant(h, { serverId: "server", model: "owner_server" });
+    h.sqlite.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at)
+       VALUES ('app-y', 'other-org', 'yankee', 'App Y', 'electron', 'ck-y', 1)`,
+    ).run();
+    const bySlug = grant(h, { app: "app-y", serverSlug: "botiverse", model: "owner_server" });
+    const { token } = await mint(h, { name: "co", scopes: ["feedback:read"], app_ids: ["app-x", "app-y"] });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(200);
+    expect((await call(h, token, "/api/apps/app-y/feedback")).status).toBe(200);
+    end(h, byId);
+    end(h, bySlug);
+    for (const appId of ["app-x", "app-y"]) {
+      const denied = await call(h, token, `/api/apps/${appId}/feedback`);
+      expect(denied.status, appId).toBe(403);
+      expect(await denied.json(), appId).toEqual({ error: "org_token_app_boundary", app_id: appId });
+    }
+    expect(await listedApps(h)).toEqual([]);
+  });
+
+  it("all_apps covers and audits co-owned apps on create and revoke", async () => {
+    const h = await environment();
+    grant(h, { serverId: "server", model: "owner_server" });
+    const { token, access_token } = await mint(h, { name: "all", scopes: ["feedback:read"], all_apps: true });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(200);
+    const created = h.sqlite.prepare(
+      "SELECT app_id FROM audit_logs WHERE action = 'org_access_token.create' ORDER BY app_id",
+    ).all() as { app_id: string }[];
+    expect(created.map((r) => r.app_id)).toEqual(["app-a", "app-b", "app-x"]);
+    await call(h, ADMIN_SESSION, `/api/orgs/org/access-tokens/${access_token.id}`, { method: "DELETE" });
+    const revoked = h.sqlite.prepare(
+      "SELECT app_id FROM audit_logs WHERE action = 'org_access_token.revoke' ORDER BY app_id",
+    ).all() as { app_id: string }[];
+    expect(revoked.map((r) => r.app_id)).toEqual(["app-a", "app-b", "app-x"]);
+  });
+
+  it("all_apps refuses when owned plus co-owned apps exceed the cap", async () => {
+    const h = await environment();
+    const insertApp = h.sqlite.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at)
+       VALUES (?, 'other-org', ?, ?, 'electron', ?, 1)`,
+    );
+    // 2 owned + 199 co-owned = 201.
+    for (let i = 0; i < 199; i += 1) {
+      insertApp.run(`co-${i}`, `co-${i}`, `Co ${i}`, `ck-co-${i}`);
+      grant(h, { app: `co-${i}`, serverId: "server", model: "owner_server" });
+    }
+    expect((await create(h, { name: "x", scopes: ["feedback:read"], all_apps: true })).status).toBe(400);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_tokens").get()).toEqual({ n: 0 });
+  });
+
+  it("all_apps succeeds for an org that owns nothing but co-owns an app", async () => {
+    const h = await environment();
+    h.sqlite.prepare("DELETE FROM apps WHERE org_id = 'org'").run();
+    expect((await create(h, { name: "x", scopes: ["feedback:read"], all_apps: true })).status).toBe(400);
+    grant(h, { serverId: "server", model: "owner_server" });
+    const { token } = await mint(h, { name: "x", scopes: ["feedback:read"], all_apps: true });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(200);
+  });
+
+  it("an archived org's tokens do not get co-owned apps", async () => {
+    const h = await environment();
+    accountWithSlug(h, "acct-slugged", "server", "botiverse");
+    grant(h, { serverId: "server", model: "owner_server" });
+    h.sqlite.prepare(
+      `INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at)
+       VALUES ('app-y', 'other-org', 'yankee', 'App Y', 'electron', 'ck-y', 1)`,
+    ).run();
+    grant(h, { app: "app-y", serverSlug: "botiverse", model: "owner_server" });
+    const selected = await insertToken(h, { apps: ["app-a", "app-x", "app-y"] });
+    const everything = await insertToken(h, { allApps: true });
+    for (const token of [selected, everything]) {
+      for (const appId of ["app-a", "app-x", "app-y"]) {
+        expect((await call(h, token, `/api/apps/${appId}/feedback`)).status, appId).toBe(200);
+      }
+    }
+    h.sqlite.prepare("UPDATE organizations SET archived = 1 WHERE id = 'org'").run();
+    for (const token of [selected, everything]) {
+      for (const appId of ["app-x", "app-y"]) {
+        expect((await call(h, token, `/api/apps/${appId}/feedback`)).status, appId).toBe(403);
+      }
+    }
+  });
+});

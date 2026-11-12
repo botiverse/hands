@@ -6,6 +6,7 @@ import {
   generateOrgAccessToken,
   hashOrgAccessToken,
   isOrgTokenScope,
+  orgEligibleAppSql,
   parseOrgTokenScopes,
 } from "../lib/org_access_tokens";
 
@@ -35,6 +36,13 @@ const MAX_EXPIRES_IN_DAYS = 3650;
  * batch well inside D1's per-invocation query limit.
  */
 const MAX_COVERED_APPS = 200;
+
+/** Every app an org token of org ?1 may cover: owned or co-owned (orgEligibleAppSql). */
+function eligibleAppIds(db: D1Database, orgId: string) {
+  return db.prepare(
+    `SELECT a.id FROM apps a WHERE ${orgEligibleAppSql("a", "?1")} ORDER BY a.id`,
+  ).bind(orgId).all<{ id: string }>();
+}
 
 /**
  * Management is for session principals only. requireOrgRole already rejects a
@@ -66,14 +74,14 @@ function toResponse(row: OrgAccessTokenRow, apps: TokenApp[]) {
   };
 }
 
-/** App ids an audit row must be written for: selected apps, or every app in the org now. */
+/** App ids an audit row must be written for: selected apps, or every eligible app now. */
 async function auditAppIds(db: D1Database, orgId: string, tokenId: string, allApps: boolean): Promise<string[]> {
   const { results } = allApps
-    ? await db.prepare("SELECT id FROM apps WHERE org_id = ?1 ORDER BY id").bind(orgId).all<{ id: string }>()
+    ? await eligibleAppIds(db, orgId)
     : await db.prepare(
       `SELECT ta.app_id AS id FROM org_access_token_apps ta
        JOIN apps a ON a.id = ta.app_id
-       WHERE ta.token_id = ?1 AND a.org_id = ?2
+       WHERE ta.token_id = ?1 AND ${orgEligibleAppSql("a", "?2")}
        ORDER BY ta.app_id`,
     ).bind(tokenId, orgId).all<{ id: string }>();
   return results.map((row) => row.id);
@@ -96,7 +104,7 @@ export async function handleListOrgAccessTokens(c: AdminContext) {
     `SELECT ta.token_id, a.id, a.slug, a.name
      FROM org_access_token_apps ta
      JOIN org_access_tokens t ON t.id = ta.token_id
-     JOIN apps a ON a.id = ta.app_id AND a.org_id = t.org_id
+     JOIN apps a ON a.id = ta.app_id AND ${orgEligibleAppSql("a", "t.org_id")}
      WHERE t.org_id = ?1
      ORDER BY a.slug`,
   ).bind(orgId).all<TokenApp & { token_id: string }>();
@@ -169,15 +177,16 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
     if (appIds.length > MAX_COVERED_APPS) {
       return c.json({ error: `app_ids may list at most ${MAX_COVERED_APPS} apps` }, 400);
     }
-    // Read the org's app ids and compare in memory: an IN (...) list would hit
-    // D1's bound-parameter limit long before the app cap.
-    const { results } = await c.env.DB.prepare(
-      "SELECT id FROM apps WHERE org_id = ?1",
-    ).bind(orgId).all<{ id: string }>();
+    // Read the org's eligible app ids (owned or co-owned) and compare in memory:
+    // an IN (...) list would hit D1's bound-parameter limit long before the app cap.
+    const { results } = await eligibleAppIds(c.env.DB, orgId);
     const found = new Set(results.map((row) => row.id));
     const missing = appIds.filter((id) => !found.has(id));
     if (missing.length > 0) {
-      return c.json({ error: "every app in app_ids must belong to this organization", app_ids: missing }, 400);
+      return c.json({
+        error: "every app in app_ids must be owned by this organization or co-owned by it as an owner server",
+        app_ids: missing,
+      }, 400);
     }
   }
 
@@ -229,12 +238,11 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
   // Audit rows are written per covered app (audit_logs is app-scoped), in the same
   // batch as the token: a token must never exist without its creation record.
   const coveredApps = hasAllApps
-    ? (await c.env.DB.prepare("SELECT id FROM apps WHERE org_id = ?1 ORDER BY id").bind(orgId).all<{ id: string }>())
-      .results.map((row) => row.id)
+    ? (await eligibleAppIds(c.env.DB, orgId)).results.map((row) => row.id)
     : appIds;
   if (hasAllApps && coveredApps.length === 0) {
     // Nothing to record the creation against, and nothing for the token to read yet.
-    return c.json({ error: "all_apps needs at least one app in the organization" }, 400);
+    return c.json({ error: "all_apps needs at least one app the organization owns or co-owns" }, 400);
   }
   if (coveredApps.length > MAX_COVERED_APPS) {
     return c.json({

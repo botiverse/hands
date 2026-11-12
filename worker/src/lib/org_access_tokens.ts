@@ -72,6 +72,53 @@ export function orgTokenTargetAppId(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * The single definition of "apps eligible for an org token of org X", as a SQL
+ * predicate over an `apps` row. An app is eligible when the org owns it
+ * (`apps.org_id = X`) or co-owns it through an `owner_server` grant to X's Raft
+ * server: X is a non-archived `raft` organization and the grant names its server
+ * by id, or by a slug that an account of that same server carries (the trust the
+ * account path in permissions.ts already places in `raft_accounts.server_slug`).
+ * `legacy_role` grants never count.
+ *
+ * Coverage, create validation, audit lists, and the list display all use this
+ * predicate, so they cannot drift. Because it is evaluated on every request,
+ * removing the grant (or flipping it to legacy_role) ends access immediately.
+ *
+ * Both arguments are SQL expressions chosen by the caller in code — a table
+ * alias and a column reference or `?N` placeholder — never request data, so
+ * every value stays a bound parameter.
+ */
+export function orgEligibleAppSql(appAlias: string, orgIdExpr: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(appAlias) || !/^(?:[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?|\?\d+)$/i.test(orgIdExpr)) {
+    throw new Error("orgEligibleAppSql takes an identifier and a column or ?N placeholder");
+  }
+  return `(
+    ${appAlias}.org_id = ${orgIdExpr}
+    OR EXISTS (
+      SELECT 1
+      FROM app_server_grants g
+      JOIN organizations o
+        ON o.id = ${orgIdExpr}
+       AND o.external_provider = 'raft'
+       AND o.archived = 0
+      WHERE g.app_id = ${appAlias}.id
+        AND g.access_model = 'owner_server'
+        AND (
+          g.server_id = o.external_id
+          OR (
+            g.server_slug IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM raft_accounts ra
+              WHERE ra.server_id = o.external_id
+                AND ra.server_slug = g.server_slug
+            )
+          )
+        )
+    )
+  )`;
+}
+
 export type OrgTokenResolution =
   | { kind: "unknown" }
   | { kind: "not_covered"; org_token_id: string }
@@ -93,8 +140,9 @@ type OrgTokenLookupRow = {
 
 /**
  * Resolve an org token for one target app. Token validity (hash, not revoked,
- * not expired) and coverage (the app exists, belongs to the token's org, and is
- * either selected or covered by all_apps) are decided in one query.
+ * not expired) and coverage (the app exists, is eligible for the token's org —
+ * owned or co-owned, see orgEligibleAppSql — and is either selected or covered
+ * by all_apps) are decided in one query.
  */
 export async function resolveOrgAccessToken(
   env: Env,
@@ -111,7 +159,7 @@ export async function resolveOrgAccessToken(
      FROM org_access_tokens t
      LEFT JOIN apps a
        ON a.id = ?2
-      AND a.org_id = t.org_id
+      AND ${orgEligibleAppSql("a", "t.org_id")}
       AND (
         t.all_apps = 1
         OR EXISTS (
