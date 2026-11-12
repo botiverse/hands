@@ -486,9 +486,9 @@ describe("org access token: hardening", () => {
     const h = await environment();
     h.sqlite.exec(`CREATE TRIGGER fail_audit BEFORE INSERT ON audit_logs
       WHEN NEW.action = 'org_access_token.create' BEGIN SELECT RAISE(ABORT, 'audit down'); END;`);
-    const response = await call(h, ADMIN_SESSION, "/api/orgs/org/access-tokens", {
+    const response = await Promise.resolve(call(h, ADMIN_SESSION, "/api/orgs/org/access-tokens", {
       method: "POST", body: { name: "x", scopes: ["feedback:read"], app_ids: ["app-a"] },
-    }).catch(() => null);
+    })).catch(() => null);
     expect(response === null || response.status >= 500).toBe(true);
     expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_tokens").get()).toEqual({ n: 0 });
     expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_token_apps").get()).toEqual({ n: 0 });

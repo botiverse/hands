@@ -68,6 +68,8 @@ hands deploy-tokens revoke raft-android <tokenId>
 
 面向单个组织的只读细粒度令牌：选择应用（或使用 `--all-apps`，同时覆盖之后创建的应用）和权限范围（`app:read`、`feedback:read`）。令牌只能用于其覆盖应用的 `/api/apps/<appId>/...`。管理令牌需要通过已登录会话且具备**组织管理员**权限；`--org` 默认为当前组织。
 
+`app:read` 授予应用 **viewer** 能读取的全部内容，包括构建及其公开分享链接、成员、审计日志，以及经由 Hands 的只读 Google Play 调用；`feedback:read` 只授予反馈工单（含内部备注，以 `internal` 标记）。如果使用方只需要反馈，优先只给 `feedback:read`。一个令牌最多覆盖 200 个应用，有效期最长 3650 天。
+
 ```bash
 # 为两个应用创建反馈读取令牌（仅显示一次，请立即保存）
 hands org-tokens create --name feedback-sync --scope feedback:read --app raft-android raft-ios
