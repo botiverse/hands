@@ -108,7 +108,8 @@ export const ASC_ANALYTICS_REPORTS: AscReportMapping[] = [
   },
 ];
 
-const REPORT_CATEGORIES = "APP_USAGE,APP_STORE_COMMERCE,APP_STORE_ENGAGEMENT";
+// Apple's enum: APP_USAGE, APP_STORE_ENGAGEMENT, COMMERCE, FRAMEWORK_USAGE, PERFORMANCE.
+const REPORT_CATEGORIES = "APP_USAGE,COMMERCE,APP_STORE_ENGAGEMENT";
 
 export type IngestWarning = {
   code: "missing_column" | "unmapped_value" | "invalid_rows" | "checksum_missing" | "checksum_unverified";

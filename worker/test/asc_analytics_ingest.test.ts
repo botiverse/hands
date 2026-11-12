@@ -182,7 +182,13 @@ function apple(w: World) {
       if (p === "/v1/apps/asc-app/analyticsReportRequests") return page(w.requests, (id) => ({ id, attributes: {} }));
       let m = p.match(/^\/v1\/analyticsReportRequests\/([^/]+)\/reports$/);
       if (m) {
-        expect(url.searchParams.get("filter[category]")).toContain("APP_USAGE");
+        // Apple rejects any value outside its enum (production returned PARAMETER_ERROR.INVALID).
+        const categories = (url.searchParams.get("filter[category]") ?? "").split(",");
+        const allowed = ["APP_USAGE", "APP_STORE_ENGAGEMENT", "COMMERCE", "FRAMEWORK_USAGE", "PERFORMANCE"];
+        if (!categories.every((c) => allowed.includes(c))) {
+          return Response.json({ errors: [{ status: "400", code: "PARAMETER_ERROR.INVALID", source: { parameter: "filter[category]" } }] }, { status: 400 });
+        }
+        expect(categories).toEqual(expect.arrayContaining(["APP_USAGE", "COMMERCE"]));
         return page(w.reports[m[1]!] ?? [], (r) => ({ id: r.id, attributes: { name: r.name } }));
       }
       m = p.match(/^\/v1\/analyticsReports\/([^/]+)\/instances$/);
