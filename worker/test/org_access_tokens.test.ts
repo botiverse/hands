@@ -613,6 +613,14 @@ describe("org access token: co-owned apps (owner-server grants)", () => {
     expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(403);
   });
 
+  it("a token whose creator account is gone keeps owned apps but no co-owned ones", async () => {
+    const h = await environment();
+    grant(h, { serverId: "server", model: "owner_server" });
+    const token = await insertToken(h, { apps: ["app-a", "app-x"], createdBy: null });
+    expect((await call(h, token, "/api/apps/app-x/feedback")).status).toBe(403);
+    expect((await call(h, token, "/api/apps/app-a/feedback")).status).toBe(200);
+  });
+
   it("co-owned apps leave the token when its creator leaves the org; owned apps stay", async () => {
     const h = await environment();
     grant(h, { serverId: "server", model: "owner_server" });

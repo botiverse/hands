@@ -75,19 +75,21 @@ export function orgTokenTargetAppId(pathname: string): string | null {
 /**
  * The single definition of "apps eligible for an org token of org X", as a SQL
  * predicate over an `apps` row. An app is eligible when the org owns it
- * (`apps.org_id = X`) or co-owns it through an `owner_server` grant to X's Raft
- * server: X is a non-archived `raft` organization and the grant names its server
- * by id, or by a slug that an account of that same server carries (the trust the
- * account path in permissions.ts already places in `raft_accounts.server_slug`).
- * `legacy_role` grants never count.
+ * (`apps.org_id = X`) or co-owns it through an `owner_server` grant, under the
+ * same rule that gives an account access (getOwnerServerRole): X is a
+ * non-archived `raft` organization, the token's creator is still a member of X
+ * with a Raft account on X's own server, and the grant names that server by id or
+ * by the creator's own server slug. `legacy_role` grants never count. A creator
+ * who leaves X (or whose account is deleted) takes the co-owned apps out of the
+ * token; demotion within X does not, matching the account path.
  *
  * Coverage, create validation, audit lists, and the list display all use this
  * predicate, so they cannot drift. Because it is evaluated on every request,
  * removing the grant (or flipping it to legacy_role) ends access immediately.
  *
- * Both arguments are SQL expressions chosen by the caller in code — a table
- * alias and a column reference or `?N` placeholder — never request data, so
- * every value stays a bound parameter.
+ * The arguments are SQL expressions chosen by the caller in code — a table alias,
+ * and column references or `?N` placeholders for the org and the creator — never
+ * request data, so every value stays a bound parameter.
  */
 export function orgEligibleAppSql(appAlias: string, orgIdExpr: string, accountIdExpr: string): string {
   const expr = /^(?:[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?|\?\d+)$/i;
