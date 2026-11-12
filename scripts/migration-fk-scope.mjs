@@ -7,11 +7,11 @@
 //     missing or a name is not a plain identifier, so the caller cannot mistake
 //     "could not tell" for "nothing to check".
 //
-//   migration-fk-scope.mjs referencing-sql <table>...
-//     Prints one SQL query returning the tables to check: those of the given
-//     tables that still exist (a migration may drop its own scratch tables), plus
-//     every table whose foreign keys point at them, since a DELETE or DROP in a
-//     parent can orphan rows in its children.
+//   migration-fk-scope.mjs scope <table>... < schema.json
+//     Reads the JSON rows of `SELECT name, sql FROM sqlite_master WHERE type =
+//     'table'` on stdin and prints the tables to check, space-separated: those of
+//     the given tables that still exist, plus every table whose foreign keys point
+//     at them.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -33,12 +33,32 @@ export function tablesWritten(sql) {
   return [...out].sort();
 }
 
-export function referencingSql(tables) {
+/**
+ * The tables to check, from the live schema rows `SELECT name, sql FROM sqlite_master
+ * WHERE type = 'table'`: those of the given tables that still exist (a migration may
+ * drop its own scratch tables), plus every table whose foreign keys point at one of
+ * them, since a DELETE or DROP in a parent can orphan rows in its children.
+ *
+ * The references are read from each table's CREATE statement rather than from
+ * pragma_foreign_key_list(): production D1 refuses that table-valued function, and
+ * only plain reads of sqlite_master are known to work there.
+ */
+export function scopeFromSchema(tables, rows) {
   for (const t of tables) if (!IDENT.test(t)) throw new Error(`not a plain identifier: ${t}`);
-  const list = tables.map((t) => `'${t}'`).join(", ");
-  return `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${list}) `
-    + `UNION SELECT m.name AS name FROM sqlite_master m, pragma_foreign_key_list(m.name) f `
-    + `WHERE m.type = 'table' AND f."table" IN (${list}) ORDER BY name;`;
+  if (!Array.isArray(rows)) throw new Error("schema rows must be an array");
+  const wanted = new Set(tables.map((t) => t.toLowerCase()));
+  const out = new Set();
+  for (const row of rows) {
+    if (!row || typeof row.name !== "string" || typeof row.sql !== "string") {
+      throw new Error("schema row without name and sql");
+    }
+    if (wanted.has(row.name.toLowerCase())) out.add(row.name);
+    for (const m of stripComments(row.sql).matchAll(/\bREFERENCES\s+[`"[]?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
+      if (wanted.has(m[1].toLowerCase())) out.add(row.name);
+    }
+  }
+  for (const t of out) if (!IDENT.test(t)) throw new Error(`not a plain identifier: ${t}`);
+  return [...out].sort();
 }
 
 function main(argv) {
@@ -58,12 +78,13 @@ function main(argv) {
     process.stdout.write([...all].sort().join(" "));
     return;
   }
-  if (mode === "referencing-sql") {
-    if (rest.length === 0) throw new Error("usage: referencing-sql <table>...");
-    process.stdout.write(referencingSql(rest));
+  if (mode === "scope") {
+    if (rest.length === 0) throw new Error("usage: scope <table>... < schema.json");
+    const rows = JSON.parse(readFileSync(0, "utf8"));
+    process.stdout.write(scopeFromSchema(rest, rows).join(" "));
     return;
   }
-  throw new Error("usage: migration-fk-scope.mjs tables|referencing-sql ...");
+  throw new Error("usage: migration-fk-scope.mjs tables|scope ...");
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
