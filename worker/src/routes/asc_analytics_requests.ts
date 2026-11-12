@@ -140,6 +140,8 @@ export async function handleIngestAscAnalytics(c: AdminContext) {
         code: "ASC_API_REJECTED",
         provider_status: err.status,
         provider_code: err.code,
+        provider_source: err.source,
+        detail: err.detail,
       }, 502);
     }
     throw err;
