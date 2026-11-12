@@ -56,11 +56,15 @@ export function scopeFromSchema(tables, rows) {
       throw new Error("schema row without name and sql");
     }
     if (wanted.has(row.name.toLowerCase())) out.add(row.name);
-    // Not comment-stripped: stripping cannot tell a "--" inside a string literal from
-    // a comment and could hide a real clause, while an extra match only widens the
-    // check. SQLite needs no space after REFERENCES and accepts a single-quoted name.
-    for (const m of row.sql.matchAll(/\bREFERENCES\s*(?:\/\*[\s\S]*?\*\/\s*)*[`"'[]?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
-      if (wanted.has(m[1].toLowerCase())) out.add(row.name);
+    // Matched twice and unioned, because an extra match only widens the check: on the
+    // raw text (stripping cannot tell a "--" or "/*" inside a string literal from a
+    // comment, and could hide a real clause), and with block comments blanked (SQLite
+    // accepts REFERENCES/**/t). SQLite needs no space after REFERENCES and accepts a
+    // single-quoted name.
+    for (const text of [row.sql, row.sql.replace(/\/\*[\s\S]*?\*\//g, " ")]) {
+      for (const m of text.matchAll(/\bREFERENCES\s*[`"'[]?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
+        if (wanted.has(m[1].toLowerCase())) out.add(row.name);
+      }
     }
   }
   for (const t of out) if (!IDENT.test(t)) throw new Error(`not a plain identifier: ${t}`);
