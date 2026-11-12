@@ -85,7 +85,27 @@ describe("deploy readback foreign-key scope", () => {
     }
   });
 
+  it("finds references SQLite accepts in every spelling, without being fooled by comment markers", () => {
+    const db = new Database(":memory:");
+    db.exec("CREATE TABLE apps (id TEXT PRIMARY KEY)");
+    const spellings = {
+      dash_in_string: "CREATE TABLE c1 (a TEXT CHECK (a <> '--'), p TEXT REFERENCES apps(id))",
+      no_space: 'CREATE TABLE c2 (p TEXT REFERENCES"apps"(id))',
+      single_quoted: "CREATE TABLE c3 (p TEXT REFERENCES 'apps'(id))",
+      block_comment: "CREATE TABLE c4 (p TEXT REFERENCES/**/apps(id))",
+      line_marker_in_block: "CREATE TABLE c5 (/* -- */ p TEXT REFERENCES apps(id))",
+    };
+    for (const sql of Object.values(spellings)) db.exec(sql);
+    const viaPragma = (db.prepare(
+      `SELECT m.name FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+       WHERE m.type = 'table' AND f."table" = 'apps' ORDER BY m.name`,
+    ).all() as Array<{ name: string }>).map((r) => r.name);
+    expect(viaPragma).toEqual(["c1", "c2", "c3", "c4", "c5"]);
+    expect(referencing(db, ["apps"])).toEqual(["apps", ...viaPragma]);
+  });
+
   it("refuses schema rows it cannot read rather than checking nothing", () => {
+    expect(() => scopeFromSchema(["apps"], [])).toThrow(/no tables/);
     expect(() => scopeFromSchema(["apps"], { error: "refused" })).toThrow(/array/);
     expect(() => scopeFromSchema(["apps"], [{ name: "apps" }])).toThrow(/name and sql/);
   });

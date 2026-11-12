@@ -605,7 +605,7 @@ jobs:
             local out
             if ! out=$(pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
                 --remote --json --config wrangler.hands.generated.jsonc --command "$1" 2>>/tmp/fkc.err) \
-              || ! jq -e '.[0].results' <<<"${out}"; then
+              || ! jq -e '.[0].results | if type == "array" then . else error("results is not an array") end' <<<"${out}"; then
               printf '%s: %s\n' "$1" "$(head -c 300 <<<"${out}")" >> /tmp/fkc.err
               return 1
             fi
@@ -616,9 +616,16 @@ jobs:
             cannot_run "foreign_key_check is empty" "could not derive the tables the applied migrations touch"
           elif [[ -z "${fk_tables}" ]]; then
             skip "foreign_key_check is empty" "the applied migrations write no table"
-          elif fk_schema=$(fkq "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL") \
-            && fk_scope=$(node ../scripts/migration-fk-scope.mjs scope ${fk_tables} <<<"${fk_schema}" 2>>/tmp/fkc.err) \
-            && orphans=$(for t in ${fk_scope}; do fkq "PRAGMA foreign_key_check(${t})" | jq -r 'length' || echo ERR; done \
+          elif ! { fk_schema=$(fkq "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql IS NOT NULL") \
+            && fk_scope=$(node ../scripts/migration-fk-scope.mjs scope ${fk_tables} <<<"${fk_schema}" 2>>/tmp/fkc.err); }; then
+            cannot_run "foreign_key_check is empty" "could not read the schema to scope the check"
+            head -c 900 /tmp/fkc.err >&2 || true
+            echo >&2
+          elif [[ -z "${fk_scope}" ]]; then
+            # The script refuses an empty schema, so this is a real answer: every table
+            # the migrations wrote is gone again and no table references one of them.
+            skip "foreign_key_check is empty" "the tables the applied migrations wrote no longer exist and nothing references them"
+          elif orphans=$(for t in ${fk_scope}; do fkq "PRAGMA foreign_key_check(${t})" | jq -r 'length' || echo ERR; done \
               | awk '$1=="ERR"{e=1} {s+=$1} END{if(e) exit 1; print s+0}'); then
             # A full-database PRAGMA foreign_key_check scans every table and has overloaded
             # production D1 (7429). Only the tables the applied migrations write, and the

@@ -46,6 +46,9 @@ export function tablesWritten(sql) {
 export function scopeFromSchema(tables, rows) {
   for (const t of tables) if (!IDENT.test(t)) throw new Error(`not a plain identifier: ${t}`);
   if (!Array.isArray(rows)) throw new Error("schema rows must be an array");
+  // Called only when migrations wrote tables, so the schema cannot be empty; an
+  // empty answer means the read did not see the database, not that nothing exists.
+  if (rows.length === 0) throw new Error("schema read returned no tables");
   const wanted = new Set(tables.map((t) => t.toLowerCase()));
   const out = new Set();
   for (const row of rows) {
@@ -53,7 +56,10 @@ export function scopeFromSchema(tables, rows) {
       throw new Error("schema row without name and sql");
     }
     if (wanted.has(row.name.toLowerCase())) out.add(row.name);
-    for (const m of stripComments(row.sql).matchAll(/\bREFERENCES\s+[`"[]?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
+    // Not comment-stripped: stripping cannot tell a "--" inside a string literal from
+    // a comment and could hide a real clause, while an extra match only widens the
+    // check. SQLite needs no space after REFERENCES and accepts a single-quoted name.
+    for (const m of row.sql.matchAll(/\bREFERENCES\s*(?:\/\*[\s\S]*?\*\/\s*)*[`"'[]?([A-Za-z_][A-Za-z0-9_]*)/gi)) {
       if (wanted.has(m[1].toLowerCase())) out.add(row.name);
     }
   }
