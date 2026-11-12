@@ -1012,7 +1012,10 @@ export async function handleAddReporterComment(c: ReporterContext) {
       const committedAt = performance.now();
       setCommentTiming(committedAt);
       if (concurrent.submission_fingerprint !== fingerprint) {
-        return c.json({ error: "submission_id already used with a different body" }, 409);
+        return c.json({
+          error: "submission_id already used with a different body",
+          code: "submission_payload_mismatch",
+        }, 409);
       }
       return c.json({ id: concurrent.id, ticket_id: ticketId, created_at: concurrent.created_at, idempotent_replay: true });
     }

@@ -280,7 +280,7 @@ X-Hands-Client-Key: qk_...
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `message` | 是 | 反馈文本，最多 10,000 个字符。 |
-| `submission_id` | 否 | 客户端生成的 UUID，用于幂等重试；同一草稿保持不变。完全相同的重放返回原工单，相同 ID 使用不同内容返回 `409`。 |
+| `submission_id` | 否 | 客户端生成的 UUID，用于幂等重试；同一草稿保持不变。完全相同的重放返回原工单，相同 ID 使用不同内容返回 `409`（见 [`submission_id` 冲突](#submission-id-conflicts)）。 |
 | `kind` | 否 | `feedback`（默认）、`bug` 或 `crash`。 |
 | `contact` | 否 | 回复联系方式，例如电子邮件或 Raft 名称。 |
 | `metadata` | 否 | JSON 字符串：`version_name`、`version_code`、`channel`、`device_id`、`device_model`、`os_version`、`arch`、`locale` 及自定义键。崩溃工单附加 `crash_exception_class` / `crash_top_frame`（分组签名）。QNC2 Android 原生报告增加 `crash_native_frames`（`{ index, offset, soname, build_id, source }`）、`crash_registers`、崩溃线程字段及 `crash_native_images`；服务端符号化要求每帧 BuildId 与构建的 `native-symbols` 文件完全匹配。API 30 及以上报告还可能包含 `crash_exit_*` 元数据和保留的系统跟踪附件。 |
@@ -301,6 +301,25 @@ X-Hands-Client-Key: qk_...
   "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
 }
 ```
+
+#### `submission_id` 冲突 {#submission-id-conflicts}
+
+重复使用 `submission_id` 返回的 `409` 带有稳定的 `code`。请根据 `code` 分支处理，不要依赖 `error` 文本；为兼容旧客户端，`error` 文本保持不变。旧版服务器可能只返回 `error`。
+
+| Code | 原因 |
+| --- | --- |
+| `submission_reporter_mismatch` | 该 ID 已为其他报告者身份创建工单（不同的 `X-Hands-Reporter-Id`，或可信与匿名之间）。请使用新的 `submission_id`。 |
+| `submission_payload_mismatch` | 该 ID 已为当前报告者创建工单，但消息、类型、联系方式、元数据或附件不同。不要用同一 ID 重试；真正的新报告请使用新 ID。 |
+
+```json
+{
+  "error": "submission_id already used with a different payload",
+  "code": "submission_payload_mismatch",
+  "id": "<existing ticket UUID>"
+}
+```
+
+仅当请求来自已认证的可信报告者（`X-Hands-Reporter-Id` 加 `feedback:write` 令牌）且该报告者拥有已有工单时，`submission_payload_mismatch` 才包含 `id`。匿名提交和 `submission_reporter_mismatch` 从不包含工单 ID。报告人评论在 `submission_id` 对应不同正文或附件集合时也返回相同的 `submission_payload_mismatch`。
 
 速率限制：每个应用和客户端 IP 每小时 10 次提交。工单出现在管理控制台的反馈页；订阅的端点会收到 `feedback:new` Webhook，崩溃工单还可能触发 `crash:new_group` / `crash:spike`。Android SDK 的 `HandsFeedback.submit(...)` 封装了此接口，并自动附加设备元数据。
 
@@ -352,7 +371,7 @@ Content-Type: application/json
 
 新绑定返回 `201`，完全相同的重放返回 `200`；同一归属组合使用不同主体时返回 `409`。缺少绑定的可信提交在保存工单或附件之前返回 `409 route_required`。
 
-报告人评论需要客户端生成 UUID `submission_id`：新评论返回 `201`，完全相同的重放返回 `200`，同一 ID 对应不同的去除首尾空白后的文本或附件字节时返回 `409`。纯文本回复仍支持 JSON。Multipart 回复使用 `body`、`submission_id` 和最多三个 `attachments`；每个文件必须是 GIF、JPEG、PNG 或 WebP，且不超过 10 MiB。原始提交附件和报告人评论附件均通过私有、禁止缓存、安全处置及禁止嗅探请求头提供。
+报告人评论需要客户端生成 UUID `submission_id`：新评论返回 `201`，完全相同的重放返回 `200`，同一 ID 对应不同的去除首尾空白后的文本或附件字节时返回 `409`，code 为 `submission_payload_mismatch`。纯文本回复仍支持 JSON。Multipart 回复使用 `body`、`submission_id` 和最多三个 `attachments`；每个文件必须是 GIF、JPEG、PNG 或 WebP，且不超过 10 MiB。原始提交附件和报告人评论附件均通过私有、禁止缓存、安全处置及禁止嗅探请求头提供。
 
 #### 可选的短期服务端会话（默认关闭）
 
@@ -418,7 +437,7 @@ X-Hands-Client-Key: qk_...
 | `presigned_size_mismatch` | `size` 缺失、非正数或与存储对象的实际字节大小不一致。 |
 | `attachments_limit_exceeded` | 附件总数超过 9 个，包括内联及预签名附件。 |
 
-这些检查在创建工单及其附件记录之前执行；即使较早的附件已通过校验，也不会创建部分工单。如果 `submission_id` 尚未使用，用户可以移除诊断附件并使用新的 `submission_id` 再次提交。如果该 ID 已创建工单，相同校验失败返回 `409` 和 `submission_id already used with a different payload`；不要用该 ID 创建第二张工单。此保证仅适用于上列校验失败，不适用于网络超时或其他响应。
+这些检查在创建工单及其附件记录之前执行；即使较早的附件已通过校验，也不会创建部分工单。如果 `submission_id` 尚未使用，用户可以移除诊断附件并使用新的 `submission_id` 再次提交。如果该 ID 已创建工单，相同校验失败返回 `409` 和 code `submission_payload_mismatch`；不要用该 ID 创建第二张工单。此保证仅适用于上列校验失败，不适用于网络超时或其他响应。
 
 上传 URL 在 15 分钟后过期，但不会使已上传对象过期。未引用对象没有自动清理保证。引用限定于应用，但不绑定报告人，也不限于使用一次。上传引用会作为普通工单附件显示和下载。
 

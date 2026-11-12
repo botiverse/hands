@@ -155,7 +155,7 @@ export const ErrorResponse = z
     error: z.string(),
     // Machine-readable discriminator, present ONLY where an endpoint's error
     // descriptions enumerate its values (today: the latest/update-check 404s and
-    // 400). Where present, branch on `code`, never on the `error` prose - prose
+    // 400, and submission_id 409s via SubmissionConflictResponse). Where present, branch on `code`, never on the `error` prose - prose
     // is for humans and may be reworded. Where absent, the endpoint has not been
     // migrated yet; do not infer meaning from its absence.
     code: z.string().optional(),
@@ -163,6 +163,20 @@ export const ErrorResponse = z
   })
   .catchall(z.unknown())
   .openapi("ErrorResponse");
+
+/**
+ * 409 for a reused submission_id. `error` keeps its legacy prose; branch on
+ * `code`. `id` is the existing ticket UUID, present only on
+ * `submission_payload_mismatch` for the same trusted reporter identity.
+ */
+export const SubmissionConflictResponse = z
+  .object({
+    error: z.string(),
+    code: z.enum(["submission_reporter_mismatch", "submission_payload_mismatch"]),
+    id: z.string().uuid().optional(),
+  })
+  .catchall(z.unknown())
+  .openapi("SubmissionConflictResponse");
 
 export const GenericObject = z
   .object({})

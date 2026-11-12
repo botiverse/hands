@@ -13105,12 +13105,14 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(replayWithInvalidAttachment.status).toBe(409);
     expect(await responseJson(replayWithInvalidAttachment)).toEqual({
       error: "submission_id already used with a different payload",
+      code: "submission_payload_mismatch",
     });
 
     const replayWithTooManyInlineAttachments = await submit([], submissionId, 10);
     expect(replayWithTooManyInlineAttachments.status).toBe(409);
     expect(await responseJson(replayWithTooManyInlineAttachments)).toEqual({
       error: "submission_id already used with a different payload",
+      code: "submission_payload_mismatch",
     });
 
     const tickets = await env.DB.prepare("SELECT COUNT(*) AS count FROM feedback_tickets").first();
@@ -13176,7 +13178,14 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(replayBody.idempotent_replay).toBe(true);
     expect(putCalls).toHaveLength(1);
 
-    expect((await submit({ message: "Different draft", bytes: [1, 2, 3] })).status).toBe(409);
+    const differentMessage = await submit({ message: "Different draft", bytes: [1, 2, 3] });
+    expect(differentMessage.status).toBe(409);
+    // Anonymous submissions get the stable code but never the ticket id: the
+    // submission_id alone does not prove authorship.
+    expect(await responseJson(differentMessage)).toEqual({
+      error: "submission_id already used with a different payload",
+      code: "submission_payload_mismatch",
+    });
     expect((await submit({ bytes: [3, 2, 1] })).status).toBe(409);
     expect(deleted).toEqual([]);
 
@@ -13546,8 +13555,66 @@ describe("quiver public API v2 — scope resolution", () => {
        VALUES ('app-scope', 'integration-proxy', 'trusted-feedback-webhook', ?1)`,
     ).bind(Date.now()).run();
     const ownedSubmission = "55555555-5555-4555-8555-555555555555";
-    expect((await submit("g".repeat(64), credential.token, ownedSubmission)).status).toBe(201);
-    expect((await submit("h".repeat(64), credential.token, ownedSubmission)).status).toBe(409);
+    const ownedCreated = await submit("g".repeat(64), credential.token, ownedSubmission);
+    expect(ownedCreated.status).toBe(201);
+    const ownedTicketId = (await responseJson<any>(ownedCreated)).id;
+    // Another reporter reusing the id gets a stable code and never learns the
+    // owning reporter's ticket id.
+    const otherReporterConflict = await submit("h".repeat(64), credential.token, ownedSubmission);
+    expect(otherReporterConflict.status).toBe(409);
+    const otherReporterBody = await responseJson<any>(otherReporterConflict);
+    expect(otherReporterBody).toEqual({
+      error: "submission_id already used by a different reporter",
+      code: "submission_reporter_mismatch",
+    });
+    expect(otherReporterBody).not.toHaveProperty("id");
+    // The owning trusted reporter can recover its existing ticket id.
+    const ownPayloadConflict = await submit("g".repeat(64), credential.token, ownedSubmission, true);
+    expect(ownPayloadConflict.status).toBe(409);
+    expect(await responseJson(ownPayloadConflict)).toEqual({
+      error: "submission_id already used with a different payload",
+      code: "submission_payload_mismatch",
+      id: ownedTicketId,
+    });
+
+    // Concurrent insert race: the preflight lookup misses, the insert loses to
+    // the committed ticket, and the post-conflict lookup classifies the 409.
+    const dbBeforeSubmissionRace = env.DB;
+    const prepareBeforeSubmissionRace = dbBeforeSubmissionRace.prepare.bind(dbBeforeSubmissionRace);
+    const racedSubmit = async (reporterId: string, withAttachment: boolean) => {
+      let preflightMissed = false;
+      env.APK_BUCKET = { ...(env.APK_BUCKET as object), delete: async () => {} } as typeof env.APK_BUCKET;
+      env.DB = {
+        ...dbBeforeSubmissionRace,
+        prepare(sql: string) {
+          if (!preflightMissed && sql.includes("SELECT id, submission_fingerprint, reporter_id")) {
+            preflightMissed = true;
+            return { bind: () => ({ first: async () => null }) } as any;
+          }
+          return prepareBeforeSubmissionRace(sql);
+        },
+      } as typeof env.DB;
+      try {
+        return await submit(reporterId, credential.token, ownedSubmission, withAttachment);
+      } finally {
+        env.DB = dbBeforeSubmissionRace;
+      }
+    };
+    const racedOtherReporter = await racedSubmit("h".repeat(64), false);
+    expect(racedOtherReporter.status).toBe(409);
+    const racedOtherReporterBody = await responseJson<any>(racedOtherReporter);
+    expect(racedOtherReporterBody).toEqual({
+      error: "submission_id already used with a different payload",
+      code: "submission_reporter_mismatch",
+    });
+    expect(racedOtherReporterBody).not.toHaveProperty("id");
+    const racedOwnPayload = await racedSubmit("g".repeat(64), true);
+    expect(racedOwnPayload.status).toBe(409);
+    expect(await responseJson(racedOwnPayload)).toEqual({
+      error: "submission_id already used with a different payload",
+      code: "submission_payload_mismatch",
+      id: ownedTicketId,
+    });
 
     const trustedDelivery = (await env.DB.prepare(
       `SELECT payload_json, signing_secret, signature_key_version, reporter_delivery,
