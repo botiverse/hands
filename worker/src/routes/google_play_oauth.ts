@@ -61,11 +61,11 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
     }
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
   const meta = await getGooglePlayBindingMeta(c.env.DB, appId);
-  // Reauthorizing an enabled binding without a body keeps its package and
+  // Reauthorizing an enabled Google-account binding without a body keeps its package and
   // tracks; otherwise the new credential would be stored unconfigured and
   // publishing would stop until an admin re-entered them. The callback still
   // verifies the new credential against them before storing.
-  if (packageName === null && tracks === null && meta?.enabled === 1 && meta.package_name
+  if (packageName === null && tracks === null && meta?.enabled === 1 && meta.credential_kind === "authorized_user" && meta.package_name
     && meta.internal_track && meta.closed_track && meta.production_track) {
     packageName = meta.package_name;
     tracks = { internal: meta.internal_track, closed: meta.closed_track, production: meta.production_track };
@@ -193,8 +193,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status, undefined, "invalid_response");
     if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
     const grantedScopes = typeof token.scope === "string" ? token.scope.split(/\s+/) : [];
-    if (!grantedScopes.includes(SCOPE)) return fail("google_permissions");
-    const reportAccess = grantedScopes.includes(GOOGLE_PLAY_REPORTS_SCOPE);
+    // Exact token equality; a substring match would accept look-alike scopes.
+    if (!grantedScopes.some((scope) => scope === SCOPE)) return fail("google_permissions");
+    const reportAccess = grantedScopes.some((scope) => scope === GOOGLE_PLAY_REPORTS_SCOPE);
     stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { authorization: "Bearer " + token.access_token }, redirect: "manual", signal: AbortSignal.timeout(30_000),

@@ -266,6 +266,25 @@ describe("Google Play OAuth", () => {
     const audit = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.connect'").get() as {payload:string};
     expect(JSON.parse(audit.payload).report_access).toBe(granted);
   });
+  it.each(['verification', 'disabled-meanwhile'] as const)('keeps the previous enabled credential when reauthorization fails (%s)', async (mode) => {
+    const h = harness(); google();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:{...oauth, refresh_token:'old-refresh'}, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:'{}'});
+    const state = new URL((await response.json() as any).authorization_url).searchParams.get('state')!;
+    if (mode === 'verification') h.verify.mockResolvedValueOnce({ok:false, error:{code:'play_api_rejected'}} as any);
+    else h.sqlite.prepare('UPDATE app_google_play_bindings SET enabled=0, updated_at=updated_at+1').run();
+    const location = (await h.callback(state)).headers.get('location')!;
+    expect(new URL(location).searchParams.get('google_play_oauth_error')).toBe(mode === 'verification' ? 'play_permissions' : 'connection_changed');
+    expect((await getGooglePlayBinding(h.env.DB, appId, keyring))!.credential).toMatchObject({refresh_token:'old-refresh'});
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toMatchObject({package_name:input.package_name, enabled: mode === 'verification' ? 1 : 0});
+  });
+  it('does not carry the configuration of an enabled service-account binding into a bodyless authorization', async () => {
+    const h = harness();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    h.sqlite.prepare("UPDATE app_google_play_bindings SET credential_kind='service_account'").run();
+    await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session'}});
+    expect(h.sqlite.prepare('SELECT package_name, tracks_json FROM google_play_oauth_requests').get()).toEqual({package_name:null, tracks_json:null});
+  });
   it('does not reuse the configuration of a disabled binding on a bodyless reauthorization', async () => {
     const h = harness(); google();
     await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
