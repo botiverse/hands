@@ -50,10 +50,10 @@ const CreateOrgAccessTokenRequest = z
     name: z.string().min(1).max(80),
     scopes: z.array(OrgAccessTokenScope).min(1),
     app_ids: z.array(z.string()).min(1).optional().openapi({
-      description: "Apps the token may read. Every app must belong to this organization. Provide exactly one of app_ids or all_apps.",
+      description: "Apps the token may read. Every app must be owned by this organization or co-owned by it as an owner server; access to a co-owned app ends when the co-ownership is removed. Provide exactly one of app_ids or all_apps.",
     }),
     all_apps: z.literal(true).optional().openapi({
-      description: "Cover every app in the organization, including apps created later.",
+      description: "Cover every app the organization owns or co-owns as an owner server, including apps added later.",
     }),
     expires_in_days: z.number().positive().max(3650).optional(),
     expires_at: z.number().int().optional().openapi({

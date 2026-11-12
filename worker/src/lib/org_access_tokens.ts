@@ -72,6 +72,61 @@ export function orgTokenTargetAppId(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * The single definition of "apps eligible for an org token of org X", as a SQL
+ * predicate over an `apps` row. An app is eligible when the org owns it
+ * (`apps.org_id = X`) or co-owns it through an `owner_server` grant, under the
+ * same rule that gives an account access (getOwnerServerRole): X is a
+ * non-archived `raft` organization, the token's creator is still a member of X
+ * with a Raft account on X's own server, and the grant names that server by id or
+ * by the creator's own server slug. `legacy_role` grants never count. A creator
+ * who leaves X (or whose account is deleted) takes the co-owned apps out of the
+ * token; demotion within X does not, matching the account path.
+ *
+ * Coverage, create validation, audit lists, and the list display all use this
+ * predicate, so they cannot drift. Because it is evaluated on every request,
+ * removing the grant (or flipping it to legacy_role) ends access immediately.
+ *
+ * The arguments are SQL expressions chosen by the caller in code — a table alias,
+ * and column references or `?N` placeholders for the org and the creator — never
+ * request data, so every value stays a bound parameter.
+ */
+export function orgEligibleAppSql(appAlias: string, orgIdExpr: string, accountIdExpr: string): string {
+  const expr = /^(?:[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?|\?\d+)$/i;
+  if (!/^[a-z_][a-z0-9_]*$/i.test(appAlias) || !expr.test(orgIdExpr) || !expr.test(accountIdExpr)) {
+    throw new Error("orgEligibleAppSql takes an identifier and columns or ?N placeholders");
+  }
+  return `(
+    ${appAlias}.org_id = ${orgIdExpr}
+    OR EXISTS (
+      SELECT 1
+      FROM app_server_grants g
+      JOIN organizations o
+        ON o.id = ${orgIdExpr}
+       AND o.external_provider = 'raft'
+       AND o.archived = 0
+      WHERE g.app_id = ${appAlias}.id
+        AND g.access_model = 'owner_server'
+        AND EXISTS (
+          -- Exactly the account path (getOwnerServerRole): the token's creator must be
+          -- an account of the org's own server, still a member of the org, and the
+          -- grant must name that server by id or by the creator's own server slug.
+          -- An admin invited from another server never inherits the co-ownership,
+          -- and a creator who leaves takes the co-owned apps out of the token.
+          SELECT 1
+          FROM raft_accounts ra
+          JOIN org_members om ON om.org_id = o.id AND om.account_id = ra.id
+          WHERE ra.id = ${accountIdExpr}
+            AND ra.server_id = o.external_id
+            AND (
+              g.server_id = ra.server_id
+              OR (g.server_slug IS NOT NULL AND g.server_slug = ra.server_slug)
+            )
+        )
+    )
+  )`;
+}
+
 export type OrgTokenResolution =
   | { kind: "unknown" }
   | { kind: "not_covered"; org_token_id: string }
@@ -93,8 +148,9 @@ type OrgTokenLookupRow = {
 
 /**
  * Resolve an org token for one target app. Token validity (hash, not revoked,
- * not expired) and coverage (the app exists, belongs to the token's org, and is
- * either selected or covered by all_apps) are decided in one query.
+ * not expired) and coverage (the app exists, is eligible for the token's org —
+ * owned or co-owned, see orgEligibleAppSql — and is either selected or covered
+ * by all_apps) are decided in one query.
  */
 export async function resolveOrgAccessToken(
   env: Env,
@@ -111,7 +167,7 @@ export async function resolveOrgAccessToken(
      FROM org_access_tokens t
      LEFT JOIN apps a
        ON a.id = ?2
-      AND a.org_id = t.org_id
+      AND ${orgEligibleAppSql("a", "t.org_id", "t.created_by")}
       AND (
         t.all_apps = 1
         OR EXISTS (
