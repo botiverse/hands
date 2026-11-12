@@ -86,7 +86,7 @@ describe("FeedbackProvider", () => {
     );
     expect(html).not.toContain("data-hands-feedback-theme");
     expect(html).toContain("Feedback");
-    expect(html).toContain("New Feedback");
+    expect(html).toContain("New feedback");
     expect(html).not.toContain("dashboard");
   });
 

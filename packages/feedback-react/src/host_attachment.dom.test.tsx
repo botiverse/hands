@@ -117,7 +117,7 @@ async function openNew(adapter = transport()) {
       <FeedbackWorkspace ref={ref} />
     </FeedbackProvider>,
   );
-  fireEvent.click(await screen.findByText("New Feedback"));
+  fireEvent.click(await screen.findByText("New feedback"));
   await screen.findByLabelText(/What would you like us to know/);
   return { ref, adapter };
 }
@@ -159,7 +159,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
     fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
       target: { value: "Unread badge is wrong" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
     await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
     expect(vi.mocked(adapter.createTicket).mock.calls[0]![0].attachments).toEqual([file]);
   });
@@ -243,7 +243,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
         <FeedbackWorkspace ref={ref} />
       </FeedbackProvider>,
     );
-    await screen.findByText("New Feedback");
+    await screen.findByText("New feedback");
     expect(asUser(() => ref.current!.attachPendingFile({ file: diagnostic() }))).toEqual({
       ok: false,
       reason: "composer_closed",
@@ -256,7 +256,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
     adapter.createTicket = vi.fn(() => new Promise<FeedbackTicketDetail>(() => {}));
     const { ref } = await openNew(adapter);
     fireEvent.change(screen.getByLabelText(/What would you like us to know/), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
     await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
     expect(asUser(() => ref.current!.attachPendingFile({ file: diagnostic() }))).toEqual({
       ok: false,
@@ -295,7 +295,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <FeedbackWorkspace ref={ref} />
         </FeedbackProvider>,
       );
-      await screen.findByText("New Feedback");
+      await screen.findByText("New feedback");
       return { ref, adapter };
     }
 
@@ -314,7 +314,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
       fireEvent.change(screen.getByLabelText(/What would you like us to know/), {
         target: { value: "Unread badge is wrong" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Send Feedback" }));
+      fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
       await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
       expect(vi.mocked(adapter.createTicket).mock.calls[0]![0].attachments).toEqual([file]);
     });
@@ -362,7 +362,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
       asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() }));
       expect(pendingNames()).toHaveLength(1);
       fireEvent.click(screen.getByRole("button", { name: "Back" }));
-      fireEvent.click(await screen.findByText("New Feedback"));
+      fireEvent.click(await screen.findByText("New feedback"));
       await screen.findByLabelText(/What would you like us to know/);
       expect(pendingNames()).toEqual([]);
     });
@@ -380,7 +380,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <Host />
         </FeedbackProvider>,
       );
-      await screen.findByText("New Feedback");
+      await screen.findByText("New feedback");
       expect(
         asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file: diagnostic() })),
       ).toEqual({ ok: true });
@@ -396,7 +396,7 @@ describe("FeedbackWorkspace host pending-attachment API", () => {
           <FeedbackWorkspace ref={ref} onOpenPendingAttachment={onOpenPendingAttachment} />
         </FeedbackProvider>,
       );
-      await screen.findByText("New Feedback");
+      await screen.findByText("New feedback");
       const file = diagnostic();
       asUser(() => ref.current!.openNewFeedbackWithPendingFile({ file }));
       const chip = screen.getByRole("button", { name: "Open attachment unread-activity.json" });

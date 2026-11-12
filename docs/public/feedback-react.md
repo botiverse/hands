@@ -367,7 +367,7 @@ the row then has no preview line.
 ### Page header
 
 The inbox can sit under your own page title: pass `hideHeaderTitle` and the
-inbox starts at its filter row. A ticket and New Feedback are pages of their
+inbox starts at its filter row. A ticket and New feedback are pages of their
 own, with their own 56px header (Back, the title, the ticket's status), so
 hide your page header while the workspace is on them instead of stacking two
 headers. Track the view with `onRouteChange` (it fires whether or not you
@@ -380,6 +380,25 @@ const [view, setView] = useState<FeedbackWorkspaceRoute["view"]>("inbox");
 <FeedbackWorkspace
   hideHeaderTitle
   onRouteChange={(route) => setView(route.view)}
+/>
+```
+
+### Inbox notice
+
+`inboxNotice` puts host content, such as a one-line info `Banner`, on its own
+full-width line between the inbox toolbar (status filter and **New feedback**)
+and the ticket list. It uses the same inset as the list's error banner, sits
+at the top of the list scroll region (it scrolls away with the list), and is
+shown only on the inbox view, not on a ticket or New feedback. Without the
+prop the inbox renders nothing extra. `FeedbackInbox` accepts the same prop.
+
+```tsx
+<FeedbackWorkspace
+  inboxNotice={
+    <Banner status="info">
+      <BannerDescription>Did you know? Any agent can draft your feedback…</BannerDescription>
+    </Banner>
+  }
 />
 ```
 

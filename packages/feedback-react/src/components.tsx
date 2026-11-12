@@ -967,6 +967,12 @@ export type FeedbackInboxProps = {
   enablePullToRefresh?: boolean;
   /** Hides the inbox title text/icon in the header (actions stay right). */
   hideHeaderTitle?: boolean;
+  /**
+   * Host content (e.g. an info `Banner`) shown on its own full-width line
+   * between the toolbar and the ticket list. It sits at the top of the list
+   * scroll region, like the inbox error banner, and scrolls with the list.
+   */
+  inboxNotice?: ReactNode;
 };
 
 export function FeedbackInbox({
@@ -979,6 +985,7 @@ export function FeedbackInbox({
   upsertTicket,
   enablePullToRefresh = false,
   hideHeaderTitle = false,
+  inboxNotice,
 }: FeedbackInboxProps) {
   const { formatDate, locale, message, reportUnread, transport } =
     useHandsFeedback();
@@ -1164,6 +1171,14 @@ export function FeedbackInbox({
           label={message("refreshing")}
           state={pullToRefresh.state}
         />
+        {!hidden && inboxNotice != null && inboxNotice !== false && (
+          <div
+            className="hands-feedback-inset hands-feedback-inbox-notice"
+            data-feedback-inbox-notice
+          >
+            {inboxNotice}
+          </div>
+        )}
         {loading && (
           <div
             className="hands-feedback-ticket-list"
@@ -2621,6 +2636,11 @@ export type FeedbackWorkspaceProps = {
   /** Hides the inbox title text/icon; ticket and composer headers keep theirs. */
   hideHeaderTitle?: boolean;
   /**
+   * Inbox-only host content (e.g. an info `Banner`) rendered between the
+   * toolbar and the ticket list; not shown on the ticket or new views.
+   */
+  inboxNotice?: ReactNode;
+  /**
    * Host handle. `attachPendingFile` targets the new-feedback composer only
    * and returns `composer_closed` on any other route.
    */
@@ -2635,6 +2655,7 @@ export function FeedbackWorkspace({
   onOpenPendingAttachment,
   enablePullToRefresh = false,
   hideHeaderTitle = false,
+  inboxNotice,
   ref,
 }: FeedbackWorkspaceProps) {
   const initial = useMemo<FeedbackWorkspaceRoute>(
@@ -2746,6 +2767,7 @@ export function FeedbackWorkspace({
       <FeedbackInbox
         enablePullToRefresh={enablePullToRefresh}
         hideHeaderTitle={hideHeaderTitle}
+        inboxNotice={inboxNotice}
         hidden={route.view !== "inbox"}
         readTicketId={readTicket.id}
         readTicketVersion={readTicket.version}
