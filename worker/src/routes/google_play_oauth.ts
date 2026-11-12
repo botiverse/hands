@@ -9,6 +9,11 @@ import { decryptGooglePlayValue, encryptGooglePlayValue, getGooglePlayBindingMet
 import { requireAndroidApp, verifyBinding } from "./google_play_bindings";
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
+// Play Console statistics exports (installs, active devices) are CSV files in a
+// Google-owned Cloud Storage bucket. Requested alongside publishing so one
+// consent covers both; optional, because Google lets the user deselect it and
+// publishing must keep working without it.
+export const GOOGLE_PLAY_REPORTS_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
 function callbackUri(env: Env) { return businessOrigin(env) + "/api/google-play/oauth/callback"; }
 function cookieDomain(c: AdminContext): { domain: string } | Record<string, never> {
   const domain = sharedCookieDomain(c.env);
@@ -55,6 +60,16 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
       tracks = normalizeGooglePlayTracks(body.tracks);
     }
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
+  const meta = await getGooglePlayBindingMeta(c.env.DB, appId);
+  // Reauthorizing an enabled binding without a body keeps its package and
+  // tracks; otherwise the new credential would be stored unconfigured and
+  // publishing would stop until an admin re-entered them. The callback still
+  // verifies the new credential against them before storing.
+  if (packageName === null && tracks === null && meta?.enabled === 1 && meta.package_name
+    && meta.internal_track && meta.closed_track && meta.production_track) {
+    packageName = meta.package_name;
+    tracks = { internal: meta.internal_track, closed: meta.closed_track, production: meta.production_track };
+  }
   const domainOption = cookieDomain(c);
   if (new URL(c.req.url).hostname !== new URL(callbackUri(c.env)).hostname && !domainOption.domain) {
     return c.json({ code: "PLAY_OAUTH_ORIGIN_MISMATCH", error: "Dashboard and callback need a shared cookie domain" }, 503);
@@ -65,7 +80,6 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   try {
     encrypted = await encryptGooglePlayValue(verifier, appId, c.env.PLAY_CRED_ENC_KEYS, c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION);
   } catch { return c.json({ code: "PLAY_CREDENTIAL_STORAGE_UNAVAILABLE", error: "Credential encryption is not configured" }, 503); }
-  const meta = await getGooglePlayBindingMeta(c.env.DB, appId);
   const now = Date.now();
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE expires_at<=?1").bind(now),
@@ -77,7 +91,8 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID, redirect_uri: callbackUri(c.env), response_type: "code",
-    scope: SCOPE + " openid email", access_type: "offline", prompt: "consent select_account",
+    scope: [SCOPE, GOOGLE_PLAY_REPORTS_SCOPE, "openid", "email"].join(" "), include_granted_scopes: "true",
+    access_type: "offline", prompt: "consent select_account",
     state, code_challenge: await challenge(verifier), code_challenge_method: "S256",
   }).toString();
   setCookie(c, googlePlayOAuthCookieName(state)!, sessionToken, {
@@ -177,7 +192,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     if (token.token_type !== "Bearer"
       || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status, undefined, "invalid_response");
     if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
-    if (typeof token.scope !== "string" || !token.scope.split(/\s+/).some((scope) => scope === SCOPE)) return fail("google_permissions");
+    const grantedScopes = typeof token.scope === "string" ? token.scope.split(/\s+/) : [];
+    if (!grantedScopes.includes(SCOPE)) return fail("google_permissions");
+    const reportAccess = grantedScopes.includes(GOOGLE_PLAY_REPORTS_SCOPE);
     stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
       headers: { authorization: "Bearer " + token.access_token }, redirect: "manual", signal: AbortSignal.timeout(30_000),
@@ -210,7 +227,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     });
     stored = true;
     await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.connect",
-      payload: { package_name: pending.package_name, credential_kind: credential.type, credential_fingerprint: meta.credential_fingerprint } });
+      payload: { package_name: pending.package_name, credential_kind: credential.type, credential_fingerprint: meta.credential_fingerprint, report_access: reportAccess } });
     await c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE state_hash=?1").bind(hash).run();
     return finish("connected");
   } catch (error) {

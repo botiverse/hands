@@ -2,7 +2,7 @@ import { currentLocale, preferredLocale } from "./locale";
 
 export const GOOGLE_PLAY_MESSAGE_KEYS = [
   "loadingTracks", "noTracks", "tracksHelp", "reloadTracks", "chooseTrack", "existingPackage", "manualPackage", "parsed", "declared", "channel", "googleMethod", "packageMissing", "authorize", "authorizedAccount", "oauthUnavailable", "oauthHelp", "oauthFailed", "oauthCancelled",
-  "oauthErrMissingCode", "oauthErrServerConfig", "oauthErrTokenExchange", "oauthErrOfflineAccess", "oauthErrGooglePermissions", "oauthErrAccountIdentity", "oauthErrPlayPermissions", "oauthErrAccessChanged", "oauthErrConnectionChanged", "oauthErrCredentialStorage", "disconnectHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
+  "oauthErrMissingCode", "oauthErrServerConfig", "oauthErrTokenExchange", "oauthErrOfflineAccess", "oauthErrGooglePermissions", "oauthErrAccountIdentity", "oauthErrPlayPermissions", "oauthErrAccessChanged", "oauthErrConnectionChanged", "oauthErrCredentialStorage", "disconnectHelp", "reauthorize", "reauthorizeHelp", "title", "description", "configured", "enabled", "disabled", "verified", "stale", "serviceAccount",
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "connect", "connecting", "connected", "retry", "needsConfig", "needsConfigHelp", "expand", "collapse", "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
@@ -33,6 +33,8 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     oauthErrAccessChanged: "Access changed since the connection was made. Reconnect to refresh it.",
     oauthErrConnectionChanged: "The connection changed in Hands during authorization. Reconnect to restore it.",
     oauthErrCredentialStorage: "Authorization succeeded, but saving the credential failed. Try again.",
+    reauthorize: "Reauthorize with Google",
+    reauthorizeHelp: "Reauthorizing keeps the package and tracks, and also asks Google for read-only access to Play Console statistics reports (installs and active devices). Publishing keeps working if you decline that part.",
     disconnectHelp: "Unbind deletes the credential stored by Hands. To revoke Google's grant as well, remove Hands in your Google account connections.",
 
     title: "Google Play",
@@ -71,6 +73,8 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     oauthErrAccessChanged: "连接后账号权限发生了变化。请重新连接以刷新。",
     oauthErrConnectionChanged: "Hands 中的连接已变更，请重新连接。",
     oauthErrCredentialStorage: "授权成功但凭据保存失败，请重试。",
+    reauthorize: "重新向 Google 授权",
+    reauthorizeHelp: "重新授权会保留包名和轨道，同时向 Google 申请只读读取 Play Console 统计报表（安装量、活跃设备）。如果不勾选这一项，发布功能不受影响。",
     disconnectHelp: "解除绑定会删除 Hands 保存的凭据。若也要撤销 Google 的授权，请在 Google 账号的第三方连接中移除 Hands。",
 
     title: "Google Play",

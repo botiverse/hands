@@ -353,6 +353,9 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
                 <Button variant="outline" disabled={verify.isPending} onClick={() => verify.mutate()}>
                   {verify.isPending ? gp("testing") : gp("test")}
                 </Button>
+                {meta.credential_kind === "authorized_user" && meta.enabled && (
+                  <Button variant="outline" disabled={authorize.isPending} onClick={startConnect}>{gp("reauthorize")}</Button>
+                )}
                 <Button variant="outline" onClick={() => { setConnectionMethod("service"); setEditing(true); }}>{gp("replace")}</Button>
                 <Button
                   variant="outline"
@@ -368,6 +371,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
                   if (window.confirm(gp("confirmUnbind"))) remove.mutate();
                 }}>{gp("unbind")}</Button>
               </div>}
+              {meta.credential_kind === "authorized_user" && meta.enabled && !editing && <p className="text-xs text-foreground-muted">{gp("reauthorizeHelp")}</p>}
               {meta.credential_kind === "authorized_user" && <p className="text-xs text-foreground-muted">{gp("disconnectHelp")}{" "}
                 <a className="text-info-strong hover:underline" href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
               </p>}

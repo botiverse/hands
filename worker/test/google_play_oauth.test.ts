@@ -242,6 +242,38 @@ describe("Google Play OAuth", () => {
     expect(h.verify.mock.calls[0]![0].credential).toEqual(oauth);
     expect((await saved.json() as any).google_play).toMatchObject({package_name:input.package_name, enabled:true, verification_state:'verified'});
   });
+  it('requests optional read-only report access alongside publishing', async () => {
+    const h = harness();
+    const { url } = await h.start();
+    expect(url!.searchParams.get('scope')!.split(' ')).toEqual([
+      'https://www.googleapis.com/auth/androidpublisher', 'https://www.googleapis.com/auth/devstorage.read_only', 'openid', 'email']);
+    expect(url!.searchParams.get('include_granted_scopes')).toBe('true');
+  });
+  it.each([true, false])('reauthorizes an enabled binding without a body, keeping its configuration (report access granted=%s)', async (granted) => {
+    const h = harness();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:{...oauth, refresh_token:'old-refresh'}, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    const scope = 'openid email https://www.googleapis.com/auth/androidpublisher' + (granted ? ' https://www.googleapis.com/auth/devstorage.read_only' : '');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url) === 'https://oauth2.googleapis.com/token'
+      ? Response.json({access_token:'access', refresh_token:oauth.refresh_token, token_type:'Bearer', scope})
+      : Response.json({email:oauth.client_email, email_verified:true}));
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:'{}'});
+    const url = new URL((await response.json() as any).authorization_url);
+    expect((await h.callback(url.searchParams.get('state')!)).headers.get('location')).toContain('google_play_oauth=connected');
+    expect(h.verify).toHaveBeenCalledOnce();
+    expect(h.verify.mock.calls[0]![0]).toMatchObject({packageName:input.package_name, tracks:input.tracks});
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toMatchObject({package_name:input.package_name, internal_track:'internal', closed_track:'closed', production_track:'production', enabled:1, verification_state:'verified'});
+    expect((await getGooglePlayBinding(h.env.DB, appId, keyring))!.credential).toEqual(oauth);
+    const audit = h.sqlite.prepare("SELECT payload FROM audit_logs WHERE action='google_play.oauth.connect'").get() as {payload:string};
+    expect(JSON.parse(audit.payload).report_access).toBe(granted);
+  });
+  it('does not reuse the configuration of a disabled binding on a bodyless reauthorization', async () => {
+    const h = harness(); google();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    h.sqlite.prepare('UPDATE app_google_play_bindings SET enabled=0').run();
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session'}});
+    expect(h.sqlite.prepare('SELECT package_name, tracks_json FROM google_play_oauth_requests').get()).toEqual({package_name:null, tracks_json:null});
+    expect(response.status).toBe(200);
+  });
   it.each([{package_name:input.package_name}, {tracks:input.tracks}, null, [], 'invalid'])('rejects malformed or partial configuration %j', async (body) => {
     const h = harness();
     const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:JSON.stringify(body)});
