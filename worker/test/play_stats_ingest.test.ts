@@ -392,7 +392,7 @@ describe("Google Play statistics ingest", () => {
     expect(body.hint).toMatch(/pubsite_prod_rev_<digits>/);
     expect(JSON.stringify(body)).not.toContain("secret provider text");
     // Every listing went to the configured bucket only.
-    for (const c of h.g.calls.filter((c) => c.url.startsWith("https://storage.googleapis.com"))) {
+    for (const c of h.g.calls.filter((c) => new URL(c.url).origin === "https://storage.googleapis.com")) {
       expect(new URL(c.url).pathname).toBe(`/storage/v1/b/${BUCKET}/o`);
     }
     await pollGooglePlayStats(h.env, Date.now());
