@@ -612,6 +612,11 @@ empty list does not prove the build never crashed. Some shared crashes have no
 log on Apple's side (`CRASH_LOG_NOT_AVAILABLE`). Screenshot URLs are signed by
 Apple and expire (`expires_at`). Tester emails are not returned.
 
+These commands find the App Store Connect app through the main channel's
+bundle id. If it is not set, they fail with `BUNDLE_ID_NOT_CONFIGURED`; set it
+with `hands channels update raft-ios main --bundle-id <bundle id>`. Hands does
+not fall back to the bundle id in an uploaded build's metadata.
+
 **Closing (separate, explicit step).** After triage, close the item on Apple's
 side. This calls Apple's official TestFlight feedback API, and Apple's only
 resolution for a submission is delete: the crash or screenshot feedback is
@@ -963,6 +968,10 @@ hands feedback update raft-android <ticket-id> --status resolved
 hands feedback update raft-android <ticket-id> --status closed --closure-reason completed
 hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
+
+`hands feedback list` shows in-app (SDK) tickets only. TestFlight crashes and
+screenshot feedback come from Apple and use `hands testflight crashes` and
+`hands testflight feedback`; an empty list prints these commands.
 
 `--assignee none` unassigns. Closing a ticket requires `--closure-reason`
 (`completed`, `not_planned`, `cannot_reproduce`, `duplicate`, or

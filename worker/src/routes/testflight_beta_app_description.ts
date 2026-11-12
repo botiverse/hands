@@ -11,6 +11,7 @@ import {
   type BetaAppLocalizationResource,
 } from "../lib/asc_api";
 import { insertAuditLog } from "../lib/permissions";
+import { BUNDLE_ID_NOT_CONFIGURED_MESSAGE, bundleIdNotConfiguredNextAction } from "../lib/bundle_id_guidance";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -124,7 +125,8 @@ async function resolveAppContext(c: AdminContext): Promise<{
     throw new BetaAppDescriptionError(
       400,
       "BUNDLE_ID_NOT_CONFIGURED",
-      "the main channel has no App Store bundle id",
+      BUNDLE_ID_NOT_CONFIGURED_MESSAGE,
+      { next_action: bundleIdNotConfiguredNextAction(appId) },
     );
   }
   const encKey = c.env.ASC_CRED_ENC_KEY;

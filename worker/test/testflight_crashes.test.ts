@@ -27,7 +27,7 @@ async function testCreds() {
   };
 }
 
-async function setup(platform = "ios") {
+async function setup(platform = "ios", bundleId: string | null = "build.raft.app") {
   const creds = await testCreds();
   const encrypted = await encryptP8(creds.p8, "test-key");
   const statements: Array<{ sql: string; params: unknown[] }> = [];
@@ -42,7 +42,7 @@ async function setup(platform = "ios") {
         },
         async first() {
           if (sql.includes("SELECT platform FROM apps")) return { platform };
-          if (sql.includes("SELECT bundle_id FROM channels")) return { bundle_id: "build.raft.app" };
+          if (sql.includes("SELECT bundle_id FROM channels")) return { bundle_id: bundleId };
           if (sql.includes("FROM app_asc_credentials")) {
             return {
               id: "cred-1",
@@ -207,6 +207,27 @@ describe("TestFlight crash pull", () => {
     expect(((await res.json()) as any).code).toBe("APP_NOT_IOS");
     expect(parseCrashLimit(undefined)).toBe(20);
     expect(() => parseCrashLimit("201")).toThrow();
+  });
+
+  it("answers BUNDLE_ID_NOT_CONFIGURED with the exact channels command, before any Apple call", async () => {
+    for (const path of [
+      "/api/apps/app-1/testflight-crashes",
+      "/api/apps/app-1/testflight-crashes/crash-1/log",
+      "/api/apps/app-1/testflight-feedback",
+    ]) {
+      const { app, env, calls } = await setup("ios", null);
+      const res = await app.request(path, undefined, env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "the main channel has no App Store bundle id",
+        code: "BUNDLE_ID_NOT_CONFIGURED",
+        next_action: "set it with: hands channels update app-1 main --bundle-id <bundle id>",
+      });
+      expect(calls).toEqual([]);
+    }
+    const blank = await setup("ios", "  ");
+    const res = await blank.app.request("/api/apps/app-1/testflight-crashes", undefined, blank.env);
+    expect(((await res.json()) as any).code).toBe("BUNDLE_ID_NOT_CONFIGURED");
   });
 
   it("serves the crash log as a .ips attachment, scoped to the app's bundle", async () => {

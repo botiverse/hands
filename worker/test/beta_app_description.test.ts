@@ -146,6 +146,39 @@ describe("Beta App Description route", () => {
       .toThrow(/between 1 and 100/);
   });
 
+  it("answers BUNDLE_ID_NOT_CONFIGURED with the exact channels command", async () => {
+    const fetchMock = vi.fn(async () => Response.json({}, { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() {
+            return this;
+          },
+          async first() {
+            if (sql.includes("SELECT platform FROM apps")) return { platform: "ios" };
+            if (sql.includes("SELECT bundle_id FROM channels")) return { bundle_id: null };
+            return null;
+          },
+        };
+      },
+    };
+    const app = new Hono();
+    app.get("/api/apps/:appId/testflight-beta-app-description", handleGetBetaAppDescription as any);
+    const response = await app.request(
+      "/api/apps/app-1/testflight-beta-app-description",
+      undefined,
+      { DB: db, ASC_CRED_ENC_KEY: "test-key" } as any,
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "the main channel has no App Store bundle id",
+      code: "BUNDLE_ID_NOT_CONFIGURED",
+      next_action: "set it with: hands channels update app-1 main --bundle-id <bundle id>",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("updates app descriptions, performs exact readback, and writes a redacted audit", async () => {
     const creds = await generateTestCreds();
     const encrypted = await encryptP8(creds.p8, "test-key");

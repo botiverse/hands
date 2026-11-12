@@ -37,6 +37,7 @@ import {
   type AscApiCredentials,
   type BetaFeedbackCrashSubmission,
 } from "../lib/asc_api";
+import { BUNDLE_ID_NOT_CONFIGURED_MESSAGE, bundleIdNotConfiguredNextAction } from "../lib/bundle_id_guidance";
 import { prepareTestflightCrashIngest } from "./apple_webhooks";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -50,6 +51,7 @@ class CrashPullError extends Error {
     readonly status: 400 | 404 | 500,
     readonly code: string,
     message: string,
+    readonly nextAction?: string,
   ) {
     super(message);
   }
@@ -75,7 +77,12 @@ async function resolveIosAppContext(c: AdminContext): Promise<{
     .first<{ bundle_id: string | null }>();
   const bundleId = (bundleRow?.bundle_id ?? "").trim();
   if (!bundleId) {
-    throw new CrashPullError(400, "BUNDLE_ID_NOT_CONFIGURED", "the main channel has no App Store bundle id");
+    throw new CrashPullError(
+      400,
+      "BUNDLE_ID_NOT_CONFIGURED",
+      BUNDLE_ID_NOT_CONFIGURED_MESSAGE,
+      bundleIdNotConfiguredNextAction(appId),
+    );
   }
   const encKey = c.env.ASC_CRED_ENC_KEY;
   if (!encKey) {
@@ -94,7 +101,14 @@ async function resolveIosAppContext(c: AdminContext): Promise<{
 
 function errorResponse(c: AdminContext, error: unknown) {
   if (error instanceof CrashPullError) {
-    return c.json({ error: error.message, code: error.code }, error.status);
+    return c.json(
+      {
+        error: error.message,
+        code: error.code,
+        ...(error.nextAction ? { next_action: error.nextAction } : {}),
+      },
+      error.status,
+    );
   }
   if (error instanceof AscApiError) {
     const notFound = error.status === 404;
