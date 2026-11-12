@@ -698,6 +698,16 @@ hands --json api GET /api/apps
 - **认证与角色控制不变。** 复用现有命令行登录或令牌；服务端执行与其他调用相同的角色检查。
 - 参数：`--param key=value`（可重复）、`--data <json|@file>`、`--output <file>`（二进制响应时必填）。全局 `--api` 和 `--json` 均有效。
 
+### App Store 分析报表
+
+Apple 只有在应用存在「分析报表请求」后才会生成 App Store 分析报表（安装、删除、会话、活跃设备），而请求只能通过 API 创建。应用管理员执行一次即可：
+
+```bash
+hands api POST /api/apps/<appId>/stats/app-store/analytics-report-requests
+```
+
+Hands 按 main 渠道的 bundle id 找到对应的 App Store Connect 应用，创建持续每日生成的 `ONGOING` 请求和回溯历史的 `ONE_TIME_SNAPSHOT` 请求。已有的请求会直接复用，重复执行是安全的；被 Apple 因长期未下载而停止的 `ONGOING` 请求会重新创建。返回结果列出每个请求以及是否新建。Apple 一般在一到两天内生成第一批报表。App Store Connect API 密钥需要能读取分析报表的角色，例如「管理」。
+
 ## CI 环境变量
 
 每个变量先读取 `HANDS_<name>`，再读取旧版 `QUIVER_<name>`，因此现有 CI 无需更改。

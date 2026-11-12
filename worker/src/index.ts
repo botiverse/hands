@@ -125,6 +125,7 @@ import {
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleAppStats } from "./routes/stats";
+import { handleEnableAscAnalyticsReports } from "./routes/asc_analytics_requests";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
   handlePublicAppHistory,
@@ -1207,6 +1208,7 @@ bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"),
 bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 bindAdmin("get", "/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
+bindAdmin("post", "/api/apps/:appId/stats/app-store/analytics-report-requests", requireAppRole("admin"), handleEnableAscAnalyticsReports);
 bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
 bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
 bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);

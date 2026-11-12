@@ -1048,6 +1048,24 @@ hands --json api GET /api/apps
   `--output <file>` (required for binary). Both the global `--api` and `--json`
   flags are honored.
 
+### App Store analytics reports
+
+Apple produces App Store analytics reports (installs, deletions, sessions,
+active devices) only after an analytics report request exists for the app, and
+requests can only be created through the API. An app admin starts them once:
+
+```bash
+hands api POST /api/apps/<appId>/stats/app-store/analytics-report-requests
+```
+
+Hands resolves the App Store Connect app from the main channel's bundle id and
+creates an `ONGOING` request (daily from now on) and a `ONE_TIME_SNAPSHOT`
+request (history). Requests that already exist are reused, so running it again
+is safe; an `ONGOING` request Apple stopped for inactivity is replaced. The
+response lists each request and whether it was created. Apple usually delivers
+the first reports within one to two days. The App Store Connect API key needs a
+role that can read analytics, such as Admin.
+
 ## CI Environment Variables
 
 Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,
