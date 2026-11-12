@@ -223,6 +223,15 @@ function feedbackLink(origin: string | null | undefined, appId: string | null, t
   }
 }
 
+/** A deterministic, content-free root when a destination first sees a ticket update. */
+export function formatExistingFeedbackRoot(body: Payload, appId: string): string | null {
+  const ticketId = record(body.payload).ticket_id;
+  if (!UUID_RE.test(appId) || typeof ticketId !== "string" || !UUID_RE.test(ticketId)) return null;
+  // Only immutable IDs are used: a retry must reproduce the exact same body
+  // even if the app name, slug, or dashboard origin changes in between.
+  return `📮 **Existing feedback**\n📖 View more: \`hands feedback show ${appId} ${ticketId}\``;
+}
+
 const PLAY_STATES: Readonly<Record<string, string>> = {
   RELEASE_LIFECYCLE_STATE_DRAFT: "Draft",
   RELEASE_LIFECYCLE_STATE_NOT_SENT_FOR_REVIEW: "Not sent for review",

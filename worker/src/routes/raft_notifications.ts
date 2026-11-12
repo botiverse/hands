@@ -13,7 +13,7 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
-import { formatRaftNotificationMessage } from "../lib/raft_notification_content";
+import { formatExistingFeedbackRoot, formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
 import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
@@ -77,6 +77,9 @@ class RaftBotApiError extends Error {
 
 const CHANNEL_TARGET_RE = /^#[^\s:#]{1,120}$/;
 const SERVER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Distinct from the old pending marker: an older root send may have an
+// uncertain outcome and must not be replaced with a new synthetic root.
+const FEEDBACK_ROOT_PENDING = "pending:feedback-root";
 
 function parseOptionalServerId(value: unknown): { serverId: string | null } | { error: string } {
   if (value === undefined || value === null) return { serverId: null };
@@ -1006,6 +1009,8 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   ).bind(subscriptionId, objectKey).first<{ parent_message_id: string; updated_at: number }>();
   let ownsParentClaim = false;
   let createdParentClaim = false;
+  const feedbackRoot = isFeedbackThreadEvent(event) ? formatExistingFeedbackRoot(eventBody, row.app_id) : null;
+  const needsFeedbackRoot = feedbackRoot !== null && event !== "feedback:new";
   if (!thread) {
     const legacy = await preserveLegacyFeedbackThread(c.env.DB, subscriptionId, eventBody, objectKey);
     if (legacy === "pending") return c.json({ error: "notification thread is being created" }, 503);
@@ -1017,15 +1022,17 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     }
   }
   if (!thread) {
+    const marker = needsFeedbackRoot ? FEEDBACK_ROOT_PENDING : "pending";
+    const now = Date.now();
     const claim = await c.env.DB.prepare(
       `INSERT OR IGNORE INTO raft_notification_threads
          (subscription_id, object_key, parent_message_id, created_at, updated_at)
-       VALUES (?1, ?2, 'pending', ?3, ?3)`,
-    ).bind(subscriptionId, objectKey, Date.now()).run();
+       VALUES (?1, ?2, ?3, ?4, ?4)`,
+    ).bind(subscriptionId, objectKey, marker, now).run();
     if (claim.meta.changes === 1) {
       ownsParentClaim = true;
       createdParentClaim = true;
-      thread = { parent_message_id: "pending", updated_at: Date.now() };
+      thread = { parent_message_id: marker, updated_at: now };
     } else {
       thread = await c.env.DB.prepare(
         `SELECT parent_message_id, updated_at FROM raft_notification_threads
@@ -1034,24 +1041,22 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     }
   }
   if (!thread) return c.json({ error: "notification thread claim unavailable" }, 503);
-  if (thread?.parent_message_id === "pending") {
+  if (thread.parent_message_id === "pending" || thread.parent_message_id === FEEDBACK_ROOT_PENDING) {
     const now = Date.now();
     if (thread.updated_at < now - 5 * 60_000) {
       const takeover = await c.env.DB.prepare(
         `UPDATE raft_notification_threads SET updated_at = ?1
          WHERE subscription_id = ?2 AND object_key = ?3
-           AND parent_message_id = 'pending' AND updated_at = ?4`,
-      ).bind(now, subscriptionId, objectKey, thread.updated_at).run();
+           AND parent_message_id = ?4 AND updated_at = ?5`,
+      ).bind(now, subscriptionId, objectKey, thread.parent_message_id, thread.updated_at).run();
       ownsParentClaim = takeover.meta.changes === 1;
-      if (ownsParentClaim) thread = { parent_message_id: "pending", updated_at: now };
+      if (ownsParentClaim) thread = { parent_message_id: thread.parent_message_id, updated_at: now };
     }
     if (!ownsParentClaim) return c.json({ error: "notification thread is being created" }, 503);
   }
   let target = ownsParentClaim
     ? row.channel_target
-    : thread?.parent_message_id
-      ? `${row.channel_target}:${thread.parent_message_id.slice(0, 8)}`
-      : row.channel_target;
+    : `${row.channel_target}:${thread.parent_message_id.slice(0, 8)}`;
   // The delivery header is metadata outside the signed body and can change on
   // a replay. Derive the provider idempotency key only from the signed payload
   // so the same event cannot be sent again with a substituted delivery id.
@@ -1059,6 +1064,37 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   // A pre-deploy worker can send the same event without its new diagnostic
   // fields. Keep that exact old rendering available for same-key replay.
   const app = { id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null };
+
+  if (ownsParentClaim && thread.parent_message_id === FEEDBACK_ROOT_PENDING) {
+    // The marker and root key belong to the ticket, not to this event. Another
+    // update can recover an uncertain first send without making a second root.
+    if (!feedbackRoot) return c.json({ error: "notification thread claim unavailable" }, 503);
+    const rootKey = `hands-raft-feedback-root:${subscriptionId}:${await sha256Hex(objectKey)}`.slice(0, 240);
+    try {
+      // An old worker may already have sent this event before losing its DB
+      // pointer. Replay the exact channel message to prove its target and
+      // content; never create a second root if that proof fails.
+      const prior = await reconcileBotMessage(c.env, bot, row.channel_target, idempotencyKey);
+      const root = prior.state === "committed"
+        ? await sendBotMessage(c.env, bot, row.channel_target, formatRaftNotificationMessage(eventBody, app), idempotencyKey)
+        : await sendBotMessage(c.env, bot, row.channel_target, feedbackRoot, rootKey);
+      const saved = await c.env.DB.prepare(
+        `UPDATE raft_notification_threads SET parent_message_id = ?1, updated_at = ?2
+         WHERE subscription_id = ?3 AND object_key = ?4 AND parent_message_id = ?5 AND updated_at = ?6`,
+      ).bind(root.messageId, Date.now(), subscriptionId, objectKey, FEEDBACK_ROOT_PENDING, thread.updated_at).run();
+      if (saved.meta.changes !== 1) return c.json({ error: "notification thread is being created" }, 503);
+      if (prior.state === "committed") return c.json({ ok: true, message_id: root.messageId, threaded: false });
+      ownsParentClaim = false;
+      target = `${row.channel_target}:${root.messageId.slice(0, 8)}`;
+    } catch (error) {
+      // Keep the claim: the provider may have committed despite a lost reply.
+      // The next owner replays the same ticket key and immutable content.
+      if (error instanceof RaftBotApiError) {
+        return c.json({ error: error.code }, error.status >= 400 && error.status < 600 ? error.status as any : 503);
+      }
+      return c.json({ error: "bot send failed" }, 503);
+    }
+  }
   const legacyFailureContent = event === "google_play:submission_failed"
     ? legacyPlayFailureText(formatRaftNotificationMessage(eventBody, app)) : undefined;
   const legacyStandaloneContent = standalone ? formatRaftNotificationMessage(eventBody, app) : undefined;
@@ -1137,11 +1173,25 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     const content = channelText && cardTextFallback
       ? fallbackWarning(baseContent, false)
       : previousContent;
-    const sent = channelText
-      ? await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? legacyStandaloneTarget ?? target, content,
+    let sent: { messageId: string };
+    if (channelText) {
+      sent = await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? legacyStandaloneTarget ?? target, content,
         [previousContent, baseContent, ...(legacyFailureContent ? [legacyFailureContent] : [])], idempotencyKey,
-        `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240))
-      : await sendBotMessage(c.env, bot, target, content, idempotencyKey);
+        `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240));
+    } else {
+      try {
+        sent = await sendBotMessage(c.env, bot, target, content, idempotencyKey);
+      } catch (error) {
+        // A replay of the event which created the original feedback root must
+        // use its original channel target, not the now-known thread target.
+        // Replaying the same key and content proves that root without posting
+        // another message; other conflicts remain errors.
+        if (!isFeedbackThreadEvent(event) || target === row.channel_target
+          || !(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
+        sent = await sendBotMessage(c.env, bot, row.channel_target, content, idempotencyKey);
+        target = row.channel_target;
+      }
+    }
     const now = Date.now();
     if (ownsParentClaim) {
       await c.env.DB.prepare(

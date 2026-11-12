@@ -205,6 +205,35 @@ function mockRaftFetch(implementation: typeof fetch) {
   });
 }
 
+/** Mimics Raft's send key binding and reconcile-only API, including lost replies. */
+function mockFeedbackRaft(options: {
+  afterCommit?: (message: { target: string; content: string; key: string }) => Promise<void>;
+} = {}) {
+  const committed = new Map<string, { target: string; content: string; messageId: string }>();
+  const calls: Array<Record<string, unknown>> = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    const call = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(call);
+    const key = String(call.idempotencyKey);
+    const prior = committed.get(key);
+    if (call.reconcileOnly === true) return Response.json(prior
+      ? { state: "committed", messageId: prior.messageId } : { state: "not_found" });
+    const target = String(call.target);
+    const content = String(call.content);
+    if (prior) {
+      if (prior.target !== target || prior.content !== content) {
+        return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      }
+      return Response.json({ state: "committed", messageId: prior.messageId });
+    }
+    const messageId = `${String(committed.size + 1).padStart(8, "0")}-0000-4000-8000-000000000000`;
+    committed.set(key, { target, content, messageId });
+    await options.afterCommit?.({ target, content, key });
+    return Response.json({ state: "sent", messageId });
+  });
+  return { committed, calls };
+}
+
 describe("Hands-managed Raft notifications", () => {
   it("sends each Play failure receipt as a separate channel card and deduplicates its replay", async () => {
     const { request, sqlite, updateConfig } = await harness();
@@ -2588,13 +2617,171 @@ describe("Hands-managed Raft notifications", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("creates a fresh canonical thread when the old claim has expired", async () => {
+  it("creates an existing-feedback root and threads an update when a legacy claim has expired", async () => {
     const { request, sqlite } = await harness();
     sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:status_changed"]), SUBSCRIPTION_ID);
     sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "pending", 1, 1);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ state: "sent", messageId: "new-parent-1" }));
+    const raft = mockFeedbackRaft();
     expect((await request(feedbackBody("feedback:status_changed"), "status")).status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key = ?").pluck().get(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`)).toBe("new-parent-1");
+    expect([...raft.committed.values()].map(({ target }) => target)).toEqual(["#releases", "#releases:00000001"]);
+    expect([...raft.committed.values()][0]?.content).toContain("Existing feedback");
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key = ?").pluck().get(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`)).toBe("00000001-0000-4000-8000-000000000000");
+  });
+
+  it.each(["feedback:comment_created", "feedback:status_changed"])("boots a destination's %s in a private-content-free root and replies", async (firstEvent) => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:new", "feedback:comment_created", "feedback:status_changed"]), SUBSCRIPTION_ID);
+    const raft = mockFeedbackRaft();
+    const first = feedbackBody(firstEvent, { comment: { body: "SECRET COMMENT" }, previous_status: "open", status: "closed" });
+    expect((await request(first, "first")).status).toBe(200);
+    expect((await request(first, "retry")).status).toBe(200);
+    expect((await request(feedbackBody("feedback:new", { kind: "feedback", message: "old message" }), "late-new")).status).toBe(200);
+    const sent = [...raft.committed.values()];
+    expect(sent).toHaveLength(3);
+    expect(sent.map(({ target }) => target)).toEqual(["#releases", "#releases:00000001", "#releases:00000001"]);
+    expect(sent[0]!.content).toContain("Existing feedback");
+    expect(sent[0]!.content).toContain(`hands feedback show ${APP_ID} ${TICKET_ID}`);
+    expect(sent[0]!.content).not.toContain("SECRET COMMENT");
+    expect(sent[1]!.content).not.toContain("SECRET COMMENT");
+    expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_threads").pluck().get()).toBe(1);
+  });
+
+  it("isolates first updates for separate tickets and replays a pre-existing new-feedback root", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:new", "feedback:comment_created"]), SUBSCRIPTION_ID);
+    const raft = mockFeedbackRaft();
+    const newFeedback = feedbackBody("feedback:new", { message: "A report" });
+    expect((await request(newFeedback, "new")).status).toBe(200);
+    expect((await request(newFeedback, "new-retry")).status).toBe(200);
+    expect((await request(feedbackBody("feedback:comment_created", { ticket_id: "73449b32-9499-40d2-ad45-3a23dd8c37f7" }), "other")).status).toBe(200);
+    const sent = [...raft.committed.values()];
+    expect(sent).toHaveLength(3);
+    expect(sent.map(({ target }) => target)).toEqual(["#releases", "#releases", "#releases:00000002"]);
+    expect(sent[0]!.content).not.toContain("Existing feedback");
+    expect(sent[1]!.content).toContain("73449b32-9499-40d2-ad45-3a23dd8c37f7");
+  });
+
+  it("serializes concurrent first updates for one ticket", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created", "feedback:status_changed"]), SUBSCRIPTION_ID);
+    let signalRoot: (() => void) | undefined;
+    let releaseRoot: (() => void) | undefined;
+    const rootSent = new Promise<void>((resolve) => { signalRoot = resolve; });
+    const rootRelease = new Promise<void>((resolve) => { releaseRoot = resolve; });
+    const raft = mockFeedbackRaft({ afterCommit: async ({ content }) => {
+      if (content.includes("Existing feedback")) { signalRoot?.(); await rootRelease; }
+    } });
+    const comment = feedbackBody("feedback:comment_created");
+    const status = feedbackBody("feedback:status_changed");
+    const first = request(comment, "comment");
+    await rootSent;
+    expect((await request(status, "status")).status).toBe(503);
+    releaseRoot?.();
+    expect((await first).status).toBe(200);
+    expect((await request(status, "status-retry")).status).toBe(200);
+    const sent = [...raft.committed.values()];
+    expect(sent).toHaveLength(3);
+    expect(sent.map(({ target }) => target)).toEqual(["#releases", "#releases:00000001", "#releases:00000001"]);
+  });
+
+  it("recovers a lost root response with the same key even if another event takes over", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created", "feedback:status_changed"]), SUBSCRIPTION_ID);
+    let loseRootResponse = true;
+    const raft = mockFeedbackRaft({ afterCommit: async ({ content }) => {
+      if (content.includes("Existing feedback") && loseRootResponse) { loseRootResponse = false; throw new Error("lost response"); }
+    } });
+    const comment = feedbackBody("feedback:comment_created");
+    expect((await request(comment, "comment")).status).toBe(503);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("pending:feedback-root");
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(feedbackBody("feedback:status_changed"), "status")).status).toBe(200);
+    expect((await request(comment, "retry")).status).toBe(200);
+    const sent = [...raft.committed.values()];
+    expect(sent).toHaveLength(3);
+    expect(sent.map(({ target }) => target)).toEqual(["#releases", "#releases:00000001", "#releases:00000001"]);
+    const rootCalls = raft.calls.filter((call) => String(call.idempotencyKey).startsWith("hands-raft-feedback-root:"));
+    expect(rootCalls).toHaveLength(2);
+    expect(rootCalls[0]).toEqual(rootCalls[1]);
+  });
+
+  it("keeps the chosen root if a stale old worker completes another root during deployment", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created", "feedback:status_changed"]), SUBSCRIPTION_ID);
+    const old = feedbackBody("feedback:comment_created");
+    const oldBody = JSON.stringify(old);
+    const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(oldBody)}`;
+    let releaseOld!: () => void;
+    const oldDone = new Promise<void>((resolve) => { releaseOld = resolve; });
+    let startOld!: () => void;
+    const oldStarted = new Promise<void>((resolve) => { startOld = resolve; });
+    const raft = mockFeedbackRaft();
+    sqlite.prepare(`INSERT INTO webhook_deliveries
+      (id,webhook_id,event_type,payload_json,status,attempts,max_attempts,created_at,updated_at)
+      VALUES ('old-delivery','webhook-1','feedback:comment_created',?,'pending',0,3,1,1)`).run(oldBody);
+    // A pre-upgrade handler passed the old pending check but its POST reaches
+    // Raft only after the new root has been saved. Its old error handler also
+    // deletes an unqualified pending row on failure.
+    const oldWorker = (async () => {
+      sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, 'pending', 1, 1)").run(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`);
+      startOld();
+      await oldDone;
+      raft.committed.set(key, { target: "#releases", content: formatRaftNotificationMessage(old, {
+        id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test",
+      }), messageId: "00000009-0000-4000-8000-000000000000" });
+      sqlite.prepare("UPDATE raft_notification_threads SET parent_message_id=? WHERE subscription_id=? AND object_key=? AND parent_message_id='pending'")
+        .run("00000009-0000-4000-8000-000000000000", SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`);
+    })();
+    await oldStarted;
+    const result = await request(feedbackBody("feedback:status_changed"), "status");
+    releaseOld();
+    await oldWorker;
+    // Different old/new event keys may still produce two roots during a rolling
+    // deploy. Once chosen, the new parent is not overwritten by the old worker.
+    expect(result.status).toBe(200);
+    expect([...raft.committed.values()].map(({ target }) => target)).toEqual(["#releases", "#releases"]);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key = ?").pluck().get(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`)).toBe("00000001-0000-4000-8000-000000000000");
+  });
+
+  it("recovers when an old worker sent the event but did not save its parent", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created"]), SUBSCRIPTION_ID);
+    const event = feedbackBody("feedback:comment_created");
+    const eventKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const raft = mockFeedbackRaft();
+    raft.committed.set(eventKey, { target: "#releases", content: formatRaftNotificationMessage(event, {
+      id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test",
+    }), messageId: "old-root-1" });
+    expect((await request(event, "recovery")).status).toBe(200);
+    expect((await request(event, "replay")).status).toBe(200);
+    expect(raft.committed.size).toBe(1);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("old-root-1");
+  });
+
+  it("fails closed on an uncertain old send if its channel content no longer matches", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created"]), SUBSCRIPTION_ID);
+    const event = feedbackBody("feedback:comment_created");
+    const raft = mockFeedbackRaft();
+    raft.committed.set(`hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`, {
+      target: "#releases", content: "old and unverifiable", messageId: "old-root-1",
+    });
+    expect((await request(event, "recovery")).status).toBe(409);
+    expect(raft.committed.size).toBe(1);
+    expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads").pluck().get()).toBe("pending:feedback-root");
+  });
+
+  it("reclaims a bootstrap when a feedback:new event arrives while the first root is uncertain", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:new", "feedback:comment_created"]), SUBSCRIPTION_ID);
+    let loseRootResponse = true;
+    const raft = mockFeedbackRaft({ afterCommit: async ({ content }) => {
+      if (content.includes("Existing feedback") && loseRootResponse) { loseRootResponse = false; throw new Error("lost response"); }
+    } });
+    expect((await request(feedbackBody("feedback:comment_created"), "comment")).status).toBe(503);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(feedbackBody("feedback:new", { message: "report" }), "late-new")).status).toBe(200);
+    expect((await request(feedbackBody("feedback:comment_created"), "comment-retry")).status).toBe(200);
+    expect([...raft.committed.values()].map(({ target }) => target)).toEqual(["#releases", "#releases:00000001", "#releases:00000001"]);
   });
 });

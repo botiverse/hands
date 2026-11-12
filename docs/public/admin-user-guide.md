@@ -102,7 +102,11 @@ bodies are not included. A feedback notification includes a `hands feedback
 show <app> <ticket>` command; viewing the full ticket still requires Hands
 access. The `feedback:comment_created` and `feedback:status_changed` events are
 emitted for reporter-owned tickets. Updates for the same ticket and destination
-are posted in its existing Raft thread.
+are posted in its Raft thread. If a destination first sees a comment or status
+change for an existing ticket (for example, after switching channels), Hands
+creates an **Existing feedback** message in that destination and posts the
+update in its thread. Existing threads are preserved. The original feedback
+history remains in its previous destination; it is not moved.
 
 TestFlight notifications can include test group names and a short excerpt of a
 developer's testing notes. Select a channel whose members may see these details.
