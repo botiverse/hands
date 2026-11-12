@@ -388,6 +388,8 @@ hands testflight crashes raft-ios --build 11200001 --app-version 1.12.0 --json
 
 Apple API 只提供测试人员在 TestFlight 提示中选择分享的崩溃。未分享的崩溃只出现在 Xcode Organizer 中，因此空列表不能证明构建从未崩溃。部分已分享崩溃在 Apple 侧没有日志（`CRASH_LOG_NOT_AVAILABLE`）。截图 URL 由 Apple 签名并会过期（`expires_at`）。不会返回测试人员电子邮件地址。
 
+这些命令通过主渠道的 bundle id 找到 App Store Connect 应用。如果未设置，会返回 `BUNDLE_ID_NOT_CONFIGURED`；使用 `hands channels update raft-ios main --bundle-id <bundle id>` 设置。Hands 不会回退使用已上传构建元数据中的 bundle id。
+
 **关闭是单独的明确步骤。** 处理后可以在 Apple 侧关闭条目。此操作调用 Apple 官方 TestFlight 反馈 API，而 Apple 对提交项唯一的解决方式是删除：崩溃或截图反馈会从 App Store Connect 的 TestFlight 反馈中移除。需要应用发布者角色或 `feedback:triage` 权限。
 
 ```bash
@@ -643,6 +645,8 @@ hands feedback update raft-android <ticket-id> --status resolved
 hands feedback update raft-android <ticket-id> --status closed --closure-reason completed
 hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
+
+`hands feedback list` 只显示应用内（SDK）工单。TestFlight 崩溃和截图反馈来自 Apple，请使用 `hands testflight crashes` 和 `hands testflight feedback`；列表为空时会打印这些命令。
 
 `--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce`、`duplicate` 或 `no_longer_needed`），重复工单还需提供 `--duplicate-of <ticket-id>`。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
 

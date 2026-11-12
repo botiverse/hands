@@ -38,6 +38,14 @@ async function resolveAppId(slugOrId: string): Promise<string> {
   return match.id;
 }
 
+export function testflightHint(appIdOrSlug: string): string {
+  return [
+    "This lists in-app (SDK) tickets only. For iOS TestFlight submissions:",
+    `  crashes:             hands testflight crashes ${appIdOrSlug} [--build N] [--download DIR]`,
+    `  screenshot feedback: hands testflight feedback ${appIdOrSlug} [--build N] [--download DIR]`,
+  ].join("\n");
+}
+
 export function registerFeedbackCommands(program: Command): void {
   const feedback = program
     .command("feedback")
@@ -74,6 +82,9 @@ export function registerFeedbackCommands(program: Command): void {
       }
       if (res.tickets.length === 0) {
         console.log("No tickets.");
+        // In-app SDK tickets only. TestFlight submissions live in Apple's API and
+        // have their own commands; point at them so an empty list is not a dead end.
+        console.log(testflightHint(appIdOrSlug));
         return;
       }
       for (const t of res.tickets) {

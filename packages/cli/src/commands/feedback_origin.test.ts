@@ -25,6 +25,28 @@ describe("feedback origin filtering", () => {
     expect(output).toHaveBeenCalledWith(expect.stringContaining("[external]"));
   });
 
+  it("points at the TestFlight commands when there are no tickets, but keeps --json clean", async () => {
+    apiRequest.mockImplementation(async (path: string) =>
+      path === "/api/apps"
+        ? { apps: [{ id: "11111111-2222-3333-4444-555555555555", slug: "ferry-ios" }] }
+        : { tickets: [] });
+    const output = vi.spyOn(console, "log").mockImplementation(() => {});
+    const program = new Command();
+    registerFeedbackCommands(program);
+    await program.parseAsync(["node", "hands", "feedback", "list", "ferry-ios"]);
+    const text = output.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(text).toContain("No tickets.");
+    expect(text).toContain("hands testflight crashes ferry-ios");
+    expect(text).toContain("hands testflight feedback ferry-ios");
+
+    output.mockClear();
+    const jsonProgram = new Command();
+    registerFeedbackCommands(jsonProgram);
+    await jsonProgram.parseAsync(["node", "hands", "feedback", "list", "11111111-2222-3333-4444-555555555555", "--json"]);
+    expect(output).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(output.mock.calls[0][0]))).toEqual({ tickets: [] });
+  });
+
   it("filters by crash_type and labels non-exception crash types", async () => {
     apiRequest.mockResolvedValue({ tickets: [{
       id: "ticket-kill", status: "open", kind: "crash", assignee: null,
