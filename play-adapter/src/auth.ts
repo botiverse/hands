@@ -3,7 +3,9 @@ import { PlayAdapterError } from "./errors";
 import type { ServiceAccountCredential, GooglePlayCredential } from "./types";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
+export const ANDROID_PUBLISHER_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
+/** Read-only Cloud Storage: the Play Console statistics export bucket. */
+export const PLAY_REPORTS_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
 
 export function parseServiceAccount(raw: unknown): ServiceAccountCredential {
   let value: unknown;
@@ -50,11 +52,21 @@ export function parsePlayCredential(raw: unknown): GooglePlayCredential {
     refresh_token: o.refresh_token as string, client_email: o.client_email as string };
 }
 
+/**
+ * Mint a short-lived access token. `scope` defaults to Android Publisher.
+ *
+ * For an authorized_user credential a non-default scope is requested on the
+ * refresh grant itself, so the token carries no more than that scope (it must
+ * be one the user granted; Google answers invalid_scope otherwise). For a
+ * service account it is the only scope in the signed assertion.
+ */
 export async function createAccessToken(
   credential: GooglePlayCredential,
   fetchImpl: typeof fetch,
   nowSeconds = Math.floor(Date.now() / 1000),
+  scope: typeof ANDROID_PUBLISHER_SCOPE | typeof PLAY_REPORTS_SCOPE = ANDROID_PUBLISHER_SCOPE,
 ): Promise<string> {
+  const reports = scope === PLAY_REPORTS_SCOPE;
   if (credential.type === "authorized_user") {
     let response: Response;
     try {
@@ -62,13 +74,22 @@ export async function createAccessToken(
         method: "POST", redirect: "manual", signal: AbortSignal.timeout(30_000),
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "refresh_token", client_id: credential.client_id,
-          client_secret: credential.client_secret, refresh_token: credential.refresh_token }),
+          client_secret: credential.client_secret, refresh_token: credential.refresh_token,
+          // Publishing keeps its original request shape; reports narrow the token.
+          ...(reports ? { scope } : {}) }),
       });
     } catch { throw new PlayAdapterError(502, "play_token_unavailable", "Google OAuth token request failed"); }
     const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    if (reports && !response.ok && body?.error === "invalid_scope") {
+      throw new PlayAdapterError(403, "play_reports_scope_missing", "Google authorization does not include Play Console report access; reconnect Google Play and allow reports");
+    }
     if (!response.ok) throw new PlayAdapterError(response.status < 500 ? 403 : 502, "play_token_rejected", "Google OAuth authorization needs reconnection");
     if (typeof body?.access_token !== "string" || !body.access_token || body.token_type !== "Bearer") {
       throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
+    }
+    // When Google reports the token's scopes, the reports scope must be among them (exact token match).
+    if (reports && typeof body.scope === "string" && !body.scope.split(/\s+/).includes(PLAY_REPORTS_SCOPE)) {
+      throw new PlayAdapterError(403, "play_reports_scope_missing", "Google authorization does not include Play Console report access; reconnect Google Play and allow reports");
     }
     return body.access_token;
   }
@@ -78,7 +99,7 @@ export async function createAccessToken(
   } catch {
     throw new PlayAdapterError(400, "play_credentials_invalid", "Google Play credentials are invalid");
   }
-  const assertion = await new SignJWT({ scope: ANDROID_PUBLISHER_SCOPE })
+  const assertion = await new SignJWT({ scope })
     .setProtectedHeader({
       alg: "RS256",
       typ: "JWT",

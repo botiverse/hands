@@ -81,6 +81,39 @@ export interface AppStatsResponse {
         }>;
       }> | null;
       live_error: string | null;
+      /** Daily metrics Hands ingested from Play Console statistics reports (oldest first). */
+      daily?: GooglePlayDailyRow[];
+      totals?: {
+        device_installs: number | null;
+        device_uninstalls: number | null;
+        device_upgrades: number | null;
+        user_installs: number | null;
+        user_uninstalls: number | null;
+        install_events: number | null;
+        update_events: number | null;
+        uninstall_events: number | null;
+        store_listing_visitors: number | null;
+        store_listing_acquisitions: number | null;
+        store_listing_conversion_rate: number | null;
+        active_device_installs_latest: number | null;
+        active_device_installs_latest_date: string | null;
+        total_user_installs_latest: number | null;
+      } | null;
+      reports_ingest?: {
+        stats_bucket: string | null;
+        files_processed: number;
+        files_incomplete: number;
+        files_failed: number;
+        files_over_limit: number;
+        last_processed_at: number | null;
+        latest_data_date: string | null;
+        last_run_at: number | null;
+        last_error_code: string | null;
+        hint: string | null;
+        problems: Array<{ report_kind: string; month: string; status: string; last_error: string | null }>;
+        warnings: Array<{ report_kind: string; code: string; column?: string; columns?: string[]; count?: number }>;
+      } | null;
+      reports_note?: string | null;
       download_reports: {
         available: boolean;
         source: string;
@@ -161,6 +194,72 @@ export interface AppStoreDailyRow {
 }
 
 const num = (v: number | null | undefined) => (v === null || v === undefined ? "-" : String(v));
+
+export interface GooglePlayDailyRow {
+  date: string;
+  device_installs: number | null;
+  device_uninstalls: number | null;
+  device_upgrades: number | null;
+  user_installs: number | null;
+  user_uninstalls: number | null;
+  total_user_installs: number | null;
+  active_device_installs: number | null;
+  install_events: number | null;
+  update_events: number | null;
+  uninstall_events: number | null;
+  store_listing_visitors: number | null;
+  store_listing_acquisitions: number | null;
+}
+
+/** Google Play statistics reports section of `hands stats`; a status line when nothing was ingested. */
+export function formatGooglePlayReports(gp: NonNullable<AppStatsResponse["stores"]["google_play"]>, windowDays: number): string[] {
+  const lines: string[] = [];
+  const daily = gp.daily ?? [];
+  const ingest = gp.reports_ingest;
+  const problem = ingest?.last_error_code ? ` (last run: ${ingest.last_error_code})` : "";
+  if (daily.length === 0) {
+    if (ingest && !ingest.stats_bucket) {
+      lines.push("  - Play statistics reports: bucket not set (hands api PUT /api/apps/<appId>/google-play/stats-bucket)");
+    } else if (ingest) {
+      lines.push(`  - Play statistics reports: no data in this window yet${problem}`);
+    }
+    if (ingest?.hint) lines.push(`    Hint: ${ingest.hint}`);
+    return lines;
+  }
+  const t = gp.totals;
+  if (t) {
+    const rate = t.store_listing_conversion_rate === null ? "-" : `${(t.store_listing_conversion_rate * 100).toFixed(2)}%`;
+    lines.push(
+      `  - Play statistics (${windowDays}d): ${num(t.user_installs)} user installs, ${num(t.user_uninstalls)} user uninstalls | ` +
+        `${num(t.device_installs)} device installs, ${num(t.device_uninstalls)} device uninstalls, ${num(t.device_upgrades)} upgrades | ` +
+        `active device installs ${num(t.active_device_installs_latest)}${t.active_device_installs_latest_date ? ` on ${t.active_device_installs_latest_date}` : ""} | ` +
+        `store listing ${num(t.store_listing_visitors)} visitors, ${num(t.store_listing_acquisitions)} acquisitions (${rate})`,
+    );
+  }
+  lines.push("    Date        U-Inst  U-Uninst  D-Inst  D-Uninst  Upgrades  Active  Visitors  Acquired");
+  for (const d of daily.slice(-14)) {
+    lines.push(
+      `    ${d.date}  ${num(d.user_installs).padStart(6)}  ${num(d.user_uninstalls).padStart(8)}  ${num(d.device_installs).padStart(6)}  ` +
+        `${num(d.device_uninstalls).padStart(8)}  ${num(d.device_upgrades).padStart(8)}  ${num(d.active_device_installs).padStart(6)}  ` +
+        `${num(d.store_listing_visitors).padStart(8)}  ${num(d.store_listing_acquisitions).padStart(8)}`,
+    );
+  }
+  if (daily.length > 14) lines.push(`    (${daily.length - 14} earlier days in --json)`);
+  for (const w of ingest?.warnings ?? []) {
+    const detail = w.column ? ` ${w.column}` : w.columns?.length ? ` [${w.columns.join(", ")}]` : "";
+    lines.push(`    Warning: ${w.report_kind}: ${w.code}${detail}${w.count ? ` (${w.count})` : ""}`);
+  }
+  const retrying = (ingest?.files_incomplete ?? 0) + (ingest?.files_failed ?? 0) + (ingest?.files_over_limit ?? 0);
+  if (retrying > 0) {
+    lines.push(`    Retrying: ${ingest?.files_incomplete ?? 0} incomplete, ${ingest?.files_failed ?? 0} failed, ` +
+      `${ingest?.files_over_limit ?? 0} over size limit report files${problem}`);
+  } else if (ingest?.last_error_code) {
+    lines.push(`    Last run: ${ingest.last_error_code}`);
+  }
+  if (ingest?.hint) lines.push(`    Hint: ${ingest.hint}`);
+  if (gp.reports_note) lines.push(`    Note: ${gp.reports_note}`);
+  return lines;
+}
 
 /** App Store Analytics Reports section of `hands stats`; empty when nothing was ingested. */
 export function formatAppStoreAnalytics(asc: NonNullable<AppStatsResponse["stores"]["app_store"]>, windowDays: number): string[] {
@@ -267,6 +366,7 @@ export function formatAppStatsReport(stats: AppStatsResponse): string {
         );
       }
     }
+    lines.push(...formatGooglePlayReports(gp, window_days));
     if (gp.live_error) {
       lines.push(`  - Play live query warning: ${gp.live_error}`);
     }

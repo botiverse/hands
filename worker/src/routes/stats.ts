@@ -16,6 +16,7 @@ import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_
 import { getAscCredentials, getAscCredentialsMeta } from "../lib/asc_credentials";
 import { ascRequest, resolveAscAppId, type AscApiCredentials } from "../lib/asc_api";
 import { queryAscAnalyticsDaily } from "../lib/asc_analytics_ingest";
+import { queryGooglePlayStatsDaily } from "../lib/play_stats_ingest";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -231,6 +232,7 @@ async function queryGooglePlayStats(
   appId: string,
   appPlatform: string | null,
   includeStoreLive: boolean,
+  since: number,
 ) {
   const localDistributions = await c.env.DB.prepare(
     `SELECT
@@ -328,6 +330,10 @@ async function queryGooglePlayStats(
     }
   }
 
+  // Ingested Play Console statistics come from D1, so they are shown with or without `live`.
+  const reports = await queryGooglePlayStatsDaily(c.env.DB, appId, new Date(since).toISOString().slice(0, 10))
+    .catch(() => null);
+
   return {
     configured,
     package_name: binding?.package_name ?? localDistributions.results[0]?.package_name ?? null,
@@ -336,13 +342,18 @@ async function queryGooglePlayStats(
     promoted_releases: localDistributions.results,
     live_tracks: liveTracks,
     live_error: liveError,
+    daily: reports?.daily ?? [],
+    totals: reports?.totals ?? null,
+    reports_ingest: reports?.ingest ?? null,
+    reports_note: reports?.note ?? null,
     download_reports: {
-      available: false,
+      available: (reports?.daily.length ?? 0) > 0,
       source: "google_play_androidpublisher_v3",
       note:
         "Google Play Android Publisher v3 API exposes track, release, bundle, and rollout states. " +
-        "Aggregate store install/acquisition CSV exports live in Play Console Cloud Storage (gs://pubsite_prod_rev_*) " +
-        "or Play Developer Reporting API; active installed devices across all channels (including Play installs) are tracked in `direct.devices` via Hands SDK telemetry (`device_pings`).",
+        "Aggregate store install/acquisition CSV exports live in Play Console Cloud Storage (gs://pubsite_prod_rev_*); " +
+        "Hands ingests the monthly installs and store performance overview files into `daily` once the app's reports bucket is set " +
+        "(PUT /api/apps/:appId/google-play/stats-bucket). Active installed devices across all channels (including Play installs) are tracked in `direct.devices` via Hands SDK telemetry (`device_pings`).",
     },
   };
 }
@@ -617,7 +628,7 @@ export async function handleAppStats(c: AdminContext) {
 
   const [direct, googlePlay, appStore] = await Promise.all([
     queryDirectStats(c.env.DB, appId, since, channelFilter),
-    queryGooglePlayStats(c, appId, app.platform, includeStoreLive),
+    queryGooglePlayStats(c, appId, app.platform, includeStoreLive, since),
     queryAppStoreStats(c, appId, app.platform, includeStoreLive, since),
   ]);
 

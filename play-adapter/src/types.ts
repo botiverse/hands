@@ -41,6 +41,20 @@ export interface PlayDiscoveryInput {
   packageName: string;
 }
 
+/** List one Play statistics report folder (installs or store_performance) for the bound package. */
+export interface StatsListRpcInput extends PlayDiscoveryInput {
+  bucket: string;
+  report: "installs" | "store_performance";
+}
+
+/** Read one generation of one Play statistics CSV of the bound package. */
+export interface StatsReadRpcInput extends PlayDiscoveryInput {
+  bucket: string;
+  name: string;
+  generation: string;
+  maxBytes: number;
+}
+
 export interface PlayBindingInput extends PlayDiscoveryInput {
   credential: GooglePlayCredential;
   packageName: string;

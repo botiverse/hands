@@ -1,9 +1,19 @@
-import { createAccessToken, parsePlayCredential } from "./auth";
+import { createAccessToken, parsePlayCredential, PLAY_REPORTS_SCOPE } from "./auth";
 import { PlayAdapterError } from "./errors";
 import { DEOBFUSCATION_FILE_KINDS, GooglePlayClient, MAX_SYMBOLS_SIZE_BYTES } from "./google_play";
 import { resumableUploadOptions } from "./resumable_upload";
 import { pushStoreListings, readStoreListings, storeListingImagesInput, storeListingsInput } from "./store_listing";
 import { normalizeProduct, reconcileProduct } from "./subscription_products";
+import {
+  MAX_STATS_OBJECT_BYTES,
+  PlayStatsStorageClient,
+  statsBucketInput,
+  statsObjectInput,
+  statsPackageInput,
+  statsReportInput,
+  type StatsObject,
+  type StatsReport,
+} from "./stats_reports";
 import type {
   AdapterResult,
   DeobfuscationSymbolType,
@@ -27,6 +37,8 @@ import type {
   StoreListingPushRpcInput,
   StoreListingReadResult,
   StoreListingReadRpcInput,
+  StatsListRpcInput,
+  StatsReadRpcInput,
   SymbolsRpcInput,
   TrackMaximumRpcInput,
   UpdateReleaseNotesRequest,
@@ -497,7 +509,45 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
     return { binding, client: new GooglePlayClient(token, fetchImpl, maxAabSize(env), uploadOptions(env)) };
   }
 
+  /** A storage client holding a devstorage.read_only token; nothing else can use it. */
+  async function statsClient(credential: unknown) {
+    const parsed = parsePlayCredential(credential);
+    const token = await createAccessToken(parsed, fetchImpl, options.nowSeconds?.() ?? Math.floor(Date.now() / 1000), PLAY_REPORTS_SCOPE);
+    return new PlayStatsStorageClient(token, fetchImpl);
+  }
+
   return {
+    /**
+     * List the Play Console statistics CSVs of one report folder for the bound
+     * package (all pages, bounded). Read-only; see stats_reports.ts.
+     */
+    async listStatsObjects(input: StatsListRpcInput): Promise<AdapterResult<{ bucket: string; report: StatsReport; objects: StatsObject[]; truncated: boolean }>> {
+      try {
+        // Validate before OAuth: a malformed request never reaches Google.
+        const packageName = statsPackageInput(input?.packageName);
+        const bucket = statsBucketInput(input?.bucket);
+        const report = statsReportInput(input?.report);
+        const google = await statsClient(input.credential);
+        const listed = await google.list(bucket, report, packageName);
+        return { ok: true, value: { bucket, report, ...listed } };
+      } catch (error) { return failure(error, null); }
+    },
+
+    /** Download one generation of one statistics CSV of the bound package, size-bounded. */
+    async readStatsObject(input: StatsReadRpcInput): Promise<AdapterResult<{ name: string; generation: string; size: number; bytes: Uint8Array }>> {
+      try {
+        const packageName = statsPackageInput(input?.packageName);
+        const bucket = statsBucketInput(input?.bucket);
+        const object = statsObjectInput(packageName, input?.name, input?.generation);
+        const requested = positiveInteger(input?.maxBytes);
+        if (requested === null) throw new PlayAdapterError(400, "play_reports_request_invalid", "maxBytes is required");
+        const maxBytes = Math.min(requested, MAX_STATS_OBJECT_BYTES);
+        const google = await statsClient(input.credential);
+        const bytes = await google.read(bucket, object.name, object.generation, maxBytes);
+        return { ok: true, value: { name: object.name, generation: object.generation, size: bytes.byteLength, bytes } };
+      } catch (error) { return failure(error, null); }
+    },
+
     async applySubscriptionProduct(input: PlayDiscoveryInput & { product: unknown; mode: "dry_run" | "commit"; regionsVersion: string }, env: PlayAdapterEnv) {
       try {
         if (input?.mode !== "dry_run" && input?.mode !== "commit") throw new PlayAdapterError(400, "subscription_request_invalid", "mode must be dry_run or commit");
