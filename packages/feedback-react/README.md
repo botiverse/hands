@@ -61,8 +61,10 @@ scroll surfaces.
 `inboxNotice` (on `FeedbackWorkspace` and `FeedbackInbox`) renders host
 content, such as an info `Banner`, on its own full-width line between the
 inbox toolbar and the ticket list. It sits at the top of the list scroll
-region with the same inset as the error banner and is shown on the inbox view
-only.
+region with the same inset as the error banner and is visible on the inbox view
+only (it stays mounted while a ticket or the new-feedback form is open, so its
+state survives Back). The prop takes a node: write `cond ? <Notice /> : null`
+rather than `cond && <Notice />`, because a falsy `0` would still render.
 
 All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider

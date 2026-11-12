@@ -389,8 +389,11 @@ const [view, setView] = useState<FeedbackWorkspaceRoute["view"]>("inbox");
 full-width line between the inbox toolbar (status filter and **New feedback**)
 and the ticket list. It uses the same inset as the list's error banner, sits
 at the top of the list scroll region (it scrolls away with the list), and is
-shown only on the inbox view, not on a ticket or New feedback. Without the
-prop the inbox renders nothing extra. `FeedbackInbox` accepts the same prop.
+visible only on the inbox view. Like the rest of the inbox it stays mounted,
+hidden, while a ticket or New feedback is open, so its state survives Back.
+`null`, `undefined`, booleans and `""` render nothing (no wrapper); pass
+`cond ? <Notice /> : null` rather than `cond && <Notice />`, since `0` would
+render. `FeedbackInbox` accepts the same prop.
 
 ```tsx
 <FeedbackWorkspace

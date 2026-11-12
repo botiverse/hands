@@ -1171,7 +1171,9 @@ export function FeedbackInbox({
           label={message("refreshing")}
           state={pullToRefresh.state}
         />
-        {!hidden && inboxNotice != null && inboxNotice !== false && (
+        {inboxNotice != null &&
+          typeof inboxNotice !== "boolean" &&
+          inboxNotice !== "" && (
           <div
             className="hands-feedback-inset hands-feedback-inbox-notice"
             data-feedback-inbox-notice
@@ -2637,7 +2639,8 @@ export type FeedbackWorkspaceProps = {
   hideHeaderTitle?: boolean;
   /**
    * Inbox-only host content (e.g. an info `Banner`) rendered between the
-   * toolbar and the ticket list; not shown on the ticket or new views.
+   * toolbar and the ticket list. Hidden, but kept mounted with the inbox,
+   * on the ticket and new views. Booleans, `null` and `""` render nothing.
    */
   inboxNotice?: ReactNode;
   /**

@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { FeedbackWorkspace } from "./components.js";
+import { FeedbackInbox, FeedbackWorkspace } from "./components.js";
 import { FeedbackProvider } from "./provider.js";
 import type {
   FeedbackTicketDetail,
@@ -106,32 +106,84 @@ describe("FeedbackWorkspace inboxNotice", () => {
     ).toBeTruthy();
   });
 
-  it("does not render the notice on the new-feedback or ticket views", async () => {
-    const view = render(
+  it("keeps the notice mounted but hidden on the ticket and new-feedback views", async () => {
+    const statusNotice = (
+      <p data-testid="host-notice" role="status">
+        Did you know?
+      </p>
+    );
+    render(
       <FeedbackProvider transport={transport()}>
-        <FeedbackWorkspace inboxNotice={notice} />
+        <FeedbackWorkspace inboxNotice={statusNotice} />
       </FeedbackProvider>,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "New feedback" }));
-    expect(screen.getByRole("heading", { name: "New feedback" })).toBeTruthy();
-    expect(screen.queryByTestId("host-notice")).toBeNull();
-    view.unmount();
+    const visibleNotice = () =>
+      screen
+        .queryAllByRole("status")
+        .find((el) => el.dataset.testid === "host-notice") ?? null;
 
-    const adapter = transport();
-    render(
-      <FeedbackProvider transport={adapter}>
-        <FeedbackWorkspace
+    const row = await screen.findByRole("button", {
+      name: /^A reporter-visible ticket/,
+    });
+    const original = visibleNotice();
+    expect(original).not.toBeNull();
+
+    fireEvent.click(row);
+    // Ticket view: still in the DOM (same node) but inside the hidden inbox.
+    await screen.findByRole("button", { name: "Back" });
+    expect(screen.getByTestId("host-notice")).toBe(original);
+    expect(original!.closest("section")?.hidden).toBe(true);
+    expect(visibleNotice()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(visibleNotice()).toBe(original));
+
+    fireEvent.click(screen.getByRole("button", { name: "New feedback" }));
+    expect(screen.getByRole("heading", { name: "New feedback" })).toBeTruthy();
+    expect(screen.getByTestId("host-notice")).toBe(original);
+    expect(original!.closest("section")?.hidden).toBe(true);
+    expect(visibleNotice()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(visibleNotice()).toBe(original));
+  });
+
+  it.each([
+    ["false", false],
+    ["true", true],
+    ["empty string", ""],
+    ["null", null],
+  ] as const)("renders no wrapper for %s", async (_label, value) => {
+    const { container } = render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace inboxNotice={value} />
+      </FeedbackProvider>,
+    );
+    await screen.findByRole("button", { name: /^A reporter-visible ticket/ });
+    expect(container.querySelector("[data-feedback-inbox-notice]")).toBeNull();
+  });
+
+  it("renders the notice in a directly used FeedbackInbox", async () => {
+    const { container } = render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackInbox
+          onSelectTicket={vi.fn()}
+          onNewFeedback={vi.fn()}
           inboxNotice={notice}
-          route={{ view: "ticket", ticketId: "ticket-1" }}
         />
       </FeedbackProvider>,
     );
-    await screen.findAllByText("A reporter-visible ticket");
-    await waitFor(() => expect(adapter.getTicket).toHaveBeenCalled());
-    expect(screen.queryByTestId("host-notice")).toBeNull();
+    await screen.findByRole("button", { name: /^A reporter-visible ticket/ });
+    const wrapper = screen.getByTestId("host-notice").parentElement!;
+    expect(wrapper.hasAttribute("data-feedback-inbox-notice")).toBe(true);
+    expect(wrapper.parentElement).toBe(
+      container.querySelector("[data-feedback-list-scroll]"),
+    );
     expect(
-      document.querySelector("[data-feedback-inbox-notice]"),
-    ).toBeNull();
+      wrapper.compareDocumentPosition(
+        container.querySelector("ul.hands-feedback-ticket-list")!,
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("renders no extra wrapper when the prop is absent", async () => {
