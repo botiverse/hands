@@ -82,6 +82,39 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
       429: error("Reporter rate limit exceeded."),
     },
   },
+  listReporterChanges: {
+    method: "get",
+    path: "/api/apps/{appId}/reporter-feedback/changes",
+    tags: ["Reporter Feedback"],
+    summary: "Reconcile feedback changes for one reporter integration",
+    description: "Server-only, integration-bound feedback:read deploy token required; per-reporter sessions are not accepted. With no cursor, start at the current position without replaying history. The feed coalesces changes by ticket and includes internal-only activity as a content-free signal. Do not use comment_id as an event id: re-read the public detail with mark_read=false and deduplicate public reply ids. Opaque cursors are scoped to this app and integration; rotating the feedback audit key invalidates them.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        cursor: z.string().optional(),
+        limit: z.coerce.number().int().min(1).max(200).optional(),
+      }),
+    },
+    responses: {
+      200: success("Coalesced integration-scoped ticket change signals.", z.object({
+        changes: z.array(z.object({
+          ticket_id: z.string(),
+          route_subject: z.string().nullable(),
+          reporter_id: z.string(),
+          comment_id: z.string().nullable(),
+        })),
+        next_cursor: z.string(),
+        has_more: z.boolean(),
+      })),
+      400: error("Invalid cursor or limit."),
+      401: error("Missing or invalid bearer token."),
+      403: error("Invalid reporter integration grant."),
+      409: error("Cursor is ahead of current feedback state."),
+      429: error("Integration rate limit exceeded."),
+      503: error("Reporter backend or audit configuration unavailable."),
+    },
+  },
   mintReporterSession: {
     method: "post",
     path: "/api/apps/{appId}/reporter-feedback/session",
@@ -132,10 +165,11 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
       query: z.object({
         comment_limit: z.coerce.number().int().min(1).max(100).default(50),
         comment_cursor: z.string().optional(),
+        mark_read: z.enum(["true", "false"]).optional().describe("Use false for background reads that must not advance the reporter's read receipt; omitted defaults to true."),
       }),
     },
     responses: {
-      200: success("Reporter-owned feedback details; successful reads advance the authoritative receipt.", GenericObject),
+      200: success("Reporter-owned feedback details; successful reads advance the authoritative receipt unless mark_read=false.", GenericObject),
       400: error("Missing or malformed reporter id."),
       401: error("Missing or invalid bearer token."),
       403: error("Invalid reporter integration grant."),

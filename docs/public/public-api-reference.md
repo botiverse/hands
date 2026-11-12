@@ -492,7 +492,9 @@ has `unread` and `unread_count`, while the response has `unread_total` (the
 number of owned tickets with unread visible staff/system replies). A successful
 detail read advances a monotonic receipt through the latest visible reply in
 the returned comment page; concurrent or later replies remain unread;
-reporter comments and internal staff notes never create unread state.
+reporter comments and internal staff notes never create unread state. Add
+`mark_read=false` to a detail request for a background read that does not
+advance the receipt; omitting it preserves the default read behavior.
 
 The list is ordered by latest conversation activity: the time of the newest
 visible comment (from anyone, reporter included), or the ticket's creation
@@ -503,6 +505,22 @@ created_at }` (`body_preview` is the first 280 characters of the body), or
 as its latest comment. `latest_comment` is a list field; the detail response
 does not include it. Cursors from the previous creation-time order stay valid
 and keep paging in that order.
+
+A separate server-only `GET /api/apps/:appId/reporter-feedback/changes`
+reconciles ticket changes across the credential's reporter integration, with no
+reporter-id header. It accepts only an active integration-bound feedback-only
+`feedback:read` deploy token, not a per-reporter session. The first call without
+a cursor starts at the current position and returns no history. Subsequent
+responses contain `changes`, `next_cursor`, and `has_more`; each change has
+`ticket_id`, nullable `route_subject`, `reporter_id` (pseudonymous), and
+nullable `comment_id` (latest public staff/system comment ID, not an event ID).
+No content or staff-only
+fields are returned. Internal-only changes also produce a signal, and changes
+for one ticket coalesce. Process all public detail pages with `mark_read=false`,
+deduplicate public comment IDs, and persist the feed cursor only after each
+whole page is processed. Cursors are app/integration-bound, encrypted, and
+invalidated by feedback audit key rotation. See the [backend reconciliation
+contract](server-feedback.md#reconcile-changes-in-the-background).
 
 Before a trusted reporter creates its first ticket, bind its immutable opaque
 route subject with `feedback:route` permission:

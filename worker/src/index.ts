@@ -154,6 +154,7 @@ import {
   handleListReporterFeedback,
   cleanupReporterFeedbackData,
 } from "./routes/reporter_feedback";
+import { handleReporterChanges } from "./routes/reporter_changes";
 import { handleMintReporterSession } from "./routes/reporter_sessions";
 import {
   handleBindReporterRouteSubject,
@@ -835,6 +836,8 @@ bindApp("post", "/public/v2/apps/:slug/feedback/multipart/abort", handleAbortFee
 app.openapi(openapiLookup(feedbackRoutes, "listReporter"), handleListReporterFeedback as any);
 app.openapi(openapiLookup(feedbackRoutes, "mintReporterSession"), handleMintReporterSession as any);
 app.openapi(openapiLookup(feedbackRoutes, "bindReporterRouteSubject"), handleBindReporterRouteSubject as any);
+// Register the static path before :ticketId so it cannot be captured as an id.
+app.openapi(openapiLookup(feedbackRoutes, "listReporterChanges"), handleReporterChanges as any);
 app.openapi(openapiLookup(feedbackRoutes, "getReporter"), handleGetReporterFeedback as any);
 // This route accepts both JSON and multipart. Use the shared mixed-body
 // dispatcher so JSON validators do not run against multipart input. The

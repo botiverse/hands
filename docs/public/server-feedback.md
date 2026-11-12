@@ -147,7 +147,53 @@ Ownership is checked against the app, integration, and reporter tuple. Another
 reporter's ticket returns `404`. Reply submissions also use a stable
 `submission_id`; see the [wire contract](public-api-reference.md) for bodies,
 pagination, and limits. Internal staff comments are excluded from the
-reporter's conversation.
+reporter's conversation. A detail request marks the visible page read by
+default. For background reconciliation add `?mark_read=false` so the user's
+unread receipt is not changed; use the default when the user opens the ticket.
+
+## Reconcile changes in the background
+
+The trusted backend may also call the separate integration-wide feed:
+
+```http
+GET /api/apps/:appId/reporter-feedback/changes?limit=50&cursor=<opaque-cursor>
+Authorization: Bearer <server-side reporter-integration token>
+```
+
+This server-only endpoint requires a role-free deploy token bound to an active
+reporter integration and `feedback:read`; per-reporter sessions and ordinary
+app-role tokens cannot enumerate the feed. It does not need a reporter-id
+header. It returns only tickets owned by the token's app and integration.
+Never expose this integration-wide endpoint, token, or cursor to browsers.
+
+The first request **without** `cursor` returns no history and a `next_cursor`
+at the current position. Persist that cursor before the next poll. A response
+contains `changes`, `next_cursor`, and `has_more`. Each change has `ticket_id`,
+`route_subject` (nullable for historical unbound tickets), `reporter_id` (the
+integration's pseudonymous reporter ID), and `comment_id` (the latest visible
+staff/system comment ID or null). There is no body or staff metadata. The feed
+exposes which pseudonymous reporters filed tickets within this integration, so
+keep the credential and endpoint on the backend. `comment_id` is a current
+snapshot, not the ID of this specific change. Ticket creation, status/assignment changes, public
+comments, and internal notes can all trigger a signal; multiple changes on one
+ticket coalesce. Do not infer that a notification is public from the signal.
+
+Process and durably deduplicate **all** public comment IDs returned by the
+reporter detail API, including every `next_comment_cursor` page, with
+`mark_read=false`. Validate `route_subject` and `reporter_id` against your own
+user mapping, and notify only for previously unprocessed visible staff/system
+replies. A null route subject requires your own out-of-band routing and must
+not be silently delivered to another user. Make processing idempotent, persist
+the new feed cursor only after the entire page is processed, and continue while
+`has_more` is true. A retry can return a newer snapshot of a ticket; this is a
+coalesced reconciliation feed, not an ordered comment event log.
+
+Feed cursors are authenticated and encrypted to avoid revealing other
+integrations' activity. They are valid only for the issuing app/integration and
+the current Hands feedback audit key. An audit-key rotation invalidates old
+cursors: reinitialize and reconcile any missed window through your own durable
+state or signed webhooks. Respect `429` and `Retry-After`. This feed does not
+mark any conversation read; it does use rate-limit and access-audit bookkeeping.
 
 <a id="notify-the-products-user-or-agent"></a>
 

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { reporterErrorHandler, httpResponseTelemetry } from "../src/middleware/http_response_telemetry";
+import { setReporterFailureStage } from "../src/lib/reporter_failure";
 import { sealedReporterFailure } from "../src/lib/reporter_failure_detail";
 afterEach(() => vi.restoreAllMocks());
 
@@ -55,6 +56,24 @@ describe("reporter error boundary", () => {
     const response = await app.request("/api/apps/app/reporter-feedback");
     expect(response.status).toBe(401); expect(await response.text()).toBe("denied"); expect(response.headers.get("X-Error")).toBe("retained");
     expect(info.mock.calls.some(call => call[0] === "hands_reporter_failure_detail")).toBe(false);
+  });
+  it("sanitizes and classifies changes-feed D1 failures even when a parameter route also matches", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const app = new Hono();
+    app.onError(reporterErrorHandler);
+    app.use("*", httpResponseTelemetry);
+    app.get("/api/apps/:appId/reporter-feedback/changes", (c) => {
+      setReporterFailureStage(c, "list_query");
+      throw new Error("D1_ERROR internal error private-reporter-secret");
+    });
+    app.get("/api/apps/:appId/reporter-feedback/:ticketId", () => new Response("wrong"));
+    const response = await app.request("/api/apps/app/reporter-feedback/changes");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(errorLog).not.toHaveBeenCalled();
+    expect(JSON.stringify(info.mock.calls)).not.toContain("private-reporter-secret");
+    expect(info.mock.calls.some(call => call[0] === "hands_reporter_failure_detail")).toBe(true);
   });
   it("keeps the 500 response even if diagnostic encryption fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});

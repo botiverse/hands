@@ -825,5 +825,14 @@
   "Package-scoped resource path (e.g. `edits`, `edits/{editId}/tracks/production`, `reviews`, `monetization/subscriptions`, or `/androidpublisher/v3/applications/{packageName}/...`). Paths targeting any other package or containing `..` are rejected.": "包名级资源路径（例如 `edits`、`edits/{editId}/tracks/production`、`reviews`、`monetization/subscriptions` 或 `/androidpublisher/v3/applications/{packageName}/...`）。指向其他包名或包含 `..` 的路径会被拒绝。",
   "Optional query string parameters.": "可选的查询字符串参数。",
   "Optional JSON request body for POST, PUT, PATCH, or DELETE calls.": "POST、PUT、PATCH 或 DELETE 调用的可选 JSON 请求体。",
-  "Optional audit/receipt note recorded for mutating calls.": "为变更类调用记录的可选审计与回执说明。"
+  "Optional audit/receipt note recorded for mutating calls.": "为变更类调用记录的可选审计与回执说明。",
+  "Reconcile feedback changes for one reporter integration": "协调单个报告者集成的反馈变化",
+  "Server-only, integration-bound feedback:read deploy token required; per-reporter sessions are not accepted. With no cursor, start at the current position without replaying history. The feed coalesces changes by ticket and includes internal-only activity as a content-free signal. Do not use comment_id as an event id: re-read the public detail with mark_read=false and deduplicate public reply ids. Opaque cursors are scoped to this app and integration; rotating the feedback audit key invalidates them.": "仅限服务端使用绑定到报告者集成并具有 feedback:read 的部署令牌；不接受单个报告者会话。首次不带游标时从当前位置开始，不重放历史。此流按工单合并变化，内部变化也只产生不含内容的信号。不要把 comment_id 当作事件 ID：应使用 mark_read=false 重读公开详情并按公开回复 ID 去重。不透明游标绑定应用和集成，轮换反馈审计密钥会使其失效。",
+  "Coalesced integration-scoped ticket change signals.": "按集成隔离且已合并的工单变化信号。",
+  "Invalid cursor or limit.": "游标或数量限制无效。",
+  "Cursor is ahead of current feedback state.": "游标超前于当前反馈状态。",
+  "Integration rate limit exceeded.": "超过集成速率限制。",
+  "Reporter backend or audit configuration unavailable.": "报告者后端或审计配置不可用。",
+  "Use false for background reads that must not advance the reporter's read receipt; omitted defaults to true.": "后台读取不应推进报告者已读回执时使用 false；不填默认为 true。",
+  "Reporter-owned feedback details; successful reads advance the authoritative receipt unless mark_read=false.": "报告者自己的反馈详情；成功读取会推进权威回执，除非设置 mark_read=false。"
 }
