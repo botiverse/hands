@@ -34,6 +34,8 @@ export type StatsObject = {
   generation: string;
   /** Base64 MD5 of the object bytes, as Cloud Storage reports it (may be absent for composite objects). */
   md5_hash: string | null;
+  /** Stored Content-Encoding. "gzip" means Cloud Storage decompresses on download, so md5_hash covers the stored, not the served, bytes. */
+  content_encoding: string | null;
   size: number;
   updated: string | null;
 };
@@ -137,7 +139,7 @@ export class PlayStatsStorageClient {
     do {
       const url = new URL(`${GCS_ORIGIN}/storage/v1/b/${encodeURIComponent(bucket)}/o`);
       url.searchParams.set("prefix", statsPrefix(report, packageName));
-      url.searchParams.set("fields", "items(name,generation,md5Hash,size,updated),nextPageToken");
+      url.searchParams.set("fields", "items(name,generation,md5Hash,contentEncoding,size,updated),nextPageToken");
       url.searchParams.set("maxResults", "1000");
       if (pageToken) url.searchParams.set("pageToken", pageToken);
       const response = await this.get(url);
@@ -155,6 +157,7 @@ export class PlayStatsStorageClient {
           name,
           generation,
           md5_hash: typeof raw.md5Hash === "string" && MD5_B64.test(raw.md5Hash) ? raw.md5Hash : null,
+          content_encoding: typeof raw.contentEncoding === "string" && /^[a-z0-9-]{1,20}$/i.test(raw.contentEncoding) ? raw.contentEncoding.toLowerCase() : null,
           size,
           updated: typeof raw.updated === "string" && raw.updated.length <= 40 ? raw.updated : null,
         });

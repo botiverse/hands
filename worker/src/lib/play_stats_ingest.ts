@@ -101,7 +101,7 @@ export const PLAY_STATS_REPORTS: Record<PlayStatsReportKind, PlayStatsMapping> =
 };
 
 export type PlayStatsWarning = {
-  code: "missing_column" | "unknown_column" | "invalid_rows" | "empty_values" | "checksum_missing" | "no_rows";
+  code: "missing_column" | "unknown_column" | "invalid_rows" | "empty_values" | "checksum_missing" | "checksum_unverified_transcoded" | "no_rows";
   column?: string;
   columns?: string[];
   count?: number;
@@ -356,7 +356,7 @@ export type PlayStatsIngestSummary = {
   warnings: Array<{ object_name: string; report_kind: PlayStatsReportKind } & PlayStatsWarning>;
 };
 
-type Listed = { name: string; generation: string; md5_hash: string | null; size: number };
+type Listed = { name: string; generation: string; md5_hash: string | null; content_encoding?: string | null; size: number };
 type Candidate = Listed & { kind: PlayStatsReportKind; month: string; generationNum: number };
 
 function overviewMatch(name: string, report: "installs" | "store_performance", packageName: string): string | null {
@@ -471,8 +471,14 @@ export async function ingestGooglePlayStatsForApp(
       if (read.value.name !== file.name || read.value.generation !== file.generation) throw new PlayStatsError("object_identity_mismatch");
       if (bytes.byteLength > budget.maxFileBytes) throw new PlayStatsError("file_bytes_limit");
       const extra: PlayStatsWarning[] = [];
-      if (file.md5_hash) {
-        if (md5Base64(bytes) !== file.md5_hash) throw new PlayStatsError("md5_mismatch");
+      if (file.content_encoding === "gzip") {
+        // Stored gzip-encoded: Cloud Storage serves it decompressed, and md5Hash covers the
+        // compressed bytes, so it cannot be compared. Recorded, not silent.
+        extra.push({ code: "checksum_unverified_transcoded" });
+      } else if (file.md5_hash) {
+        if (md5Base64(bytes) !== file.md5_hash) {
+          throw new PlayStatsError(bytes.byteLength === file.size ? "md5_mismatch" : "md5_mismatch_size_differs");
+        }
       } else {
         extra.push({ code: "checksum_missing" });
       }
