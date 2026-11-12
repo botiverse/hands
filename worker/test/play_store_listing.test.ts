@@ -7,6 +7,7 @@ import { exportPKCS8, generateKeyPair } from "jose";
 import { storeGooglePlayBinding } from "../src/lib/google_play_bindings";
 import { requireAppRole } from "../src/lib/permissions";
 import { isPlayListingLanguage, PLAY_LISTING_LANGUAGES, suggestPlayListingLanguage } from "../src/lib/play_listing_languages";
+import { PLAY_EDIT_LOCK_STALE_MS } from "../src/lib/play_edit_lock";
 import {
   handleGetPlayStoreListing,
   handleListPlayStoreListingReceipts,
@@ -263,6 +264,16 @@ describe("store listing routes", () => {
     const response = await h.pushBody({ mode: "dry_run", listings: [{ language: "en-US", title: "Raft" }] });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", failure_code: "play_edit_locked" } });
+  });
+
+  it("reclaims a promote's edit lock once it is older than the stale window", async () => {
+    const h = await harness();
+    h.sqlite.pragma("foreign_keys = OFF");
+    h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+      VALUES ('app', 'build.raft.app', 'r', 'cancelled-promote', 'x', ?)`).run(Date.now() - PLAY_EDIT_LOCK_STALE_MS - 60_000);
+    const response = await h.pushBody({ mode: "dry_run", listings: [{ language: "en-US", title: "Raft" }] });
+    expect(response.status).not.toBe(409);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
   });
 
   it("requires publisher, an authenticated human or agent, and a verified binding", async () => {

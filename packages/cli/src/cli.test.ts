@@ -2162,6 +2162,7 @@ describe("play distribution commands", () => {
   async function startPlayHarness(
     overrides: {
       writeError?: { status: number; error: Record<string, unknown> };
+      dropWrite?: boolean;
       playNull?: boolean;
       writeExtra?: Record<string, unknown>;
     } = {},
@@ -2208,6 +2209,11 @@ describe("play distribution commands", () => {
         }));
       }
       if (req.url?.startsWith("/api/apps/app-1/releases/release-1/distributions/play/") && req.method === "POST") {
+        if (overrides.dropWrite) {
+          // The connection dies before any response, as on a client-side timeout.
+          req.socket.destroy();
+          return;
+        }
         if (overrides.writeError) {
           res.statusCode = overrides.writeError.status;
           return res.end(JSON.stringify({ error: overrides.writeError.error }));
@@ -2596,6 +2602,21 @@ describe("play distribution commands", () => {
       await expect(harness.run(
         "releases", "play-halt", "raft-android", "release-1", "--note", "hold",
       )).rejects.toThrow(/edit_conflict.*Not retried automatically/);
+      expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+      expect(harness.logs).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("says a write with no response may have completed and points at receipts instead of a retry", async () => {
+    const harness = await startPlayHarness({ dropWrite: true });
+    try {
+      const run = harness.run(
+        "releases", "play-promote", "raft-android", "release-1", "--track", "closed", "--note", "ship",
+      );
+      await expect(run).rejects.toThrow(/no response from Hands .*may still have completed on Google Play/);
+      await expect(run).rejects.toThrow("hands releases receipts raft-android release-1");
       expect(harness.requests.filter((request) => request.method === "POST")).toHaveLength(1);
       expect(harness.logs).toHaveLength(0);
     } finally {

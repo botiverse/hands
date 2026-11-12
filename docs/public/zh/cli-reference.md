@@ -192,6 +192,13 @@ API：`POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，�
 
 之后再次推送同一版本时，如果先前成功回执确认精确文件且 Play 仍持有相同 AAB，Hands 可以省略映射上传。新回执引用旧回执作为历史证据；Play 不提供映射文件回读，因此这不能验证其当前内容。没有该证据时 Hands 会继续尝试上传。要明确替换映射，请使用下文的 `play-upload-symbols`。
 
+## Google Play：Play 写操作没有响应时
+
+CLI 放弃等待（`fetch failed`）之后，Play 写操作仍可能在 Google Play 上完成。此时 CLI 会报告 `no response from Hands`，且不会自动重试。再次运行前，先用 `hands releases receipts <app> <release>` 和 `hands releases play-status <app> <release>` 检查，并与 Play Console 对照。
+
+- 客户端断开后，服务端会在短暂的宽限期内继续执行写操作；在此期间落地的提交仍会写入回执。如果请求在此之前被取消，Play 可能领先于 Hands：没有回执，`play-status` 仍显示之前的轨道。
+- 原请求仍在执行时，重试会返回 `edit_conflict`。如果原请求已被取消，它持有的按包 Play edit 锁会在 30 分钟后失效，之后该包的 Play 写操作即可恢复。
+
 ## Google Play：为线上版本补传映射或原生符号
 
 `hands releases play-promote` 只接受高于轨道最大值的版本号，因此不能为已经在 Play 上的版本附加映射。`play-upload-symbols` 为版本对应的版本号上传构建中已封存的 R8/ProGuard 映射（`proguard`）和（或）原生调试符号 zip（`nativeCode`）；该版本号必须已经存在于 Google Play。它不会更改轨道、发布比例、应用包或更新说明。

@@ -21,6 +21,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { ensureAppRole, insertAuditLog } from "../lib/permissions";
+import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration, type GooglePlayBinding } from "../lib/google_play_bindings";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -249,6 +250,7 @@ async function takePlayApiLock(db: D1Database, appId: string, packageName: strin
     .prepare("DELETE FROM play_store_listing_locks WHERE app_id = ?1 AND package_name = ?2 AND acquired_at < ?3")
     .bind(appId, packageName, now - LOCK_STALE_MS)
     .run();
+  await reclaimStalePlayEditLock(db, appId, packageName, now);
   try {
     const result = await db
       .prepare(

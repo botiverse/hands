@@ -254,6 +254,23 @@ does not offer a mapping readback, so this does not verify its current contents.
 Without that evidence, Hands continues to attempt the upload. To explicitly
 replace the mapping, use `play-upload-symbols` below.
 
+## Google Play: when a Play write gets no response
+
+A Play write can finish on Google Play after the CLI has given up waiting
+(`fetch failed`). The CLI then reports `no response from Hands` and does not
+retry. Before running the command again, check
+`hands releases receipts <app> <release>` and
+`hands releases play-status <app> <release>`, and compare them with Play
+Console.
+
+- After a client disconnect, the server keeps running the write for a short
+  grace period, so a commit that lands shortly afterward still gets its receipt.
+  If the request is cancelled before that, Play can be ahead of Hands: there is
+  no receipt and `play-status` shows the earlier track.
+- A retry returns `edit_conflict` while the original request is still running.
+  If that request was cancelled, its per-package Play edit lock expires after
+  30 minutes, and Play writes for the package then work again.
+
 ## Google Play: backfill mapping / native symbols for a live version
 
 `hands releases play-promote` only accepts a versionCode above the track
