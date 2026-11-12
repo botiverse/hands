@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { parseQueryParams, resolvePlayApiBody, registerPlayCommands } from "./play.js";
-import { formatAppStatsReport, registerStatsCommands } from "./stats.js";
+import { formatAppStatsReport, formatAppStoreAnalytics, registerStatsCommands } from "./stats.js";
 
 const APP_ID = "a78f3891-f980-4f48-80d7-2a58e93a99aa";
 
@@ -205,5 +205,33 @@ describe("hands play api & hands stats CLI", () => {
     expect(text).toContain("Raft Android (raft-android, android)");
     expect(text).toContain("Active Devices: 12 (30d)");
     expect(text).toContain("Track production (production): 1.23.0 [12300] (completed)");
+  });
+
+  it("prints ingested App Store daily metrics, totals, warnings and the privacy note", () => {
+    const lines = formatAppStoreAnalytics({
+      configured: true, bundle_id: "build.raft.app", key_id: "K", versions: null, builds: null, analytics_reports: null,
+      daily: [
+        { date: "2026-11-09", downloads_first_time: null, downloads_redownload: null, installations: null, deletions: null, sessions: 8, active_devices: 3 },
+        { date: "2026-11-10", downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 15, active_devices: 6 },
+      ],
+      totals: { downloads_first_time: 7, downloads_redownload: 3, installations: 6, deletions: 1, sessions: 23, active_devices_peak_daily: 6 },
+      analytics_ingest: { instances_processed: 5, instances_incomplete: 1, instances_failed: 0, instances_over_limit: 2, last_processed_at: 1, latest_processing_date: "2026-11-10", last_run_at: 1, last_error_code: "missing_column:Unique Devices",
+        warnings: [{ report_name: "App Sessions Standard", code: "missing_column", column: "Unique Devices" }] },
+      analytics_note: "Only users who agreed to share analytics.",
+    }, 30);
+    const text = lines.join("\n");
+    expect(text).toContain("App Store Analytics (30d): 7 first-time downloads, 3 redownloads | 6 installations, 1 deletions | 23 sessions | peak 6 active devices/day");
+    expect(text).toMatch(/2026-11-09\s+-\s+-\s+-\s+-\s+8\s+3/);
+    expect(text).toMatch(/2026-11-10\s+7\s+3\s+6\s+1\s+15\s+6/);
+    expect(text).toContain("Warning: App Sessions Standard: missing_column Unique Devices");
+    expect(text).toContain("Retrying: 1 incomplete, 0 failed, 2 over size limit report instances (last: missing_column:Unique Devices)");
+    expect(text).toContain("Note: Only users who agreed to share analytics.");
+  });
+
+  it("says when no App Store report was ingested yet", () => {
+    expect(formatAppStoreAnalytics({ configured: true, bundle_id: null, key_id: null, versions: null, builds: null, analytics_reports: null,
+      daily: [], totals: null, analytics_note: "n",
+      analytics_ingest: { instances_processed: 0, last_processed_at: null, latest_processing_date: null, last_run_at: 1, last_error_code: "asc_api_403", warnings: [] } }, 30))
+      .toEqual(["  - App Store Analytics: no reports ingested yet (last run: asc_api_403)"]);
   });
 });

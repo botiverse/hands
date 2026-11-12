@@ -1066,6 +1066,59 @@ response lists each request and whether it was created. Apple usually delivers
 the first reports within one to two days. The App Store Connect API key needs a
 role that can read analytics, such as Admin.
 
+Once reports exist, Hands downloads them on its own: a scheduled job checks
+each app with an App Store Connect key every few hours and reads each new daily
+report once. An app admin can run the same bounded read immediately:
+
+```bash
+hands api POST /api/apps/<appId>/stats/app-store/ingest
+```
+
+`hands stats <app>` then shows an App Store Analytics line with totals for the
+window and a table of the most recent days; `hands stats <app> --json` (or
+`GET /api/apps/<appId>/stats`) returns them as `stores.app_store.daily`,
+`stores.app_store.totals`, `stores.app_store.analytics_ingest` and
+`stores.app_store.analytics_note`. These come from Hands' own storage, so they
+are included with `--no-live` too.
+
+| Field | Apple report | Meaning |
+|---|---|---|
+| `downloads_first_time` | App Downloads Standard | First-time downloads (`Download Type` = First-time download) |
+| `downloads_redownload` | App Downloads Standard | Redownloads by people who had the app before. Updates and restores are not counted |
+| `installations` / `deletions` | App Store Installation and Deletion Standard | Install and delete events |
+| `sessions` | App Sessions Standard | App sessions |
+| `active_devices` | App Sessions Standard | Sum of Apple's `Unique Devices` over the report's rows |
+
+What these numbers can and cannot tell you:
+
+- **They undercount.** Installation, deletion, session and device figures only
+  include people who agreed to share analytics with app developers, and Apple
+  drops rows that fall below its privacy thresholds (small territories, rare
+  versions). Expect them to be lower than the totals App Store Connect shows.
+- **They lag.** Apple publishes a day's report one to two days later, so the
+  most recent days are missing at first.
+- **`active_devices` is an estimate.** A device that appears in more than one
+  row of a day (for example, on two app versions) is counted more than once,
+  and the value cannot be added across days. `totals` therefore gives the
+  highest daily value, `active_devices_peak_daily`, instead of a sum. For exact
+  active devices of builds that include the Hands SDK, use `direct.devices`.
+- **A missing value is `null`, not 0:** no report covered that metric on that
+  day.
+- If Apple changes a report's columns, Hands records a warning (for example
+  `missing_column Unique Devices`) in `analytics_ingest.warnings` and leaves
+  that metric empty rather than guessing. Reports with a missing required
+  column or an unrecognised value are counted in
+  `analytics_ingest.instances_incomplete` and read again every six hours, so
+  they fill in by themselves once Hands supports the new layout. Reports that
+  could not be downloaded (`instances_failed`) are retried on the same
+  schedule. A report larger than Hands reads at once (more than 50 files or
+  32 MiB compressed for one day) is counted in `instances_over_limit`, with
+  the reason in `last_error_code`; it is also checked again every six hours.
+- Each downloaded file is checked against the checksum Apple publishes for it
+  and rejected if it does not match. If Apple sends no checksum, or one in a
+  format Hands cannot check, the file is used and the warning
+  `checksum_missing` or `checksum_unverified` is shown.
+
 ## CI Environment Variables
 
 Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,
