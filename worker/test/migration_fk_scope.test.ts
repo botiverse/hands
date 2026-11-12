@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { referencingSql, tablesWritten } from "../../scripts/migration-fk-scope.mjs";
 
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
@@ -52,5 +53,14 @@ describe("deploy readback foreign-key scope", () => {
 
   it("rejects identifiers it cannot quote safely", () => {
     expect(() => referencingSql(["apps'; DROP TABLE apps; --"])).toThrow(/plain identifier/);
+  });
+  it("fails closed when a run applied migrations but no file names were parsed", () => {
+    const script = fileURLToPath(new URL("../../scripts/migration-fk-scope.mjs", import.meta.url));
+    const run = spawnSync(process.execPath, [script, "tables", migrationDir], { encoding: "utf8" });
+    expect(run.status).not.toBe(0);
+    expect(run.stdout).toBe("");
+    const ok = spawnSync(process.execPath, [script, "tables", migrationDir, "0088_asc_analytics_ingest.sql"], { encoding: "utf8" });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain("asc_analytics_daily");
   });
 });

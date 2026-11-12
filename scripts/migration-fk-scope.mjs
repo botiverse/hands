@@ -46,6 +46,9 @@ function main(argv) {
   if (mode === "tables") {
     const [dir, ...files] = rest;
     if (!dir) throw new Error("usage: tables <migrations_dir> <file.sql>...");
+    // A run that applied migrations but names none means the file list was not
+    // parsed; "no files" must not read as "nothing to check".
+    if (files.length === 0) throw new Error("no migration files given");
     const all = new Set();
     for (const f of files) {
       if (!FILE.test(f)) throw new Error(`not a migration file name: ${f}`);
