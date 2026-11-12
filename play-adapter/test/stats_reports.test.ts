@@ -78,18 +78,18 @@ describe("Play statistics: request restrictions", () => {
       const page = url.searchParams.get("pageToken");
       if (!page) {
         return Response.json({ nextPageToken: "p2", items: [
-          { name: OBJECT, generation: "17", md5Hash: "1B2M2Y8AsgTpgAmY7PhCfg==", size: "10", updated: "2026-11-12T00:00:00Z" },
+          { name: OBJECT, generation: "17", md5Hash: "1B2M2Y8AsgTpgAmY7PhCfg==", contentEncoding: "GZIP", size: "10", updated: "2026-11-12T00:00:00Z" },
           { name: `stats/installs/installs_build.raft.app.evil_202611_overview.csv`, generation: "1", size: "1" },
           { name: `stats/installs/installs_${PKG}_202611_overview.csv/../../secret`, generation: "1", size: "1" },
           { name: `stats/installs/installs_${PKG}_2026_overview.csv`, generation: "1", size: "1" },
         ] });
       }
-      return Response.json({ items: [{ name: `stats/installs/installs_${PKG}_202610_country.csv`, generation: "18", size: "5", md5Hash: "not-base64" }] });
+      return Response.json({ items: [{ name: `stats/installs/installs_${PKG}_202610_country.csv`, generation: "18", size: "5", md5Hash: "not-base64", contentEncoding: "gzip; evil" }] });
     });
     const result = await service.listStatsObjects({ credential: oauth, packageName: PKG, bucket: BUCKET, report: "installs" });
     expect(result).toEqual({ ok: true, value: { bucket: BUCKET, report: "installs", truncated: false, objects: [
-      { name: OBJECT, generation: "17", md5_hash: "1B2M2Y8AsgTpgAmY7PhCfg==", size: 10, updated: "2026-11-12T00:00:00Z" },
-      { name: `stats/installs/installs_${PKG}_202610_country.csv`, generation: "18", md5_hash: null, size: 5, updated: null },
+      { name: OBJECT, generation: "17", md5_hash: "1B2M2Y8AsgTpgAmY7PhCfg==", content_encoding: "gzip", size: 10, updated: "2026-11-12T00:00:00Z" },
+      { name: `stats/installs/installs_${PKG}_202610_country.csv`, generation: "18", md5_hash: null, content_encoding: null, size: 5, updated: null },
     ] } });
     const gcs = calls.filter((c) => c.url.origin === "https://storage.googleapis.com");
     expect(gcs).toHaveLength(2);

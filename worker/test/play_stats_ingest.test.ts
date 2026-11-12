@@ -59,7 +59,7 @@ function d1(sqlite: Database.Database): D1Database {
 
 // ---------- A fake Google: OAuth token endpoint and the GCS JSON API ----------
 
-type GcsObject = { bytes: Uint8Array; generation: string; md5?: string | null };
+type GcsObject = { bytes: Uint8Array; generation: string; md5?: string | null; contentEncoding?: string };
 type Google = {
   objects: Record<string, GcsObject>;
   /** Status to answer listing with (e.g. 403). */
@@ -92,7 +92,7 @@ function googleFetch(g: Google): typeof fetch {
       const page = names.slice(cursor, cursor + 1).map((name) => {
         const o = g.objects[name]!;
         return { name, generation: o.generation, size: String(o.bytes.byteLength), updated: "2026-11-12T00:00:00Z",
-          ...(o.md5 === null ? {} : { md5Hash: o.md5 ?? md5b64(o.bytes) }) };
+          ...(o.md5 === null ? {} : { md5Hash: o.md5 ?? md5b64(o.bytes) }), ...(o.contentEncoding ? { contentEncoding: o.contentEncoding } : {}) };
       });
       return Response.json({ ...(page.length ? { items: page } : {}), ...(cursor + 1 < names.length ? { nextPageToken: String(cursor + 1) } : {}) });
     }
@@ -308,6 +308,26 @@ describe("Google Play statistics ingest", () => {
     expect(result.daily.map((d) => d.device_installs)).toEqual([501, 502, 503]);
     expect(h.sqlite.prepare("SELECT generation FROM google_play_stats_files WHERE object_name = ?").get(name("installs", "202611")))
       .toEqual({ generation: 1763000000000000 });
+  });
+
+  it("ingests a gzip-encoded object Cloud Storage serves decompressed, recording that its md5Hash could not be checked", async () => {
+    const h = await harness();
+    const o = h.g.objects[name("installs", "202611")]!;
+    o.md5 = md5b64(new TextEncoder().encode("hash of the stored compressed bytes"));
+    o.contentEncoding = "gzip";
+    const summary = await ingestGooglePlayStatsForApp(h.env, "app", BUDGET);
+    expect(summary.files_failed).toEqual([]);
+    expect(summary.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ object_name: name("installs", "202611"), code: "checksum_unverified_transcoded" })]));
+    expect(h.sqlite.prepare("SELECT status FROM google_play_stats_files WHERE object_name = ?").get(name("installs", "202611"))).toEqual({ status: "complete" });
+  });
+
+  it("still rejects an identity-encoded object whose bytes do not match md5Hash", async () => {
+    const h = await harness();
+    const o = h.g.objects[name("installs", "202611")]!;
+    o.md5 = md5b64(new TextEncoder().encode("x"));
+    o.contentEncoding = "identity";
+    const summary = await ingestGooglePlayStatsForApp(h.env, "app", BUDGET);
+    expect(summary.files_failed).toEqual([{ object_name: name("installs", "202611"), code: "md5_mismatch" }]);
   });
 
   it("rejects a file whose bytes do not match the listed md5Hash, writes nothing, and retries after the back-off", async () => {
