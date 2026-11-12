@@ -344,6 +344,8 @@ describe("org access token: creation validation", () => {
     ["misspelled expiry", { name: "x", scopes: ["app:read"], app_ids: ["app-a"], expires_days: 3 }],
     ["both expiries", { name: "x", scopes: ["app:read"], app_ids: ["app-a"], expires_in_days: 3, expires_at: Date.now() + 86_400_000 }],
     ["expiry too long", { name: "x", scopes: ["app:read"], app_ids: ["app-a"], expires_in_days: 4000 }],
+    ["expires_at beyond the cap", { name: "x", scopes: ["app:read"], app_ids: ["app-a"], expires_at: Date.now() + 3651 * 86_400_000 }],
+    ["too many app_ids", { name: "x", scopes: ["app:read"], app_ids: Array.from({ length: 201 }, (_v, i) => `app-${i}`) }],
     ["missing name", { scopes: ["app:read"], app_ids: ["app-a"] }],
     ["name too long", { name: "n".repeat(81), scopes: ["app:read"], app_ids: ["app-a"] }],
   ])("rejects %s with 400", async (_label, body) => {
@@ -463,5 +465,43 @@ describe("org access token: secrecy and audit", () => {
       ["admin_org_token_id", "t"],
     ]);
     expect(currentActorInfo({ get: (k: string) => ctx.get(k) } as never).display_name).toBe("org-token:bot@alpha");
+  });
+});
+
+describe("org access token: hardening", () => {
+  it("refuses all_apps in an organization with no apps, so no token exists without an audit record", async () => {
+    const h = await environment();
+    h.sqlite.prepare(
+      `INSERT INTO org_members (id, org_id, account_id, org_role, joined_at) VALUES ('m-x', 'other-org', 'acct-admin', 'admin', 1)`,
+    ).run();
+    h.sqlite.prepare("DELETE FROM apps WHERE org_id = 'other-org'").run();
+    const response = await call(h, ADMIN_SESSION, "/api/orgs/other-org/access-tokens", {
+      method: "POST", body: { name: "x", scopes: ["feedback:read"], all_apps: true },
+    });
+    expect(response.status).toBe(400);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_tokens").get()).toEqual({ n: 0 });
+  });
+
+  it("commits the token and its audit rows together: a failing audit insert leaves no token", async () => {
+    const h = await environment();
+    h.sqlite.exec(`CREATE TRIGGER fail_audit BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'org_access_token.create' BEGIN SELECT RAISE(ABORT, 'audit down'); END;`);
+    const response = await call(h, ADMIN_SESSION, "/api/orgs/org/access-tokens", {
+      method: "POST", body: { name: "x", scopes: ["feedback:read"], app_ids: ["app-a"] },
+    }).catch(() => null);
+    expect(response === null || response.status >= 500).toBe(true);
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_tokens").get()).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT COUNT(*) AS n FROM org_access_token_apps").get()).toEqual({ n: 0 });
+  });
+
+  it("an operation of another app is not readable through this app's operations route", async () => {
+    const h = await environment();
+    h.sqlite.prepare(
+      `INSERT INTO operation_logs (id, app_id, kind, status, actor, created_at, updated_at)
+       VALUES ('op-b', 'app-b', 'test', 'succeeded', 'test', 1, 1)`,
+    ).run();
+    const token = await insertToken(h, { scopes: ["app:read"], apps: ["app-a", "app-b"] });
+    expect((await call(h, token, "/api/apps/app-a/operations/op-b")).status).toBe(404);
+    expect((await call(h, token, "/api/apps/app-b/operations/op-b")).status).toBe(200);
   });
 });

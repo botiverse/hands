@@ -178,14 +178,16 @@ export async function handleListOperations(
 export async function handleGetOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const row = await getOperation(c.env.DB, id);
-  if (!row) return c.json({ error: "not found" }, 404);
+  // The route is authorized for the app in the path; an operation of another app
+  // must not be readable through it.
+  if (!row || row.app_id !== c.req.param("appId")) return c.json({ error: "not found" }, 404);
   return c.json(row);
 }
 
 export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
-  if (!existing) return c.json({ error: "not found" }, 404);
+  if (!existing || existing.app_id !== c.req.param("appId")) return c.json({ error: "not found" }, 404);
   if (existing.kind === "testflight-expire" || existing.kind === "app-store-release") {
     return c.json(
       {
@@ -243,7 +245,7 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
 export async function handleDeleteOperation(c: Context<{ Bindings: Env }>) {
   const id = c.req.param("opId") ?? "";
   const existing = await getOperation(c.env.DB, id);
-  if (!existing) return c.json({ error: "not found" }, 404);
+  if (!existing || existing.app_id !== c.req.param("appId")) return c.json({ error: "not found" }, 404);
   if (existing.kind === "testflight-expire" || existing.kind === "app-store-release") {
     return c.json(
       { error: "durable TestFlight expire and App Store release receipts cannot be deleted" },

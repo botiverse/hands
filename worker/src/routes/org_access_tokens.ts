@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { currentAccount, currentDeployToken, insertAuditLog } from "../lib/permissions";
+import { currentAccount, currentDeployToken, auditLogStatement } from "../lib/permissions";
 import {
   ORG_TOKEN_ALLOWED_SCOPES,
   generateOrgAccessToken,
@@ -29,6 +29,12 @@ type OrgAccessTokenRow = {
 type TokenApp = { id: string; slug: string; name: string };
 
 const MAX_EXPIRES_IN_DAYS = 3650;
+/**
+ * Create and revoke commit the token change and one audit row per covered app in
+ * a single D1 batch, so neither can land without the other. This bounds that
+ * batch well inside D1's per-invocation query limit.
+ */
+const MAX_COVERED_APPS = 200;
 
 /**
  * Management is for session principals only. requireOrgRole already rejects a
@@ -160,9 +166,11 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
       return c.json({ error: "app_ids must be a non-empty array of app ids" }, 400);
     }
     appIds = [...new Set((body.app_ids as string[]).map((id) => id.trim()))];
-    if (appIds.length > 500) return c.json({ error: "app_ids may list at most 500 apps" }, 400);
+    if (appIds.length > MAX_COVERED_APPS) {
+      return c.json({ error: `app_ids may list at most ${MAX_COVERED_APPS} apps` }, 400);
+    }
     // Read the org's app ids and compare in memory: an IN (...) list would hit
-    // D1's bound-parameter limit long before the 500-app cap.
+    // D1's bound-parameter limit long before the app cap.
     const { results } = await c.env.DB.prepare(
       "SELECT id FROM apps WHERE org_id = ?1",
     ).bind(orgId).all<{ id: string }>();
@@ -191,6 +199,9 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
     if (value < Date.now() + 60_000) {
       return c.json({ error: "expires_at must be at least 60 seconds in the future" }, 400);
     }
+    if (value > Date.now() + MAX_EXPIRES_IN_DAYS * 24 * 60 * 60 * 1000) {
+      return c.json({ error: `expires_at must be at most ${MAX_EXPIRES_IN_DAYS} days in the future` }, 400);
+    }
     expiresAt = Math.floor(value);
   }
 
@@ -215,17 +226,29 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
       "INSERT INTO org_access_token_apps (token_id, app_id) VALUES (?1, ?2)",
     ).bind(id, appId)
   );
-  await c.env.DB.batch([insertToken, ...insertApps]);
-
-  const auditPayload = { id, org_id: orgId, name, token_prefix, scopes, all_apps: hasAllApps, expires_at: expiresAt };
-  for (const appId of await auditAppIds(c.env.DB, orgId, id, hasAllApps)) {
-    await insertAuditLog(c.env.DB, c, {
-      app_id: appId,
-      action: "org_access_token.create",
-      payload: auditPayload,
-      created_at: now,
-    });
+  // Audit rows are written per covered app (audit_logs is app-scoped), in the same
+  // batch as the token: a token must never exist without its creation record.
+  const coveredApps = hasAllApps
+    ? (await c.env.DB.prepare("SELECT id FROM apps WHERE org_id = ?1 ORDER BY id").bind(orgId).all<{ id: string }>())
+      .results.map((row) => row.id)
+    : appIds;
+  if (hasAllApps && coveredApps.length === 0) {
+    // Nothing to record the creation against, and nothing for the token to read yet.
+    return c.json({ error: "all_apps needs at least one app in the organization" }, 400);
   }
+  if (coveredApps.length > MAX_COVERED_APPS) {
+    return c.json({
+      error: `all_apps covers more than ${MAX_COVERED_APPS} apps; select apps with app_ids instead`,
+    }, 400);
+  }
+  const auditPayload = { id, org_id: orgId, name, token_prefix, scopes, all_apps: hasAllApps, expires_at: expiresAt };
+  const auditRows = coveredApps.map((appId) => auditLogStatement(c.env.DB, c, {
+    app_id: appId,
+    action: "org_access_token.create",
+    payload: auditPayload,
+    created_at: now,
+  }));
+  await c.env.DB.batch([insertToken, ...insertApps, ...auditRows]);
 
   const apps = hasAllApps
     ? []
@@ -280,9 +303,9 @@ export async function handleRevokeOrgAccessToken(c: AdminContext) {
   }
 
   const now = Date.now();
-  await c.env.DB.prepare(
+  const revoke = c.env.DB.prepare(
     "UPDATE org_access_tokens SET revoked_at = ?1 WHERE id = ?2 AND org_id = ?3 AND revoked_at IS NULL",
-  ).bind(now, tokenId, orgId).run();
+  ).bind(now, tokenId, orgId);
 
   const allApps = existing.all_apps === 1;
   const auditPayload = {
@@ -293,14 +316,18 @@ export async function handleRevokeOrgAccessToken(c: AdminContext) {
     scopes: parseOrgTokenScopes(existing.scopes_json),
     all_apps: allApps,
   };
-  for (const appId of await auditAppIds(c.env.DB, orgId, existing.id, allApps)) {
-    await insertAuditLog(c.env.DB, c, {
+  // Revocation and its audit rows commit together. Coverage beyond the cap (an
+  // all_apps token in an org that has since grown) is recorded on the first
+  // MAX_COVERED_APPS apps; the revocation itself never depends on the audit count.
+  const auditRows = (await auditAppIds(c.env.DB, orgId, existing.id, allApps))
+    .slice(0, MAX_COVERED_APPS)
+    .map((appId) => auditLogStatement(c.env.DB, c, {
       app_id: appId,
       action: "org_access_token.revoke",
       payload: auditPayload,
       created_at: now,
-    });
-  }
+    }));
+  await c.env.DB.batch([revoke, ...auditRows]);
 
   return c.json({ ok: true, id: tokenId, revoked_at: now });
 }

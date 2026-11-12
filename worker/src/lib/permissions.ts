@@ -645,6 +645,23 @@ export async function insertAuditLog(
     created_at?: number;
   },
 ) {
+  await auditLogStatement(db, c, input).run();
+}
+
+/**
+ * The audit insert as a prepared statement, so a caller can commit it in the same
+ * batch as the change it records.
+ */
+export function auditLogStatement(
+  db: D1Database,
+  c: AdminContext,
+  input: {
+    app_id: string;
+    action: string;
+    payload: unknown;
+    created_at?: number;
+  },
+): D1PreparedStatement {
   const actor = currentActorInfo(c);
   // actor_id carries a FOREIGN KEY to raft_accounts(id) (0016_account_org_team.sql).
   // A deploy token authenticates as an agent but its id lives in app_deploy_tokens,
@@ -670,7 +687,7 @@ export async function insertAuditLog(
             : { deploy_token_prefix: deployToken.token_prefix }),
         }
       : input.payload;
-  await db
+  return db
     .prepare(
       `INSERT INTO audit_logs
        (id, app_id, action, actor, actor_id, actor_type, payload, created_at)
@@ -685,6 +702,5 @@ export async function insertAuditLog(
       actor.type,
       JSON.stringify(payload),
       input.created_at ?? Date.now(),
-    )
-    .run();
+    );
 }
