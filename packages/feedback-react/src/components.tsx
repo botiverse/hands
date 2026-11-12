@@ -1163,6 +1163,8 @@ export function FeedbackInbox({
           className="hands-feedback-list-scroll"
           data-feedback-list-scroll
           ref={pullToRefresh.scrollRef}
+          // Focus fallback after a deleted ticket, but not an extra Tab stop:
+          // each ticket's own button remains keyboard accessible.
           tabIndex={-1}
         >
           <OverlayScrollArea.Content

@@ -54,7 +54,9 @@ try {
 
   for (const mode of [
     { name: "desktop mouse", width: 1200, hasTouch: false, inset: 16 },
-    { name: "narrow mouse", width: 390, hasTouch: false, inset: 16 },
+    { name: "mouse at 48rem", width: 768, hasTouch: false, inset: 16 },
+    { name: "mouse below 48rem", width: 767, hasTouch: false, inset: 20 },
+    { name: "narrow mouse", width: 390, hasTouch: false, inset: 20 },
     { name: "narrow touch", width: 390, hasTouch: true, inset: 20 },
     { name: "wide touch", width: 1200, hasTouch: true, inset: 20 },
   ]) {
@@ -156,14 +158,49 @@ try {
         const scrolled = await dimensions();
         assert.ok(scrolled.scrollTop > 0, `${mode.name} scrolls`);
         if (!mode.hasTouch) {
-          // The overlay track is functional, not just a hidden native scrollbar.
+          // The overlay track is functional and matches the design-system
+          // small thumb at rest and while the pointer is over its track.
           const track = page.locator("[data-feedback-list-scrollbar]");
-          await track.hover();
+          const thumbLocator = page.locator(".hands-feedback-scrollbar-thumb");
           await page.waitForFunction(() => {
             const thumb = document.querySelector(".hands-feedback-scrollbar-thumb");
             return thumb && thumb.getBoundingClientRect().height > 0;
           });
-          const thumb = await page.locator(".hands-feedback-scrollbar-thumb").boundingBox();
+          const thumbStyle = () => thumbLocator.evaluate((thumb) => {
+            const track = thumb.parentElement.getBoundingClientRect();
+            const rect = thumb.getBoundingClientRect();
+            const style = getComputedStyle(thumb);
+            const foreground = getComputedStyle(thumb).getPropertyValue("--foreground").trim() || "#111827";
+            const oracle = document.createElement("div");
+            oracle.style.backgroundColor = `color-mix(in oklab, ${foreground} 42%, transparent)`;
+            document.body.append(oracle);
+            const restColor = getComputedStyle(oracle).backgroundColor;
+            oracle.style.backgroundColor = `color-mix(in oklab, ${foreground} 58%, transparent)`;
+            const hoverColor = getComputedStyle(oracle).backgroundColor;
+            oracle.remove();
+            return { width: rect.width, gap: track.right - rect.right, color: style.backgroundColor, restColor, hoverColor };
+          });
+          const rest = await thumbStyle();
+          near(rest.width, 5, "thumb width at rest");
+          near(rest.gap, 3, "thumb gap at rest");
+          assert.equal(rest.color, rest.restColor, `${mode.name} thumb rest color`);
+          await track.hover();
+          await page.waitForFunction(() => Math.abs(document.querySelector(".hands-feedback-scrollbar-thumb").getBoundingClientRect().width - 7) < 0.1);
+          const hovered = await thumbStyle();
+          near(hovered.width, 7, "thumb width on hover");
+          near(hovered.gap, 3, "thumb gap on hover");
+          await page.waitForFunction(() => {
+            const el = document.querySelector(".hands-feedback-scrollbar-thumb");
+            const foreground = getComputedStyle(el).getPropertyValue("--foreground").trim() || "#111827";
+            const probe = document.createElement("div");
+            probe.style.backgroundColor = `color-mix(in oklab, ${foreground} 58%, transparent)`;
+            document.body.append(probe);
+            const expected = getComputedStyle(probe).backgroundColor;
+            probe.remove();
+            return getComputedStyle(el).backgroundColor === expected;
+          });
+          assert.equal((await thumbStyle()).color, hovered.hoverColor, `${mode.name} thumb hover color`);
+          const thumb = await thumbLocator.boundingBox();
           await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2);
           await page.mouse.down();
           await page.mouse.move(thumb.x + thumb.width / 2, thumb.y + thumb.height / 2 + 45, { steps: 6 });
@@ -196,6 +233,26 @@ try {
       await pull();
       await page.waitForTimeout(100);
       assert.equal(await page.evaluate(() => window.feedbackFixture.count), initialCalls + 1, `${mode.name} only refreshes at top`);
+    }
+    // The fallback scroll viewport can receive programmatic focus when a
+    // ticket is gone, but never enters sequential Tab order; ticket controls
+    // themselves remain reachable by keyboard.
+    const viewportTab = await page.locator("[data-feedback-list-scroll]").getAttribute("tabindex");
+    assert.equal(viewportTab, "-1", `${mode.name} viewport excluded from Tab order`);
+    if (!mode.hasTouch) {
+      // Verify native keyboard navigation, not merely the attribute.
+      const seen = [];
+      await page.locator("[data-feedback-list-scroll]").evaluate((el) => { el.scrollTop = 0; });
+      await page.locator(".hands-feedback-toolbar-action").focus();
+      for (let i = 0; i < 5; i++) {
+        await page.keyboard.press("Tab");
+        seen.push(await page.evaluate(() => ({
+          viewport: document.activeElement?.hasAttribute("data-feedback-list-scroll"),
+          ticket: document.activeElement?.getAttribute("data-ticket-id") ?? null,
+        })));
+      }
+      assert.ok(seen.some((item) => item.ticket === "ticket-0"), `${mode.name} first ticket reachable by Tab`);
+      assert.ok(seen.every((item) => !item.viewport), `${mode.name} viewport skipped by Tab`);
     }
     // The existing workspace keeps its inbox mounted and restores both scroll
     // and ticket focus after a detail view returns.

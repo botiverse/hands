@@ -1,6 +1,7 @@
 /* Layout only. Every visible part (headers, rows, chips, messages, the
    composer, dialogs) is a raft-ui component and draws itself; this file places
-   them in the embedded workspace. */
+   them in the embedded workspace. The overlay scrollbar is the one exception,
+   because raft-ui's scroll-area wrapper changed across supported versions. */
 .hands-feedback-root {
   /* Theme aliases: --hf-* is the stable public surface, mapped onto the
      design system's tokens (one look, light and dark). */
@@ -83,13 +84,13 @@
   flex: none;
 }
 
-/* One content edge in the inbox: 16px for a fine primary pointer (mouse),
-   20px for a coarse or unavailable pointer (touch), at every width. */
+/* Match raft-ui's one content edge: 16px for a fine primary pointer at
+   48rem and wider; otherwise 20px. */
 .hands-feedback-inbox {
   --hf-list-inset: 20px;
 }
 
-@media (pointer: fine) {
+@media (min-width: 48rem) and (pointer: fine) {
   .hands-feedback-inbox {
     --hf-list-inset: 16px;
   }
@@ -137,12 +138,10 @@
   flex-direction: column;
 }
 
-/* The track overlays the viewport; it never subtracts from content width. */
+/* The track overlays the viewport; it never subtracts from content width.
+   Match the design system's small thumb, while leaving a larger hit target. */
 .hands-feedback-scrollbar {
-  display: flex;
-  justify-content: center;
-  padding: 4px;
-  width: 12px;
+  width: 14px;
   opacity: 0;
   transition: opacity 150ms;
 }
@@ -153,10 +152,19 @@
 }
 
 .hands-feedback-scrollbar-thumb {
-  background: var(--foreground-muted, #64748b);
-  border-radius: 3px;
-  opacity: 0.5;
-  width: 4px;
+  position: absolute;
+  inset-inline-end: 3px;
+  width: 5px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--foreground, #111827) 42%, transparent);
+  transition: width 150ms ease-out, background-color 150ms ease-out;
+}
+
+@media (hover: hover) {
+  .hands-feedback-scrollbar:hover .hands-feedback-scrollbar-thumb {
+    width: 7px;
+    background: color-mix(in oklab, var(--foreground, #111827) 58%, transparent);
+  }
 }
 
 .hands-feedback-ticket-list {
