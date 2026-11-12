@@ -37,11 +37,14 @@ const MAX_EXPIRES_IN_DAYS = 3650;
  */
 const MAX_COVERED_APPS = 200;
 
-/** Every app an org token of org ?1 may cover: owned or co-owned (orgEligibleAppSql). */
-function eligibleAppIds(db: D1Database, orgId: string) {
+/**
+ * Every app a token of org ?1 created by account ?2 may cover: owned, or co-owned
+ * through the creator's own server (orgEligibleAppSql).
+ */
+function eligibleAppIds(db: D1Database, orgId: string, creatorId: string | null) {
   return db.prepare(
-    `SELECT a.id FROM apps a WHERE ${orgEligibleAppSql("a", "?1")} ORDER BY a.id`,
-  ).bind(orgId).all<{ id: string }>();
+    `SELECT a.id FROM apps a WHERE ${orgEligibleAppSql("a", "?1", "?2")} ORDER BY a.id`,
+  ).bind(orgId, creatorId).all<{ id: string }>();
 }
 
 /**
@@ -75,15 +78,21 @@ function toResponse(row: OrgAccessTokenRow, apps: TokenApp[]) {
 }
 
 /** App ids an audit row must be written for: selected apps, or every eligible app now. */
-async function auditAppIds(db: D1Database, orgId: string, tokenId: string, allApps: boolean): Promise<string[]> {
+async function auditAppIds(
+  db: D1Database,
+  orgId: string,
+  tokenId: string,
+  allApps: boolean,
+  creatorId: string | null,
+): Promise<string[]> {
   const { results } = allApps
-    ? await eligibleAppIds(db, orgId)
+    ? await eligibleAppIds(db, orgId, creatorId)
     : await db.prepare(
       `SELECT ta.app_id AS id FROM org_access_token_apps ta
        JOIN apps a ON a.id = ta.app_id
-       WHERE ta.token_id = ?1 AND ${orgEligibleAppSql("a", "?2")}
+       WHERE ta.token_id = ?1 AND ${orgEligibleAppSql("a", "?2", "?3")}
        ORDER BY ta.app_id`,
-    ).bind(tokenId, orgId).all<{ id: string }>();
+    ).bind(tokenId, orgId, creatorId).all<{ id: string }>();
   return results.map((row) => row.id);
 }
 
@@ -104,7 +113,7 @@ export async function handleListOrgAccessTokens(c: AdminContext) {
     `SELECT ta.token_id, a.id, a.slug, a.name
      FROM org_access_token_apps ta
      JOIN org_access_tokens t ON t.id = ta.token_id
-     JOIN apps a ON a.id = ta.app_id AND ${orgEligibleAppSql("a", "t.org_id")}
+     JOIN apps a ON a.id = ta.app_id AND ${orgEligibleAppSql("a", "t.org_id", "t.created_by")}
      WHERE t.org_id = ?1
      ORDER BY a.slug`,
   ).bind(orgId).all<TokenApp & { token_id: string }>();
@@ -179,7 +188,7 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
     }
     // Read the org's eligible app ids (owned or co-owned) and compare in memory:
     // an IN (...) list would hit D1's bound-parameter limit long before the app cap.
-    const { results } = await eligibleAppIds(c.env.DB, orgId);
+    const { results } = await eligibleAppIds(c.env.DB, orgId, currentAccount(c)?.id ?? null);
     const found = new Set(results.map((row) => row.id));
     const missing = appIds.filter((id) => !found.has(id));
     if (missing.length > 0) {
@@ -238,7 +247,7 @@ export async function handleCreateOrgAccessToken(c: AdminContext) {
   // Audit rows are written per covered app (audit_logs is app-scoped), in the same
   // batch as the token: a token must never exist without its creation record.
   const coveredApps = hasAllApps
-    ? (await eligibleAppIds(c.env.DB, orgId)).results.map((row) => row.id)
+    ? (await eligibleAppIds(c.env.DB, orgId, account?.id ?? null)).results.map((row) => row.id)
     : appIds;
   if (hasAllApps && coveredApps.length === 0) {
     // Nothing to record the creation against, and nothing for the token to read yet.
@@ -294,10 +303,11 @@ export async function handleRevokeOrgAccessToken(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   const tokenId = c.req.param("tokenId") ?? "";
   const existing = await c.env.DB.prepare(
-    `SELECT id, name, token_prefix, scopes_json, all_apps, revoked_at
+    `SELECT id, name, token_prefix, scopes_json, all_apps, created_by, revoked_at
      FROM org_access_tokens WHERE id = ?1 AND org_id = ?2 LIMIT 1`,
   ).bind(tokenId, orgId).first<{
     id: string;
+    created_by: string | null;
     name: string;
     token_prefix: string;
     scopes_json: string;
@@ -327,7 +337,7 @@ export async function handleRevokeOrgAccessToken(c: AdminContext) {
   // Revocation and its audit rows commit together. Coverage beyond the cap (an
   // all_apps token in an org that has since grown) is recorded on the first
   // MAX_COVERED_APPS apps; the revocation itself never depends on the audit count.
-  const auditRows = (await auditAppIds(c.env.DB, orgId, existing.id, allApps))
+  const auditRows = (await auditAppIds(c.env.DB, orgId, existing.id, allApps, existing.created_by))
     .slice(0, MAX_COVERED_APPS)
     .map((appId) => auditLogStatement(c.env.DB, c, {
       app_id: appId,

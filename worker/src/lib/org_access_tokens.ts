@@ -89,9 +89,10 @@ export function orgTokenTargetAppId(pathname: string): string | null {
  * alias and a column reference or `?N` placeholder — never request data, so
  * every value stays a bound parameter.
  */
-export function orgEligibleAppSql(appAlias: string, orgIdExpr: string): string {
-  if (!/^[a-z_][a-z0-9_]*$/i.test(appAlias) || !/^(?:[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?|\?\d+)$/i.test(orgIdExpr)) {
-    throw new Error("orgEligibleAppSql takes an identifier and a column or ?N placeholder");
+export function orgEligibleAppSql(appAlias: string, orgIdExpr: string, accountIdExpr: string): string {
+  const expr = /^(?:[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?|\?\d+)$/i;
+  if (!/^[a-z_][a-z0-9_]*$/i.test(appAlias) || !expr.test(orgIdExpr) || !expr.test(accountIdExpr)) {
+    throw new Error("orgEligibleAppSql takes an identifier and columns or ?N placeholders");
   }
   return `(
     ${appAlias}.org_id = ${orgIdExpr}
@@ -104,16 +105,21 @@ export function orgEligibleAppSql(appAlias: string, orgIdExpr: string): string {
        AND o.archived = 0
       WHERE g.app_id = ${appAlias}.id
         AND g.access_model = 'owner_server'
-        AND (
-          g.server_id = o.external_id
-          OR (
-            g.server_slug IS NOT NULL
-            AND EXISTS (
-              SELECT 1 FROM raft_accounts ra
-              WHERE ra.server_id = o.external_id
-                AND ra.server_slug = g.server_slug
+        AND EXISTS (
+          -- Exactly the account path (getOwnerServerRole): the token's creator must be
+          -- an account of the org's own server, still a member of the org, and the
+          -- grant must name that server by id or by the creator's own server slug.
+          -- An admin invited from another server never inherits the co-ownership,
+          -- and a creator who leaves takes the co-owned apps out of the token.
+          SELECT 1
+          FROM raft_accounts ra
+          JOIN org_members om ON om.org_id = o.id AND om.account_id = ra.id
+          WHERE ra.id = ${accountIdExpr}
+            AND ra.server_id = o.external_id
+            AND (
+              g.server_id = ra.server_id
+              OR (g.server_slug IS NOT NULL AND g.server_slug = ra.server_slug)
             )
-          )
         )
     )
   )`;
@@ -159,7 +165,7 @@ export async function resolveOrgAccessToken(
      FROM org_access_tokens t
      LEFT JOIN apps a
        ON a.id = ?2
-      AND ${orgEligibleAppSql("a", "t.org_id")}
+      AND ${orgEligibleAppSql("a", "t.org_id", "t.created_by")}
       AND (
         t.all_apps = 1
         OR EXISTS (
