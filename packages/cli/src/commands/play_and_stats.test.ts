@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { parseQueryParams, resolvePlayApiBody, registerPlayCommands } from "./play.js";
-import { formatAppStatsReport, formatAppStoreAnalytics, registerStatsCommands } from "./stats.js";
+import { formatAppStatsReport, formatAppStoreAnalytics, formatGooglePlayReports, registerStatsCommands } from "./stats.js";
 
 const APP_ID = "a78f3891-f980-4f48-80d7-2a58e93a99aa";
 
@@ -226,6 +226,52 @@ describe("hands play api & hands stats CLI", () => {
     expect(text).toContain("Warning: App Sessions Standard: missing_column Unique Devices");
     expect(text).toContain("Retrying: 1 incomplete, 0 failed, 2 over size limit report instances (last: missing_column:Unique Devices)");
     expect(text).toContain("Note: Only users who agreed to share analytics.");
+  });
+
+  const gpBase = {
+    configured: true, package_name: "build.raft.app", verification_state: "verified", tracks_configured: null,
+    promoted_releases: [], live_tracks: null, live_error: null,
+    download_reports: { available: true, source: "google_play_androidpublisher_v3", note: "note" },
+  };
+  const ingest = { stats_bucket: "pubsite_prod_1", files_processed: 3, files_incomplete: 1, files_failed: 1, files_over_limit: 0,
+    last_processed_at: 1, latest_data_date: "2026-11-03", last_run_at: 1, last_error_code: "md5_mismatch", hint: null, problems: [],
+    warnings: [{ report_kind: "installs_overview", code: "missing_column", column: "Install events" }] };
+
+  it("prints ingested Google Play statistics, totals, warnings, retries and the metric note", () => {
+    const row = (date: string, n: number) => ({ date, device_installs: n + 10, device_uninstalls: 1, device_upgrades: 2, user_installs: n,
+      user_uninstalls: 1, total_user_installs: 5000, active_device_installs: 1000 + n, install_events: null, update_events: null,
+      uninstall_events: null, store_listing_visitors: n === 1 ? 1000 : null, store_listing_acquisitions: n === 1 ? 2 : null });
+    const text = formatGooglePlayReports({
+      ...gpBase,
+      daily: [row("2026-11-01", 1), row("2026-11-02", 2)],
+      totals: { device_installs: 23, device_uninstalls: 2, device_upgrades: 4, user_installs: 3, user_uninstalls: 2, install_events: null,
+        update_events: null, uninstall_events: null, store_listing_visitors: 1000, store_listing_acquisitions: 2,
+        store_listing_conversion_rate: 0.002, active_device_installs_latest: 1002, active_device_installs_latest_date: "2026-11-02",
+        total_user_installs_latest: 5000 },
+      reports_ingest: ingest,
+      reports_note: "Google publishes them with a delay of about 3 to 7 days.",
+    }, 30).join("\n");
+    expect(text).toContain("Play statistics (30d): 3 user installs, 2 user uninstalls | 23 device installs, 2 device uninstalls, 4 upgrades | " +
+      "active device installs 1002 on 2026-11-02 | store listing 1000 visitors, 2 acquisitions (0.20%)");
+    expect(text).toMatch(/2026-11-01\s+1\s+1\s+11\s+1\s+2\s+1001\s+1000\s+2/);
+    expect(text).toMatch(/2026-11-02\s+2\s+1\s+12\s+1\s+2\s+1002\s+-\s+-/);
+    expect(text).toContain("Warning: installs_overview: missing_column Install events");
+    expect(text).toContain("Retrying: 1 incomplete, 1 failed, 0 over size limit report files (last run: md5_mismatch)");
+    expect(text).toContain("Note: Google publishes them with a delay of about 3 to 7 days.");
+  });
+
+  it("says how to set the Play reports bucket, and shows the bucket hint when listing fails", () => {
+    expect(formatGooglePlayReports({ ...gpBase, daily: [], totals: null, reports_note: "n",
+      reports_ingest: { ...ingest, stats_bucket: null, files_processed: 0, last_error_code: null, warnings: [] } }, 30))
+      .toEqual(["  - Play statistics reports: bucket not set (hands api PUT /api/apps/<appId>/google-play/stats-bucket)"]);
+    expect(formatGooglePlayReports({ ...gpBase, daily: [], totals: null, reports_note: "n",
+      reports_ingest: { ...ingest, last_error_code: "play_reports_bucket_forbidden", hint: "Newer accounts use pubsite_prod_rev_<digits>.", warnings: [] } }, 30))
+      .toEqual([
+        "  - Play statistics reports: no data in this window yet (last run: play_reports_bucket_forbidden)",
+        "    Hint: Newer accounts use pubsite_prod_rev_<digits>.",
+      ]);
+    // An older server without the fields prints nothing extra.
+    expect(formatGooglePlayReports(gpBase as any, 30)).toEqual([]);
   });
 
   it("says when no App Store report was ingested yet", () => {

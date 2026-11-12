@@ -240,6 +240,30 @@ interface GooglePlayAdapterService {
     }>;
     commit: { changes_in_review_behavior: "ERROR_IF_IN_REVIEW"; changes_not_sent_for_review: false } | null;
   }>>;
+  /**
+   * Play Console statistics exports (read-only, devstorage.read_only token
+   * minted inside the adapter). Optional: an adapter deployed before this
+   * method existed lacks it, and Hands reports service_unavailable.
+   */
+  listStatsObjects?(
+    input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+      bucket: string;
+      report: "installs" | "store_performance";
+    },
+  ): Promise<GooglePlayAdapterResult<{
+    bucket: string;
+    report: "installs" | "store_performance";
+    objects: Array<{ name: string; generation: string; md5_hash: string | null; size: number; updated: string | null }>;
+    truncated: boolean;
+  }>>;
+  readStatsObject?(
+    input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
+      bucket: string;
+      name: string;
+      generation: string;
+      maxBytes: number;
+    },
+  ): Promise<GooglePlayAdapterResult<{ name: string; generation: string; size: number; bytes: Uint8Array }>>;
   callPlayApi?(
     input: Pick<GooglePlayBindingInput, "credential" | "packageName"> & {
       operationId: string;

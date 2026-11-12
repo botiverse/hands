@@ -733,6 +733,54 @@ hands api POST /api/apps/<appId>/stats/app-store/ingest
 - 如果 Apple 改变了报表的列，Hands 会在 `analytics_ingest.warnings` 中记录警告（例如 `missing_column Unique Devices`），并让该指标留空，而不是猜测。缺少必需列或含有无法识别取值的报表计入 `analytics_ingest.instances_incomplete`，每六小时重新读取一次，Hands 支持新格式后会自动补全。下载失败的报表（`instances_failed`）按同样的间隔重试。超过 Hands 单次读取上限的报表（同一天超过 50 个文件或压缩后超过 32 MiB）计入 `instances_over_limit`，原因见 `last_error_code`，同样每六小时重新检查一次。
 - 每个下载的文件都会与 Apple 提供的校验值比对，不一致即拒绝。如果 Apple 没有提供校验值，或格式无法校验，文件仍会使用，并显示警告 `checksum_missing` 或 `checksum_unverified`。
 
+### Google Play 统计报表
+
+Play Console 会把每月的统计 CSV 导出到 Google 自有的 Cloud Storage 存储桶。Hands 读取应用包名对应的安装与商店表现**概览（overview）**文件：
+
+- `stats/installs/installs_<package>_<YYYYMM>_overview.csv`
+- `stats/store_performance/store_performance_<package>_<YYYYMM>_overview.csv`
+
+需要满足两点：
+
+1. 应用的 Google Play 连接有报表权限。OAuth 连接在授权时须允许 Cloud Storage 只读权限（`devstorage.read_only`，用于读取 Play Console 报表）；没有勾选的，在集成页点「重新向 Google 授权」（包名和轨道会保留）。服务账号需要在 Play Console 中授予下载报表的权限。
+2. 应用管理员设置一次报表存储桶。在 Play Console「下载报告 > 统计信息」中复制 Cloud Storage URI，形如 `gs://pubsite_prod_rev_<数字>/`（较早的开发者账号为 `gs://pubsite_prod_<数字>/`）。`gs://` URI 或纯存储桶名都可以：
+
+```bash
+hands api PUT /api/apps/<appId>/google-play/stats-bucket --data '{"stats_bucket":"pubsite_prod_rev_0123456789"}'
+hands api GET /api/apps/<appId>/google-play/stats-bucket
+hands api PUT /api/apps/<appId>/google-play/stats-bucket --data '{"stats_bucket":null}'   # 停止读取
+```
+
+之后 Hands 会自动下载：定时任务每隔几小时检查一次 Google Play 连接已验证、已启用并设置了存储桶的应用。应用管理员也可以立即执行一次同样有上限的读取：
+
+```bash
+hands api POST /api/apps/<appId>/stats/google-play/ingest
+```
+
+`hands stats <app>` 会显示一行 Play 统计汇总以及最近若干天的表格；`--json`（或 `GET /api/apps/<appId>/stats`）在 `stores.google_play.daily`、`stores.google_play.totals`、`stores.google_play.reports_ingest` 和 `stores.google_play.reports_note` 中返回这些数据。数据来自 Hands 自己的存储，使用 `--no-live` 时同样会返回。
+
+| 字段 | Play 列 | 含义 |
+|---|---|---|
+| `user_installs` / `user_uninstalls` | Daily User Installs / Uninstalls | 当天安装 / 卸载应用的 Google 账号数 |
+| `device_installs` / `device_uninstalls` | Daily Device Installs / Uninstalls | 当天安装 / 卸载应用的设备数 |
+| `device_upgrades` | Daily Device Upgrades | 更新应用的设备数 |
+| `install_events` / `update_events` / `uninstall_events` | Install / Update / Uninstall events | 所有事件，包括重复 |
+| `active_device_installs` | Active Device Installs | 已安装且近期在线的设备数（时点值） |
+| `total_user_installs` | Total User Installs | 累计安装过的 Google 账号数（时点值） |
+| `store_listing_visitors` / `store_listing_acquisitions` | Store listing visitors / acquisitions | 来自商店表现报表 |
+
+`totals` 对窗口内的每日计数求和；`active_device_installs_latest`（附日期）和 `total_user_installs_latest` 取最新值而不是求和；`store_listing_conversion_rate` 为窗口内获客数除以访客数。
+
+这些数字的含义与局限：
+
+- **延迟 3 到 7 天。** Google 每天重写当月文件，最近几天可能缺失或变化。Hands 对每个文件版本只读取一次，新版本会**替换**该月的数据，不会重复计数。
+- **口径与 Play Console 统计页面不同**，后者有自己的过滤和新口径，数字可能略有差异。
+- **缺失值是 `null` 而不是 0。**
+- 列按名称精确映射。如果缺少 Hands 需要的列（例如 Google 改了列名），该指标留空，文件计入 `reports_ingest.files_incomplete` 并带 `missing_column` 警告，之后会重新读取（6 小时后，逐次翻倍，最长 4 天），Google 写入新版本时会立即读取。Hands 不认识的列以 `unknown_column` 警告列出。日期无法解析或不在文件所属月份的行计为 `invalid_rows`，文件同样保持未完成。
+- 每个文件都会与 Cloud Storage 列出的 MD5 比对，不一致即拒绝（`md5_mismatch`）。超过 2 MiB 的文件不读取（`files_over_limit`）。
+- 如果 Google 对存储桶返回 403 或 404，`reports_ingest.last_error_code` 为 `play_reports_bucket_forbidden` 或 `play_reports_bucket_not_found`，`reports_ingest.hint` 说明需要检查什么。Hands 不会自行改用其他存储桶名；如果配置的名称不含 `rev_`，提示会建议确认账号是否使用 `pubsite_prod_rev_<数字>`。
+- Hands 只用只读令牌列出和读取绑定包名下 `stats/installs/` 与 `stats/store_performance/` 的 CSV。国家等细分文件暂不读取。
+
 ## CI 环境变量
 
 每个变量先读取 `HANDS_<name>`，再读取旧版 `QUIVER_<name>`，因此现有 CI 无需更改。

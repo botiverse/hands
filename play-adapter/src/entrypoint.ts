@@ -7,6 +7,8 @@ import type {
   PlayDiscoveryInput,
   PromotionRpcInput,
   SendForReviewRpcInput,
+  StatsListRpcInput,
+  StatsReadRpcInput,
   StoreListingPushRpcInput,
   StoreListingReadRpcInput,
   TrackMaximumRpcInput,
@@ -79,6 +81,14 @@ export default class GooglePlayAdapter extends WorkerEntrypoint<PlayAdapterEnv> 
     symbolsBody: ReadableStream<Uint8Array> | null,
   ) {
     return this.service.promoteWithPriorMapping(input, symbolsBody ?? null, this.env);
+  }
+
+  listStatsObjects(input: StatsListRpcInput) {
+    return this.service.listStatsObjects(input);
+  }
+
+  readStatsObject(input: StatsReadRpcInput) {
+    return this.service.readStatsObject(input);
   }
 
   callPlayApi(input: PlayApiProxyRpcInput) {

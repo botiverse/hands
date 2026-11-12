@@ -1119,6 +1119,93 @@ What these numbers can and cannot tell you:
   format Hands cannot check, the file is used and the warning
   `checksum_missing` or `checksum_unverified` is shown.
 
+### Google Play statistics reports
+
+Play Console exports monthly statistics CSVs to a Google-owned Cloud Storage
+bucket. Hands reads the installs and store performance **overview** files of the
+app's package:
+
+- `stats/installs/installs_<package>_<YYYYMM>_overview.csv`
+- `stats/store_performance/store_performance_<package>_<YYYYMM>_overview.csv`
+
+Two things must be in place:
+
+1. The app's Google Play connection has report access. For an OAuth
+   connection, the Google account must have allowed read-only Cloud Storage
+   access (`devstorage.read_only`, used for Play Console reports) when
+   authorizing; if not, choose "Reauthorize with Google" on the Google Play
+   integration page (package and tracks are kept).
+   For a service account, grant it access to download reports in Play Console.
+2. An app admin sets the reports bucket once. Copy the Cloud Storage URI from
+   Play Console > Download reports > Statistics; it looks like
+   `gs://pubsite_prod_rev_<digits>/` (older developer accounts:
+   `gs://pubsite_prod_<digits>/`). Either the `gs://` URI or the bare bucket
+   name is accepted:
+
+```bash
+hands api PUT /api/apps/<appId>/google-play/stats-bucket --data '{"stats_bucket":"pubsite_prod_rev_0123456789"}'
+hands api GET /api/apps/<appId>/google-play/stats-bucket
+hands api PUT /api/apps/<appId>/google-play/stats-bucket --data '{"stats_bucket":null}'   # stop reading
+```
+
+Hands then downloads the files on its own: a scheduled job checks each app
+with a verified, enabled Google Play connection and a bucket every few hours.
+An app admin can run the same bounded read immediately:
+
+```bash
+hands api POST /api/apps/<appId>/stats/google-play/ingest
+```
+
+`hands stats <app>` then shows a Play statistics line with totals for the
+window and a table of the most recent days; `--json` (or
+`GET /api/apps/<appId>/stats`) returns `stores.google_play.daily`,
+`stores.google_play.totals`, `stores.google_play.reports_ingest` and
+`stores.google_play.reports_note`. These come from Hands' own storage, so they
+are included with `--no-live` too.
+
+| Field | Play column | Meaning |
+|---|---|---|
+| `user_installs` / `user_uninstalls` | Daily User Installs / Uninstalls | Google accounts that installed / removed the app that day |
+| `device_installs` / `device_uninstalls` | Daily Device Installs / Uninstalls | Devices that installed / removed the app that day |
+| `device_upgrades` | Daily Device Upgrades | Devices that updated the app |
+| `install_events` / `update_events` / `uninstall_events` | Install / Update / Uninstall events | Every event, repeats included |
+| `active_device_installs` | Active Device Installs | Devices with the app installed that were online recently (point in time) |
+| `total_user_installs` | Total User Installs | Cumulative Google accounts that ever installed (point in time) |
+| `store_listing_visitors` / `store_listing_acquisitions` | Store listing visitors / acquisitions | From the store performance report |
+
+`totals` sums the daily counts over the window, gives the latest
+`active_device_installs_latest` (with its date) and `total_user_installs_latest`
+instead of a sum, and `store_listing_conversion_rate` as acquisitions divided by
+visitors over the window.
+
+What these numbers can and cannot tell you:
+
+- **They lag 3 to 7 days.** Google rewrites the current month's file daily, and
+  recent days can be missing or change. Hands reads each file version once and
+  a newer version **replaces** that month's numbers, so they are never counted
+  twice.
+- **Definitions differ from the Play Console Statistics page**, which applies
+  its own filters and recent definitions; expect small differences.
+- **A missing value is `null`, not 0.**
+- Columns are mapped by exact name. If a column Hands expects is missing (for
+  example after Google renames it), the metric stays empty, the file counts in
+  `reports_ingest.files_incomplete` with a `missing_column` warning, and it is
+  read again later (after 6 hours, doubling up to 4 days) or as soon as Google
+  writes a new version. Columns Hands does not know are listed as
+  `unknown_column` warnings. Rows whose date does not parse or falls outside the
+  file's month are counted as `invalid_rows` and keep the file incomplete.
+- Each file is checked against the MD5 that Cloud Storage lists for it and
+  rejected (`md5_mismatch`) if it differs. Files larger than 2 MiB are not read
+  (`files_over_limit`).
+- If Google answers 403 or 404 for the bucket, `reports_ingest.last_error_code`
+  is `play_reports_bucket_forbidden` or `play_reports_bucket_not_found` and
+  `reports_ingest.hint` explains what to check. Hands never switches to a
+  different bucket name by itself; if the configured name has no `rev_`, the
+  hint suggests checking whether the account uses `pubsite_prod_rev_<digits>`.
+- Hands only lists and reads `stats/installs/` and `stats/store_performance/`
+  CSVs of the bound package, with a read-only token. Country and other
+  breakdown files are not read yet.
+
 ## CI Environment Variables
 
 Every variable is read as `HANDS_<name>` first, then the legacy `QUIVER_<name>`,

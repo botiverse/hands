@@ -1,7 +1,8 @@
 import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
 import { pollGooglePlayReleases } from "./lib/play_release_poll";
-import { pollAscAnalytics } from "./lib/asc_analytics_ingest";
+import { storeReportsIngest } from "./lib/store_reports_schedule";
+import { handleGetPlayStatsBucket, handlePutPlayStatsBucket, handleIngestPlayStats } from "./routes/play_stats";
 import { handleAppleWebhook, handleCreateAppleWebhook, handleGetAppleWebhook, handleDeleteAppleWebhook, handleRegisterAppleWebhook } from "./routes/apple_webhooks";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "./routes/google_play_oauth";
 import { handleUploadAgcMarketPackage, handleGetAgcMarketPackage } from "./routes/agc_market_packages";
@@ -1211,6 +1212,9 @@ bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole(
 bindAdmin("get", "/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
 bindAdmin("post", "/api/apps/:appId/stats/app-store/analytics-report-requests", requireAppRole("admin"), handleEnableAscAnalyticsReports);
 bindAdmin("post", "/api/apps/:appId/stats/app-store/ingest", requireAppRole("admin"), handleIngestAscAnalytics);
+bindAdmin("post", "/api/apps/:appId/stats/google-play/ingest", requireAppRole("admin"), handleIngestPlayStats);
+bindAdmin("get", "/api/apps/:appId/google-play/stats-bucket", requireAppRole("admin"), handleGetPlayStatsBucket);
+bindAdmin("put", "/api/apps/:appId/google-play/stats-bucket", requireAppRole("admin"), handlePutPlayStatsBucket);
 bindAdmin("get", "/api/apps/:appId/release-health", requireAppRole("viewer"), handleReleaseHealth);
 bindAdmin("get", "/api/apps/:appId/feedback", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedback);
 bindAdmin("get", "/api/apps/:appId/feedback/material-delta", requireAppRoleOrFeedbackPermission("viewer", {}, "feedback:read"), handleListFeedbackMaterialDelta);
@@ -1525,7 +1529,7 @@ export async function scheduled(
     dailyBgKillSummary,
     pollGooglePlayReleases(env),
     pollAgcInvitations(env),
-    pollAscAnalytics(env).catch(() => undefined),
+    storeReportsIngest(env, scheduledTime),
     cleanupReporterFeedbackData(env),
     cleanupExpiredBuildAssetUploads(env),
   ]).then(() => undefined));
