@@ -19,6 +19,7 @@ import type { Context } from "hono";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
+import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration, type GooglePlayBinding } from "../lib/google_play_bindings";
 import { isPlayListingLanguage, suggestPlayListingLanguage } from "../lib/play_listing_languages";
 import {
@@ -435,6 +436,7 @@ async function takeListingLock(db: D1Database, appId: string, packageName: strin
   // A listing push lives inside one request; a row older than this is a crashed one.
   await db.prepare("DELETE FROM play_store_listing_locks WHERE app_id = ?1 AND package_name = ?2 AND acquired_at < ?3")
     .bind(appId, packageName, now - LOCK_STALE_MS).run();
+  await reclaimStalePlayEditLock(db, appId, packageName, now);
   try {
     const result = await db.prepare(
       `INSERT INTO play_store_listing_locks (app_id, package_name, operation_id, acquired_by, acquired_at)

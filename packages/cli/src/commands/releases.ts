@@ -139,7 +139,7 @@ async function fetchReleaseRevision(appId: string, releaseId: string): Promise<n
  * receipt_id}}) onto a plain Error so the CLI exits non-zero with the gate
  * name verbatim and never auto-retries or prints partial output.
  */
-function playWriteError(action: string, err: unknown): Error {
+function playWriteError(action: string, err: unknown, appIdOrSlug: string, releaseId: string): Error {
   if (err instanceof QuiverApiError) {
     const info = (err.body as { error?: Record<string, unknown> } | undefined)?.error;
     if (info && typeof info === "object") {
@@ -160,7 +160,23 @@ function playWriteError(action: string, err: unknown): Error {
       return new Error(`Play ${action} failed (${code}${failureCode}): ${message}${receiptNote}`);
     }
   }
+  if (isNoResponseError(err)) {
+    // No HTTP answer (`fetch failed` on a client timeout or dropped connection): the
+    // server may still have finished the Play write, so a bare network error would
+    // invite a blind retry against an edit that already committed.
+    return new Error(
+      `Play ${action}: no response from Hands (${(err as Error).message}). The write may still have completed on Google Play. ` +
+        `Do not retry blindly: check \`hands releases receipts ${appIdOrSlug} ${releaseId}\` and ` +
+        `\`hands releases play-status ${appIdOrSlug} ${releaseId}\` first; a retry while the original request ` +
+        "is still running returns edit_conflict.",
+    );
+  }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+/** fetch() rejects with a TypeError when no HTTP response arrived at all. */
+function isNoResponseError(err: unknown): boolean {
+  return err instanceof Error && (err instanceof TypeError || err.name === "AbortError" || err.name === "TimeoutError");
 }
 
 const RELEASE_SCOPE_TYPES = new Set(["full", "platform", "user_cohort", "ip_range", "device_group"]);
@@ -746,7 +762,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("promote", err);
+        throw playWriteError("promote", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
@@ -795,7 +811,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("send-for-review", err);
+        throw playWriteError("send-for-review", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
@@ -835,7 +851,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("release-notes", err);
+        throw playWriteError("release-notes", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
@@ -882,7 +898,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("upload-symbols", err);
+        throw playWriteError("upload-symbols", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
@@ -929,7 +945,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("halt", err);
+        throw playWriteError("halt", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));
@@ -969,7 +985,7 @@ export function registerReleaseCommands(program: Command): void {
           { method: "POST", body, retryOnUnauthorized: false },
         );
       } catch (err) {
-        throw playWriteError("rollback", err);
+        throw playWriteError("rollback", err, appIdOrSlug, releaseId);
       }
       if (opts.json || command.optsWithGlobals<{ json?: boolean }>().json) {
         console.log(JSON.stringify(res, null, 2));

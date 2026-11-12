@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { currentDeployToken } from "../lib/permissions";
+import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { playFailureNotificationFields } from "../lib/play_failure_notification";
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
@@ -600,6 +601,7 @@ async function hashStream(body: ReadableStream<Uint8Array>) {
 }
 
 async function takeLock(db: D1Database, appId: string, row: ReleaseArtifactRow, operationId: string, actor: string) {
+  await reclaimStalePlayEditLock(db, appId, row.package_name);
   try {
     // A store listing push holds its own package-scoped lock row
     // (play_store_listing_locks); one Hands-held Play edit per package at a time.
@@ -617,6 +619,29 @@ async function takeLock(db: D1Database, appId: string, row: ReleaseArtifactRow, 
 
 async function releaseLock(db: D1Database, operationId: string) {
   await db.prepare("DELETE FROM play_edit_locks WHERE operation_id = ?1").bind(operationId).run();
+}
+
+/**
+ * Run the lock-holding part of a Play write, then release the lock.
+ *
+ * Workers cancel a request's outstanding work when the client disconnects. A Play
+ * write that is still in flight when the CLI gives up can nonetheless commit on
+ * Google's side; if this Worker is cancelled at that point, the receipt, the
+ * distribution state, and the lock release are all lost. Registering the work with
+ * waitUntil keeps it running past the disconnect (for the platform's grace period),
+ * so a commit that lands shortly after the client left is still recorded and the
+ * lock is still released.
+ */
+async function withPlayEditLock(c: AdminContext, operationId: string, run: () => Promise<Response>): Promise<Response> {
+  const work = (async () => {
+    try {
+      return await run();
+    } finally {
+      await releaseLock(c.env.DB, operationId);
+    }
+  })();
+  c.executionCtx.waitUntil(work.then(() => undefined, () => undefined));
+  return work;
 }
 
 /**
@@ -821,6 +846,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
   }
+  const playService = c.env.PLAY_RELEASE_SERVICE;
   let binding;
   try {
     binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
@@ -850,10 +876,10 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
     return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
   }
-  try {
+  return withPlayEditLock(c, operationId, async () => {
     let trackResult;
     try {
-      trackResult = await c.env.PLAY_RELEASE_SERVICE.readTrackMaximum({
+      trackResult = await playService.readTrackMaximum({
         credential: binding.credential,
         packageName: binding.package_name,
         tracks: binding.tracks,
@@ -1130,9 +1156,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       // Only with the flag, so the default response is unchanged.
       ...(notSentForReview ? { review } : {}),
     });
-  } finally {
-    await releaseLock(c.env.DB, operationId);
-  }
+  });
 }
 
 /**
@@ -1196,6 +1220,7 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
   }
+  const playService = c.env.PLAY_RELEASE_SERVICE;
   let binding;
   try {
     binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
@@ -1219,7 +1244,7 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
     return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
   }
-  try {
+  return withPlayEditLock(c, operationId, async () => {
     const reserved = await c.env.DB.prepare(
       `UPDATE releases SET revision = revision + 1, updated_at = ?1
        WHERE app_id = ?2 AND id = ?3 AND revision = ?4`,
@@ -1229,7 +1254,7 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
     }
     let reply;
     try {
-      reply = await c.env.PLAY_RELEASE_SERVICE.sendForReview({
+      reply = await playService.sendForReview({
         credential: binding.credential,
         packageName: binding.package_name,
         tracks: binding.tracks,
@@ -1323,9 +1348,7 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
       revision: input.expected_revision + 1,
       review,
     });
-  } finally {
-    await releaseLock(c.env.DB, operationId);
-  }
+  });
 }
 
 /**
@@ -1402,7 +1425,8 @@ export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
   }
-  if (typeof c.env.PLAY_RELEASE_SERVICE.updateReleaseNotes !== "function") {
+  const playService = c.env.PLAY_RELEASE_SERVICE;
+  if (typeof playService.updateReleaseNotes !== "function") {
     return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service does not support updating release notes yet; deploy the Play adapter first" });
   }
   let binding;
@@ -1428,7 +1452,7 @@ export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
     return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
   }
-  try {
+  return withPlayEditLock(c, operationId, async () => {
     const reserved = await c.env.DB.prepare(
       `UPDATE releases SET revision = revision + 1, updated_at = ?1
        WHERE app_id = ?2 AND id = ?3 AND revision = ?4`,
@@ -1438,7 +1462,7 @@ export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
     }
     let reply;
     try {
-      reply = await c.env.PLAY_RELEASE_SERVICE.updateReleaseNotes({
+      reply = await playService.updateReleaseNotes!({
         credential: binding.credential,
         packageName: binding.package_name,
         tracks: binding.tracks,
@@ -1539,9 +1563,7 @@ export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
       revision: input.expected_revision + 1,
       release_notes: notesReceipt,
     });
-  } finally {
-    await releaseLock(c.env.DB, operationId);
-  }
+  });
 }
 
 /** Google Play deobfuscationFileType values Hands uploads. */
@@ -1745,6 +1767,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
   if (!c.env.PLAY_RELEASE_SERVICE) {
     return fail(c, 502, { code: "play_api_error", gate: null, message: "Google Play release service is not configured" });
   }
+  const playService = c.env.PLAY_RELEASE_SERVICE;
   let binding;
   try {
     binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS);
@@ -1778,7 +1801,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
     return fail(c, 409, { code: "edit_conflict", gate: "edit_lock", message: "another Play edit is active for this package" });
   }
-  try {
+  return withPlayEditLock(c, operationId, async () => {
     if (input.mode === "dry_run") {
       // Stored objects must still be there at their sealed size (metadata only, no body read).
       for (const { type, asset } of selected) {
@@ -1789,7 +1812,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
       }
       let reply;
       try {
-        reply = await c.env.PLAY_RELEASE_SERVICE.uploadDeobfuscation({ ...adapterInput, mode: "dry_run" });
+        reply = await playService.uploadDeobfuscation({ ...adapterInput, mode: "dry_run" });
       } catch {
         return fail(c, 502, { code: "play_api_error", gate: null, message: "Play deobfuscation dry-run request failed" });
       }
@@ -1842,7 +1865,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
     }
     let reply;
     try {
-      reply = await c.env.PLAY_RELEASE_SERVICE.uploadDeobfuscation(
+      reply = await playService.uploadDeobfuscation(
         { ...adapterInput, mode: "commit" },
         bodies.proguard ?? null,
         bodies.nativeCode ?? null,
@@ -1919,9 +1942,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
       files: receiptFiles,
       revision: input.expected_revision + 1,
     });
-  } finally {
-    await releaseLock(c.env.DB, operationId);
-  }
+  });
 }
 
 export async function handleGetPlayDistribution(c: Context<{ Bindings: Env }>) {

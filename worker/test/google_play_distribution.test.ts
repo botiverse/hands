@@ -29,6 +29,7 @@ import {
   handleUpdatePlayReleaseNotes,
   normalizePlayUploadSymbolsInput,
 } from "../src/routes/play_distribution";
+import { PLAY_EDIT_LOCK_STALE_MS } from "../src/lib/play_edit_lock";
 import { createRelease } from "../src/routes/releases";
 import { openApiDocument } from "../src/openapi";
 import { storeGooglePlayBinding } from "../src/lib/google_play_bindings";
@@ -1853,7 +1854,7 @@ describe("Play promotion route", () => {
     });
     harness.sqlite.prepare(`INSERT INTO play_edit_locks
       (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', ?)`).run(Date.now());
     const response = await harness.request("/api/apps/app/releases/release/distributions/play/promote", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1881,6 +1882,73 @@ describe("Play promotion route", () => {
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
     expect(calls).toBe(0);
     expect(harness.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+  });
+
+  it("reclaims a Play edit lock left behind by a cancelled request, but not a live one", async () => {
+    const successfulPromote: PlayAdapter["promote"] = async (_input, stream) => {
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      return { ok: true, value: {
+        edit_id: "edit-1", package_name: "build.raft.app", version_code: 42,
+        track: "internal", sha256: sha(bytes), rollout_percent: 100,
+      } };
+    };
+    const lockAt = async (ageMs: number) => {
+      const harness = await readyRelease();
+      harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({ promote: successfulPromote });
+      harness.sqlite.prepare(`INSERT INTO play_edit_locks
+        (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
+        VALUES ('app', 'build.raft.app', 'release', 'cancelled-op', 'other', ?)`).run(Date.now() - ageMs);
+      return { harness, response: await promoteInternal(harness) };
+    };
+
+    const live = await lockAt(PLAY_EDIT_LOCK_STALE_MS - 60_000);
+    expect(live.response.status).toBe(409);
+    expect(await live.response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
+    expect(live.harness.sqlite.prepare("SELECT operation_id FROM play_edit_locks").all()).toEqual([{ operation_id: "cancelled-op" }]);
+
+    const stale = await lockAt(PLAY_EDIT_LOCK_STALE_MS + 60_000);
+    expect(stale.response.status).toBe(200);
+    expect(stale.harness.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+    expect(stale.harness.sqlite.prepare("SELECT verdict, track FROM release_receipts WHERE kind='play-promotion'").get())
+      .toEqual({ verdict: "success", track: "internal" });
+  });
+
+  it("keeps a promote running past a client disconnect so the receipt and lock release still land", async () => {
+    const harness = await readyRelease();
+    const registered: Promise<unknown>[] = [];
+    let registeredAtPlayCall = -1;
+    let commitOnPlay!: () => void;
+    const committed = new Promise<void>((resolve) => { commitOnPlay = resolve; });
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      promote: async (_input, stream) => {
+        registeredAtPlayCall = registered.length;
+        const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+        await committed;
+        return { ok: true, value: {
+          edit_id: "edit-late", package_name: "build.raft.app", version_code: 42,
+          track: "internal", sha256: sha(bytes), rollout_percent: 100,
+        } };
+      },
+    });
+    const originalWaitUntil = executionContext.waitUntil;
+    executionContext.waitUntil = (promise: Promise<unknown>) => { registered.push(promise); };
+    try {
+      // The client goes away: nobody awaits the response. Only the work handed to
+      // waitUntil is allowed to keep running, which is what the platform does too.
+      void promoteInternal(harness);
+      for (let i = 0; i < 50 && registeredAtPlayCall < 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(registeredAtPlayCall).toBeGreaterThan(0);
+      const heldAcrossDisconnect = registered.slice(0, registeredAtPlayCall);
+      commitOnPlay();
+      await Promise.all(heldAcrossDisconnect);
+      expect(harness.sqlite.prepare("SELECT verdict, play_edit_id FROM release_receipts WHERE kind='play-promotion'").get())
+        .toEqual({ verdict: "success", play_edit_id: "edit-late" });
+      expect(harness.sqlite.prepare("SELECT track, last_edit_id FROM play_distribution_state").get())
+        .toEqual({ track: "internal", last_edit_id: "edit-late" });
+      expect(harness.sqlite.prepare("SELECT COUNT(*) AS n FROM play_edit_locks").get()).toEqual({ n: 0 });
+    } finally {
+      executionContext.waitUntil = originalWaitUntil;
+    }
   });
 
   it("returns typed play_api_error before revision reserve for malformed track JSON", async () => {
@@ -2328,7 +2396,7 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
   it.each([
     ["a promote holds the package's Play edit", (h: Harness) => h.sqlite.prepare(`INSERT INTO play_edit_locks
       (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run()],
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', ?)`).run(Date.now())],
     ["a store listing push holds the package's Play edit", (h: Harness) => h.sqlite.prepare(`INSERT INTO play_store_listing_locks
       (app_id, package_name, operation_id, acquired_by, acquired_at)
       VALUES ('app', 'build.raft.app', 'listing-op', 'other', ?)`).run(Date.now())],
@@ -2433,7 +2501,7 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
     if (table === "play_edit_locks") {
       h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-        VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+        VALUES ('app', 'build.raft.app', 'release', 'other', 'other', ?)`).run(Date.now());
     } else {
       h.sqlite.prepare(`INSERT INTO play_store_listing_locks (app_id, package_name, operation_id, acquired_by, acquired_at)
         VALUES ('app', 'build.raft.app', 'listing-op', 'other', ?)`).run(Date.now());
@@ -2614,7 +2682,7 @@ describe("Play release-notes (What's new for a release already on a track)", () 
     const h = await promotedWithoutNotes();
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
     h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', ?)`).run(Date.now());
     const response = await updateNotes(h);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
@@ -2953,7 +3021,7 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     attachSealedMapping(h);
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub();
     h.sqlite.prepare(`INSERT INTO play_edit_locks (app_id, package_name, release_id, operation_id, acquired_by, acquired_at)
-      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', 1)`).run();
+      VALUES ('app', 'build.raft.app', 'release', 'other', 'other', ?)`).run(Date.now());
     const response = await uploadSymbols(h, { mode: "commit" });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
