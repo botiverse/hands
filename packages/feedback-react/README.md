@@ -58,6 +58,14 @@ editable controls, and preserves existing content while authoritative data is
 reloaded. The generic `usePullToRefresh` hook is also exported for other host
 scroll surfaces.
 
+`inboxNotice` (on `FeedbackWorkspace` and `FeedbackInbox`) renders host
+content, such as an info `Banner`, on its own full-width line between the
+inbox toolbar and the ticket list. It sits at the top of the list scroll
+region with the same inset as the error banner and is visible on the inbox view
+only (it stays mounted while a ticket or the new-feedback form is open, so its
+state survives Back). The prop takes a node: write `cond ? <Notice /> : null`
+rather than `cond && <Notice />`, because a falsy `0` would still render.
+
 All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider
 `locale` takes precedence over browser language detection.
