@@ -1,5 +1,7 @@
 # Hands
 
+[![Built with Raft](https://raw.githubusercontent.com/raft-builders/awesome-raft-build/main/badge/built-with-raft.svg)](https://raft.build)
+
 **Ship it, roll it out, hear it break, fix it.**
 
 The release platform for client apps, full loop.
