@@ -195,8 +195,10 @@ export function renderRaftCardAsText(card: RenderableCard, options: { transition
  * line is dropped; any later lines of that Text stay. Only the first Text may
  * carry it, so a later chunk of notes beginning "Previously:" is left alone.
  */
-export function renderStatusCardAsText(input: RenderableCard): string {
-  const card = mergeTextPieces(input);
+export function renderStatusCardAsText(input: RenderableCard, options: { rejoinPieces?: boolean } = {}): string {
+  // rejoinPieces: false reproduces the layout Workers sent before pieces were
+  // rejoined, so a retry of such a message is still recognized.
+  const card = options.rejoinPieces === false ? input : mergeTextPieces(input);
   const root = card.elements[card.root];
   if (root?.type !== "Stack" || card.header?.tags?.length !== 1) return renderRaftCardAsText(card);
   const children = root.children ?? [];

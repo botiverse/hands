@@ -756,21 +756,27 @@ async function sendChannelCard(
 }
 
 /** The event's card written out as text by Raft's card-to-markdown rules; null if no card can be built. */
-function cardLayoutText(body: Record<string, unknown>, app: { id: string; slug: string | null; name: string | null }): string | null {
+function cardLayoutText(body: Record<string, unknown>, app: { id: string; slug: string | null; name: string | null },
+  options: { rejoinPieces?: boolean } = {}): string | null {
   try {
-    return cardLayoutFromCard(formatRaftNotificationCard(body, app).card);
+    return cardLayoutFromCard(formatRaftNotificationCard(body, app).card, options);
   } catch {
     return null;
   }
 }
 
-function cardLayoutFromCard(card: RaftMessageCard): string | null {
+function cardLayoutFromCard(card: RaftMessageCard, options: { rejoinPieces?: boolean } = {}): string | null {
   try {
-    const text = renderStatusCardAsText(card).trim();
+    const text = renderStatusCardAsText(card, options).trim();
     return text || null;
   } catch {
     return null;
   }
+}
+
+/** Earlier Workers sent the layout with a long Text's pieces as separate paragraphs; still accept it on replay. */
+function unjoinedLayoutVariants(layout: string | null, unjoined: string | null): string[] {
+  return unjoined && unjoined !== layout ? [unjoined, fallbackWarning(unjoined, false), fallbackWarning(unjoined, true)] : [];
 }
 
 function fallbackWarning(content: string, thread: boolean): string {
@@ -786,9 +792,11 @@ function compatibleCardText(content: string, card?: RaftMessageCard): string[] {
   const old = withoutPlayConsoleFooter(content);
   // The text path now sends the card's layout as text under the same key.
   const layout = card ? cardLayoutFromCard(card) : null;
+  const unjoined = card ? cardLayoutFromCard(card, { rejoinPieces: false }) : null;
   return [content, old, fallbackWarning(content, false), fallbackWarning(old, false),
     fallbackWarning(content, true), fallbackWarning(old, true),
-    ...(layout ? [layout, fallbackWarning(layout, false), fallbackWarning(layout, true)] : [])];
+    ...(layout ? [layout, fallbackWarning(layout, false), fallbackWarning(layout, true)] : []),
+    ...unjoinedLayoutVariants(layout, unjoined)];
 }
 
 // Previous workers did not render these fixed diagnostic lines. Derive the
@@ -1207,6 +1215,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
       cardTextFallback ? fallbackWarning(legacyContent, !channelText) : legacyContent,
       fallbackWarning(legacyContent, true), fallbackWarning(legacyContent, false), legacyContent,
     ];
+    if (supportsRaftNotificationCards(event)) {
+      legacyVariants.push(...unjoinedLayoutVariants(baseContent, cardLayoutText(eventBody, app, { rejoinPieces: false })));
+    }
     let sent: { messageId: string };
     if (channelText) {
       sent = await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? legacyStandaloneTarget ?? target, content,

@@ -1125,6 +1125,31 @@ describe("Hands-managed Raft notifications", () => {
     expect(committed.size).toBe(1);
   });
 
+  it("recognizes a retry of long notes an earlier Worker sent with the pieces as separate paragraphs", async () => {
+    const { request, updateConfig } = await harness();
+    expect((await updateConfig({ events: ["testflight:external_state_changed"] })).status).toBe(200);
+    const notes = Array.from({ length: 40 }, (_, i) => `- 第 ${i} 项：「计算机」页面支持搜索、筛选和排序`).join("\n");
+    const event = { event: "testflight:external_state_changed", delivered_at: 100, payload: {
+      app: { slug: "raft-ios", name: "Raft App" }, resource: { id: "build-1" }, state: "READY_FOR_BETA_TESTING",
+      version: "1.24.0", build_number: "12400004", what_to_test: { "zh-Hans": notes } } };
+    const attempts: string[] = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as { content: string };
+      attempts.push(data.content);
+      // The earlier Worker's body: a 500-character piece boundary became a paragraph break.
+      const lines = data.content.split("\n");
+      const splitInsideNotes = lines.some((line, i) => /项：/.test(line) && !line.endsWith("排序") && !line.endsWith("…")
+        && lines[i + 1] === "");
+      return splitInsideNotes ? Response.json({ state: "committed", messageId: "old-text" })
+        : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+    });
+    const result = await request(event, "replay");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "old-text" });
+    // The new layout went first and keeps every note line whole and contiguous.
+    expect(attempts[0]).toContain("第 0 项：「计算机」页面支持搜索、筛选和排序\n\\- 第 1 项");
+  });
+
   it("treats the older text already sent under the same key as delivered, not as a new message", async () => {
     const { request } = await harness();
     const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
