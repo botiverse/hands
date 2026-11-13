@@ -1392,7 +1392,7 @@ async function reporterAuthorActor(
 }
 
 /** Signature = "<ExceptionClass>@<top app frame>", trimmed and bounded. */
-function crashSignature(metadata: Record<string, unknown>): string | null {
+export function crashSignature(metadata: Record<string, unknown>): string | null {
   const exc = String(metadata["crash_exception_class"] ?? metadata["exception_class"] ?? "").trim();
   const frame = String(metadata["crash_top_frame"] ?? metadata["top_frame"] ?? "").trim();
   if (!exc && !frame) return null;
@@ -2277,17 +2277,18 @@ export function isBackgroundSystemKill(metadata: Record<string, unknown>): boole
   return false;
 }
 
-// Mirrors isBackgroundSystemKill: an integer, or an all-digit string, else NULL.
+// Mirrors isBackgroundSystemKill: an integer, or an all-digit string (ASCII
+// whitespace trimmed, as JS trim() does), else NULL. Migration 0091 repeats it.
 const SYSTEM_KILL_IMPORTANCE_SQL = `(CASE
     WHEN json_type(t.metadata_json, '$.crash_exit_importance') IN ('integer', 'real')
       THEN CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER)
     WHEN json_type(t.metadata_json, '$.crash_exit_importance') = 'text'
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) <> ''
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) NOT GLOB '*[^0-9]*'
-      THEN CAST(TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) AS INTEGER)
+      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) <> ''
+      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) NOT GLOB '*[^0-9]*'
+      THEN CAST(TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) AS INTEGER)
   END)`;
 
-const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
+export const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
   json_valid(t.metadata_json)
   AND json_extract(t.metadata_json, '$.crash_type') = 'system_kill'
   AND COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_reason_code') AS INTEGER), -1) NOT IN (4, 5, 6, 9)
