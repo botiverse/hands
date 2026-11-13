@@ -462,5 +462,9 @@ describe("Raft release notification cards", () => {
     expect(dailySummary).toContain("1.23.0 (1023000): 10 次 (5 台设备)");
     expect(dailySummary).toContain("较上一版本显著上升");
     expect(dailySummary).toContain("PME110 (dev-oppo): 6 次");
+    // The footer must be a command the published CLI accepts and must select
+    // exactly the tickets the summary counted.
+    expect(dailySummary).toContain("View more: `hands feedback list raft-android --signature SystemKill@background`");
+    expect(dailySummary).not.toContain("feedback crashes");
   });
 });
