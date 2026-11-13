@@ -153,6 +153,25 @@ describe("app event webhooks route to the app's owning org", () => {
     ]);
   });
 
+  it("an app-scoped webhook keeps firing for the app's events, whoever triggers them", async () => {
+    const h = harness();
+    const now = Date.now();
+    h.sqlite.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_by, created_at, updated_at)
+       VALUES ('wh-app', 'org-a', 'app-1', 'https://hooks.example/app', 's', '[]', 1, 'a-admin', ?, ?)`,
+    ).run(now, now);
+    for (const token of [SESSION, DEPLOY_TOKEN]) {
+      const created = await h.call(token, "POST", "/api/apps/app-1/builds", {
+        version_name: "1.0.0", version_code: token === SESSION ? 1 : 2, channel_id: "ch-main", product_type: "apk", status: "succeeded",
+      });
+      expect(created.status).toBe(201);
+    }
+    const appScoped = h.deliveries().filter((d) => d.webhook_id === "wh-app");
+    expect(appScoped).toHaveLength(2);
+    expect(appScoped.every((d) => d.event_type === "build:succeeded" && d.org_id === "org-a")).toBe(true);
+    expect(h.deliveries().some((d) => d.webhook_id === "wh-b")).toBe(false);
+  });
+
   it("a deploy-token request emits build and release events to the app org", async () => {
     const h = harness();
     const created = await h.call(DEPLOY_TOKEN, "POST", "/api/apps/app-1/builds", {
