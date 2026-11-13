@@ -108,6 +108,20 @@ export async function handleCreateWebhook(c: AdminContext) {
   } catch {
     return c.json({ error: "url must be a valid URL" }, 400);
   }
+  const appId = body.app_id ?? null;
+  if (appId !== null) {
+    if (typeof appId !== "string" || appId.length === 0) {
+      return c.json({ error: "app_id must be a non-empty string or null" }, 400);
+    }
+    // An org webhook may only narrow to an app this org owns, the same bar the
+    // app-webhook route applies. A foreign app's events are routed to its own
+    // org, so such a row would never fire here, and it would survive that
+    // app's transfer pointing at an app the org does not hold.
+    const owned = await c.env.DB.prepare(
+      "SELECT 1 AS ok FROM apps WHERE id = ?1 AND org_id = ?2 AND archived = 0",
+    ).bind(appId, orgId).first<{ ok: number }>();
+    if (!owned) return c.json({ error: "app not found" }, 404);
+  }
   const events = Array.isArray(body.events) ? body.events : [];
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -119,7 +133,7 @@ export async function handleCreateWebhook(c: AdminContext) {
   ).bind(
     id,
     orgId,
-    body.app_id ?? null,
+    appId,
     body.url,
     body.secret,
     JSON.stringify(events),
@@ -399,6 +413,27 @@ export async function handleListAppWebhookDeliveries(c: AdminContext) {
 // ============================================================================
 // Event emission (called from release / build endpoints)
 // ============================================================================
+
+/**
+ * The org whose webhooks receive an app's events: the org that owns the app.
+ * Never the caller's selected org (`c.get("org_id")`) -- a cross-org actor
+ * would otherwise leak the event into their own org's org-wide webhooks and
+ * starve the owning org, and a deploy token, which carries no org, would emit
+ * nothing at all.
+ */
+export async function appOwningOrgId(db: D1Database, appId: string): Promise<string | null> {
+  // Callers run this after their mutation has committed; emission is
+  // best-effort there, so a failed lookup must not turn into a 500.
+  try {
+    const row = await db.prepare("SELECT org_id FROM apps WHERE id = ?1")
+      .bind(appId)
+      .first<{ org_id: string | null }>();
+    return row?.org_id ?? null;
+  } catch (err) {
+    console.warn("[webhooks] app org lookup failed; event not emitted", err);
+    return null;
+  }
+}
 
 export async function emitWebhookEvent(
   env: EnqueueDeliveriesEnv,

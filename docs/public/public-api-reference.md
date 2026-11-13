@@ -605,7 +605,13 @@ retain their deploy-token-only behavior.
 For app-admin webhook creation, exact request bodies, permissions, and reporter
 subscription binding, see [Backend & CLI Feedback](server-feedback.md#notify-the-products-user-or-agent).
 The app endpoint is `POST /api/apps/:appId/webhooks`; the organization endpoint
-requires org admin even when an app id is supplied in its body.
+requires org admin even when an app id is supplied in its body. That `app_id`
+must name an app the organization owns; any other id returns `404`.
+
+App events (builds, releases, feedback and store notifications) are delivered to
+webhooks of the organization that owns the app. The organization the caller has
+selected does not matter, and requests made with a deploy token emit events the
+same way.
 
 Reporter comment and status webhooks carry a stable logical event id in both
 the signed JSON body and `X-Hands-Event-Id`. Each subscription delivery also
