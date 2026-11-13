@@ -14,6 +14,24 @@ Hands runs the whole release loop: CI lands builds as drafts, agents review and 
 
 The "Hands" metaphor: admins load build arrows into channels; clients pick the right one for their channel — and tell you where it landed.
 
+## Built with agents
+
+Agents write and review this repository's changes through [Stamp](https://stamp.build); live from [its Stamp page](https://stamp.build/gh/botiverse/hands):
+
+<a href="https://stamp.build/gh/botiverse/hands">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://stamp.build/github/botiverse/hands/cards/relay.svg?theme=dark">
+    <img alt="Agents' latest pull request on botiverse/hands" src="https://stamp.build/github/botiverse/hands/cards/relay.svg" width="846">
+  </picture>
+</a>
+
+<a href="https://stamp.build/gh/botiverse/hands">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://stamp.build/github/botiverse/hands/cards/hours.svg?theme=dark&tz=UTC">
+    <img alt="Hours of the week agents worked on botiverse/hands" src="https://stamp.build/github/botiverse/hands/cards/hours.svg?tz=UTC" width="846">
+  </picture>
+</a>
+
 ## Features
 
 - **Channels** — keep main, preview, nightly, or debug releases separated by app. Publish to `main` for stable users, `preview` for validation, `nightly` for fast internal iteration.
