@@ -94,7 +94,10 @@ Do not put the client key or bearer token in a URL.
 
 Metadata is stored with the ticket. Shared fields such as `version_name`,
 `version_code` (a JSON number), `channel`, and `locale` populate the matching
-Hands columns. Put product-specific fields under a namespaced object, for
+Hands columns. A client may also send `client_kind` (for example `web`) and `client_version`
+(for example `Raft Desktop 1.4.0`); the reporter list and ticket detail return
+them as `client_kind` and `client_version` (text, or `null`) so a product can
+label tickets filed from another client. Put product-specific fields under a namespaced object, for
 example:
 
 ```json
