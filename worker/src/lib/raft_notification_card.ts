@@ -173,11 +173,23 @@ function isFooterLine(line: string): boolean {
 }
 
 /** The card contract bounds each Text by Unicode code points, not UTF-16 units. */
-function pieces(value: string): string[] {
+/**
+ * Split text into Text-element-sized pieces whose concatenation is exactly the
+ * input. Cut after the last line break in the window when there is one, so a
+ * piece boundary never lands inside a word or a line.
+ */
+export function pieces(value: string): string[] {
   const chars = Array.from(value);
   const result: string[] = [];
-  for (let offset = 0; offset < chars.length; offset += TEXT_LIMIT) {
-    result.push(chars.slice(offset, offset + TEXT_LIMIT).join(""));
+  let offset = 0;
+  while (offset < chars.length) {
+    let end = Math.min(chars.length, offset + TEXT_LIMIT);
+    if (end < chars.length) {
+      const newline = chars.lastIndexOf("\n", end - 1);
+      if (newline >= offset) end = newline + 1;
+    }
+    result.push(chars.slice(offset, end).join(""));
+    offset = end;
   }
   return result;
 }

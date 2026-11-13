@@ -104,6 +104,47 @@ function block(el: Element): string {
 }
 
 /**
+ * Hands' status cards split a long Text into consecutive pieces (`detail0`, `detail1`, ...)
+ * only because a card element has a size limit; their concatenation is the
+ * original text. In text form they are one block, so rejoin them exactly
+ * instead of separating them as paragraphs, which broke words apart.
+ */
+function mergeTextPieces(card: RenderableCard): RenderableCard {
+  // Only the ids Hands' status-card builder gives its split pieces (addText).
+  const piece = (id: string) => /^(reason|detail|metadata|footer)(\d+)$/.exec(id);
+  const sameStyle = (a: Element | undefined, b: Element | undefined) => a?.type === "Text" && b?.type === "Text"
+    && (a.props?.tone ?? null) === (b.props?.tone ?? null) && Boolean(a.props?.mono) === Boolean(b.props?.mono);
+  let elements: RenderableCard["elements"] | null = null;
+  for (const [id, el] of Object.entries(card.elements)) {
+    if (el.type !== "Stack" || !el.children?.length) continue;
+    const children: string[] = [];
+    let headId: string | null = null;
+    let lastIndex = -1;
+    for (const child of el.children) {
+      const current = piece(child);
+      const head = headId ? piece(headId) : null;
+      const source = elements ?? card.elements;
+      if (headId && head && current && head[1] === current[1] && Number(current[2]) === lastIndex + 1
+        && sameStyle(source[headId], source[child])) {
+        elements ??= { ...card.elements };
+        const merged = elements[headId]!;
+        elements[headId] = { ...merged, props: { ...merged.props, text: String(merged.props?.text ?? "") + String(source[child]!.props?.text ?? "") } };
+        lastIndex += 1;
+        continue;
+      }
+      children.push(child);
+      headId = child;
+      lastIndex = current ? Number(current[2]) : -1;
+    }
+    if (children.length !== el.children.length) {
+      elements ??= { ...card.elements };
+      elements[id] = { ...el, children };
+    }
+  }
+  return elements ? { ...card, elements } : card;
+}
+
+/**
  * `transitionFrom` is a Hands addition to Raft's rules: when a status card
  * says what the state was before, the tag line reads `[before] -> [after]`.
  */
@@ -154,7 +195,8 @@ export function renderRaftCardAsText(card: RenderableCard, options: { transition
  * line is dropped; any later lines of that Text stay. Only the first Text may
  * carry it, so a later chunk of notes beginning "Previously:" is left alone.
  */
-export function renderStatusCardAsText(card: RenderableCard): string {
+export function renderStatusCardAsText(input: RenderableCard): string {
+  const card = mergeTextPieces(input);
   const root = card.elements[card.root];
   if (root?.type !== "Stack" || card.header?.tags?.length !== 1) return renderRaftCardAsText(card);
   const children = root.children ?? [];
