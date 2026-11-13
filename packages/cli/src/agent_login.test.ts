@@ -279,6 +279,47 @@ describe("runAgentLogin (full flow via pinned wrapper)", () => {
     expect(existsSync(agentAuthPath(a))).toBe(false);
   });
 
+  it("tries the new Raft app id first and falls back to the old one, storing under the same key", async () => {
+    const a = agentEnvAt(dir, "/t");
+    const services: string[] = [];
+    const session = await runAgentLogin(a, {
+      now: T0,
+      invoke: (args) => {
+        const id = args[args.indexOf("--service") + 1]!;
+        services.push(id);
+        // Before the rename `hands` does not resolve; the old id answers.
+        return id === "hands" ? { status: 1, stdout: "", stderr: "not found" } : { status: 0, stdout: invokeEnvelope(), stderr: "" };
+      },
+    });
+    expect(services).toEqual(["hands", "hands-4cc7a2"]);
+    expect(session.access_token).toBe("acc-123");
+    expect(existsSync(agentAuthPath(a))).toBe(true);
+  });
+
+  it("accepts Raft reporting the new id and Hands reporting the old one after the rename", async () => {
+    const a = agentEnvAt(dir, "/t");
+    const services: string[] = [];
+    const session = await runAgentLogin(a, {
+      now: T0,
+      invoke: (args) => {
+        services.push(args[args.indexOf("--service") + 1]!);
+        return { status: 0, stdout: invokeEnvelope({ service: "hands" }, { service: "hands-4cc7a2" }), stderr: "" };
+      },
+    });
+    expect(services).toEqual(["hands"]);
+    expect(session.access_token).toBe("acc-123");
+    expect(readAgentAccessToken(a)).toBe("acc-123");
+  });
+
+  it("still rejects a service that is not one of Hands' ids", async () => {
+    const a = agentEnvAt(dir, "/t");
+    await expect(runAgentLogin(a, { now: T0, invoke: () => ({ status: 0, stdout: invokeEnvelope({ service: "hands-other" }), stderr: "" }) }))
+      .rejects.toThrow(/service/);
+    await expect(runAgentLogin(a, { now: T0, invoke: () => ({ status: 0, stdout: invokeEnvelope({}, { service: "other-app" }), stderr: "" }) }))
+      .rejects.toThrow(/service/);
+    expect(existsSync(agentAuthPath(a))).toBe(false);
+  });
+
   it("a terminal old refresh does NOT block a fresh login (independent exchange, no old Bearer)", async () => {
     const a = agentEnvAt(dir, "/t");
     // Pre-seed a store whose refresh is terminal (would 409) and whose access is expired.
