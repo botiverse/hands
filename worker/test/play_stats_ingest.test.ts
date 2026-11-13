@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
-import { storeGooglePlayBinding } from "../src/lib/google_play_bindings";
+import { storeGooglePlayBinding, storeGooglePlayReportsGrant } from "../src/lib/google_play_bindings";
 import { requireAppRole } from "../src/lib/permissions";
 import {
   PLAY_DAILY_SQL,
@@ -64,6 +64,10 @@ type Google = {
   objects: Record<string, GcsObject>;
   /** Status to answer listing with (e.g. 403). */
   listStatus?: number;
+  /** Status to answer the OAuth token request with (e.g. 400 for a revoked grant). */
+  tokenStatus?: number;
+  /** OAuth error code sent with tokenStatus (default invalid_grant). */
+  tokenError?: string;
   calls: Array<{ method: string; url: string; authorization: string | null; body: string | null }>;
   onRead?: (name: string) => Promise<void>;
 };
@@ -77,6 +81,7 @@ function googleFetch(g: Google): typeof fetch {
       body: typeof init.body === "string" ? init.body : init.body instanceof URLSearchParams ? init.body.toString() : null });
     expect(init.redirect).toBe("manual");
     if (url.origin === "https://oauth2.googleapis.com" && url.pathname === "/token") {
+      if (g.tokenStatus) return Response.json({ error: g.tokenError ?? "invalid_grant" }, { status: g.tokenStatus });
       return Response.json({ access_token: "gcs-access-token", token_type: "Bearer", expires_in: 3599, scope: REPORTS_SCOPE });
     }
     if (url.origin !== "https://storage.googleapis.com") throw new Error(`unexpected host ${url.host}`);
@@ -426,6 +431,50 @@ describe("Google Play statistics ingest", () => {
     const rev = await queryGooglePlayStatsDaily(h.env.DB, "app", "2026-01-01");
     expect(rev.ingest.last_error_code).toBe("play_reports_bucket_not_found");
     expect(rev.ingest.hint).not.toMatch(/pubsite_prod_rev_<digits>/);
+  });
+
+  it("reads with the separate statistics grant when there is one, and names its rejection", async () => {
+    const h = await harness();
+    await storeGooglePlayReportsGrant(h.env.DB, { appId: "app", credential: { ...credential, refresh_token: "reports-refresh-secret" },
+      actor: "raft:acct@test", keyringJson: h.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: "v1" });
+    const ok = await h.call("/api/apps/app/stats/google-play/ingest", "POST");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ status: "ok", reports_credential: "reports_grant" });
+    const tokenBodies = h.g.calls.filter((c) => c.url.startsWith("https://oauth2.googleapis.com/")).map((c) => new URLSearchParams(c.body ?? ""));
+    expect(tokenBodies.length).toBeGreaterThan(0);
+    for (const body of tokenBodies) expect(body.get("refresh_token")).toBe("reports-refresh-secret");
+
+    h.g.tokenStatus = 400;
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const rejected = await h.call("/api/apps/app/stats/google-play/ingest", "POST");
+    expect(rejected.status).toBe(502);
+    const body = await rejected.json() as any;
+    expect(body).toMatchObject({ provider_code: "play_reports_token_rejected" });
+    expect(body.hint).toMatch(/reauthorize statistics reports/);
+    expect(body.hint).toMatch(/publishing is not affected/);
+  });
+
+  it("falls back to the publishing credential before a statistics grant exists", async () => {
+    const h = await harness();
+    const ok = await h.call("/api/apps/app/stats/google-play/ingest", "POST");
+    expect(await ok.json()).toMatchObject({ status: "ok", reports_credential: "publishing" });
+    const tokenBodies = h.g.calls.filter((c) => c.url.startsWith("https://oauth2.googleapis.com/")).map((c) => new URLSearchParams(c.body ?? ""));
+    for (const body of tokenBodies) expect(body.get("refresh_token")).toBe("refresh-token-secret");
+
+    // A publishing grant without the reports scope means statistics were never authorized.
+    h.g.tokenStatus = 400;
+    h.g.tokenError = "invalid_scope";
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const body = await (await h.call("/api/apps/app/stats/google-play/ingest", "POST")).json() as any;
+    expect(body).toMatchObject({ provider_code: "play_reports_not_authorized" });
+    expect(body.hint).toMatch(/Authorize statistics reports/);
+    // A revoked publishing credential stays a publishing problem, never "publishing is not affected".
+    h.g.tokenError = "invalid_grant";
+    const revoked = await (await h.call("/api/apps/app/stats/google-play/ingest", "POST")).json() as any;
+    expect(revoked).toMatchObject({ provider_code: "play_token_rejected" });
+    expect(String(revoked.hint ?? "")).not.toMatch(/publishing is not affected/);
   });
 
   it("reports an adapter without the statistics methods, and a missing bucket, without calling Google", async () => {

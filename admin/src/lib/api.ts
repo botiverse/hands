@@ -910,7 +910,13 @@ export interface GooglePlayBindingMeta {
 }
 
 export const getGooglePlayBinding = (appId: string) =>
-  request<{ google_play: GooglePlayBindingMeta | null; oauth_available: boolean }>(`/api/apps/${appId}/google-play-binding`, { admin: true });
+  request<{ google_play: GooglePlayBindingMeta | null; reports_grant?: GooglePlayReportsGrant | null; oauth_available: boolean }>(`/api/apps/${appId}/google-play-binding`, { admin: true });
+
+/** The separate Google authorization used only to read Play Console statistics reports. */
+export interface GooglePlayReportsGrant { account_email: string; updated_at: number }
+
+export const deleteGooglePlayReportsGrant = (appId: string) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}/google-play-reports-grant`, { method: "DELETE", admin: true });
 
 export const setGooglePlayBinding = (
   appId: string,
@@ -2340,9 +2346,9 @@ export const rotateAppClientKey = (appId: string) =>
     { method: "POST", body: "{}", admin: true },
   );
 
-export const startGooglePlayOAuth = (appId: string) =>
+export const startGooglePlayOAuth = (appId: string, purpose: "publishing" | "reports" = "publishing") =>
   request<{ authorization_url: string }>(`/api/apps/${appId}/google-play-oauth/start`, {
-    method: "POST", admin: true, body: "{}",
+    method: "POST", admin: true, body: purpose === "reports" ? JSON.stringify({ purpose }) : "{}",
   });
 
 export function listGooglePlayTracks(appId: string, body: { package_name: string; service_account_json?: string }): Promise<{ package_name: string; tracks: string[] }> {

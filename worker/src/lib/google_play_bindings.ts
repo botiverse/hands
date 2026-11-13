@@ -360,8 +360,75 @@ export async function setGooglePlayBindingVerification(
 export async function deleteGooglePlayBinding(db: D1Database, appId: string) {
   await db.batch([
     db.prepare("DELETE FROM google_play_oauth_requests WHERE app_id=?1").bind(appId),
+    db.prepare("DELETE FROM google_play_reports_grants WHERE app_id=?1").bind(appId),
     db.prepare("DELETE FROM app_google_play_bindings WHERE app_id=?1").bind(appId),
   ]);
+}
+
+/**
+ * The statistics-reports authorization, kept apart from the publishing binding.
+ * It holds devstorage.read_only, a Google Cloud scope that Workspace session
+ * control can expire; keeping it separate means that never stops publishing.
+ */
+export type GooglePlayReportsGrantMeta = {
+  app_id: string;
+  account_email: string;
+  credential_fingerprint: string;
+  credential_key_version: string;
+  created_by_actor: string;
+  updated_by_actor: string;
+  created_at: number;
+  updated_at: number;
+};
+
+const REPORTS_META_COLUMNS = `app_id, account_email, credential_fingerprint, credential_key_version,
+  created_by_actor, updated_by_actor, created_at, updated_at`;
+
+export async function getGooglePlayReportsGrantMeta(db: D1Database, appId: string) {
+  return (await db.prepare(`SELECT ${REPORTS_META_COLUMNS} FROM google_play_reports_grants WHERE app_id=?1`)
+    .bind(appId).first<GooglePlayReportsGrantMeta>()) ?? null;
+}
+
+export async function getGooglePlayReportsCredential(
+  db: D1Database,
+  appId: string,
+  keyringJson: string | undefined,
+): Promise<GooglePlayCredential | null> {
+  const row = await db.prepare(`SELECT credential_ciphertext_b64, credential_iv_b64, credential_key_version
+    FROM google_play_reports_grants WHERE app_id=?1`).bind(appId)
+    .first<{ credential_ciphertext_b64: string; credential_iv_b64: string; credential_key_version: string }>();
+  if (!row) return null;
+  return decryptGooglePlayCredential(row.credential_ciphertext_b64, row.credential_iv_b64, appId,
+    row.credential_key_version, keyringJson);
+}
+
+export async function storeGooglePlayReportsGrant(
+  db: D1Database,
+  args: { appId: string; credential: GooglePlayCredential; actor: string; keyringJson: string | undefined; activeKeyVersion: string | undefined },
+): Promise<GooglePlayReportsGrantMeta> {
+  if (args.credential.type !== "authorized_user") throw new Error("A reports grant is a Google account authorization");
+  const encrypted = await encryptGooglePlayCredential(args.credential, args.appId, args.keyringJson, args.activeKeyVersion);
+  const fingerprint = await fingerprintGooglePlayCredential(args.credential);
+  const now = Date.now();
+  const row = await db.prepare(`INSERT INTO google_play_reports_grants
+    (app_id, account_email, credential_fingerprint, credential_ciphertext_b64, credential_iv_b64, credential_key_version,
+     created_by_actor, updated_by_actor, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?8)
+    ON CONFLICT(app_id) DO UPDATE SET account_email=excluded.account_email,
+      credential_fingerprint=excluded.credential_fingerprint, credential_ciphertext_b64=excluded.credential_ciphertext_b64,
+      credential_iv_b64=excluded.credential_iv_b64, credential_key_version=excluded.credential_key_version,
+      updated_by_actor=excluded.updated_by_actor, updated_at=MAX(excluded.updated_at, google_play_reports_grants.updated_at+1)
+    RETURNING ${REPORTS_META_COLUMNS}`)
+    .bind(args.appId, args.credential.client_email, fingerprint, encrypted.ciphertext_b64, encrypted.iv_b64,
+      encrypted.key_version, args.actor, now)
+    .first<GooglePlayReportsGrantMeta>();
+  if (!row) throw new Error("Google Play reports grant was not stored");
+  return row;
+}
+
+export async function deleteGooglePlayReportsGrant(db: D1Database, appId: string): Promise<boolean> {
+  const result = await db.prepare("DELETE FROM google_play_reports_grants WHERE app_id=?1").bind(appId).run();
+  return Number(result.meta?.changes ?? 0) > 0;
 }
 
 export function hasGooglePlayConfiguration(binding: GooglePlayBinding): binding is GooglePlayBinding & { package_name: string; tracks: GooglePlayTracks } {

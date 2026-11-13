@@ -266,6 +266,7 @@ import {
 import { handleProxyPlayApi } from "./routes/play_api_proxy";
 import {
   handleDeleteGooglePlayBinding,
+  handleDeleteGooglePlayReportsGrant,
   handleDisableGooglePlayBinding,
   handleEnableGooglePlayBinding,
   handleGetGooglePlayBinding,
@@ -1211,6 +1212,7 @@ bindAdmin("post", "/api/apps/:appId/google-play-binding/verify", requireAppRole(
 bindAdmin("post", "/api/apps/:appId/google-play-binding/enable", requireAppRole("admin"), handleEnableGooglePlayBinding);
 bindAdmin("post", "/api/apps/:appId/google-play-binding/disable", requireAppRole("admin"), handleDisableGooglePlayBinding);
 bindAdmin("delete", "/api/apps/:appId/google-play-binding", requireAppRole("admin"), handleDeleteGooglePlayBinding);
+bindAdmin("delete", "/api/apps/:appId/google-play-reports-grant", requireAppRole("admin"), handleDeleteGooglePlayReportsGrant);
 bindAdmin("get", "/api/apps/:appId/shares", requireAppRole("viewer"), handleListAppShares);
 bindAdmin("post", "/api/apps/:appId/shares/:shareId/rebind", requireAppRole("publisher"), handleRebindReleaseShare);
 bindAdmin("put", "/api/apps/:appId/icon", requireAppRole("publisher"), handleUploadAppIcon);

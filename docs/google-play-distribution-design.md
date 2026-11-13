@@ -221,8 +221,14 @@ to Google Account connections for a deliberate grant revocation.
 
 1. Enable the Google Play Android Developer API in the Google Cloud project.
 2. Configure Google Auth Platform branding, audience and consent, including the
-   androidpublisher, devstorage.read_only (optional, Play Console statistics
-   report download), openid and email scopes. An external app in testing needs
+   androidpublisher, devstorage.read_only (Play Console statistics report
+   download), openid and email scopes. Hands requests them in two separate
+   authorizations: publishing asks for androidpublisher only, and statistics
+   reports ask for devstorage.read_only only. devstorage is a Google Cloud
+   scope, and Workspace "Google Cloud session control" expires any grant
+   holding one after the organization's reauthentication interval; keeping it
+   out of the publishing grant means that expiry stops statistics, never
+   publishing. An external app in testing needs
    the intended authorizer listed as a test user; test refresh credentials may
    expire. Use the appropriate production consent configuration before relying
    on unattended publication.

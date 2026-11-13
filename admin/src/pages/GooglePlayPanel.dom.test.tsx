@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   verify: vi.fn(),
   toggle: vi.fn(),
   remove: vi.fn(),
+  removeReports: vi.fn(),
   toast: vi.fn(),
 }));
 
@@ -32,6 +33,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   verifyGooglePlayBinding: mocks.verify,
   setGooglePlayBindingEnabled: mocks.toggle,
   deleteGooglePlayBinding: mocks.remove,
+  deleteGooglePlayReportsGrant: mocks.removeReports,
 }));
 
 import { GooglePlayConnector } from "../components/integrations/GooglePlayConnector";
@@ -156,7 +158,7 @@ describe("GooglePlayConnector", () => {
     expect(screen.queryByText("Google account")).toBeNull();
     expect(screen.queryByText(/Sign in with a Google account/)).toBeNull();
     fireEvent.click(connect);
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "publishing"));
     expect(mocks.save).not.toHaveBeenCalled();
     cleanup();
     mocks.get.mockResolvedValue({ google_play: null, oauth_available: false });
@@ -174,7 +176,7 @@ describe("GooglePlayConnector", () => {
     expect(await screen.findByText(/Google authorization failed/)).toBeTruthy();
     const retry = screen.getByRole("button", { name: "Retry" });
     fireEvent.click(retry);
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "publishing"));
     expect(window.location.search).not.toContain("google_play_oauth");
   });
 
@@ -236,7 +238,7 @@ describe("GooglePlayConnector", () => {
     await expandConnectedDetail();
     expect(screen.getByText(/keeps the package and tracks/)).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Reauthorize with Google" }));
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "publishing"));
     expect(mocks.save).not.toHaveBeenCalled();
     cleanup();
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "service_account", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "app@tenant.example", internal_track: "internal", closed_track: "closed", production_track: "production" }, oauth_available: true });
@@ -314,7 +316,7 @@ describe("GooglePlayConnector", () => {
     expect(screen.getByText(/Reauthorizing keeps the package and tracks/)).toBeTruthy();
     expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
     fireEvent.click(buttons[0]!);
-    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "publishing"));
   });
 
   it("does not carry a token-rejected hint over to another app", async () => {
@@ -345,6 +347,38 @@ describe("GooglePlayConnector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unbind" }));
     await waitFor(() => expect(mocks.remove).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText(/Google rejected the stored authorization/)).toBeNull());
+  });
+
+  it("authorizes statistics reports separately and shows their account", async () => {
+    const binding = { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" };
+    mocks.get.mockResolvedValue({ google_play: binding, reports_grant: null, oauth_available: true });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    renderPanel();
+    await expandConnectedDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Authorize statistics reports" }));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "reports"));
+    cleanup();
+    mocks.get.mockResolvedValue({ google_play: binding, reports_grant: { account_email: "stats@example.com", updated_at: 1 }, oauth_available: true });
+    mocks.removeReports.mockResolvedValue({ ok: true });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPanel();
+    await expandConnectedDetail();
+    expect((await screen.findByTestId("google-play-reports")).textContent).toContain("stats@example.com");
+    expect(screen.getByRole("button", { name: "Reauthorize statistics" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mocks.removeReports).toHaveBeenCalledWith("app-a"));
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed statistics authorization as statistics, not publishing", async () => {
+    const binding = { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" };
+    mocks.get.mockResolvedValue({ google_play: binding, reports_grant: null, oauth_available: true });
+    mocks.authorize.mockRejectedValue(new Error("fixture rejection"));
+    window.history.replaceState(null, "", "/apps/app-a/integrations?google_play_oauth=failed&google_play_oauth_error=google_permissions&google_play_oauth_purpose=reports");
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a", "reports"));
+    expect(window.location.search).toBe("");
   });
 
   it("does not offer reauthorization for a binding an admin disabled while verified", async () => {

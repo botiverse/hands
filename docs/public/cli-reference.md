@@ -1176,12 +1176,13 @@ app's package:
 
 Two things must be in place:
 
-1. The app's Google Play connection has report access. For an OAuth
-   connection, the Google account must have allowed read-only Cloud Storage
-   access (`devstorage.read_only`, used for Play Console reports) when
-   authorizing; if not, choose "Reauthorize with Google" on the Google Play
-   integration page (package and tracks are kept).
-   For a service account, grant it access to download reports in Play Console.
+1. The app can read reports. For a Google-account connection, choose
+   "Authorize statistics reports" under Statistics reports on the Google Play
+   integration page. This is a separate, read-only authorization
+   (`devstorage.read_only`): if your organization makes it expire, only
+   statistics stop, and publishing keeps working. Until it is granted, Hands
+   tries the publishing connection. For a service account, grant it access to
+   download reports in Play Console.
 2. An app admin sets the reports bucket once. Copy the Cloud Storage URI from
    Play Console > Download reports > Statistics; it looks like
    `gs://pubsite_prod_rev_<digits>/` (older developer accounts:

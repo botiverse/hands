@@ -633,7 +633,6 @@
   "Current principal cannot view shares.": "当前身份不能查看分享。",
   "Release share list.": "发布分享列表。",
   "Created share link.": "已创建分享链接。",
-  "Invalid request.": "请求无效。",
   "Release cannot be shared, for example because it is cancelled.": "此发布无法分享，例如因为已取消。",
   "Updated share.": "分享已更新。",
   "Share was not found.": "未找到分享。",
@@ -847,5 +846,13 @@
   "Organization access token was not found.": "未找到组织访问令牌。",
   "Selected apps. Empty when all_apps is true.": "选定的应用。all_apps 为 true 时为空。",
   "Apps the token may read. Every app must be owned by this organization or co-owned by it as an owner server; access to a co-owned app ends when the co-ownership is removed. Provide exactly one of app_ids or all_apps.": "令牌可读取的应用。每个应用都必须属于本组织，或由本组织作为所有者服务器共同拥有；共同所有权移除后，对该应用的访问随即终止。app_ids 与 all_apps 必须且只能提供其一。",
-  "Cover every app the organization owns or co-owns as an owner server, including apps added later.": "覆盖组织拥有或以所有者服务器身份共同拥有的所有应用，包括之后加入的应用。"
+  "Cover every app the organization owns or co-owns as an owner server, including apps added later.": "覆盖组织拥有或以所有者服务器身份共同拥有的所有应用，包括之后加入的应用。",
+  "purpose \"publishing\" (default) asks only for androidpublisher. purpose \"reports\" asks only for read-only Cloud Storage access to Play Console statistics reports and stores a separate grant, so an expired reports grant never stops publishing; it takes no package or tracks and needs a configured binding.": "purpose 为 \"publishing\"（默认）时只申请 androidpublisher 权限。purpose 为 \"reports\" 时只申请读取 Play Console 统计报表的 Cloud Storage 只读权限，并单独保存这份授权，因此统计授权过期不会影响发布；它不接受包名或轨道，且需要已配置的绑定。",
+  "Invalid package, tracks or purpose.": "包名、轨道或 purpose 无效。",
+  "Statistics reports need a configured Google Play binding first.": "需要先配置 Google Play 绑定，才能授权统计报表。",
+  "Binding, encrypted credential and any statistics reports authorization deleted.": "已删除绑定、加密凭据以及统计报表授权（如有）。",
+  "Delete this app's Google Play statistics reports authorization": "删除此应用的 Google Play 统计报表授权",
+  "Removes only the separate statistics grant. Publishing is unaffected; statistics fall back to the publishing credential.": "只删除单独的统计授权。发布不受影响；统计会改用发布凭据读取。",
+  "Statistics reports authorization deleted.": "已删除统计报表授权。",
+  "No statistics reports authorization for this app.": "此应用没有统计报表授权。"
 }

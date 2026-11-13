@@ -20,7 +20,7 @@
  * generation appears.
  */
 import { createHash } from "node:crypto";
-import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_bindings";
+import { getGooglePlayBinding, getGooglePlayReportsCredential, hasGooglePlayConfiguration } from "./google_play_bindings";
 
 export const PLAY_STATS_BUCKET = /^pubsite_prod_(rev_)?[0-9]{1,30}$/;
 
@@ -311,6 +311,12 @@ export async function setPlayStatsBucket(db: D1Database, appId: string, bucket: 
  */
 export function playStatsBucketHint(bucket: string | null, code: string | null): string | null {
   if (!bucket || !code) return null;
+  if (code === "play_reports_not_authorized") {
+    return "Statistics reports are not authorized for this app. An app admin can choose \"Authorize statistics reports\" in the app's Google Play settings; publishing is not affected.";
+  }
+  if (code === "play_reports_token_rejected") {
+    return "Google rejected the statistics authorization (it expired or was revoked). An admin can reauthorize statistics reports in the app's Google Play settings; publishing is not affected.";
+  }
   if (code !== "play_reports_bucket_forbidden" && code !== "play_reports_bucket_not_found") return null;
   if (bucket.startsWith("pubsite_prod_rev_")) {
     return "Google denied or could not find this bucket. Check that the connected Google account can download reports in Play Console, and copy the exact Cloud Storage URI from Play Console > Download reports.";
@@ -353,6 +359,8 @@ export type PlayStatsIngestSummary = {
   files_over_limit: Array<{ object_name: string; code: string }>;
   rows_written: number;
   more_pending: boolean;
+  /** Which credential read the reports: the separate statistics grant, or the publishing one. */
+  reports_credential?: "reports_grant" | "publishing";
   warnings: Array<{ object_name: string; report_kind: PlayStatsReportKind } & PlayStatsWarning>;
 };
 
@@ -413,13 +421,26 @@ export async function ingestGooglePlayStatsForApp(
   const bucket = await getPlayStatsBucket(env.DB, appId);
   if (!bucket) return { ...summary, status: "bucket_not_configured" };
   summary.bucket = bucket;
-  const credential = binding.credential;
+  // The separate statistics authorization when there is one. Until it is granted,
+  // fall back to the publishing credential (a service account, or an older Google
+  // grant that also holds the reports scope).
+  const reportsCredential = await getGooglePlayReportsCredential(env.DB, appId, env.PLAY_CRED_ENC_KEYS);
+  const credential = reportsCredential ?? binding.credential;
+  summary.reports_credential = reportsCredential ? "reports_grant" : "publishing";
+  // A rejected reports grant needs the statistics authorization redone, not the publishing one.
+  // Without one, a publishing grant without the reports scope (every publishing grant from
+  // now on) means statistics were never authorized. A rejected publishing credential stays
+  // play_token_rejected: that is a publishing problem and must read as one.
+  const errorCode = (code: string) => {
+    if (reportsCredential) return code === "play_token_rejected" ? "play_reports_token_rejected" : code;
+    return code === "play_reports_scope_missing" ? "play_reports_not_authorized" : code;
+  };
 
   const candidates: Candidate[] = [];
   for (const kind of ["installs_overview", "store_performance_overview"] as const) {
     const report = PLAY_STATS_REPORTS[kind].report;
     const listed = await service.listStatsObjects({ credential, packageName, bucket, report });
-    if (!listed.ok) throw new PlayStatsError(listed.error.code);
+    if (!listed.ok) throw new PlayStatsError(errorCode(listed.error.code));
     if (listed.value.truncated) summary.more_pending = true;
     for (const o of listed.value.objects) {
       const month = overviewMatch(o.name, report, packageName);
@@ -465,7 +486,7 @@ export async function ingestGooglePlayStatsForApp(
       const read = await service.readStatsObject({
         credential, packageName, bucket, name: file.name, generation: file.generation, maxBytes: budget.maxFileBytes,
       });
-      if (!read.ok) throw new PlayStatsError(read.error.code);
+      if (!read.ok) throw new PlayStatsError(errorCode(read.error.code));
       const bytes = read.value.bytes instanceof Uint8Array ? read.value.bytes : new Uint8Array(read.value.bytes as ArrayBufferLike);
       runBytes += bytes.byteLength;
       if (read.value.name !== file.name || read.value.generation !== file.generation) throw new PlayStatsError("object_identity_mismatch");
