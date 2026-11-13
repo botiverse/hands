@@ -227,6 +227,10 @@ Two storage arms feed it:
   declared source URL and keeps resolving the same bytes even after the
   release is superseded.
 
+The release-bound `/dl` route serves the active release and any superseded
+release, so a URL handed out earlier keeps working. It returns `404` for a
+superseded release that has been hidden or is a QA build.
+
 Installers should not care which arm served an entry: select by
 `platform`/`arch`, download, verify, install.
 

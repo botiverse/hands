@@ -5,7 +5,9 @@
  *       External (artifact_mode='external'): active|superseded → 302 to the declared
  *       source URL; draft/cancelled 404. A manifest that pinned a release keeps
  *       resolving the same bytes through supersession (rollback/audit
- *       continuity).
+ *       continuity). A superseded release is served only while a public surface
+ *       still publishes it (pinned CLI update, public history download); see
+ *       handleExternalReleaseDl.
  *       Hosted (bytes in the Hands bucket): redirects to a short-lived R2 URL
  *       when signing is configured; otherwise streams the same pinned object.
  *
@@ -159,10 +161,28 @@ export async function handleExternalReleaseDl(c: Context<{ Bindings: Env }>) {
   const kind = parseAssetKind(c.req.query("kind"));
   if (!kind) return c.json({ error: "invalid asset kind" }, 400);
 
+  // Which releases this public, unauthenticated route serves by id:
+  //
+  //   - an ACTIVE release: what `/dl/{slug}/{channel}/...` and `/public/v2/.../latest`
+  //     resolve to and redirect here for;
+  //   - a SUPERSEDED release that is not hidden and not a QA build. The `/latest`
+  //     download_url and pinned CLI installs are documented to keep resolving the same
+  //     bytes after supersession, so a URL already handed out must keep working.
+  //
+  // A hidden or QA release is never served by id: hiding a release, or building it for
+  // QA only, means no public surface hands it out, so its id must not be a back door.
   const release = await c.env.DB.prepare(
     `SELECT r.id, r.build_id FROM releases r
      JOIN apps a ON a.id = r.app_id
-     WHERE a.slug = ?1 AND r.id = ?2 AND r.status IN ('active', 'superseded')`,
+     JOIN builds b ON b.id = r.build_id
+     WHERE a.slug = ?1 AND r.id = ?2
+       AND (
+         r.status = 'active'
+         OR (
+           r.status = 'superseded' AND r.hidden = 0
+           AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+         )
+       )`,
   )
     .bind(slug, releaseId)
     .first<{ id: string; build_id: string }>();

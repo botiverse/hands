@@ -954,8 +954,11 @@ admin.onError((err, c) => {
 //
 // Admin-gated on purpose. The exact deployed commit narrows a public repository's tree to
 // one revision for anyone asking which known issues currently apply, and this readback is
-// run by operators, not by clients.
-bindAdmin("get", "/api/admin/container/build", async (c) => {
+// run by operators, not by clients. The gate is requireHandsAdmin, the same one the
+// observability console uses: a session whose login-time server role is owner/admin on an
+// allowed server. Before it was attached, any session, unscoped deploy token or dev token
+// could read the commit.
+bindAdmin("get", "/api/admin/container/build", requireHandsAdmin, async (c) => {
   const container = await getRandom(c.env.APK_PARSER, 1);
   const res = await container.fetch(new Request("http://container/health"));
   const body = await res.text();
