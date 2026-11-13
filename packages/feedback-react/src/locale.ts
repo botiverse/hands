@@ -1,4 +1,5 @@
 import type {
+  FeedbackClient,
   FeedbackLocale,
   FeedbackStatus,
   FeedbackTransportErrorCode,
@@ -50,6 +51,7 @@ export type FeedbackMessageKey =
   | "errorUnavailable"
   | "feedback"
   | "feedbackType"
+  | "filedOn"
   | "idea"
   | "inboxDescription"
   | "loadMore"
@@ -227,6 +229,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     showAll: "Show all",
     today: "Today",
     yesterday: "Yesterday",
+    filedOn: "Filed on {client}",
   },
   "zh-CN": {
     active: "活跃",
@@ -336,6 +339,7 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     showAll: "查看全部",
     today: "今天",
     yesterday: "昨天",
+    filedOn: "提交自 {client}",
   },
 };
 
@@ -396,6 +400,23 @@ export function feedbackStatusLabel(
     },
   };
   return labels[locale][status];
+}
+
+/** Raft client product names; the same in every locale. */
+const clientNames: Record<FeedbackClient, string> = {
+  web: "Web",
+  desktop: "Desktop",
+  android: "Android",
+  ios: "iOS",
+  ohos: "HarmonyOS",
+};
+
+export function isFeedbackClient(value: unknown): value is FeedbackClient {
+  return typeof value === "string" && Object.hasOwn(clientNames, value);
+}
+
+export function feedbackClientName(client: FeedbackClient): string {
+  return clientNames[client];
 }
 
 export function feedbackErrorMessage(

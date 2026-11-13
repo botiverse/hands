@@ -70,6 +70,14 @@ width. Its toolbar, notice and ticket content share one edge on both sides:
 16px at 48rem and wider with a fine primary pointer (mouse), otherwise 20px.
 The supported `@botiverse/raft-ui` peer range remains `>=0.20.0 <1.0.0`.
 
+A person's list can merge tickets filed from several Raft clients. Set
+`currentClient` on `FeedbackProvider` (`"web"`, `"desktop"`, `"android"`,
+`"ios"` or `"ohos"`) to the client the host runs on, and have the transport set
+`client` on each ticket summary (`FeedbackClient`) to the client it was filed
+from. A ticket filed on another client names that client once, after the time
+of its first message; list rows and the ticket header never show it, and
+nothing shows while either value is unset.
+
 All visible copy, closed error copy, dates, and accessibility labels share the
 SDK locale. Supported locales are `en` and `zh-CN`; an explicit provider
 `locale` takes precedence over browser language detection.

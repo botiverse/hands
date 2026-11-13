@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ThemeProvider } from "@botiverse/raft-ui";
 import type {
+  FeedbackClient,
   FeedbackLocale,
   FeedbackUnreadChange,
   HandsFeedbackTransport,
@@ -24,6 +25,7 @@ import {
 type FeedbackContextValue = {
   transport: HandsFeedbackTransport;
   locale: FeedbackLocale;
+  currentClient: FeedbackClient | undefined;
   message(key: FeedbackMessageKey, values?: FeedbackMessageValues): string;
   formatDate(value: number): string;
   formatFileSize(value: number): string;
@@ -56,6 +58,11 @@ export type FeedbackProviderProps = {
     bytes: number,
     context: { locale: FeedbackLocale },
   ) => string;
+  /**
+   * The Raft client the host runs on. A ticket whose `client` differs names
+   * that client on its first message; unset, no ticket names its client.
+   */
+  currentClient?: FeedbackClient;
   onUnreadChanged?: (change: FeedbackUnreadChange) => void;
   children: ReactNode;
 };
@@ -66,6 +73,7 @@ export function FeedbackProvider({
   messages,
   formatDate: formatDateOverride,
   formatFileSize: formatFileSizeOverride,
+  currentClient,
   onUnreadChanged,
   children,
 }: FeedbackProviderProps) {
@@ -120,6 +128,7 @@ export function FeedbackProvider({
     () => ({
       transport,
       locale,
+      currentClient,
       message,
       formatDate,
       formatFileSize,
@@ -129,6 +138,7 @@ export function FeedbackProvider({
     [
       transport,
       locale,
+      currentClient,
       message,
       formatDate,
       formatFileSize,

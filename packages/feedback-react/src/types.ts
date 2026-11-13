@@ -7,6 +7,8 @@ export type FeedbackClosureReason =
   | "not_planned"
   | "cannot_reproduce"
   | "duplicate";
+/** A Raft client a ticket can be filed from. */
+export type FeedbackClient = "web" | "desktop" | "android" | "ios" | "ohos";
 
 export type FeedbackTicketSummary = {
   id: string;
@@ -21,6 +23,11 @@ export type FeedbackTicketSummary = {
   unreadCount: number;
   attachmentCount: number;
   commentCount: number;
+  /**
+   * The Raft client the ticket was filed from. Absent from older hosts and
+   * transports.
+   */
+  client?: FeedbackClient;
   /**
    * The newest visible comment, as the list shows it under the title. Hands
    * returns it on list pages only; absent on a detail response and from

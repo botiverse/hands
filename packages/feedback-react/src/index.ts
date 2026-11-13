@@ -44,6 +44,7 @@ export type {
   AddFeedbackCommentInput,
   CreateFeedbackInput,
   FeedbackAttachment,
+  FeedbackClient,
   FeedbackComment,
   FeedbackKind,
   FeedbackLocale,

@@ -18,12 +18,15 @@ import {
   ArrowLeft,
   Bug,
   CircleCheck,
+  Globe,
   ImagePlus,
   Lightbulb,
   MessageSquare,
   MessageSquarePlus,
+  Monitor,
   Paperclip,
   Send,
+  Smartphone,
   User,
   X,
 } from "lucide-react";
@@ -135,13 +138,19 @@ import {
   TabsList,
   TabsTab,
 } from "@botiverse/raft-ui";
-import type { FeedbackMessageKey, FeedbackMessageValues } from "./locale.js";
+import {
+  feedbackClientName,
+  isFeedbackClient,
+  type FeedbackMessageKey,
+  type FeedbackMessageValues,
+} from "./locale.js";
 import { useHandsFeedback } from "./provider.js";
 import { MarkdownText } from "./MarkdownText.js";
 import { usePullToRefresh } from "./usePullToRefresh.js";
 import { FeedbackTransportError } from "./types.js";
 import type {
   FeedbackAttachment,
+  FeedbackClient,
   FeedbackClosureReason,
   FeedbackComment,
   FeedbackKind,
@@ -1477,6 +1486,8 @@ type FeedbackConversationMessageProps = {
   onOpenAttachment?: (input: FeedbackAttachmentOpenInput) => void;
   /** A later message from the same sender on the same day. */
   continuation?: boolean;
+  /** The other Raft client this message was filed on, named after its time. */
+  client?: FeedbackClient;
 };
 
 function FeedbackImageAttachment({
@@ -1588,6 +1599,35 @@ function FeedbackDateDivider({ at }: { at: number }) {
   );
 }
 
+const clientIcons = {
+  web: Globe,
+  desktop: Monitor,
+  android: Smartphone,
+  ios: Smartphone,
+  ohos: Smartphone,
+} satisfies Record<FeedbackClient, unknown>;
+
+/** Names the Raft client a ticket was filed on ("Filed on Android" to a screen reader). */
+function FeedbackClientBadge({ client }: { client: FeedbackClient }) {
+  const { message } = useHandsFeedback();
+  const ClientIcon = clientIcons[client];
+  const name = feedbackClientName(client);
+  return (
+    <Badge
+      appearance="outline"
+      variant="muted"
+      className="hands-feedback-message-client"
+      data-feedback-client={client}
+    >
+      <ClientIcon aria-hidden="true" />
+      <span className="hands-feedback-sr-only">
+        {message("filedOn", { client: name })}
+      </span>
+      <span aria-hidden="true">{name}</span>
+    </Badge>
+  );
+}
+
 function FeedbackConversationMessage({
   authorType,
   body,
@@ -1596,6 +1636,7 @@ function FeedbackConversationMessage({
   attachments = [],
   onOpenAttachment,
   continuation = false,
+  client,
 }: FeedbackConversationMessageProps) {
   const { formatDate, formatFileSize, locale, message } = useHandsFeedback();
   const sentAt = new Date(createdAt);
@@ -1712,6 +1753,7 @@ function FeedbackConversationMessage({
             >
               {time}
             </MessageItemTime>
+            {client && <FeedbackClientBadge client={client} />}
           </MessageItemHeader>
           {content}
         </MessageItemContent>
@@ -1732,7 +1774,8 @@ export function FeedbackTicket({
   onTicketUpdated,
   enablePullToRefresh = false,
 }: FeedbackTicketProps) {
-  const { locale, message, reportUnread, transport } = useHandsFeedback();
+  const { currentClient, locale, message, reportUnread, transport } =
+    useHandsFeedback();
   const safeError = useSafeError();
   const [detail, setDetail] = useState<FeedbackTicketDetail | null>(() =>
     previewTicketDetail(
@@ -2043,6 +2086,15 @@ export function FeedbackTicket({
     setConfirmingClose(true);
   };
   const title = ticket?.message.split("\n", 1)[0] || message("workspaceTitle");
+  // A person's list merges every Raft client's tickets: one filed on another
+  // client names it once, on its first message. Same client, or a host that
+  // doesn't say which client it is, shows nothing.
+  const filedElsewhere =
+    currentClient &&
+    isFeedbackClient(ticket?.client) &&
+    ticket.client !== currentClient
+      ? ticket.client
+      : undefined;
 
   return (
     <section
@@ -2164,6 +2216,7 @@ export function FeedbackTicket({
                   ticketId={ticketId}
                   attachments={detail.attachments}
                   {...(onOpenAttachment ? { onOpenAttachment } : {})}
+                  {...(filedElsewhere ? { client: filedElsewhere } : {})}
                 />
                 {detail.comments.map((comment, index) => {
                   const previous =

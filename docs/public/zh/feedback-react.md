@@ -301,7 +301,7 @@ export function FeedbackPage() {
 }
 ```
 
-代理可以直接返回 SDK 使用的驼峰命名 DTO。如果它原样转发 Hands JSON，请将 `created_at`、`updated_at`、`attachment_count`、`comment_count`、`unread_count`、`author_type`、`content_type`、`size_bytes`、`next_cursor`、`next_comment_cursor` 和 `unread_total` 映射为 SDK 中对应的驼峰字段。将列表工单的 `latest_comment` 映射为 `latestComment`（`{ authorType, bodyPreview, createdAt }` 或 `null`）：每行会将其显示在标题下方。如果代理没有该字段，则不传 `latestComment`，该行就不会显示预览。
+代理可以直接返回 SDK 使用的驼峰命名 DTO。如果它原样转发 Hands JSON，请将 `created_at`、`updated_at`、`attachment_count`、`comment_count`、`unread_count`、`author_type`、`content_type`、`size_bytes`、`next_cursor`、`next_comment_cursor` 和 `unread_total` 映射为 SDK 中对应的驼峰字段。将列表工单的 `latest_comment` 映射为 `latestComment`（`{ authorType, bodyPreview, createdAt }` 或 `null`）：每行会将其显示在标题下方。如果代理没有该字段，则不传 `latestComment`，该行就不会显示预览。仅当 `client_kind` 是 `web`、`desktop`、`android`、`ios` 或 `ohos` 之一时，才将其映射为 `client`，并在 `FeedbackProvider` 上通过 `currentClient` 传入宿主自己的客户端：在其他客户端提交的工单会在第一条消息上标出该客户端。
 
 ### 页面标题
 
