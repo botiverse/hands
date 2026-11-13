@@ -438,7 +438,8 @@ export type IngestSummary = {
   instances_processed: number;
   /** Written, but missing a required column or holding unmapped values: retried later. */
   instances_incomplete: Array<{ instance_id: string; code: string }>;
-  instances_failed: Array<{ instance_id: string; code: string }>;
+  /** `host` is the hostname a segment URL was refused or failed on (never the URL, path or query). */
+  instances_failed: Array<{ instance_id: string; code: string; host?: string }>;
   /** Larger than the per-instance limits: nothing written, status over_limit. */
   instances_over_limit: Array<{ instance_id: string; code: string }>;
   rows_written: number;
@@ -649,13 +650,14 @@ export async function ingestAscAnalyticsForApp(
       for (const w of warnings) summary.warnings.push({ instance_id: inst.id, report_name: inst.mapping.name, ...w });
     } catch (err) {
       const code = errorCode(err);
-      logFailure(appId, code, { instance_id: inst.id, host: err instanceof AscIngestError ? err.host : undefined });
+      const host = err instanceof AscIngestError && err.host ? err.host : undefined;
+      logFailure(appId, code, { instance_id: inst.id, host });
       // Record the attempt so a permanently broken or oversized instance is retried
       // every few hours, not on every run; its earlier rows (if any) are left as they were.
       // Oversized instances get their own status so they are visible, not a silent loop.
       const overLimit = LIMIT_CODES.has(code);
       if (overLimit) summary.instances_over_limit.push({ instance_id: inst.id, code });
-      else summary.instances_failed.push({ instance_id: inst.id, code });
+      else summary.instances_failed.push(host ? { instance_id: inst.id, code, host } : { instance_id: inst.id, code });
       await env.DB.prepare(
         `INSERT INTO asc_analytics_instances (app_id, instance_id, report_id, report_name, granularity, processing_date,
            processed_at, status, attempts, last_error, next_attempt_at)

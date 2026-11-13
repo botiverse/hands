@@ -313,7 +313,7 @@ describe("App Store analytics ingest", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fetch = apple(w);
     const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
-    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed" }]);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed", host: "reports.apple.com.evil.example" }]);
     expect(segmentCalls(fetch)).toHaveLength(0);
     // Recorded as a failed attempt (no rows), retried only after the back-off.
     expect(h.sqlite.prepare("SELECT status, attempts, last_error FROM asc_analytics_instances").all())
@@ -334,7 +334,7 @@ describe("App Store analytics ingest", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const fetch = apple(w);
     const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
-    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed" }]);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-dl", code: "segment_host_not_allowed", host: "attacker.example" }]);
     expect(segmentCalls(fetch).map(([u]) => new URL(String(u)).hostname)).toEqual(["analytics-segments.apple.com"]);
   });
 
@@ -424,7 +424,7 @@ describe("incomplete and failed instances stay retryable, with back-off", () => 
     const early = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + HOUR);
     expect(early).toMatchObject({ instances_deferred: 1, instances_failed: [] });
     const later = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0 + 6 * HOUR + 1);
-    expect(later.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_host_not_allowed" }]);
+    expect(later.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_host_not_allowed", host: "evil.example" }]);
     expect(instanceRow(h.sqlite, "i-sess")).toMatchObject({ status: "failed", attempts: 2 });
     expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01")).ingest).toMatchObject({ instances_failed: 1, instances_processed: 0 });
   });
@@ -439,7 +439,7 @@ describe("segment checksum", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     apple(w);
     const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, T0);
-    expect(summary.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_checksum_mismatch" }]);
+    expect(summary.instances_failed).toEqual([{ instance_id: "i-sess", code: "segment_checksum_mismatch", host: "analytics-segments.apple.com" }]);
     expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).toEqual({ n: 0 });
   });
 
