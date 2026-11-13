@@ -390,7 +390,9 @@ Content-Type: application/json
 
 签发操作按来源令牌、集成和审计 HMAC 报告人化名限流，限流检查失败时拒绝。响应使用 `Cache-Control: private, no-store`。功能关闭时签发路由返回 `404`，报告人路由继续只接受部署令牌。
 
-应用管理员创建 Webhook 的准确请求体、权限及报告人订阅绑定见[服务端与命令行反馈](server-feedback.md#notify-the-products-user-or-agent)。应用端点为 `POST /api/apps/:appId/webhooks`；组织端点即使请求体中提供应用 ID，也需要组织管理员权限。
+应用管理员创建 Webhook 的准确请求体、权限及报告人订阅绑定见[服务端与命令行反馈](server-feedback.md#notify-the-products-user-or-agent)。应用端点为 `POST /api/apps/:appId/webhooks`；组织端点即使请求体中提供应用 ID，也需要组织管理员权限。该 `app_id` 必须是此组织拥有的应用，否则返回 `404`。
+
+应用事件（构建、发布、反馈和商店通知）投递给拥有该应用的组织的 Webhook，与调用方当前选择的组织无关；使用部署令牌发出的请求同样如此。
 
 报告人评论和状态 Webhook 在已签名 JSON 正文和 `X-Hands-Event-Id` 中携带稳定的逻辑事件 ID。每个订阅投递还有稳定的 `X-Hands-Delivery-Id`。重试复用完全相同的正文、签名、事件 ID 和投递 ID；尝试时间戳和计数只保存在投递记录中。没有逻辑事件 ID 的旧投递记录会省略 `X-Hands-Event-Id`，但保留现有签名和事件请求头。
 

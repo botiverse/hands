@@ -3,7 +3,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { requestOrigin } from "../lib/origin";
-import { emitWebhookEvent } from "./webhooks";
+import { appOwningOrgId, emitWebhookEvent } from "./webhooks";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -949,8 +949,9 @@ export async function handleCreateBuild(c: AdminContext) {
   try {
     const id = await createBuild(c.env.DB, appId, body, currentActor(c));
     // Emit webhook event (P2.5.8). Best-effort.
-    const orgId = c.get("org_id");
-    if (orgId && (body.status === "succeeded" || body.status === "failed")) {
+    const terminal = body.status === "succeeded" || body.status === "failed";
+    const orgId = terminal ? await appOwningOrgId(c.env.DB, appId) : null;
+    if (orgId && terminal) {
       c.executionCtx?.waitUntil(
         emitWebhookEvent(c.env, {
           orgId,
@@ -1065,7 +1066,7 @@ export async function handleUpdateBuild(c: AdminContext) {
   await insertAuditLog(c.env.DB, appId, "build.update", currentActor(c), { buildId, ...body });
   // Emit webhook event (P2.5.8) when status transitions to terminal.
   if (body.status === "succeeded" || body.status === "failed") {
-    const orgId = c.get("org_id");
+    const orgId = await appOwningOrgId(c.env.DB, appId);
     if (orgId) {
       c.executionCtx?.waitUntil(
         emitWebhookEvent(c.env, {

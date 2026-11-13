@@ -2,7 +2,7 @@ import { DESKTOP_INSTALLER, LEGACY_ELECTRON_INSTALLER } from "../lib/release_res
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { currentAccount, currentDeployToken } from "../lib/permissions";
-import { emitWebhookEvent } from "./webhooks";
+import { appOwningOrgId, emitWebhookEvent } from "./webhooks";
 import { generateDeltaPatchesForBuild } from "./delta";
 import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes, stringifyReleaseNotes, type ReleaseNotes } from "../lib/release_notes";
@@ -1418,7 +1418,7 @@ async function emitReleaseDraftCreated(
   releaseId: string,
 ): Promise<void> {
   try {
-    const orgId = c.get("org_id");
+    const orgId = await appOwningOrgId(c.env.DB, appId);
     if (!orgId) return;
     const row = await c.env.DB.prepare(
       `SELECT r.build_id, r.channel_id, r.product_type, r.release_type,
@@ -1571,8 +1571,8 @@ export async function handleCreateRelease(c: AdminContext) {
     const status = releaseStatus(body.status);
     // release:new fires only when the release is actually live; drafts get
     // their own QA-trigger event.
-    const orgId = c.get("org_id");
-    if (status === "active" && orgId) {
+    const orgId = status === "active" ? await appOwningOrgId(c.env.DB, appId) : null;
+    if (orgId) {
       c.executionCtx?.waitUntil(
         emitReleaseNew(c.env, orgId, appId, {
           release_id: id,
@@ -2491,7 +2491,7 @@ async function executeReleasePublish(
     return releaseRevisionConflictResponse(c, expectedRevision, currentRevision);
   }
 
-  const orgId = c.get("org_id");
+  const orgId = await appOwningOrgId(c.env.DB, appId);
   if (orgId) {
     c.executionCtx?.waitUntil(
       emitReleaseNew(c.env, orgId, appId, {
@@ -2651,7 +2651,7 @@ export async function handleDeleteRelease(c: AdminContext) {
       await currentReleaseRevision(c.env.DB, appId, releaseId),
     );
   }
-  const orgId = c.get("org_id");
+  const orgId = await appOwningOrgId(c.env.DB, appId);
   if (orgId && existing.status === "active") {
     c.executionCtx?.waitUntil(
       emitWebhookEvent(c.env, {
@@ -2899,7 +2899,7 @@ export async function handleRollbackRelease(c: AdminContext) {
       );
     }
 
-    const orgId = c.get("org_id");
+    const orgId = await appOwningOrgId(c.env.DB, appId);
     if (orgId && !restoresDraft) {
       c.executionCtx?.waitUntil(emitReleaseRolledBack(c.env, orgId, appId, {
         release_id: releaseId,
