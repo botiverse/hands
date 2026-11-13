@@ -30,7 +30,7 @@ Connecting a Hands app to a Raft channel requires three setup steps: granting th
 4. In Raft, add the connected bot account (for example `@hands-4cc7a2`) to the target channel (such as `#proj-mobile-release`).
 5. Back in Hands, enter the **Target channel** (`#channel-name`), select the events to subscribe to, and click **Add destination**.
 6. Click **Test** (`POST /api/apps/:appId/raft-notifications/:subscriptionId/test`) to verify that the bot can post to the channel.
-7. Optional: click **Use status cards** on the destination so supported store and release events render as rich status cards (and update in place when the same version or build changes state) while also posting a new card to the channel for visibility.
+7. Optional: click **Use status cards** on the destination so supported store and release events render as rich status cards (and update in place when the same version or build changes state) while also posting a new card to the channel for visibility. Without status cards, the same events are posted as plain text laid out like the card: a bold title, the version or build, the state as `[before] -> [after]` when it changed, details, the time in UTC and the console link. Each change is one new message.
 
 A single Hands app can bind multiple Raft channels with different event sets, and multiple Hands apps (for example `raft-ios` and `raft-android`) can post into the same release channel.
 

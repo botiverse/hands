@@ -67,7 +67,7 @@ interface CardRow {
 
 export interface CardTransport {
   send(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string; cardRevision?: number }>;
-  replayCompatibleText(request: { target: string; content: string; idempotencyKey: string }): Promise<{ messageId: string }>;
+  replayCompatibleText(request: { target: string; content: string; card?: RaftMessageCard; idempotencyKey: string }): Promise<{ messageId: string }>;
   announce(request: { target: string; previousTarget: string; content: string; card: RaftMessageCard; eventHash: string; preferWarning?: boolean }): Promise<{ messageId: string }>;
   reconcile(request: { target: string; idempotencyKey: string }): Promise<{ state: "committed"; messageId: string; cardRevision?: number } | { state: "not_found" }>;
   resolve(messageId: string): Promise<{ kind: "card"; revision: number } | { kind: "text" }>;

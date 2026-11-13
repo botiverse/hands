@@ -16,6 +16,7 @@ import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatExistingFeedbackRoot, formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
+import { renderStatusCardAsText } from "../lib/raft_card_text";
 import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
@@ -754,19 +755,40 @@ async function sendChannelCard(
   }
 }
 
+/** The event's card written out as text by Raft's card-to-markdown rules; null if no card can be built. */
+function cardLayoutText(body: Payload, app: { id: string; slug: string | null; name: string | null }): string | null {
+  try {
+    return cardLayoutFromCard(formatRaftNotificationCard(body, app).card);
+  } catch {
+    return null;
+  }
+}
+
+function cardLayoutFromCard(card: RaftMessageCard): string | null {
+  try {
+    const text = renderStatusCardAsText(card).trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
 function fallbackWarning(content: string, thread: boolean): string {
   return content + (thread
     ? "\n⚠️ A previous status card may be out of date; follow this thread for newer updates."
     : "\n⚠️ A previous status card may be out of date; check newer channel messages.");
 }
 
-function compatibleCardText(content: string): string[] {
+function compatibleCardText(content: string, card?: RaftMessageCard): string[] {
   // The Play Console link was added to card fallbacks after older Workers
   // could have sent a channel notice with the same event key. Prove either
   // exact body before making a separate channel copy.
   const old = withoutPlayConsoleFooter(content);
+  // The text path now sends the card's layout as text under the same key.
+  const layout = card ? cardLayoutFromCard(card) : null;
   return [content, old, fallbackWarning(content, false), fallbackWarning(old, false),
-    fallbackWarning(content, true), fallbackWarning(old, true)];
+    fallbackWarning(content, true), fallbackWarning(old, true),
+    ...(layout ? [layout, fallbackWarning(layout, false), fallbackWarning(layout, true)] : [])];
 }
 
 // Previous workers did not render these fixed diagnostic lines. Derive the
@@ -1123,9 +1145,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
           send: (request) => sendBotMessage(c.env, bot, request.target, request.content, request.idempotencyKey, request.card),
           replayCompatibleText: (request) => legacyFailureContent === undefined && legacyStandaloneContent === undefined
             ? sendKnownBotText(c.env, bot, request.target,
-              compatibleCardText(request.content), request.idempotencyKey)
+              compatibleCardText(request.content, request.card), request.idempotencyKey)
             : sendChannelText(c.env, bot, request.target, legacyFailureTarget ?? legacyStandaloneTarget ?? request.target, request.content,
-              [...compatibleCardText(request.content),
+              [...compatibleCardText(request.content, request.card),
                 ...(legacyFailureContent === undefined ? [] : compatibleCardText(legacyPlayFailureText(withoutPlayConsoleFooter(request.content)))),
                 ...(legacyStandaloneContent === undefined ? [] : [legacyStandaloneContent])],
               request.idempotencyKey, request.idempotencyKey.replace(/^hands-raft:/, "hands-raft-channel:").slice(0, 240)),
@@ -1135,9 +1157,12 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
             const current = await c.env.DB.prepare(`SELECT enabled, card_updates FROM raft_notification_subscriptions
               WHERE id=?1 AND archived_at IS NULL`).bind(subscriptionId)
               .first<{ enabled: number; card_updates: number }>();
+            // A text notice uses the card's layout; the card's own content stays
+            // the message body when the notice is sent as a card.
+            const noticeText = cardLayoutFromCard(request.card) ?? request.content;
             return sendChannelCard(c.env, bot, request.target, request.previousTarget,
-              request.preferWarning ? fallbackWarning(request.content, false) : request.content,
-              request.content, request.card, compatibleCardText(request.content),
+              request.preferWarning ? fallbackWarning(noticeText, false) : noticeText,
+              request.content, request.card, compatibleCardText(request.content, request.card),
               `hands-raft:${subscriptionId}:${request.eventHash}`.slice(0, 240),
               `hands-raft-channel:${subscriptionId}:${request.eventHash}`.slice(0, 240),
               !request.preferWarning && current?.enabled === 1 && current.card_updates === 1);
@@ -1168,19 +1193,28 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   }
   try {
     const channelText = isReleaseChannelEvent(event);
-    const baseContent = formatRaftNotificationMessage(eventBody, app);
+    // Events that have a card are sent as text in the card's own layout, as
+    // Raft writes a card out as markdown. Workers before this change sent the
+    // older text under the same idempotency key; those bodies stay accepted
+    // as replays so a retry across a deployment never posts a second message.
+    const legacyContent = formatRaftNotificationMessage(eventBody, app);
+    const baseContent = supportsRaftNotificationCards(event) ? cardLayoutText(eventBody, app) ?? legacyContent : legacyContent;
     const previousContent = cardTextFallback ? fallbackWarning(baseContent, true) : baseContent;
     const content = channelText && cardTextFallback
       ? fallbackWarning(baseContent, false)
       : previousContent;
+    const legacyVariants = legacyContent === baseContent ? [] : [
+      cardTextFallback ? fallbackWarning(legacyContent, !channelText) : legacyContent,
+      fallbackWarning(legacyContent, true), fallbackWarning(legacyContent, false), legacyContent,
+    ];
     let sent: { messageId: string };
     if (channelText) {
       sent = await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? legacyStandaloneTarget ?? target, content,
-        [previousContent, baseContent, ...(legacyFailureContent ? [legacyFailureContent] : [])], idempotencyKey,
+        [previousContent, baseContent, ...legacyVariants, ...(legacyFailureContent ? [legacyFailureContent] : [])], idempotencyKey,
         `hands-raft-channel:${subscriptionId}:${eventHash}`.slice(0, 240));
     } else {
       try {
-        sent = await sendBotMessage(c.env, bot, target, content, idempotencyKey);
+        sent = await sendKnownBotText(c.env, bot, target, [content, ...legacyVariants], idempotencyKey);
       } catch (error) {
         // A replay of the event which created the original feedback root must
         // use its original channel target, not the now-known thread target.
@@ -1188,7 +1222,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
         // another message; other conflicts remain errors.
         if (!isFeedbackThreadEvent(event) || target === row.channel_target
           || !(error instanceof RaftBotApiError) || error.status !== 409 || error.code !== "idempotency_key_reused") throw error;
-        sent = await sendBotMessage(c.env, bot, row.channel_target, content, idempotencyKey);
+        sent = await sendKnownBotText(c.env, bot, row.channel_target, [content, ...legacyVariants], idempotencyKey);
         target = row.channel_target;
       }
     }

@@ -1036,7 +1036,10 @@ describe("Hands-managed Raft notifications", () => {
       return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
     });
     expect((await request(event, "delivery-1")).status).toBe(409);
-    expect(attempts.map((attempt) => attempt.target)).toEqual(["#releases", "#releases:legacy-p"]);
+    // Older bodies are tried under the same key, so a target may see several
+    // attempts; what matters is the order of targets and that no key is new.
+    expect([...new Set(attempts.map((attempt) => attempt.target))]).toEqual(["#releases", "#releases:legacy-p"]);
+    expect(attempts.at(-1)?.target).toBe("#releases:legacy-p");
     expect(new Set(attempts.map((attempt) => attempt.idempotencyKey)).size).toBe(1);
   });
 
@@ -1074,6 +1077,78 @@ describe("Hands-managed Raft notifications", () => {
     expect(retried.status).toBe(200);
     expect(await retried.json()).toMatchObject({ message_id: "channel-copy", threaded: false });
     expect([...messages.values()].filter((message) => message.target === "#releases")).toHaveLength(1);
+  });
+
+  it("sends a text destination the card's layout, with the state change on the tag line", async () => {
+    const { request } = await harness();
+    const sent: Array<Record<string, unknown>> = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      sent.push(data);
+      return Response.json({ state: "sent", messageId: `m-${sent.length}` });
+    });
+    expect((await request(stateBody("REJECTED", "2026-11-04T07:01:00Z"), "a")).status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toHaveProperty("card");
+    expect(sent[0]?.content).toBe([
+      "**🍎 Sample App · App Store · Review rejected**",
+      "1.17.0",
+      "[In review] -> [Review rejected]",
+      "",
+      "Review details are available in App Store Connect.",
+      "",
+      "2026-11-04 07:01:00Z",
+      "",
+      "[Open in App Store Connect](https://appstoreconnect.apple.com/apps/6789091965)",
+    ].join("\n"));
+    expect(String(sent[0]?.content)).not.toContain("provider prose");
+  });
+
+  it("resolves a retry of an event already sent in the card layout to that message", async () => {
+    const { request } = await harness();
+    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const committed = new Map<string, string>();
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as { idempotencyKey: string; content: string };
+      const prior = committed.get(data.idempotencyKey);
+      if (prior !== undefined) {
+        return prior === data.content ? Response.json({ state: "committed", messageId: "first" })
+          : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      }
+      committed.set(data.idempotencyKey, data.content);
+      return Response.json({ state: "sent", messageId: "first" });
+    });
+    expect((await request(event, "first-try")).status).toBe(200);
+    const retry = await request(event, "retry");
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ message_id: "first" });
+    expect(committed.size).toBe(1);
+  });
+
+  it("treats the older text already sent under the same key as delivered, not as a new message", async () => {
+    const { request } = await harness();
+    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
+    const legacy = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
+    const committed = new Map([[key, legacy]]);
+    const attempts: string[] = [];
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as { idempotencyKey: string; content: string };
+      attempts.push(data.content);
+      const prior = committed.get(data.idempotencyKey);
+      if (prior !== undefined) {
+        return prior === data.content ? Response.json({ state: "committed", messageId: "old-text" })
+          : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      }
+      committed.set(data.idempotencyKey, data.content);
+      return Response.json({ state: "sent", messageId: "new-text" });
+    });
+    const result = await request(event, "replay");
+    expect(result.status).toBe(200);
+    expect(await result.json()).toMatchObject({ message_id: "old-text" });
+    expect(attempts[0]).toContain("[In review] -> [Review rejected]");
+    expect(attempts.at(-1)).toBe(legacy);
+    expect(committed.size).toBe(1);
   });
 
   it("posts successive Play and AppGallery status changes to the channel", async () => {
@@ -1171,7 +1246,19 @@ describe("Hands-managed Raft notifications", () => {
     expect(notices).toHaveLength(2);
     expect(notices[0]).toHaveProperty("card");
     expect(notices[1]).not.toHaveProperty("card");
-    expect(notices[1]).toMatchObject({ target: "#releases", idempotencyKey: notices[0]?.idempotencyKey, content: notices[0]?.content });
+    // The text notice carries the card's layout as text, under the card's key.
+    expect(notices[1]).toMatchObject({ target: "#releases", idempotencyKey: notices[0]?.idempotencyKey });
+    expect(notices[1]?.content).toBe([
+      "**🍎 Sample App · App Store · Review rejected**",
+      "1.17.0",
+      "[In review] -> [Review rejected]",
+      "",
+      "Review details are available in App Store Connect.",
+      "",
+      "2026-11-04 07:01:00Z",
+      "",
+      "[Open in App Store Connect](https://appstoreconnect.apple.com/apps/6789091965)",
+    ].join("\n"));
   });
 
   it("recognizes a standalone event already delivered as old threaded text before creating one channel copy", async () => {
@@ -1272,7 +1359,10 @@ describe("Hands-managed Raft notifications", () => {
     expect(result.status).toBe(200);
     expect(await result.json()).toMatchObject({ message_id: "channel-copy", card_fallback: "message_cards_disabled" });
     expect(calls.some((call) => call.target === "#releases:legacy-p" && call.idempotencyKey === key)).toBe(true);
-    expect(calls.at(-1)).toMatchObject({ target: "#releases", idempotencyKey: key.replace("hands-raft:", "hands-raft-channel:"), content: text });
+    // The proven old text is replayed as written; the new channel copy uses the card's layout.
+    expect(calls.at(-1)).toMatchObject({ target: "#releases", idempotencyKey: key.replace("hands-raft:", "hands-raft-channel:"),
+      content: "**✈️ Sample App · TestFlight · Ready for internal testing**" });
+    expect(text).not.toBe(calls.at(-1)?.content);
   });
 
   it("keeps an unknown standalone-key conflict pending without emitting a new key", async () => {
@@ -1597,7 +1687,8 @@ describe("Hands-managed Raft notifications", () => {
       return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
     });
     expect((await request(event, "a")).status).toBe(503);
-    expect(calls).toHaveLength(4);
+    // Known older bodies are tried under the one key; nothing is sent under another.
+    expect(calls.length).toBeGreaterThanOrEqual(4);
     expect(new Set(calls.map((call) => call.idempotencyKey))).toEqual(new Set([
       `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`,
     ]));
