@@ -328,6 +328,12 @@ describe("I-13: /dl/:slug/releases/:releaseId/:file serves only published releas
       ["pub", h.release("pub", { status: "superseded" })],
       // A superseded CLI release /updates/check?version= publishes, history off.
       ["priv", h.release("priv", { status: "superseded", productType: "cli-binary", fullScope: true })],
+      // A /latest download_url keeps resolving after supersession (documented contract),
+      // whatever the history settings, scope or product type.
+      ["priv", h.release("priv", { status: "superseded" })],
+      ["nodl", h.release("nodl", { status: "superseded" })],
+      ["arch", h.release("arch", { status: "superseded" })],
+      ["priv", h.release("priv", { status: "superseded", productType: "cli-binary" })],
     ];
     for (const [slug, releaseId] of cases) {
       const res = await h.get(slug, releaseId);
@@ -336,16 +342,13 @@ describe("I-13: /dl/:slug/releases/:releaseId/:file serves only published releas
     }
   });
 
-  it("returns 404 for superseded releases no public surface publishes", async () => {
+  it("returns 404 for superseded releases that are hidden or QA builds", async () => {
     const h = await dlEnvironment();
     const cases: Array<[label: string, slug: string, releaseId: string]> = [
       ["hidden", "pub", h.release("pub", { status: "superseded", hidden: 1 })],
-      ["history off", "priv", h.release("priv", { status: "superseded" })],
-      ["archived app", "arch", h.release("arch", { status: "superseded" })],
-      ["history downloads off", "nodl", h.release("nodl", { status: "superseded" })],
+      ["hidden, history off", "priv", h.release("priv", { status: "superseded", hidden: 1 })],
       ["qa build", "pub", h.release("pub", { status: "superseded", releaseType: "qa" })],
       ["hidden pinned cli", "priv", h.release("priv", { status: "superseded", productType: "cli-binary", fullScope: true, hidden: 1 })],
-      ["partial-scope cli", "priv", h.release("priv", { status: "superseded", productType: "cli-binary" })],
     ];
     for (const [label, slug, releaseId] of cases) {
       const res = await h.get(slug, releaseId);

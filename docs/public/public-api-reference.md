@@ -227,12 +227,9 @@ Two storage arms feed it:
   declared source URL and keeps resolving the same bytes even after the
   release is superseded.
 
-The release-bound `/dl` route serves a release only while a public surface
-still publishes it: the current active release; a full-scope, non-hidden
-`cli-binary` release that pinned update checks and the version index return;
-or a release on the app's public history page with downloads enabled (app not
-archived, release not hidden, not a QA build). Any other release id, including
-a superseded release that has been hidden, returns `404`.
+The release-bound `/dl` route serves the active release and any superseded
+release, so a URL handed out earlier keeps working. It returns `404` for a
+superseded release that has been hidden or is a QA build.
 
 Installers should not care which arm served an entry: select by
 `platform`/`arch`, download, verify, install.

@@ -141,7 +141,7 @@ GET /public/v2/apps/:appSlug/latest?channel=main&product_type=android-apk
 - **上传的文件**（APK、IPA、安装程序）：Hands 存储字节，`download_url` 是限时签名 URL。`filetype` 反映文件类型（`apk`、`dmg` 等）。
 - **外部构建**（`cli-binary`，如字节保留在发布者 CDN 上的 Node SEA 或命令行可执行文件）：Hands 充当注册表。发布时发布者声明各目标的来源 URL、大小和 SHA-256；Hands 不可变地记录这些身份，CDN 仍是字节的权威来源。`/latest` 将声明投影为相同结构：`platform` / `arch` 从目标名派生，`filetype` 为 `binary`，`download_url` 是不可变且绑定版本的 `/dl/:appSlug/releases/:releaseId/:target` 路由。它返回 302 指向声明的来源 URL，即使版本已被替代，也继续解析到相同字节。
 
-绑定版本的 `/dl` 路由仅在某个公开入口仍发布该版本时提供下载：当前活动版本；固定版本更新检查和版本索引返回的全量范围、未隐藏的 `cli-binary` 版本；或出现在应用公开历史页面且已开启下载的版本（应用未归档、版本未隐藏、不是 QA 构建）。其他版本 ID，包括已隐藏的已替代版本，均返回 `404`。
+绑定版本的 `/dl` 路由提供活动版本和已替代版本的下载，所以之前发出的 URL 会一直有效。已替代版本如果被隐藏，或是 QA 构建，返回 `404`。
 
 安装器无需区分来源：按 `platform` / `arch` 选择、下载、验证并安装即可。
 
