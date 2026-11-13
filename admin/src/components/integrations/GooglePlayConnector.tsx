@@ -22,6 +22,7 @@ import {
   listGooglePlayTracks,
   setGooglePlayBinding,
   setGooglePlayBindingEnabled,
+  ApiError,
   startGooglePlayOAuth,
   verifyGooglePlayBinding,
 } from "../../lib/api";
@@ -102,6 +103,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     onSuccess: () => {
       setCredentialJson("");
       setEditing(false);
+      setTokenRejected(false);
       refresh();
       toast.show({ kind: "success", title: gp("saveSuccess") });
     },
@@ -109,13 +111,22 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   });
   const verify = useMutation({
     mutationFn: () => verifyGooglePlayBinding(appId),
-    onSuccess: () => { toast.show({ kind: "success", title: gp("verifySuccess") }); },
-    onError: fail,
+    onSuccess: () => {
+      setTokenRejected(false);
+      toast.show({ kind: "success", title: gp("verifySuccess") });
+    },
+    onError: (error) => {
+      // An expired or revoked Google grant is fixed by reauthorizing, which keeps the
+      // package and tracks. Say so on the row; unbinding would delete them.
+      if (reauthorizable && isTokenRejected(error)) setTokenRejected(true);
+      else fail(error);
+    },
     onSettled: refresh,
   });
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => setGooglePlayBindingEnabled(appId, enabled),
     onSuccess: (_, enabled) => {
+      if (enabled) setTokenRejected(false);
       toast.show({ kind: "success", title: gp(enabled ? "enableSuccess" : "disableSuccess") });
     },
     onError: fail,
@@ -127,6 +138,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
       setEditing(false);
       setCredentialJson("");
       setPackageName("");
+      setTokenRejected(false);
       refresh();
       toast.show({ kind: "success", title: gp("unbindSuccess") });
     },
@@ -168,8 +180,14 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   }, [appId, packageName, meta?.credential_fingerprint, meta?.package_name, credentialJson, credentialLooksValid, connectionMethod, editing, trackReload]);
   const availableTracks = discovered?.package_name === packageName ? discovered.tracks : [];
   const needsConfig = Boolean(meta && !meta.package_name);
+  // Same rule as the server: an enabled Google-account binding, or one a failed
+  // verification disabled, can be reauthorized in place and keeps its package and tracks.
+  const reauthorizable = Boolean(meta?.credential_kind === "authorized_user" && (meta.enabled || meta.verification_state === "stale"));
   const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const [tokenRejected, setTokenRejected] = useState(false);
+  // The connector stays mounted across apps; a hint about one app's grant must not carry over.
+  useEffect(() => { setTokenRejected(false); }, [appId]);
   const [oauthResult, setOauthResult] = useState<
     { kind: "failed"; errorCode: string | null } | { kind: "cancelled" } | null
   >(null);
@@ -186,6 +204,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
 
   const startConnect = () => {
     setOauthResult(null);
+    setTokenRejected(false);
     authorize.mutate();
   };
 
@@ -309,6 +328,14 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
           {gp("oauthUnavailable")}
         </p>
       ) : null}
+      {tokenRejected && reauthorizable && !oauthResult ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
+          <span className="min-w-0 flex-1 text-danger">{gp("tokenRejected")}</span>
+          <Button size="xs" variant="outline" disabled={authorize.isPending} onClick={startConnect}>
+            {gp("reauthorize")}
+          </Button>
+        </div>
+      ) : null}
       {oauthResult ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
           <span className="min-w-0 flex-1 text-danger">
@@ -353,7 +380,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
                 <Button variant="outline" disabled={verify.isPending} onClick={() => verify.mutate()}>
                   {verify.isPending ? gp("testing") : gp("test")}
                 </Button>
-                {meta.credential_kind === "authorized_user" && meta.enabled && (
+                {reauthorizable && (
                   <Button variant="outline" disabled={authorize.isPending} onClick={startConnect}>{gp("reauthorize")}</Button>
                 )}
                 <Button variant="outline" onClick={() => { setConnectionMethod("service"); setEditing(true); }}>{gp("replace")}</Button>
@@ -371,7 +398,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
                   if (window.confirm(gp("confirmUnbind"))) remove.mutate();
                 }}>{gp("unbind")}</Button>
               </div>}
-              {meta.credential_kind === "authorized_user" && meta.enabled && !editing && <p className="text-xs text-foreground-muted">{gp("reauthorizeHelp")}</p>}
+              {reauthorizable && !editing && <p className="text-xs text-foreground-muted">{gp("reauthorizeHelp")}</p>}
               {meta.credential_kind === "authorized_user" && <p className="text-xs text-foreground-muted">{gp("disconnectHelp")}{" "}
                 <a className="text-info-strong hover:underline" href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
               </p>}
@@ -405,4 +432,10 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
       ) : null}
     </section>
   );
+}
+
+function isTokenRejected(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const body = error.body as { code?: unknown } | null;
+  return body?.code === "play_token_rejected";
 }

@@ -6,7 +6,7 @@ export const GOOGLE_PLAY_MESSAGE_KEYS = [
   "packageName", "internalTrack", "closedTrack", "productionTrack", "credentialJson", "chooseFile",
   "saveEnable", "replace", "cancel", "test", "testing", "enable", "disable", "unbind",
   "connect", "connecting", "connected", "retry", "needsConfig", "needsConfigHelp", "expand", "collapse", "saveSuccess", "verifySuccess", "enableSuccess", "disableSuccess", "unbindSuccess", "actionFailed",
-  "confirmDisable", "confirmUnbind", "noPublish", "formHelp", "invalidJson",
+  "confirmDisable", "confirmUnbind", "tokenRejected", "noPublish", "formHelp", "invalidJson",
 ] as const;
 
 export type GooglePlayMessageKey = typeof GOOGLE_PLAY_MESSAGE_KEYS[number];
@@ -47,7 +47,8 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     saveSuccess: "Google Play binding saved", verifySuccess: "Google Play connection verified",
     enableSuccess: "Google Play enabled", disableSuccess: "Google Play disabled", unbindSuccess: "Google Play unbound",
     actionFailed: "Google Play action failed", confirmDisable: "Disable Google Play promotion for this app?",
-    confirmUnbind: "Remove this app's encrypted Google Play credential and binding?",
+    confirmUnbind: "Remove this app's encrypted Google Play credential and binding? This also deletes the package and tracks. If Google authorization has expired, use Reauthorize instead: it keeps them.",
+    tokenRejected: "Google rejected the stored authorization (it expired or was revoked). Reauthorize to restore it; the package and tracks are kept.",
     noPublish: "Connection testing creates and deletes a temporary Play edit; it never publishes a release.",
     formHelp: "Use a service account that can access this exact package and all three configured tracks.",
     invalidJson: "Choose the complete service-account JSON file downloaded from Google Cloud.",
@@ -87,7 +88,8 @@ export const GOOGLE_PLAY_MESSAGES: Record<"en" | "zh-CN", Record<GooglePlayMessa
     saveSuccess: "Google Play 绑定已保存", verifySuccess: "Google Play 连接验证成功",
     enableSuccess: "Google Play 已启用", disableSuccess: "Google Play 已停用", unbindSuccess: "Google Play 已解除绑定",
     actionFailed: "Google Play 操作失败", confirmDisable: "停用此应用的 Google Play 发布功能？",
-    confirmUnbind: "删除此应用加密保存的 Google Play 凭据并解除绑定？",
+    confirmUnbind: "删除此应用加密保存的 Google Play 凭据并解除绑定？包名和轨道也会一起删除。如果只是 Google 授权过期，请改用「重新授权」，会保留它们。",
+    tokenRejected: "Google 拒绝了已保存的授权（已过期或被撤销）。点「重新授权」即可恢复，包名和轨道会保留。",
     noPublish: "连接测试只会创建并删除一个临时 Play edit，不会发布任何版本。",
     formHelp: "请使用能访问这个确切包名和下列三个轨道的服务账号。",
     invalidJson: "请选择从 Google Cloud 下载的完整服务账号 JSON 文件。",

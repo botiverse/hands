@@ -341,14 +341,18 @@ export async function setGooglePlayBindingVerification(
   appId: string,
   verified: boolean,
   actor: string,
+  options: { failureOnlyIfEnabled?: boolean } = {},
 ) {
   const now = Date.now();
+  // failureOnlyIfEnabled: a failed Test on a binding an admin disabled leaves it as it
+  // is. Marking it stale would make it reauthorizable, and reauthorizing re-enables.
   const result = await db.prepare(`UPDATE app_google_play_bindings
     SET verification_state=?1, verified_at=?2,
       enabled=CASE WHEN ?3=1 THEN enabled ELSE 0 END,
       updated_by_actor=?4, updated_at=MAX(?5, updated_at+1)
-    WHERE app_id=?6`)
-    .bind(verified ? "verified" : "stale", verified ? now : null, verified ? 1 : 0, actor, now, appId)
+    WHERE app_id=?6 AND (?3=1 OR ?7=0 OR enabled=1)`)
+    .bind(verified ? "verified" : "stale", verified ? now : null, verified ? 1 : 0, actor, now, appId,
+      options.failureOnlyIfEnabled ? 1 : 0)
     .run();
   return Number(result.meta?.changes ?? 0) === 1;
 }

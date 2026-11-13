@@ -61,11 +61,15 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
     }
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
   const meta = await getGooglePlayBindingMeta(c.env.DB, appId);
-  // Reauthorizing an enabled Google-account binding without a body keeps its package and
+  // Reauthorizing a Google-account binding without a body keeps its package and
   // tracks; otherwise the new credential would be stored unconfigured and
   // publishing would stop until an admin re-entered them. The callback still
-  // verifies the new credential against them before storing.
-  if (packageName === null && tracks === null && meta?.enabled === 1 && meta.credential_kind === "authorized_user" && meta.package_name
+  // verifies the new credential against them before storing. This covers a
+  // binding a failed verification disabled (stale): an expired or revoked grant
+  // is exactly when reauthorizing is needed. One an admin disabled while it was
+  // still verified is left alone, so reauthorizing never silently re-enables it.
+  const reauthorizable = meta?.enabled === 1 || meta?.verification_state === "stale";
+  if (packageName === null && tracks === null && reauthorizable && meta?.credential_kind === "authorized_user" && meta.package_name
     && meta.internal_track && meta.closed_track && meta.production_track) {
     packageName = meta.package_name;
     tracks = { internal: meta.internal_track, closed: meta.closed_track, production: meta.production_track };

@@ -206,6 +206,7 @@
   "purge could not be started; nothing was deleted": "无法开始永久删除；没有删除任何内容",
   "purge could not be verified": "无法验证永久删除结果",
   "name must be a non-empty string": "name 必须是非空字符串",
+  "app_id must be a non-empty string or null": "app_id 必须是非空字符串或 null",
   "history_channels must be an array of channel slugs or null": "history_channels 必须是渠道标识数组或 null",
   "default_channel_id does not belong to this app": "default_channel_id 不属于此应用",
   "default_enabled must be a boolean": "default_enabled 必须是布尔值",
