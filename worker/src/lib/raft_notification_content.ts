@@ -502,7 +502,7 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       }
     }
     const footer: string[] = [];
-    if (cliApp) footer.push(`📖 View more: \`hands feedback crashes ${cliApp} --type system_kill\``);
+    if (cliApp) footer.push(`📖 View more: \`hands feedback list ${cliApp} --signature SystemKill@background\``);
     if (occurred) footer.push(`At: ${humanTime(occurred)}`);
     const content = lines.join("\n");
     if (!footer.length) return truncateMessage(content, MAX_MESSAGE_LENGTH);
