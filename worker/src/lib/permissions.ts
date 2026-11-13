@@ -41,6 +41,18 @@ export function isOrgAtLeast(role: OrgRole | null | undefined, minimum: OrgRole)
   return orgRank[role] >= orgRank[minimum];
 }
 
+/** The stronger of two org roles; an unknown or missing role never wins. */
+export function higherOrgRole(
+  left: OrgRole | null | undefined,
+  right: OrgRole | null | undefined,
+): OrgRole | null {
+  const l = isOrgRole(left) ? left : null;
+  const r = isOrgRole(right) ? right : null;
+  if (!l) return r;
+  if (!r) return l;
+  return orgRank[r] > orgRank[l] ? r : l;
+}
+
 function devTokenBypass(c: AdminContext) {
   return c.get("admin_actor") === "dev-token";
 }
@@ -142,6 +154,14 @@ export async function getAppServerGrantRole(
   return row?.app_role ?? null;
 }
 
+/**
+ * Owner-server (co-owner) and legacy server-grant access for one account.
+ *
+ * An app can carry two grant rows that both match the caller (one by server id,
+ * one by server slug), possibly with different access models. Every matching
+ * row is read and the strongest role of each kind wins, so the answer never
+ * depends on which row SQLite happens to return first.
+ */
 async function getOwnerServerRole(
   db: D1Database,
   appId: string,
@@ -149,7 +169,7 @@ async function getOwnerServerRole(
   serverId: string,
   serverSlug: string | null,
 ): Promise<{ org_role: OrgRole | null; legacy_app_role: AppRole | null } | null> {
-  const row = await db.prepare(
+  const { results } = await db.prepare(
     `SELECT om.org_role, asg.app_role, asg.access_model
        FROM organizations o
        JOIN org_members om ON om.org_id = o.id AND om.account_id = ?2
@@ -160,18 +180,21 @@ async function getOwnerServerRole(
           OR (asg.server_slug IS NOT NULL AND asg.server_slug = ?4)
         )
       WHERE o.external_provider = 'raft'
-        AND o.external_id = ?3
-      LIMIT 1`,
-  ).bind(appId, accountId, serverId, serverSlug).first<{
+        AND o.external_id = ?3`,
+  ).bind(appId, accountId, serverId, serverSlug).all<{
     org_role: OrgRole;
     app_role: AppRole;
     access_model: "legacy_role" | "owner_server";
   }>();
-  if (!row) return null;
-  return {
-    org_role: row.access_model === "owner_server" ? row.org_role : null,
-    legacy_app_role: row.access_model === "legacy_role" ? row.app_role : null,
-  };
+  const rows = results ?? [];
+  if (rows.length === 0) return null;
+  let orgRole: OrgRole | null = null;
+  const legacyRoles: AppRole[] = [];
+  for (const row of rows) {
+    if (row.access_model === "owner_server") orgRole = higherOrgRole(orgRole, row.org_role);
+    else if (row.access_model === "legacy_role" && isAppRole(row.app_role)) legacyRoles.push(row.app_role);
+  }
+  return { org_role: orgRole, legacy_app_role: strongestAppRole(legacyRoles) };
 }
 
 export async function getAppOrgId(db: D1Database, appId: string): Promise<string | null> {
@@ -230,7 +253,10 @@ export async function getEffectiveRole(
       : Promise.resolve(null),
   ]);
   const serverAppRole = ownerServerRole?.legacy_app_role ?? null;
-  const effectiveOrgRole = orgRole ?? ownerServerRole?.org_role ?? null;
+  // A direct row in the owning org and a co-owner (owner-server) role are two
+  // independent ways in; the stronger one applies. A weak direct row (for
+  // example an old auto-created viewer row) must not shadow a co-owner admin.
+  const effectiveOrgRole = higherOrgRole(orgRole, ownerServerRole?.org_role ?? null);
   const roles = [appRole, serverAppRole].filter(Boolean) as AppRole[];
   const effectiveAppRole = strongestAppRole(roles);
   return {
@@ -388,6 +414,59 @@ export async function ensureOrgRole(c: AdminContext, orgId: string, minimum: Org
     };
   }
   return { ok: true as const, role };
+}
+
+/**
+ * Decisions that change who owns or co-owns an app (transfer, co-owner servers)
+ * belong to the organization that owns it. They need admin or owner in that
+ * org through a direct org membership of the calling account. An app role
+ * (app_members), a legacy server grant or a co-owner server never qualifies,
+ * so an app-level admin cannot hand the app, or control of it, to someone else.
+ */
+export async function ensureOwningOrgAdmin(c: AdminContext, appId: string) {
+  if (devTokenBypass(c)) return { ok: true as const, org_id: null, role: "owner" as OrgRole };
+  const account = currentAccount(c);
+  if (!account) {
+    return {
+      ok: false as const,
+      response: c.json(
+        {
+          error: "authenticated account required",
+          code: "OWNING_ORG_ADMIN_REQUIRED",
+          app_id: appId,
+        },
+        403,
+      ),
+    };
+  }
+  const orgId = await getAppOrgId(c.env.DB, appId);
+  if (!orgId) return { ok: false as const, response: c.json({ error: "app org not found" }, 404) };
+  const role = await getOrgMemberRole(c.env.DB, orgId, account.id);
+  if (!isOrgAtLeast(role, "admin")) {
+    // Same privacy rule as forbiddenRole: only a member of the owning org
+    // learns its name.
+    const orgName = role ? await getOrgDisplayName(c.env.DB, orgId) : null;
+    return {
+      ok: false as const,
+      response: c.json(
+        {
+          error: "insufficient_org_role",
+          code: "OWNING_ORG_ADMIN_REQUIRED",
+          next_action:
+            `Only an admin or owner of ${orgName ? `the ${orgName} organization` : "the organization that owns this app"} ` +
+            `can do this. An admin role on the app itself, or access through a co-owner server, is not enough. ` +
+            `Ask an admin of that organization to do it for you.`,
+          required_role: "admin",
+          current_role: role,
+          org_id: orgId,
+          org_name: orgName,
+          app_id: appId,
+        },
+        403,
+      ),
+    };
+  }
+  return { ok: true as const, org_id: orgId, role };
 }
 
 /**

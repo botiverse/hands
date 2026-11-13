@@ -9,7 +9,7 @@ import type { Context } from "hono";
 import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
 import { FEEDBACK_BUILD_ORIGIN_FLAG } from "../lib/feedback_build_origin";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
-import { currentAccount, currentDeployToken } from "../lib/permissions";
+import { currentAccount, currentDeployToken, ensureOwningOrgAdmin } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -306,8 +306,11 @@ export async function handleCreateApp(c: AdminContext) {
 }
 
 /** POST /api/apps/:appId/transfer — move an app identity between orgs.
- * The route requires app admin; the target requires the same principal to be
- * an org member. Recheck both grants inside the atomic write batch.
+ * Moving an app out of an org is the owning org's decision: the caller must be
+ * admin or owner of the app's current org through their own org membership.
+ * An app role, a legacy server grant or a co-owner server does not qualify.
+ * The target requires the same principal (any linked identity) to be an org
+ * member. Both are rechecked inside the atomic write batch.
  */
 export async function handleTransferApp(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -352,42 +355,27 @@ export async function handleTransferApp(c: AdminContext) {
   const existing = await priorTransfer();
   if (existing) return existing;
   if (app.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
+  const sourceAuthority = await ensureOwningOrgAdmin(c, appId);
+  if (!sourceAuthority.ok) return sourceAuthority.response;
   if (!targetOrg || targetOrg.archived) return c.json({ error: "target organization not found or archived" }, 400);
   const now = Date.now();
   const payload = { idempotency_key: body.idempotency_key, from_org_id: app.org_id, target_org_id: body.target_org_id, slug: app.slug };
   const auditId = crypto.randomUUID();
-  // This mirrors getEffectiveRole/ensureAppRole("admin"): an app admin, an
-  // owning-org admin, or an eligible additional-server grant can authorize the
-  // source. The linked identity check matches the org switcher, including
-  // provider AND subject AND principal type, so a different account cannot
-  // borrow the target's membership. The audit row gates every subsequent write.
+  // Source authority is a direct admin/owner row of this account in the
+  // owning org (the same rule as ensureOwningOrgAdmin above, rechecked here so a
+  // demotion that lands between the read and the write still blocks). The
+  // linked identity check matches the org switcher, including provider AND
+  // subject AND principal type, so a different account cannot borrow the
+  // target's membership. The audit row gates every subsequent write.
   const results = await c.env.DB.batch([
     c.env.DB.prepare(`WITH source AS (
       SELECT a.id, a.org_id,
-        (SELECT om.org_role FROM org_members om WHERE om.org_id = a.org_id AND om.account_id = ?4 LIMIT 1) AS direct_org_role,
-        (SELECT am.app_role FROM app_members am WHERE am.app_id = a.id AND am.account_id = ?4 LIMIT 1) AS direct_app_role,
-        (SELECT CASE WHEN g.access_model = 'owner_server' THEN om.org_role END
-         FROM raft_accounts actor
-         JOIN organizations o ON o.external_provider = 'raft' AND o.external_id = actor.server_id
-         JOIN org_members om ON om.org_id = o.id AND om.account_id = actor.id
-         JOIN app_server_grants g ON g.app_id = a.id AND
-           ((g.server_id IS NOT NULL AND g.server_id = actor.server_id)
-             OR (g.server_slug IS NOT NULL AND g.server_slug = actor.server_slug))
-         WHERE actor.id = ?4 LIMIT 1) AS owner_server_org_role,
-        (SELECT CASE WHEN g.access_model = 'legacy_role' THEN g.app_role END
-         FROM raft_accounts actor
-         JOIN organizations o ON o.external_provider = 'raft' AND o.external_id = actor.server_id
-         JOIN org_members om ON om.org_id = o.id AND om.account_id = actor.id
-         JOIN app_server_grants g ON g.app_id = a.id AND
-           ((g.server_id IS NOT NULL AND g.server_id = actor.server_id)
-             OR (g.server_slug IS NOT NULL AND g.server_slug = actor.server_slug))
-         WHERE actor.id = ?4 LIMIT 1) AS legacy_server_app_role
+        (SELECT om.org_role FROM org_members om WHERE om.org_id = a.org_id AND om.account_id = ?4 LIMIT 1) AS direct_org_role
       FROM apps a WHERE a.id = ?2 AND a.org_id = ?8
     )
     INSERT INTO audit_logs (id, app_id, action, actor, actor_id, actor_type, payload, created_at)
     SELECT ?1, source.id, 'app.transfer', ?3, ?4, ?5, ?6, ?7 FROM source
-    WHERE (COALESCE(source.direct_org_role, source.owner_server_org_role) IN ('owner', 'admin')
-           OR source.direct_app_role = 'admin' OR source.legacy_server_app_role = 'admin')
+    WHERE source.direct_org_role IN ('owner', 'admin')
       AND EXISTS (SELECT 1 FROM organizations target WHERE target.id = ?9 AND target.archived = 0)
       AND EXISTS (
         SELECT 1 FROM raft_accounts actor
@@ -421,7 +409,10 @@ export async function handleTransferApp(c: AdminContext) {
     if (current?.org_id !== body.expected_source_org_id) return c.json({ error: "source org changed", code: "TRANSFER_CONFLICT" }, 409);
     const target = await c.env.DB.prepare("SELECT archived FROM organizations WHERE id = ?1").bind(body.target_org_id).first<{ archived: number }>();
     if (!target || target.archived) return c.json({ error: "target organization not found or archived" }, 400);
-    return c.json({ error: "source app admin and target organization member role required" }, 403);
+    return c.json({
+      error: "admin or owner of the app's organization and member of the target organization required",
+      code: "TRANSFER_FORBIDDEN",
+    }, 403);
   }
   if (results[1]?.meta.changes !== 1) return c.json({ error: "transfer commit could not be verified", code: "TRANSFER_UNVERIFIED" }, 500);
   return c.json({ ok: true, idempotent: false, app_id: appId, from_org_id: app.org_id, target_org_id: body.target_org_id });

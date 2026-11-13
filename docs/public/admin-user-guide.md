@@ -240,8 +240,33 @@ The Access page controls who can see or publish an app.
 For a principal on another linked Raft server, ask them to run the Hands
 `whoami` Agent Login action and send the non-secret Hands account id. In
 **Add direct app member**, paste that id instead of selecting a same-org
-principal. The account must have logged into Hands at least once. Hands adds
-missing org `viewer` membership and the selected app-scoped role atomically.
+principal. The account must have logged into Hands at least once.
+
+A direct app member gets a role on that one app and nothing else. Adding them
+does not make them a member of the app's organization, so they cannot see the
+organization's other apps. The app appears in their app list in whichever
+organization they are signed in to.
+
+Raft server visibility makes another Raft server a co-owner of the app: its
+members reach the app through their role in their own server's organization.
+Only an admin or owner of the organization that owns the app can add or remove
+a co-owner server. An app `admin` role, or admin access through a co-owner
+server, is not enough.
+
+To move an app to another organization, use **Settings → Transfer app**. You must
+be an admin or owner of the organization that owns the app, and at least a
+member of the organization you move it to. An app `admin` role or co-owner
+access does not let you transfer the app.
+
+Invites:
+
+- An invite link works once. After someone accepts it, it cannot be used again.
+- Accepting an invite never lowers a role. If you already hold a higher role in
+  the organization or on the app, you keep it.
+- Only an organization owner can invite an owner or change someone's role to
+  owner. Admins can invite and promote people up to admin.
+- An app invite gives a role on that app only, not membership of the
+  organization.
 
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 

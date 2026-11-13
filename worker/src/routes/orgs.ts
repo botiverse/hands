@@ -5,6 +5,7 @@ import {
   currentAccount,
   ensureAppRole,
   ensureOrgRole,
+  ensureOwningOrgAdmin,
   insertAuditLog,
   isAppRole,
   isOrgAtLeast,
@@ -47,6 +48,23 @@ async function getAppOrg(
     .bind(appId)
     .first<{ id: string; org_id: string | null; slug: string; name: string }>();
 }
+
+/** Granting the owner role is reserved to owners; admins can grant up to admin. */
+function ownerOnlyError(action: string) {
+  return {
+    error: "insufficient_org_role",
+    code: "OWNER_ROLE_REQUIRED",
+    required_role: "owner",
+    next_action: `Only an organization owner can ${action}. Admins can invite or promote people up to admin.`,
+  };
+}
+
+// Rank expressions for "only ever raise" upserts. Unknown stored values rank 0,
+// so any real role replaces them.
+const ORG_ROLE_RANK_SQL = (column: string) =>
+  `CASE ${column} WHEN 'owner' THEN 4 WHEN 'admin' THEN 3 WHEN 'member' THEN 2 WHEN 'viewer' THEN 1 ELSE 0 END`;
+const APP_ROLE_RANK_SQL = (column: string) =>
+  `CASE ${column} WHEN 'admin' THEN 3 WHEN 'publisher' THEN 2 WHEN 'viewer' THEN 1 ELSE 0 END`;
 
 async function countOrgOwners(db: D1Database, orgId: string) {
   const row = await db
@@ -148,6 +166,9 @@ export async function handleUpdateOrgMember(c: AdminContext) {
     "SELECT org_role FROM org_members WHERE org_id = ?1 AND account_id = ?2",
   ).bind(orgId, accountId).first<{ org_role: OrgRole }>();
   if (!target) return c.json({ error: "member not found" }, 404);
+  if (body.org_role === "owner" && target.org_role !== "owner" && allowed.role !== "owner") {
+    return c.json(ownerOnlyError("promote someone to owner"), 403);
+  }
   if (target.org_role === "owner" && body.org_role !== "owner" && (await countOrgOwners(c.env.DB, orgId)) <= 1) {
     return c.json({ error: "cannot remove the last org owner" }, 409);
   }
@@ -220,6 +241,8 @@ export async function handleCreateOrgInvite(c: AdminContext) {
     if (!isAppRole(role)) return c.json({ error: "role must be admin/publisher/viewer for app invites" }, 400);
   } else if (!isOrgRole(role)) {
     return c.json({ error: "role must be owner/admin/member/viewer for org invites" }, 400);
+  } else if (role === "owner" && allowed.role !== "owner") {
+    return c.json(ownerOnlyError("invite an owner"), 403);
   }
 
   const timestamp = now();
@@ -271,6 +294,14 @@ export async function handleResendOrgInvite(c: AdminContext) {
   const inviteId = c.req.param("inviteId") ?? "";
   const allowed = await ensureOrgRole(c, orgId, "admin");
   if (!allowed.ok) return allowed.response;
+  // Resending returns a fresh invite URL. For an owner invite that URL is an
+  // owner grant, so it takes the same owner role that creating one does.
+  const existing = await c.env.DB.prepare(
+    "SELECT app_id, role FROM invites WHERE id = ?1 AND org_id = ?2 LIMIT 1",
+  ).bind(inviteId, orgId).first<{ app_id: string | null; role: string }>();
+  if (existing && !existing.app_id && existing.role === "owner" && allowed.role !== "owner") {
+    return c.json(ownerOnlyError("resend an owner invite"), 403);
+  }
   const token = randomToken();
   const timestamp = now();
   await c.env.DB.prepare(
@@ -346,39 +377,48 @@ export async function handleAcceptInvite(c: AdminContext) {
     return c.json({ error: "invite expired" }, 410);
   }
 
-  const membershipStatement = invite.app_id
-    ? c.env.DB.prepare(
-        `INSERT INTO org_members
-         (id, org_id, account_id, org_role, invited_by, joined_at)
-         VALUES (?1, ?2, ?3, 'viewer', NULL, ?4)
-         ON CONFLICT(org_id, account_id) DO NOTHING`,
-      ).bind(`orgmem_${account.id}_${invite.org_id}`, invite.org_id, account.id, timestamp)
-    : c.env.DB.prepare(
-        `INSERT INTO org_members
-         (id, org_id, account_id, org_role, invited_by, joined_at)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5)
-         ON CONFLICT(org_id, account_id) DO UPDATE SET org_role = excluded.org_role`,
-      ).bind(`orgmem_${account.id}_${invite.org_id}`, invite.org_id, account.id, invite.role, timestamp);
-
-  const statements: D1PreparedStatement[] = [
-    membershipStatement,
+  // An invite is single use: every write below is conditioned on the invite
+  // still being pending, and the claim runs in the same transaction, so two
+  // concurrent accepts cannot both succeed.
+  //
+  // Accepting only ever raises a role. Someone who already holds a stronger
+  // role keeps it, so an invite can never demote a member or the last owner.
+  //
+  // An app invite grants a role on that one app and nothing in its org. Org
+  // membership would let the invitee read every other app the org owns.
+  const stillPending = `EXISTS (SELECT 1 FROM invites WHERE id = ?1 AND status = 'pending')`;
+  const statements: D1PreparedStatement[] = invite.app_id
+    ? [
+        c.env.DB.prepare(
+          `INSERT INTO app_members
+           (id, app_id, account_id, app_role, invited_by, joined_at)
+           SELECT ?2, ?3, ?4, ?5, NULL, ?6 WHERE ${stillPending}
+           ON CONFLICT(app_id, account_id) DO UPDATE SET app_role = CASE
+             WHEN ${APP_ROLE_RANK_SQL("excluded.app_role")} > ${APP_ROLE_RANK_SQL("app_members.app_role")}
+             THEN excluded.app_role ELSE app_members.app_role END`,
+        ).bind(invite.id, `appmem_${invite.app_id}_${account.id}`, invite.app_id, account.id, invite.role, timestamp),
+      ]
+    : [
+        c.env.DB.prepare(
+          `INSERT INTO org_members
+           (id, org_id, account_id, org_role, invited_by, joined_at)
+           SELECT ?2, ?3, ?4, ?5, NULL, ?6 WHERE ${stillPending}
+           ON CONFLICT(org_id, account_id) DO UPDATE SET org_role = CASE
+             WHEN ${ORG_ROLE_RANK_SQL("excluded.org_role")} > ${ORG_ROLE_RANK_SQL("org_members.org_role")}
+             THEN excluded.org_role ELSE org_members.org_role END`,
+        ).bind(invite.id, `orgmem_${account.id}_${invite.org_id}`, invite.org_id, account.id, invite.role, timestamp),
+      ];
+  statements.push(
     c.env.DB.prepare(
       `UPDATE invites
        SET status = 'accepted', accepted_at = ?1, accepted_by = ?2
-       WHERE id = ?3`,
+       WHERE id = ?3 AND status = 'pending'`,
     ).bind(timestamp, account.id, invite.id),
-  ];
-  if (invite.app_id) {
-    statements.push(
-      c.env.DB.prepare(
-        `INSERT INTO app_members
-         (id, app_id, account_id, app_role, invited_by, joined_at)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5)
-         ON CONFLICT(app_id, account_id) DO UPDATE SET app_role = excluded.app_role`,
-      ).bind(`appmem_${invite.app_id}_${account.id}`, invite.app_id, account.id, invite.role, timestamp),
-    );
+  );
+  const results = await c.env.DB.batch(statements);
+  if (results[results.length - 1]?.meta.changes !== 1) {
+    return c.json({ error: "invite is no longer pending" }, 409);
   }
-  await c.env.DB.batch(statements);
   return c.json({ ok: true, org_id: invite.org_id, app_id: invite.app_id });
 }
 
@@ -442,7 +482,7 @@ export async function handleListAppServerGrants(c: AdminContext) {
 
 export async function handleAddAppServerGrant(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
-  const allowed = await ensureAppRole(c, appId, "admin");
+  const allowed = await ensureOwningOrgAdmin(c, appId);
   if (!allowed.ok) return allowed.response;
   const actor = currentActorInfo(c);
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -498,7 +538,7 @@ export async function handleAddAppServerGrant(c: AdminContext) {
 export async function handleUpdateAppServerGrant(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const serverKey = c.req.param("serverId") ?? "";
-  const allowed = await ensureAppRole(c, appId, "admin");
+  const allowed = await ensureOwningOrgAdmin(c, appId);
   if (!allowed.ok) return allowed.response;
   return c.json({
     error: "owner server access has no configurable role",
@@ -511,7 +551,7 @@ export async function handleUpdateAppServerGrant(c: AdminContext) {
 export async function handleRemoveAppServerGrant(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const serverKey = c.req.param("serverId") ?? "";
-  const allowed = await ensureAppRole(c, appId, "admin");
+  const allowed = await ensureOwningOrgAdmin(c, appId);
   if (!allowed.ok) return allowed.response;
   await c.env.DB.prepare(
     "DELETE FROM app_server_grants WHERE app_id = ?1 AND (id = ?2 OR server_id = ?3 OR server_slug = ?4)",
@@ -540,20 +580,17 @@ export async function handleAddAppMember(c: AdminContext) {
   const app = await getAppOrg(c.env.DB, appId);
   if (!app?.org_id) return c.json({ error: "app org not found" }, 404);
   const timestamp = now();
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `INSERT INTO org_members
-       (id, org_id, account_id, org_role, invited_by, joined_at)
-       VALUES (?1, ?2, ?3, 'viewer', ?4, ?5)
-       ON CONFLICT(org_id, account_id) DO NOTHING`,
-    ).bind(`orgmem_${body.account_id}_${app.org_id}`, app.org_id, body.account_id, actor.id, timestamp),
-    c.env.DB.prepare(
-      `INSERT INTO app_members
-       (id, app_id, account_id, app_role, invited_by, joined_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-       ON CONFLICT(app_id, account_id) DO UPDATE SET app_role = excluded.app_role`,
-    ).bind(`appmem_${appId}_${body.account_id}`, appId, body.account_id, body.app_role, actor.id, timestamp),
-  ]);
+  // App membership is the whole grant. It deliberately does not add the
+  // account to the app's organization: an org row (even viewer) would let them
+  // read every other app that org owns. The member reaches this app from any
+  // org context, because the app list and the app role check both read
+  // app_members directly.
+  await c.env.DB.prepare(
+    `INSERT INTO app_members
+     (id, app_id, account_id, app_role, invited_by, joined_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+     ON CONFLICT(app_id, account_id) DO UPDATE SET app_role = excluded.app_role`,
+  ).bind(`appmem_${appId}_${body.account_id}`, appId, body.account_id, body.app_role, actor.id, timestamp).run();
   await insertAuditLog(c.env.DB, c, {
     app_id: appId,
     action: "app_member.upsert",

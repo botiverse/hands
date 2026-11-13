@@ -234,6 +234,10 @@ function MembersTab({
   const qc = useQueryClient();
   const toast = useToast();
   const isAdmin = currentRole === "admin" || currentRole === "owner";
+  // Admins can assign up to admin; only an owner can assign owner.
+  const assignableRoles = currentRole === "owner"
+    ? (["owner", "admin", "member", "viewer"] as const)
+    : (["admin", "member", "viewer"] as const);
   const [principalFilter, setPrincipalFilter] = useState<"all" | "human" | "agent">("all");
   const members = useQuery({
     queryKey: ["org-members", orgId],
@@ -392,12 +396,12 @@ function MembersTab({
                   )}
                 </td>
                 <td className="py-2 pr-2">
-                  {isAdmin && m.account_id !== currentAccountId ? (
+                  {isAdmin && m.account_id !== currentAccountId
+                    // Only an owner can grant or change the owner role.
+                    && (currentRole === "owner" || m.org_role !== "owner") ? (
                     <Select
                       items={Object.fromEntries(
-                        (["owner", "admin", "member", "viewer"] as const).map(
-                          (r) => [r, roleText(r, t)],
-                        ),
+                        assignableRoles.map((r) => [r, roleText(r, t)]),
                       )}
                       value={m.org_role}
                       onValueChange={(v) =>
@@ -414,13 +418,11 @@ function MembersTab({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectList>
-                        {(["owner", "admin", "member", "viewer"] as const).map(
-                          (r) => (
-                            <SelectItem key={r} value={r}>
-                              {roleText(r, t)}
-                            </SelectItem>
-                          ),
-                        )}
+                        {assignableRoles.map((r) => (
+                          <SelectItem key={r} value={r}>
+                            {roleText(r, t)}
+                          </SelectItem>
+                        ))}
                       </SelectList>
                       </SelectContent>
                     </Select>
