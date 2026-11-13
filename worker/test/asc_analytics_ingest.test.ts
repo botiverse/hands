@@ -325,6 +325,22 @@ describe("App Store analytics ingest", () => {
     expect(logged).not.toContain("sig=1");
   });
 
+  it("ingests a segment served from Apple's S3 bucket", async () => {
+    const h = await harness();
+    const w = world();
+    const s3 = "https://asp-us-west-2.s3.us-west-2.amazonaws.com/seg/dl.gz?X-Amz-Signature=secret";
+    w.requests = ["req-ongoing"];
+    w.reports["req-ongoing"] = [{ id: "r-dl", name: "App Downloads Standard" }];
+    w.segments["i-dl"] = [s3];
+    w.files[s3] = w.files[`${SEG}/dl.gz?X-Amz-Signature=secret`]!;
+    const fetch = apple(w);
+    const summary = await ingestAscAnalyticsForApp(h.env, "app", BUDGET);
+    expect(summary.instances_failed).toEqual([]);
+    expect(summary.instances_processed).toBe(1);
+    expect(segmentCalls(fetch).map(([u]) => new URL(String(u)).hostname)).toEqual(["asp-us-west-2.s3.us-west-2.amazonaws.com"]);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM asc_analytics_daily").get()).not.toEqual({ n: 0 });
+  });
+
   it("does not follow a redirect off Apple hosts", async () => {
     const h = await harness();
     const w = world();
@@ -341,8 +357,12 @@ describe("App Store analytics ingest", () => {
   it("allows only https Apple hosts for segments", () => {
     expect(segmentUrlHost("https://analytics.apple.com/x?sig=1").ok).toBe(true);
     expect(segmentUrlHost("https://apple.com/x").ok).toBe(true);
+    // Apple's own S3 bucket, exactly; not other buckets or regions.
+    expect(segmentUrlHost("https://asp-us-west-2.s3.us-west-2.amazonaws.com/x?X-Amz-Signature=1").ok).toBe(true);
     for (const bad of ["http://analytics.apple.com/x", "https://apple.com.evil.example/x", "https://evilapple.com/x",
-      "https://user:pw@analytics.apple.com/x", "https://analytics.apple.com:8443/x", "not a url"]) {
+      "https://user:pw@analytics.apple.com/x", "https://analytics.apple.com:8443/x", "not a url",
+      "https://evil.s3.us-west-2.amazonaws.com/x", "https://asp-us-west-2.s3.us-west-2.amazonaws.com.evil.example/x",
+      "http://asp-us-west-2.s3.us-west-2.amazonaws.com/x", "https://s3.us-west-2.amazonaws.com/asp-us-west-2/x"]) {
       expect(segmentUrlHost(bad).ok).toBe(false);
     }
   });
