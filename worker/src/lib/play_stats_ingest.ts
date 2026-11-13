@@ -311,6 +311,9 @@ export async function setPlayStatsBucket(db: D1Database, appId: string, bucket: 
  */
 export function playStatsBucketHint(bucket: string | null, code: string | null): string | null {
   if (!bucket || !code) return null;
+  if (code === "play_reports_not_authorized") {
+    return "Statistics reports are not authorized for this app. An app admin can choose \"Authorize statistics reports\" in the app's Google Play settings; publishing is not affected.";
+  }
   if (code === "play_reports_token_rejected") {
     return "Google rejected the statistics authorization (it expired or was revoked). An admin can reauthorize statistics reports in the app's Google Play settings; publishing is not affected.";
   }
@@ -425,7 +428,12 @@ export async function ingestGooglePlayStatsForApp(
   const credential = reportsCredential ?? binding.credential;
   summary.reports_credential = reportsCredential ? "reports_grant" : "publishing";
   // A rejected reports grant needs the statistics authorization redone, not the publishing one.
-  const errorCode = (code: string) => reportsCredential && code === "play_token_rejected" ? "play_reports_token_rejected" : code;
+  // Without one, a publishing grant that cannot read reports (no reports scope, which is
+  // every publishing grant from now on) means statistics were never authorized.
+  const errorCode = (code: string) => {
+    if (reportsCredential) return code === "play_token_rejected" ? "play_reports_token_rejected" : code;
+    return code === "play_token_rejected" || code === "play_reports_scope_missing" ? "play_reports_not_authorized" : code;
+  };
 
   const candidates: Candidate[] = [];
   for (const kind of ["installs_overview", "store_performance_overview"] as const) {

@@ -459,6 +459,14 @@ describe("Google Play statistics ingest", () => {
     expect(await ok.json()).toMatchObject({ status: "ok", reports_credential: "publishing" });
     const tokenBodies = h.g.calls.filter((c) => c.url.startsWith("https://oauth2.googleapis.com/")).map((c) => new URLSearchParams(c.body ?? ""));
     for (const body of tokenBodies) expect(body.get("refresh_token")).toBe("refresh-token-secret");
+
+    // A publishing grant that cannot read reports means statistics were never authorized.
+    h.g.tokenStatus = 400;
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const body = await (await h.call("/api/apps/app/stats/google-play/ingest", "POST")).json() as any;
+    expect(body).toMatchObject({ provider_code: "play_reports_not_authorized" });
+    expect(body.hint).toMatch(/Authorize statistics reports/);
   });
 
   it("reports an adapter without the statistics methods, and a missing bucket, without calling Google", async () => {
