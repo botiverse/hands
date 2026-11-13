@@ -285,6 +285,18 @@ describe("Google Play OAuth", () => {
     await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session'}});
     expect(h.sqlite.prepare('SELECT package_name, tracks_json FROM google_play_oauth_requests').get()).toEqual({package_name:null, tracks_json:null});
   });
+  it('reauthorizes a binding a failed verification disabled, keeping its configuration and re-enabling it', async () => {
+    const h = harness(); google();
+    await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:{...oauth, refresh_token:'old-refresh'}, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+    // What a Test connection does when Google rejects the stored grant (play_token_rejected, 403).
+    h.sqlite.prepare("UPDATE app_google_play_bindings SET enabled=0, verification_state='stale', verified_at=NULL").run();
+    const response = await h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:'{}'});
+    expect(h.sqlite.prepare('SELECT package_name, tracks_json FROM google_play_oauth_requests').get()).toEqual({package_name:input.package_name, tracks_json:JSON.stringify(input.tracks)});
+    const state = new URL((await response.json() as any).authorization_url).searchParams.get('state')!;
+    expect((await h.callback(state)).headers.get('location')).toContain('google_play_oauth=connected');
+    expect(h.verify.mock.calls.at(-1)![0]).toMatchObject({packageName:input.package_name, tracks:input.tracks});
+    expect(await getGooglePlayBindingMeta(h.env.DB, appId)).toMatchObject({package_name:input.package_name, internal_track:'internal', closed_track:'closed', production_track:'production', enabled:1, verification_state:'verified'});
+  });
   it('does not reuse the configuration of a disabled binding on a bodyless reauthorization', async () => {
     const h = harness(); google();
     await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
