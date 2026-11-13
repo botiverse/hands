@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter } from "../src/lib/raft_notification_card";
+import { renderStatusCardAsText } from "../src/lib/raft_card_text";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
 import { playFailureNotificationFields } from "../src/lib/play_failure_notification";
 
@@ -122,6 +123,25 @@ describe("Raft release notification cards", () => {
     expect(card.header?.title).toContain("Invitation test review withdrawn by developer");
     expect(card.header?.tags).toEqual([{ text: "Review withdrawn", tone: "warning" }]);
     expect(content).toContain("Invitation test review withdrawn by developer");
+  });
+
+  it("keeps long Chinese test notes whole in the text layout: no blank line inside a line", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `- 第 ${i} 项：「计算机」页面支持搜索、筛选和排序，卡片可删除计算机`);
+    const body = { event: "testflight:external_state_changed", payload: { state: "READY_FOR_BETA_TESTING",
+      version: "1.24.0", what_to_test: { "zh-Hans": lines.join("\n") } } };
+    const { card } = formatRaftNotificationCard(body);
+    expect(Object.keys(card.elements).filter((id) => /^detail\d+$/.test(id)).length).toBeGreaterThan(1);
+    // The card keeps fixed 500-character pieces (its 12-child budget assumes it).
+    expect(Object.entries(card.elements).filter(([id]) => /^detail\d+$/.test(id)).slice(0, -1)
+      .every(([, el]) => Array.from(String((el as any).props.text)).length === 500)).toBe(true);
+    expect((card.elements[card.root] as { children: string[] }).children.length).toBeLessThanOrEqual(12);
+    const text = renderStatusCardAsText(card);
+    // Every note line that is shown appears whole on one line.
+    const shown = text.split("\n").filter((line) => line.includes("项："));
+    expect(shown.length).toBeGreaterThan(3);
+    for (const line of shown.slice(0, -1)) expect(line).toMatch(/^\\- 第 \d+ 项：「计算机」页面支持搜索、筛选和排序，卡片可删除计算机$/);
+    // And the notes stay one block: consecutive lines are not separated by a blank line.
+    for (let i = 1; i < shown.length; i++) expect(text).toContain(`${shown[i - 1]}\n${shown[i]}`);
   });
 
   it("never copies user-provided text into Markdown and retains the complete fallback", () => {

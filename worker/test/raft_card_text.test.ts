@@ -80,6 +80,20 @@ describe("renderRaftCardAsText follows Raft's card-to-markdown rules", () => {
     expect(text).toBe("x");
   });
 
+  it("rejoins a Hands status card's split pieces exactly, without breaking words", () => {
+    const notes = "新功能\n- 「计算机」页面支持搜索\n- 在讨论串里可以直接回复";
+    const parts = [notes.slice(0, 9), notes.slice(9, 15), notes.slice(15)];
+    const card = {
+      header: { title: "T", tags: [{ text: "Ready" }] }, root: "r",
+      elements: { r: { type: "Stack", children: ["detail0", "detail1", "detail2", "footer0"] },
+        detail0: { type: "Text", props: { text: parts[0] } }, detail1: { type: "Text", props: { text: parts[1] } },
+        detail2: { type: "Text", props: { text: parts[2] } }, footer0: { type: "Text", props: { text: "At: x", tone: "muted" } } },
+    };
+    expect(renderStatusCardAsText(card)).toBe(`**T**\n[Ready]\n\n${escapeCardText(notes)}\n\nAt: x`);
+    // Generic cards keep Raft's rule: separate Texts are separate paragraphs.
+    expect(renderRaftCardAsText(card)).toBe(`**T**\n[Ready]\n\n${parts.map(escapeCardText).join("\n\n")}\n\nAt: x`);
+  });
+
   it("folds only the first Text's earlier state into the tag line", () => {
     const card = (texts: string[]) => ({
       header: { title: "T", tags: [{ text: "Beta testing" }] }, root: "r",

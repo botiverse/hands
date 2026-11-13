@@ -172,7 +172,11 @@ function isFooterLine(line: string): boolean {
     || line === "Apple's review message is available in App Store Connect.";
 }
 
-/** The card contract bounds each Text by Unicode code points, not UTF-16 units. */
+/**
+ * The card contract bounds each Text by Unicode code points, not UTF-16 units.
+ * Fixed-size pieces keep the child count the root's 12-child budget assumes;
+ * the status text layout rejoins them (renderStatusCardAsText).
+ */
 function pieces(value: string): string[] {
   const chars = Array.from(value);
   const result: string[] = [];
