@@ -108,7 +108,10 @@ hands apps create \
   --description "Hands web app example"
 ```
 
-List apps visible to the current token:
+List apps visible to the current token. The list contains exactly the apps you
+can open: every app of the current organization, plus apps in other
+organizations reached through an app role or an additional owner server you
+belong to.
 
 ```bash
 hands apps list

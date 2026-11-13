@@ -5,7 +5,9 @@
  *       External (artifact_mode='external'): active|superseded → 302 to the declared
  *       source URL; draft/cancelled 404. A manifest that pinned a release keeps
  *       resolving the same bytes through supersession (rollback/audit
- *       continuity).
+ *       continuity). A superseded release is served only while a public surface
+ *       still publishes it (pinned CLI update, public history download); see
+ *       handleExternalReleaseDl.
  *       Hosted (bytes in the Hands bucket): redirects to a short-lived R2 URL
  *       when signing is configured; otherwise streams the same pinned object.
  *
@@ -159,12 +161,44 @@ export async function handleExternalReleaseDl(c: Context<{ Bindings: Env }>) {
   const kind = parseAssetKind(c.req.query("kind"));
   if (!kind) return c.json({ error: "invalid asset kind" }, 400);
 
+  // Which releases this public, unauthenticated route serves by id. Each arm is a surface
+  // that already publishes the release, so the route hands out nothing those surfaces do not:
+  //
+  //   1. an ACTIVE release - what `/dl/{slug}/{channel}/...` and `/public/v2/.../latest`
+  //      resolve to and redirect here for. Unchanged from before.
+  //   2. a pinned CLI release - exactly the rows `/updates/check?version=` (and the
+  //      `/versions` index) publish a release-bound URL for: cli-binary, not hidden, full
+  //      rollout scope, succeeded build, availability reached. This keeps a pinned install
+  //      or rollback resolving through supersession.
+  //   3. a public-history release - the rule `handlePublicAppHistoryDownload` applies:
+  //      app not archived, public_history and history_show_downloads on, release not
+  //      hidden, not a QA build.
+  //
+  // A superseded release outside arms 2 and 3 (hidden, archived app, history off) used to be
+  // served to anyone holding its id; it is now the same 404 as an unknown id.
   const release = await c.env.DB.prepare(
     `SELECT r.id, r.build_id FROM releases r
      JOIN apps a ON a.id = r.app_id
-     WHERE a.slug = ?1 AND r.id = ?2 AND r.status IN ('active', 'superseded')`,
+     JOIN builds b ON b.id = r.build_id
+     WHERE a.slug = ?1 AND r.id = ?2 AND r.status IN ('active', 'superseded')
+       AND (
+         r.status = 'active'
+         OR (
+           r.product_type = 'cli-binary' AND r.hidden = 0 AND b.status = 'succeeded'
+           AND (r.availability_at IS NULL OR r.availability_at <= ?3)
+           AND EXISTS (
+             SELECT 1 FROM release_scopes s
+             WHERE s.release_id = r.id AND s.scope_type = 'full' AND s.scope_value = 'all'
+           )
+         )
+         OR (
+           a.archived = 0 AND a.public_history = 1 AND a.history_show_downloads = 1
+           AND r.hidden = 0
+           AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
+         )
+       )`,
   )
-    .bind(slug, releaseId)
+    .bind(slug, releaseId, Date.now())
     .first<{ id: string; build_id: string }>();
   if (!release) return c.json({ error: "release not found" }, 404);
 

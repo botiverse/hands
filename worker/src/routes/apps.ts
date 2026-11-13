@@ -55,6 +55,21 @@ export async function handleListApps(c: AdminContext) {
 
   const orgId = c.get("org_id");
   const account = currentAccount(c);
+  // The list must contain exactly the apps this caller can open, so each arm below
+  // mirrors one way into getEffectiveRole/ensureAppRole at the viewer bar (any org
+  // role, or any app role), instead of deciding membership with rules of its own:
+  //
+  //   - the current org: the caller's org_members row for the app's org (the route is
+  //     already gated on current-org viewer, re-checked here so the arm stands alone).
+  //     Apps in OTHER orgs the caller belongs to are listed when that org is current.
+  //   - app_members: a direct app role.
+  //   - app_server_grants, exactly as getOwnerServerRole reads them: the grant must
+  //     match the caller's server by id or slug AND the caller must be a member of the
+  //     Raft org for that server. An owner_server grant then confers the caller's org
+  //     role there, a legacy_role grant its stored app role. A grant matching the
+  //     server without that membership grants nothing and is not listed.
+  //
+  // One statement, no per-app round trips.
   const query = orgId && account
     ? {
         sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform,
@@ -62,22 +77,44 @@ export async function handleListApps(c: AdminContext) {
                      a.history_channels, a.history_show_downloads,
                      a.release_requires_human_approval
               FROM apps a
-              WHERE a.org_id = ?1
-                 OR EXISTS (
-                   SELECT 1
-                   FROM app_server_grants asg
-                   WHERE asg.app_id = a.id
-                     AND (
-                       asg.server_id = ?2
-                       OR (?3 IS NOT NULL AND asg.server_slug = ?4)
-                     )
+              WHERE (
+                   a.org_id = ?1
+                   AND EXISTS (
+                     SELECT 1 FROM org_members om
+                     WHERE om.org_id = a.org_id AND om.account_id = ?2
+                       AND om.org_role IN ('viewer', 'member', 'admin', 'owner')
+                   )
                  )
                  OR EXISTS (
                    SELECT 1 FROM app_members am
-                   WHERE am.app_id = a.id AND am.account_id = ?5
+                   WHERE am.app_id = a.id AND am.account_id = ?2
+                     AND am.app_role IN ('viewer', 'publisher', 'admin')
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM raft_accounts ra
+                   JOIN organizations o
+                     ON o.external_provider = 'raft'
+                    AND o.external_id = ra.server_id
+                   JOIN org_members om
+                     ON om.org_id = o.id
+                    AND om.account_id = ra.id
+                   JOIN app_server_grants asg
+                     ON asg.app_id = a.id
+                    AND (
+                      (asg.server_id IS NOT NULL AND asg.server_id = ra.server_id)
+                      OR (asg.server_slug IS NOT NULL AND asg.server_slug = ra.server_slug)
+                    )
+                   WHERE ra.id = ?2
+                     AND (
+                       (asg.access_model = 'owner_server'
+                         AND om.org_role IN ('viewer', 'member', 'admin', 'owner'))
+                       OR (asg.access_model = 'legacy_role'
+                         AND asg.app_role IN ('viewer', 'publisher', 'admin'))
+                     )
                  )
               ORDER BY a.archived ASC, a.created_at DESC`,
-        params: [orgId, account.server_id, account.server_slug ?? null, account.server_slug ?? null, account.id],
+        params: [orgId, account.id],
       }
     : orgId
     ? {

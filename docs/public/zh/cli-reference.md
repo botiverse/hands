@@ -99,7 +99,7 @@ hands apps create \
   --description "Hands web app example"
 ```
 
-列出当前令牌可见的应用：
+列出当前令牌可见的应用。列表恰好包含你能打开的应用：当前组织的全部应用，以及通过应用角色或你所属的附加所有者服务器可访问的其他组织应用。
 
 ```bash
 hands apps list

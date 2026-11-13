@@ -11,6 +11,7 @@
 
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
+import { ensureOrgRole } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -83,42 +84,27 @@ export async function handleListAuditLogs(c: AdminContext) {
 /**
  * GET /api/users/:accountId/audit
  *
- * Scoped query: audit log entries performed BY a single account, across all
- * apps in the org(s) the caller can see. Useful for "what did this person
- * do this week?" admin views.
+ * Audit entries performed BY one account on the apps of the CURRENT org - the
+ * per-person slice of `GET /api/orgs/:orgId/audit-logs`, with the same bar:
+ * the caller must be at least `member` of that org. The org listing already
+ * shows every actor's entries to a member, so this reveals nothing new; an org
+ * viewer (who may not read the org listing) is refused here too.
  *
- * Auth: viewer on at least one app in any of the caller's orgs is enough;
- * we then filter to entries that touch an app in those orgs. Otherwise
- * callers could enumerate across org boundaries.
+ * Other orgs are out of scope: switch org (x-hands-org-id) to read them, which
+ * re-applies the bar there.
  */
 
 export async function handleListUserAudit(c: AdminContext) {
-  // Resolve caller via auth middleware (sets c.get('admin_account')).
-  const caller = c.get("admin_account");
-  if (!caller?.id) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const orgId = c.get("org_id");
+  if (!orgId) return c.json({ error: "missing org context" }, 403);
+  const allowed = await ensureOrgRole(c, orgId, "member");
+  if (!allowed.ok) return allowed.response;
   const accountId = c.req.param("accountId") ?? "";
   if (!accountId) return c.json({ error: "accountId required" }, 400);
   const limit = Math.min(Number(c.req.query("limit") ?? "100"), 500);
   const sinceRaw = c.req.query("since");
-  const since = sinceRaw ? Number(sinceRaw) : undefined;
+  const since = sinceRaw ? Number(sinceRaw) : null;
 
-  // Discover orgs the caller is a member of.
-  const { results: callerOrgs } = await c.env.DB.prepare(
-    `SELECT org_id FROM org_members WHERE account_id = ?1`,
-  ).bind(caller.id).all<{ org_id: string }>();
-  const orgIds = callerOrgs.map((r) => r.org_id);
-  if (orgIds.length === 0) return c.json({ logs: [], total: 0 });
-
-  // Resolve apps in those orgs.
-  const placeholders = orgIds.map(() => "?").join(",");
-  const params: (string | number)[] = [accountId];
-  let extraWhere = "";
-  if (since) {
-    extraWhere = " AND l.created_at >= ?";
-    params.push(since);
-  }
   const { results } = await c.env.DB.prepare(
     `SELECT l.id, l.app_id, a.slug AS app_slug, a.name AS app_name,
             l.action, l.actor, l.actor_id, l.actor_type,
@@ -128,14 +114,15 @@ export async function handleListUserAudit(c: AdminContext) {
             acc.server_slug AS actor_server_slug,
             l.payload, l.created_at
      FROM audit_logs l
-     LEFT JOIN apps a ON a.id = l.app_id
+     JOIN apps a ON a.id = l.app_id
      LEFT JOIN raft_accounts acc ON acc.id = l.actor_id
      WHERE l.actor_id = ?1
-       AND a.org_id IN (${placeholders})${extraWhere}
+       AND a.org_id = ?2
+       AND (?3 IS NULL OR l.created_at >= ?3)
      ORDER BY l.created_at DESC
-     LIMIT ?${params.length + 1}`,
+     LIMIT ?4`,
   )
-    .bind(...params, limit)
+    .bind(accountId, orgId, since !== null && Number.isFinite(since) ? since : null, limit)
     .all<AuditRow & { app_slug: string | null; app_name: string | null }>();
   return c.json({ logs: results, total: results.length });
 }
