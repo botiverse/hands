@@ -525,6 +525,30 @@ describe("feedback material delta production routes", () => {
       "SELECT high_water FROM feedback_material_sequence_state WHERE app_id='app-b'",
     ).get()).toEqual({ high_water: 1 });
     expect(material(sqlite, appBTicket)).toBe(1);
+
+    // The reporter list and detail echo which client filed the ticket, from the
+    // submission metadata only, as bounded text; nothing else from metadata leaks.
+    const reporterTicket = async () => {
+      const list = await (await handleListReporterFeedback(reporterContext())).json() as any;
+      const detail = await (await handleGetReporterFeedback(reporterContext())).json() as any;
+      const item = list.tickets.find((t: any) => t.id === ticketId);
+      return { item, detail: detail.ticket ?? detail, raw: JSON.stringify([list, detail]) };
+    };
+    const unlabeled = await reporterTicket();
+    expect([unlabeled.item.client_kind, unlabeled.item.client_version]).toEqual([null, null]);
+    sqlite.prepare("UPDATE feedback_tickets SET metadata_json = ? WHERE id = ?").run(JSON.stringify({
+      client_kind: "web", client_version: ` Raft Desktop 1.4.0 ${"x".repeat(100)}`, secret_note: "not for reporters",
+    }), ticketId);
+    const labeled = await reporterTicket();
+    for (const view of [labeled.item, labeled.detail]) {
+      expect(view.client_kind).toBe("web");
+      expect(view.client_version).toBe(`Raft Desktop 1.4.0 ${"x".repeat(100)}`.slice(0, 80));
+    }
+    expect(labeled.raw).not.toContain("not for reporters");
+    sqlite.prepare("UPDATE feedback_tickets SET metadata_json = ? WHERE id = ?")
+      .run(JSON.stringify({ client_kind: 7, client_version: { v: 1 } }), ticketId);
+    const nonText = await reporterTicket();
+    expect([nonText.item.client_kind, nonText.detail.client_version]).toEqual([null, null]);
   });
 
   it("pages snapshot deltas without omission and rejects every foreign cursor family", async () => {

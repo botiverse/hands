@@ -300,6 +300,14 @@ function ticketNotFound(c: ReporterContext) {
   return c.json({ error: "feedback ticket not found" }, 404);
 }
 
+/** Submission metadata echoed to the reporter: text values only, bounded in length. */
+const CLIENT_LABEL_COLUMNS = `CASE WHEN json_valid(t.metadata_json)
+              AND json_type(t.metadata_json, '$.client_kind') = 'text'
+              THEN substr(trim(json_extract(t.metadata_json, '$.client_kind')), 1, 32) END AS client_kind,
+            CASE WHEN json_valid(t.metadata_json)
+              AND json_type(t.metadata_json, '$.client_version') = 'text'
+              THEN substr(trim(json_extract(t.metadata_json, '$.client_version')), 1, 80) END AS client_version`;
+
 function ticketDto(row: Record<string, unknown>) {
   const unreadCount = typeof row.unread_count === "number"
     ? Math.max(0, row.unread_count)
@@ -316,6 +324,11 @@ function ticketDto(row: Record<string, unknown>) {
     version_name: row.version_name,
     version_code: row.version_code,
     channel: row.channel,
+    // Which client filed the ticket, as that client reported it at submission
+    // (for example "web" and "Raft Desktop 1.4.0"), so a reporter's list can
+    // label tickets filed from another client of the same app.
+    client_kind: typeof row.client_kind === "string" && row.client_kind ? row.client_kind : null,
+    client_version: typeof row.client_version === "string" && row.client_version ? row.client_version : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     attachment_count: row.attachment_count,
@@ -387,6 +400,7 @@ export async function handleListReporterFeedback(c: ReporterContext) {
   const ticketColumns = `t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
             t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at,
+            ${CLIENT_LABEL_COLUMNS},
             (SELECT COUNT(*) FROM feedback_attachments fa
              WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
                AND fa.visibility = 'reporter') AS attachment_count,
@@ -497,6 +511,7 @@ function ownedTicketStatement(
     `SELECT t.id, t.kind, t.status, t.closure_reason, t.duplicate_of_ticket_id,
             t.message, t.version_name, t.version_code,
             t.channel, t.created_at, t.updated_at, a.org_id,
+            ${CLIENT_LABEL_COLUMNS},
             (SELECT COUNT(*) FROM feedback_attachments fa
              WHERE fa.ticket_id = t.id AND fa.origin IN ('submission', 'reporter')
                AND fa.visibility = 'reporter') AS attachment_count,
