@@ -428,11 +428,12 @@ export async function ingestGooglePlayStatsForApp(
   const credential = reportsCredential ?? binding.credential;
   summary.reports_credential = reportsCredential ? "reports_grant" : "publishing";
   // A rejected reports grant needs the statistics authorization redone, not the publishing one.
-  // Without one, a publishing grant that cannot read reports (no reports scope, which is
-  // every publishing grant from now on) means statistics were never authorized.
+  // Without one, a publishing grant without the reports scope (every publishing grant from
+  // now on) means statistics were never authorized. A rejected publishing credential stays
+  // play_token_rejected: that is a publishing problem and must read as one.
   const errorCode = (code: string) => {
     if (reportsCredential) return code === "play_token_rejected" ? "play_reports_token_rejected" : code;
-    return code === "play_token_rejected" || code === "play_reports_scope_missing" ? "play_reports_not_authorized" : code;
+    return code === "play_reports_scope_missing" ? "play_reports_not_authorized" : code;
   };
 
   const candidates: Candidate[] = [];
