@@ -169,5 +169,5 @@ export function renderStatusCardAsText(card: RenderableCard): string {
   const shown: RenderableCard = remaining
     ? { ...card, elements: { ...card.elements, [firstTextId]: { ...first, props: { ...first.props, text: remaining } } } }
     : { ...card, elements: { ...card.elements, [card.root]: { ...root, children: children.filter((id) => id !== firstTextId) } } };
-  return renderRaftCardAsText(shown, { transitionFrom: line.slice("Previously: ".length).trim() });
+  return renderRaftCardAsText(shown, { transitionFrom: (line ?? "").slice("Previously: ".length).trim() });
 }

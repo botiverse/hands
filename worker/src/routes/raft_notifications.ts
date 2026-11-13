@@ -756,7 +756,7 @@ async function sendChannelCard(
 }
 
 /** The event's card written out as text by Raft's card-to-markdown rules; null if no card can be built. */
-function cardLayoutText(body: Payload, app: { id: string; slug: string | null; name: string | null }): string | null {
+function cardLayoutText(body: Record<string, unknown>, app: { id: string; slug: string | null; name: string | null }): string | null {
   try {
     return cardLayoutFromCard(formatRaftNotificationCard(body, app).card);
   } catch {
