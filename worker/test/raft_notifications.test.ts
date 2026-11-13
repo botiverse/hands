@@ -1104,6 +1104,27 @@ describe("Hands-managed Raft notifications", () => {
     expect(String(sent[0]?.content)).not.toContain("provider prose");
   });
 
+  it("resolves a retry of an event already sent in the card layout to that message", async () => {
+    const { request } = await harness();
+    const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");
+    const committed = new Map<string, string>();
+    mockRaftFetch(async (_input, init) => {
+      const data = JSON.parse(String(init?.body)) as { idempotencyKey: string; content: string };
+      const prior = committed.get(data.idempotencyKey);
+      if (prior !== undefined) {
+        return prior === data.content ? Response.json({ state: "committed", messageId: "first" })
+          : Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+      }
+      committed.set(data.idempotencyKey, data.content);
+      return Response.json({ state: "sent", messageId: "first" });
+    });
+    expect((await request(event, "first-try")).status).toBe(200);
+    const retry = await request(event, "retry");
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ message_id: "first" });
+    expect(committed.size).toBe(1);
+  });
+
   it("treats the older text already sent under the same key as delivered, not as a new message", async () => {
     const { request } = await harness();
     const event = stateBody("REJECTED", "2026-11-04T07:01:00Z");

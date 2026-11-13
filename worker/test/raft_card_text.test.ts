@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeCardText, renderRaftCardAsText } from "../src/lib/raft_card_text";
+import { escapeCardText, renderRaftCardAsText, renderStatusCardAsText } from "../src/lib/raft_card_text";
 
 describe("renderRaftCardAsText follows Raft's card-to-markdown rules", () => {
   it("writes header, column blocks, row lines and every element kind", () => {
@@ -54,12 +54,42 @@ describe("renderRaftCardAsText follows Raft's card-to-markdown rules", () => {
   });
 
   it("escapes markdown and defuses mentions in plain card text", () => {
-    expect(escapeCardText("a_b *c* [d](e) <x> `f` ~g~ | @bob, mail@host")).toBe(
-      "a\\_b \\*c\\* \\[d\\](e) \\<x\\> \\`f\\` \\~g\\~ \\| `@bob`, mail@host");
+    expect(escapeCardText("a_b *c* [d](e) <x> `f` ~g~ | &lt; @bob, mail@host")).toBe(
+      "a\\_b \\*c\\* \\[d\\](e) \\<x\\> \\`f\\` \\~g\\~ \\| \\&lt; `@bob`, mail@host");
+    // A backtick around a mention is escaped, so it must not leave the mention live.
+    expect(escapeCardText("`@bob`")).toBe("\\``@bob`\\`");
+  });
+
+  it("keeps line-start markers literal so notes do not become lists, quotes, headings or rules", () => {
+    expect(escapeCardText("- login\n1. pay\n---\n> q\n# h\n===\n+ x\n2) y\n1.24.0 build\n-not a list")).toBe(
+      "\\- login\n\\1. pay\n\\---\n\\> q\n\\# h\n\\===\n\\+ x\n\\2) y\n1.24.0 build\n-not a list");
+  });
+
+  it("handles empty or multi-line mono text and link-breaking URL characters", () => {
+    const text = renderRaftCardAsText({ root: "r", elements: {
+      r: { type: "Stack", children: ["empty", "multi", "b"] },
+      empty: { type: "Text", props: { text: "", mono: true } },
+      multi: { type: "Text", props: { text: "a\n- b", mono: true } },
+      b: { type: "Button", props: { label: "Go", action: { kind: "navigate", url: "https://x.test/a (1)" } } },
+    } });
+    expect(text).toBe("`a`\n`- b`\n\n[Go](https://x.test/a%20%281%29)");
   });
 
   it("does not loop on a card that references itself", () => {
     const text = renderRaftCardAsText({ root: "r", elements: { r: { type: "Stack", children: ["r", "t"] }, t: { type: "Text", props: { text: "x" } } } });
     expect(text).toBe("x");
+  });
+
+  it("folds only the first Text's earlier state into the tag line", () => {
+    const card = (texts: string[]) => ({
+      header: { title: "T", tags: [{ text: "Beta testing" }] }, root: "r",
+      elements: { r: { type: "Stack", children: texts.map((_, i) => `t${i}`) },
+        ...Object.fromEntries(texts.map((text, i) => [`t${i}`, { type: "Text", props: { text } }])) },
+    });
+    expect(renderStatusCardAsText(card(["Previously: Ready\nMore detail", "notes"]))).toBe("**T**\n[Ready] -> [Beta testing]\n\nMore detail\n\nnotes");
+    expect(renderStatusCardAsText(card(["Previously: Ready"]))).toBe("**T**\n[Ready] -> [Beta testing]");
+    // A later chunk of notes beginning "Previously:" is not an earlier state.
+    expect(renderStatusCardAsText(card(["x".repeat(20), "Previously: Approved by Apple"]))).toBe(
+      `**T**\n[Beta testing]\n\n${"x".repeat(20)}\n\nPreviously: Approved by Apple`);
   });
 });

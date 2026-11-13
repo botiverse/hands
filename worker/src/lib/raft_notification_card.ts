@@ -188,8 +188,11 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const payload = record(body.payload);
   const event = typeof body.event === "string" ? body.event : "";
   const rawState = raftNotificationRawState(body);
-  // Recognize the newer Apple enum in the visual card only. The established
-  // fallback may already be in flight under a Raft idempotency key.
+  // Recognize the newer Apple enum in the card only; the card's `content` may
+  // already be in flight under a Raft idempotency key. Note that text
+  // destinations are sent the card's layout (renderRaftCardAsText), so a
+  // visual change here also changes that text: keep the previous layout
+  // accepted on replay (compatibleCardText) when making one.
   const visualHeading = event === "app_store:version_state_changed" && rawState === "READY_FOR_DISTRIBUTION"
     ? heading.replace(/ · Status changed\*\*$/, " · Ready for distribution**") : heading;
   const title = headerTitle(plain(visualHeading.replace(/\*\*/g, "").replace(/ failed or was blocked$/, " failed")));

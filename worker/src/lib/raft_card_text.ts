@@ -24,15 +24,26 @@ export interface RenderableCard {
   elements: Record<string, Element>;
 }
 
-const MENTION = /(^|[^\w`])(@[A-Za-z0-9][\w.-]*)/g;
+// After escaping, a backtick before `@` is the escaped "\`", so it does not protect the name.
+const MENTION = /(^|[^\w])(@[A-Za-z0-9][\w.-]*)/g;
+// A line that would start a list, quote, heading or rule (or underline the line
+// above it into a heading) in a message; its first marker character is escaped.
+const LINE_MARKER = /^([ \t]*)([-+*]|\d{1,9}[.)]|#{1,6}|>|=+|-{2,}|_{3,})(?=[ \t]|$)/;
 
 /** Escape markdown in plain card text; `@name` becomes inline code so it mentions no one. */
 export function escapeCardText(text: string): string {
-  const escaped = text.replace(/([\\`*_~[\]<>|])/g, "\\$1");
+  const escaped = text
+    .replace(/([\\`*_~[\]<>|&])/g, "\\$1")
+    .split("\n")
+    .map((line) => line.replace(LINE_MARKER, (_m, indent: string, marker: string) => `${indent}\\${marker}`))
+    .join("\n");
   return escaped.replace(MENTION, (_m, lead: string, name: string) => `${lead}\`${name}\``);
 }
 
 function code(text: string): string {
+  if (!text) return "";
+  // A code span cannot cross lines safely in a message; write each line as its own span.
+  if (text.includes("\n")) return text.split("\n").map((line) => (line ? code(line) : "")).join("\n");
   // Inline code shows its content literally; use a longer fence if it contains backticks.
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
   const fence = "`".repeat(longest + 1);
@@ -67,7 +78,8 @@ function inline(el: Element): string {
       const label = escapeCardText(String(p.label ?? ""));
       if (p.disabled) return `${label} (disabled: ${escapeCardText(String(p.disabledReason ?? p.reason ?? ""))})`;
       const url = p.action?.url;
-      return typeof url === "string" ? `[${label}](${url})` : label;
+      // Characters that would end the link destination early are percent-encoded.
+      return typeof url === "string" ? `[${label}](${url.replace(/[ ()<>]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`)})` : label;
     }
     default:
       return "";
@@ -134,4 +146,28 @@ export function renderRaftCardAsText(card: RenderableCard, options: { transition
   };
   out.push(...walk(card.root, 0));
   return out.join("\n\n");
+}
+
+/**
+ * Hands' status-card text: when the card's first Text names the earlier state
+ * ("Previously: X"), the single tag line reads `[X] -> [tag]` and that first
+ * line is dropped; any later lines of that Text stay. Only the first Text may
+ * carry it, so a later chunk of notes beginning "Previously:" is left alone.
+ */
+export function renderStatusCardAsText(card: RenderableCard): string {
+  const root = card.elements[card.root];
+  if (root?.type !== "Stack" || card.header?.tags?.length !== 1) return renderRaftCardAsText(card);
+  const children = root.children ?? [];
+  const firstTextId = children.find((id) => card.elements[id]?.type === "Text");
+  const first = firstTextId ? card.elements[firstTextId] : undefined;
+  const text = typeof first?.props?.text === "string" ? first.props.text : "";
+  if (!firstTextId || !first || first.props?.mono || first.props?.tone === "warning" || !/^Previously: \S/.test(text)) {
+    return renderRaftCardAsText(card);
+  }
+  const [line, ...rest] = text.split("\n");
+  const remaining = rest.join("\n").trim();
+  const shown: RenderableCard = remaining
+    ? { ...card, elements: { ...card.elements, [firstTextId]: { ...first, props: { ...first.props, text: remaining } } } }
+    : { ...card, elements: { ...card.elements, [card.root]: { ...root, children: children.filter((id) => id !== firstTextId) } } };
+  return renderRaftCardAsText(shown, { transitionFrom: line.slice("Previously: ".length).trim() });
 }

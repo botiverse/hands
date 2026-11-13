@@ -16,7 +16,7 @@ import { decryptP8, encryptP8 } from "../lib/asc_credentials";
 import { formatExistingFeedbackRoot, formatRaftNotificationMessage } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
-import { renderRaftCardAsText } from "../lib/raft_card_text";
+import { renderStatusCardAsText } from "../lib/raft_card_text";
 import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
@@ -766,28 +766,7 @@ function cardLayoutText(body: Payload, app: { id: string; slug: string | null; n
 
 function cardLayoutFromCard(card: RaftMessageCard): string | null {
   try {
-    // A status change reads `[before] -> [after]` on the tag line instead of
-    // a separate "Previously: …" line (only when the card has one tag to pair it with).
-    const root = card.elements[card.root];
-    let transitionFrom: string | undefined;
-    let shown = card;
-    if (root?.type === "Stack" && card.header?.tags?.length === 1) {
-      const previousId = root.children.find((id) => {
-        const el = card.elements[id];
-        return el?.type === "Text" && !el.props.mono && el.props.tone !== "warning" && /^Previously: \S/.test(el.props.text);
-      });
-      const previous = previousId ? card.elements[previousId] : undefined;
-      if (previousId && previous?.type === "Text") {
-        // Only the first line names the earlier state; later lines are other details.
-        const [first, ...rest] = previous.props.text.split("\n");
-        transitionFrom = first.slice("Previously: ".length).trim();
-        const remaining = rest.join("\n").trim();
-        shown = remaining
-          ? { ...card, elements: { ...card.elements, [previousId]: { ...previous, props: { ...previous.props, text: remaining } } } }
-          : { ...card, elements: { ...card.elements, [card.root]: { ...root, children: root.children.filter((id) => id !== previousId) } } };
-      }
-    }
-    const text = renderRaftCardAsText(shown, { transitionFrom }).trim();
+    const text = renderStatusCardAsText(card).trim();
     return text || null;
   } catch {
     return null;

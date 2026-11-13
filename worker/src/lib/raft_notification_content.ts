@@ -78,7 +78,7 @@ function testflightNote(payload: Payload, preserveFormatting: boolean): { locale
   return locale && note ? { locale, note } : null;
 }
 
-/** The visual card can preserve indentation; the established text fallback cannot change. */
+/** The card can preserve indentation; the established `content` text cannot change, and the card layout sent to text destinations follows the card. */
 export function raftNotificationCardTestNotes(body: Payload): string | null {
   return testflightNote(record(body.payload), true)?.note ?? null;
 }
