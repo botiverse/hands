@@ -2227,10 +2227,14 @@ const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
 ]);
 
 /**
- * Background system kills (`crash_type = "system_kill"` with `importance >= 400`
- * or `crash_foreground = false`, excluding `REASON_EXCESSIVE_RESOURCE_USAGE` (9)
- * and `REASON_CRASH` / `REASON_CRASH_NATIVE` / `REASON_ANR` (4/5/6)) are routine
- * OS background reclamations rather than foreground crashes. They are grouped
+ * Background system kills (`crash_type = "system_kill"`, excluding
+ * `REASON_EXCESSIVE_RESOURCE_USAGE` (9) and `REASON_CRASH` / `REASON_CRASH_NATIVE`
+ * / `REASON_ANR` (4/5/6)) are routine
+ * OS background reclamations rather than foreground crashes. When the exit
+ * record carries `crash_exit_importance` (the system's value at the moment of
+ * exit), it alone decides: `>= 400` is background, anything lower is not. Only
+ * when it is missing do the app-recorded `crash_foreground` and then the
+ * background memory-trim state decide; both can be seconds stale. They are grouped
  * into `SystemKill@background` ("后台被系统结束"), auto-closed as `not_planned`,
  * and alerted only on per-device daily repeats or version-over-version spikes.
  */
@@ -2258,7 +2262,8 @@ export function isBackgroundSystemKill(metadata: Record<string, unknown>): boole
       : typeof importanceRaw === "string" && /^\d+$/.test(importanceRaw.trim())
         ? Math.trunc(Number(importanceRaw.trim()))
         : null;
-  if (importance !== null && importance >= 400) return true;
+  if (importance !== null) return importance >= 400;
+  if (metadata["crash_foreground"] === true) return false;
   if (metadata["crash_foreground"] === false) return true;
   const trim = String(metadata["crash_trim"] ?? "").trim().toLowerCase();
   if (
@@ -2272,16 +2277,27 @@ export function isBackgroundSystemKill(metadata: Record<string, unknown>): boole
   return false;
 }
 
+// Mirrors isBackgroundSystemKill: an integer, or an all-digit string, else NULL.
+const SYSTEM_KILL_IMPORTANCE_SQL = `(CASE
+    WHEN json_type(t.metadata_json, '$.crash_exit_importance') IN ('integer', 'real')
+      THEN CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER)
+    WHEN json_type(t.metadata_json, '$.crash_exit_importance') = 'text'
+      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) <> ''
+      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) NOT GLOB '*[^0-9]*'
+      THEN CAST(TRIM(json_extract(t.metadata_json, '$.crash_exit_importance')) AS INTEGER)
+  END)`;
+
 const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
   json_valid(t.metadata_json)
   AND json_extract(t.metadata_json, '$.crash_type') = 'system_kill'
   AND COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_reason_code') AS INTEGER), -1) NOT IN (4, 5, 6, 9)
   AND LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), '')) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
-  AND (
-    COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER), 0) >= 400
-    OR COALESCE(json_extract(t.metadata_json, '$.crash_foreground'), 1) = 0
-    OR LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), '')) IN ('ui_hidden', 'background', 'moderate', 'complete')
-  )
+  AND (CASE
+    WHEN ${SYSTEM_KILL_IMPORTANCE_SQL} IS NOT NULL THEN ${SYSTEM_KILL_IMPORTANCE_SQL} >= 400
+    WHEN json_type(t.metadata_json, '$.crash_foreground') = 'true' THEN 0
+    WHEN json_type(t.metadata_json, '$.crash_foreground') = 'false' THEN 1
+    ELSE LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), '')) IN ('ui_hidden', 'background', 'moderate', 'complete')
+  END)
 ))`;
 
 const EFFECTIVE_CRASH_SIGNATURE_SQL = `CASE WHEN ${BACKGROUND_SYSTEM_KILL_SQL} THEN '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' ELSE COALESCE(t.signature, '(unsignatured)') END`;

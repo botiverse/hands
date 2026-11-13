@@ -11866,6 +11866,51 @@ describe("quiver public API v2 — scope resolution", () => {
     }
   });
 
+  it("feedback: exit importance alone decides background system kills when present; ingest and SQL agree", async () => {
+    const env = makeEnv();
+    const { isBackgroundSystemKill, handleListFeedback } = await import("../src/routes/feedback");
+    const base = { crash_type: "system_kill", crash_exception_class: "SystemKill", crash_top_frame: "other", crash_exit_reason_code: 13 };
+    const cases: Array<[string, Record<string, unknown>, boolean]> = [
+      // Ticket 560fe7ac: foreground at exit, but a memory trim of "background" 3.4 s earlier.
+      ["imp100-trim-bg", { ...base, crash_exit_importance: 100, crash_foreground: true, crash_trim: "background" }, false],
+      // Ticket f5a3d589: background at exit, app recorded foreground 10.5 s earlier.
+      ["imp400-fg-true", { ...base, crash_exit_importance: 400, crash_foreground: true, crash_trim: "ui_hidden" }, true],
+      ["imp125-fg-false", { ...base, crash_exit_importance: 125, crash_foreground: false, crash_trim: "complete" }, false],
+      ["imp300", { ...base, crash_exit_importance: 300 }, false],
+      ["imp-str-400", { ...base, crash_exit_importance: "400" }, true],
+      ["imp-str-200-fg-false", { ...base, crash_exit_importance: "200", crash_foreground: false }, false],
+      ["no-imp-fg-false", { ...base, crash_foreground: false }, true],
+      ["no-imp-fg-true-trim-bg", { ...base, crash_foreground: true, crash_trim: "background" }, false],
+      ["no-imp-trim-bg", { ...base, crash_trim: "ui_hidden" }, true],
+      ["no-imp-trim-none", { ...base, crash_trim: "none" }, false],
+      ["imp-garbage-fg-false", { ...base, crash_exit_importance: "abc", crash_foreground: false }, true],
+      ["imp400-reason-anr", { ...base, crash_exit_importance: 400, crash_exit_reason_code: 6 }, false],
+      ["imp400-reason-label-crash", { ...base, crash_exit_importance: 400, crash_exit_reason_code: undefined, crash_exit_reason: "crash" }, false],
+      ["not-system-kill", { crash_type: "anr", crash_exit_importance: 400 }, false],
+    ];
+    const now = Date.now();
+    for (const [id, meta, expected] of cases) {
+      expect([id, isBackgroundSystemKill(meta)]).toEqual([id, expected]);
+      await env.DB.prepare(
+        `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, signature, created_at, updated_at)
+         VALUES (?, 'app-scope', 'crash', 'open', 'kill', ?, 'SystemKill@other', ?, ?)`,
+      ).bind(id, JSON.stringify(meta), now, now).run();
+    }
+    const ctx = {
+      env,
+      req: {
+        param: (n: string) => (n === "appId" ? "app-scope" : ""),
+        query: (k: string) => ({ kind: "crash" } as Record<string, string>)[k],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any;
+    const tickets = (await responseJson<any>(await handleListFeedback(ctx))).tickets as any[];
+    const sqlVerdict = Object.fromEntries(tickets.map((t) => [t.id, t.background_system_kill === 1]));
+    for (const [id, , expected] of cases) {
+      expect([id, sqlVerdict[id]]).toEqual([id, expected]);
+    }
+  });
+
   it("feedback: prioritizes crash_exit_timestamp for daily background system kill summaries and deduplicates per day", async () => {
     const env = makeEnv();
     const { dispatchBackgroundSystemKillDailySummaries } = await import("../src/routes/feedback");
