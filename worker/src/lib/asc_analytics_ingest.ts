@@ -282,7 +282,15 @@ export async function parseTsvStream(
 
 // ---------- Segment download ----------
 
-/** Pre-signed segment URLs must be https on apple.com or a subdomain of it. */
+/**
+ * Apple's pre-signed segment URLs point at its own Amazon S3 bucket, not
+ * apple.com (observed in production 2026-11-13). Exactly this host is allowed;
+ * any other S3 host stays refused and is reported by name, so a new one is
+ * added deliberately rather than by widening to all of amazonaws.com.
+ */
+export const ASC_SEGMENT_HOSTS = new Set(["asp-us-west-2.s3.us-west-2.amazonaws.com"]);
+
+/** Pre-signed segment URLs must be https on apple.com (or a subdomain) or an allowed Apple S3 host. */
 export function segmentUrlHost(raw: string): { ok: true; url: URL } | { ok: false; host: string | null } {
   let url: URL;
   try {
@@ -291,7 +299,7 @@ export function segmentUrlHost(raw: string): { ok: true; url: URL } | { ok: fals
     return { ok: false, host: null };
   }
   const host = url.hostname.toLowerCase();
-  const apple = host === "apple.com" || host.endsWith(".apple.com");
+  const apple = host === "apple.com" || host.endsWith(".apple.com") || ASC_SEGMENT_HOSTS.has(host);
   if (url.protocol !== "https:" || !apple || url.username || url.password || (url.port && url.port !== "443")) {
     return { ok: false, host: host || null };
   }
