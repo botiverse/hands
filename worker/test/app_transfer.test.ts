@@ -54,7 +54,7 @@ function harness() {
     CREATE TABLE audit_logs (id TEXT PRIMARY KEY, app_id TEXT, action TEXT, actor TEXT, actor_id TEXT, actor_type TEXT, payload TEXT, created_at INTEGER);
     INSERT INTO organizations VALUES ('source', 'Source', 'raft', 'server-source', 0), ('target', 'Target', 'raft', 'server-target', 0), ('third', 'Third', 'raft', 'server-third', 0);
     INSERT INTO raft_accounts VALUES ('actor', 'raft', 'same-person', 'human', 'server-source', 'source'), ('linked', 'raft', 'same-person', 'human', 'server-target', 'target');
-    INSERT INTO org_members VALUES ('source', 'actor', 'member'), ('target', 'linked', 'member');
+    INSERT INTO org_members VALUES ('source', 'actor', 'admin'), ('target', 'linked', 'member');
     INSERT INTO apps VALUES ('app-1', 'source', 'my-app', 'My App');
     INSERT INTO app_members VALUES ('app-1', 'actor', 'admin');
     INSERT INTO webhooks VALUES ('webhook', 'source', 'app-1');
@@ -80,7 +80,7 @@ function harness() {
 const unchanged = { app: "source", webhook: "source", invite: "source", audit: 0 };
 
 describe("app transfer authority and atomicity", () => {
-  it("allows an app admin with linked target membership and moves all scoped rows once", async () => {
+  it("allows a source org admin with linked target membership and moves all scoped rows once", async () => {
     const h = harness();
     const response = await h.request();
     expect(response.status).toBe(200);
@@ -97,30 +97,47 @@ describe("app transfer authority and atomicity", () => {
 
   it("allows source organization admin even without a direct app role", async () => {
     const h = harness();
-    h.sqlite.exec("DELETE FROM app_members; UPDATE org_members SET org_role='admin' WHERE org_id='source'");
+    h.sqlite.exec("DELETE FROM app_members");
     expect((await h.request()).status).toBe(200);
     expect(h.snapshot().app).toBe("target");
   });
 
-  it.each(["owner_server", "legacy_role"])("revalidates %s additional-server grants", async (model) => {
+  it("allows a source org owner", async () => {
     const h = harness();
-    h.sqlite.exec(`DELETE FROM app_members;
-      UPDATE apps SET org_id='third'; UPDATE webhooks SET org_id='third'; UPDATE invites SET org_id='third';
-      UPDATE org_members SET org_role='admin' WHERE org_id='source';`);
-    h.sqlite.prepare("INSERT INTO app_server_grants VALUES ('app-1', 'server-source', NULL, 'admin', ?)").run(model);
-    const response = await h.request({ ...body, expected_source_org_id: "third" });
-    expect(response.status).toBe(200);
-    expect(h.snapshot()).toEqual({ app: "target", webhook: "target", invite: "target", audit: 1 });
+    h.sqlite.exec("UPDATE org_members SET org_role='owner' WHERE org_id='source'");
+    expect((await h.request()).status).toBe(200);
+    expect(h.snapshot().app).toBe("target");
   });
 
-  it("does not move the app after an additional-server grant is revoked", async () => {
+  // I-7: transfer is the owning org's decision. An app-level admin (app_members),
+  // a legacy admin server grant or a co-owner server admin used to be able to
+  // move the app out from under the org that owns it.
+  it("rejects an app_members admin who is only a member of the source org", async () => {
     const h = harness();
+    h.sqlite.exec("UPDATE org_members SET org_role='member' WHERE org_id='source'");
+    const response = await h.request();
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "OWNING_ORG_ADMIN_REQUIRED" });
+    expect(h.snapshot()).toEqual(unchanged);
+  });
+
+  it("rejects an app_members admin with no role in the source org", async () => {
+    const h = harness();
+    h.sqlite.exec("DELETE FROM org_members WHERE org_id='source'");
+    expect((await h.request()).status).toBe(403);
+    expect(h.snapshot()).toEqual(unchanged);
+  });
+
+  it.each(["owner_server", "legacy_role"])("rejects a %s server-grant admin who is not admin of the owning org", async (model) => {
+    const h = harness();
+    // The app belongs to 'third'. The actor is admin of their own server's org
+    // ('source'), which holds an admin grant on the app.
     h.sqlite.exec(`DELETE FROM app_members;
-      UPDATE apps SET org_id='third'; UPDATE webhooks SET org_id='third'; UPDATE invites SET org_id='third';
-      UPDATE org_members SET org_role='admin' WHERE org_id='source';
-      INSERT INTO app_server_grants VALUES ('app-1', 'server-source', NULL, 'admin', 'owner_server');`);
-    h.onBatch(() => h.sqlite.exec("DELETE FROM app_server_grants"));
-    expect((await h.request({ ...body, expected_source_org_id: "third" })).status).toBe(403);
+      UPDATE apps SET org_id='third'; UPDATE webhooks SET org_id='third'; UPDATE invites SET org_id='third';`);
+    h.sqlite.prepare("INSERT INTO app_server_grants VALUES ('app-1', 'server-source', NULL, 'admin', ?)").run(model);
+    const response = await h.request({ ...body, expected_source_org_id: "third" });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "OWNING_ORG_ADMIN_REQUIRED" });
     expect(h.snapshot()).toEqual({ app: "third", webhook: "third", invite: "third", audit: 0 });
   });
 
@@ -157,15 +174,15 @@ describe("app transfer authority and atomicity", () => {
     expect(h.snapshot()).toEqual(unchanged);
   });
 
-  it("rejects a source publisher before transfer", async () => {
+  it("rejects a source org viewer before transfer", async () => {
     const h = harness();
-    h.sqlite.exec("UPDATE app_members SET app_role='publisher'");
+    h.sqlite.exec("UPDATE org_members SET org_role='viewer' WHERE org_id='source'");
     expect((await h.request()).status).toBe(403);
     expect(h.snapshot()).toEqual(unchanged);
   });
 
   it.each([
-    ["source app role", "DELETE FROM app_members"],
+    ["source org admin role", "UPDATE org_members SET org_role='member' WHERE org_id='source'"],
     ["target membership", "DELETE FROM org_members WHERE org_id='target'"],
   ])("rechecks revoked %s inside the atomic write", async (_name, sql) => {
     const h = harness();

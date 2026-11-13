@@ -137,7 +137,9 @@ export function AppAccess({ appId }: { appId: string }) {
         appId={appId}
         app={app}
         isOwningOrg={isOwningOrg}
-        canManage={canManage}
+        // Co-owner servers are the owning org's decision: the server only lets an
+        // admin/owner of the org that owns the app add or remove them.
+        canManage={isOrgAdmin && isOwningOrg}
         onAdd={() => setShowAddServer(true)}
         orgRole={orgRole}
         currentServerId={account?.server_id ?? null}
