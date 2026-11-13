@@ -900,6 +900,29 @@ describe("Google Play binding routes", () => {
     expect(adapterCalls).toBe(0);
   });
 
+  it("leaves a binding an admin disabled as it is when a test is rejected", async () => {
+    const harness = googlePlayBindingHarness("admin");
+    const stored = await harness.request("/api/apps/app/google-play-binding", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(validBindingBody()),
+    });
+    expect(stored.status).toBe(200);
+    harness.sqlite.prepare("UPDATE app_google_play_bindings SET enabled=0 WHERE app_id='app'").run();
+    harness.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      verifyBinding: async () => ({
+        ok: false,
+        error: { status: 403, code: "play_token_rejected", message: "Google OAuth authorization needs reconnection" },
+      }),
+    });
+    const rejected = await harness.request("/api/apps/app/google-play-binding/verify", { method: "POST" });
+    expect(rejected.status).toBe(502);
+    expect(await rejected.json()).toMatchObject({ code: "play_token_rejected" });
+    // Still verified and disabled: not stale, so a bodyless reauthorization cannot re-enable it.
+    expect(harness.sqlite.prepare(`SELECT enabled, verification_state FROM app_google_play_bindings
+      WHERE app_id='app'`).get()).toEqual({ enabled: 0, verification_state: "verified" });
+  });
+
   it("marks a definitively rejected binding stale and disabled, then re-verifies before enable", async () => {
     const harness = googlePlayBindingHarness("admin");
     const stored = await harness.request("/api/apps/app/google-play-binding", {

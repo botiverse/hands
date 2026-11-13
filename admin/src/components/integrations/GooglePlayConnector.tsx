@@ -103,6 +103,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     onSuccess: () => {
       setCredentialJson("");
       setEditing(false);
+      setTokenRejected(false);
       refresh();
       toast.show({ kind: "success", title: gp("saveSuccess") });
     },
@@ -117,7 +118,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     onError: (error) => {
       // An expired or revoked Google grant is fixed by reauthorizing, which keeps the
       // package and tracks. Say so on the row; unbinding would delete them.
-      if (meta?.credential_kind === "authorized_user" && isTokenRejected(error)) setTokenRejected(true);
+      if (reauthorizable && isTokenRejected(error)) setTokenRejected(true);
       else fail(error);
     },
     onSettled: refresh,
@@ -125,6 +126,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => setGooglePlayBindingEnabled(appId, enabled),
     onSuccess: (_, enabled) => {
+      if (enabled) setTokenRejected(false);
       toast.show({ kind: "success", title: gp(enabled ? "enableSuccess" : "disableSuccess") });
     },
     onError: fail,
@@ -136,6 +138,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
       setEditing(false);
       setCredentialJson("");
       setPackageName("");
+      setTokenRejected(false);
       refresh();
       toast.show({ kind: "success", title: gp("unbindSuccess") });
     },
@@ -183,6 +186,8 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const [tokenRejected, setTokenRejected] = useState(false);
+  // The connector stays mounted across apps; a hint about one app's grant must not carry over.
+  useEffect(() => { setTokenRejected(false); }, [appId]);
   const [oauthResult, setOauthResult] = useState<
     { kind: "failed"; errorCode: string | null } | { kind: "cancelled" } | null
   >(null);
@@ -323,7 +328,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
           {gp("oauthUnavailable")}
         </p>
       ) : null}
-      {tokenRejected && !oauthResult ? (
+      {tokenRejected && reauthorizable && !oauthResult ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
           <span className="min-w-0 flex-1 text-danger">{gp("tokenRejected")}</span>
           <Button size="xs" variant="outline" disabled={authorize.isPending} onClick={startConnect}>

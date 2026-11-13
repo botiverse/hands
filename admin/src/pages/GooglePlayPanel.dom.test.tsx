@@ -317,6 +317,36 @@ describe("GooglePlayConnector", () => {
     await waitFor(() => expect(mocks.authorize).toHaveBeenCalledWith("app-a"));
   });
 
+  it("does not carry a token-rejected hint over to another app", async () => {
+    const binding = { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" };
+    mocks.get.mockResolvedValue({ google_play: binding, oauth_available: true });
+    const { ApiError } = await import("../lib/api");
+    mocks.verify.mockRejectedValue(new ApiError(502, { code: "play_token_rejected" }, "rejected"));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const view = render(<QueryClientProvider client={client}><GooglePlayConnector appId="app-a" /></QueryClientProvider>);
+    await expandConnectedDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText(/Google rejected the stored authorization/)).toBeTruthy();
+    view.rerender(<QueryClientProvider client={client}><GooglePlayConnector appId="app-b" /></QueryClientProvider>);
+    await waitFor(() => expect(screen.queryByText(/Google rejected the stored authorization/)).toBeNull());
+  });
+
+  it("clears the token-rejected hint after unbinding", async () => {
+    const binding = { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" };
+    mocks.get.mockResolvedValue({ google_play: binding, oauth_available: true });
+    const { ApiError } = await import("../lib/api");
+    mocks.verify.mockRejectedValue(new ApiError(502, { code: "play_token_rejected" }, "rejected"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPanel();
+    await expandConnectedDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText(/Google rejected the stored authorization/)).toBeTruthy();
+    mocks.get.mockResolvedValue({ google_play: null, oauth_available: true });
+    fireEvent.click(screen.getByRole("button", { name: "Unbind" }));
+    await waitFor(() => expect(mocks.remove).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/Google rejected the stored authorization/)).toBeNull());
+  });
+
   it("does not offer reauthorization for a binding an admin disabled while verified", async () => {
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: false, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" }, oauth_available: true });
     renderPanel();

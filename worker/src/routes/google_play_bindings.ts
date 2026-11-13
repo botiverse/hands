@@ -195,7 +195,7 @@ export async function handleVerifyGooglePlayBinding(c: AdminContext) {
   if (!binding) return c.json({ error: "Google Play is not bound for this app", code: "PLAY_BINDING_MISSING" }, 404);
   const verified = await verifyBinding(c, binding);
   if (verified.ok || verified.invalidate) {
-    await setGooglePlayBindingVerification(c.env.DB, appId, verified.ok, currentActor(c));
+    await setGooglePlayBindingVerification(c.env.DB, appId, verified.ok, currentActor(c), { failureOnlyIfEnabled: true });
   }
   await insertAuditLog(c.env.DB, c, {
     app_id: appId,
