@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
 import { getApiBase } from "./api.js";
-import { HANDS_SERVICE, type AgentEnv } from "./agent_env.js";
+import { HANDS_RAFT_SERVICE_IDS, HANDS_SERVICE, type AgentEnv } from "./agent_env.js";
 import {
   writeAgentSession,
   type AgentSession,
@@ -71,7 +71,10 @@ export function parseAgentLoginInvoke(
   stdout: string,
   service: string,
   now: number,
+  /** Other ids of the same Raft app that Raft or Hands may report for this service. */
+  aliases: readonly string[] = [],
 ): { grant: string; expires_at: string } {
+  const sameApp = (value: unknown) => value === service || (typeof value === "string" && aliases.includes(value));
   let outer: any;
   try {
     outer = JSON.parse(stdout);
@@ -90,7 +93,7 @@ export function parseAgentLoginInvoke(
   if (!hasExactKeys(data, ["service", "action", "status", "result"])) {
     throw new Error("agent-login: invoke data has unexpected fields");
   }
-  if (data.service !== service) throw new Error("agent-login: invoke service does not match the requested service");
+  if (!sameApp(data.service)) throw new Error("agent-login: invoke service does not match the requested service");
   if (data.action !== "agent-login") throw new Error("agent-login: invoke action is not agent-login");
   if (data.status !== 200) throw new Error("agent-login: agent-login action did not return HTTP 200");
   const result = data.result;
@@ -99,7 +102,7 @@ export function parseAgentLoginInvoke(
     throw new Error("agent-login: grant result has unexpected fields");
   }
   if (result.schema !== "raft-cli-agent-login-grant.v1") throw new Error("agent-login: unexpected grant result schema");
-  if (result.service !== service) throw new Error("agent-login: grant result service mismatch");
+  if (!sameApp(result.service)) throw new Error("agent-login: grant result service mismatch");
   if (typeof result.grant !== "string" || result.grant.length === 0) throw new Error("agent-login: grant is missing");
   const exp = parseRfc3339(result.expires_at);
   if (exp === null) throw new Error("agent-login: grant expires_at is not an RFC3339 timestamp");
@@ -204,27 +207,37 @@ function defaultInvoke(raftBin: string, args: string[]) {
  * → strict-validate session → atomic store. Returns the stored session on success.
  */
 export async function runAgentLogin(a: AgentEnv, opts: AgentLoginOptions = {}): Promise<AgentSession> {
+  // The local session key; the Raft app ids to invoke are tried separately below.
   const service = opts.service ?? HANDS_SERVICE;
+  const raftIds = opts.service ? [opts.service] : [...HANDS_RAFT_SERVICE_IDS];
   const now = opts.now ?? Date.now();
   const { verifier, challenge } = generatePkce();
-  const args = [
-    "integration", "invoke",
-    "--service", service,
-    "--action", "agent-login",
-    "--json",
-    "--data-json", JSON.stringify({
-      schema: "raft-cli-agent-login-request.v1",
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-    }),
-  ];
   const runner = opts.invoke ?? ((a2: string[]) => defaultInvoke(a.raftBin, a2));
-  const res = runner(args);
-  if (res.status !== 0) {
-    // Require a clean exit; never echo stdout/stderr (may carry grant/action payload).
-    throw new Error(`agent-login: raft invoke exited with a non-zero status (${res.status ?? "spawn error"})`);
+  let res: { status: number | null; stdout: string; stderr: string } | null = null;
+  let invoked = "";
+  for (const raftId of raftIds) {
+    invoked = raftId;
+    res = runner([
+      "integration", "invoke",
+      "--service", raftId,
+      "--action", "agent-login",
+      "--json",
+      "--data-json", JSON.stringify({
+        schema: "raft-cli-agent-login-request.v1",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      }),
+    ]);
+    // A non-zero exit before any grant is issued (e.g. this Raft CLI cannot resolve
+    // that id) is safe to retry with the next id: the PKCE challenge is unspent.
+    if (res.status === 0) break;
   }
-  const { grant } = parseAgentLoginInvoke(res.stdout, service, now);
+  if (!res || res.status !== 0) {
+    // Require a clean exit; never echo stdout/stderr (may carry grant/action payload).
+    throw new Error(`agent-login: raft invoke exited with a non-zero status (${res?.status ?? "spawn error"})`);
+  }
+  const { grant } = parseAgentLoginInvoke(res.stdout, invoked, now,
+    opts.service ? [] : HANDS_RAFT_SERVICE_IDS.filter((id) => id !== invoked));
 
   // Independent token request: NO stored Bearer, NO auto-refresh. `hands login` is the
   // recovery path when the stored refresh has reached a terminal state
