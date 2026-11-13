@@ -22,6 +22,7 @@ import {
   listGooglePlayTracks,
   setGooglePlayBinding,
   setGooglePlayBindingEnabled,
+  deleteGooglePlayReportsGrant,
   ApiError,
   startGooglePlayOAuth,
   verifyGooglePlayBinding,
@@ -35,6 +36,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ["google-play-binding", appId], queryFn: () => getGooglePlayBinding(appId) });
   const meta = query.data?.google_play ?? null;
+  const reportsGrant = query.data?.reports_grant ?? null;
   const [editing, setEditing] = useState(false);
   const [credentialJson, setCredentialJson] = useState("");
   const [connectionMethod, setConnectionMethod] = useState<"google" | "service">("google");
@@ -71,22 +73,27 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     const url = new URL(window.location.href);
     url.searchParams.delete("google_play_oauth");
     url.searchParams.delete("google_play_oauth_error");
+    url.searchParams.delete("google_play_oauth_purpose");
     window.history.replaceState(null, "", url);
-    if (result === "connected" && meta?.credential_kind === "authorized_user") {
+    const purpose = params.get("google_play_oauth_purpose") === "reports" ? "reports" : "publishing";
+    if (result === "reports_connected") {
+      toast.show({ kind: "success", title: gp("reportsConnected") });
+      setOauthResult(null);
+    } else if (result === "connected" && meta?.credential_kind === "authorized_user") {
       toast.show({ kind: "success", title: gp("saveSuccess") });
       setOauthResult(null);
     } else if (result === "failed") {
       // Keep the failure on the row with a retry action instead of a toast
       // that disappears (artin, #proj-hands b529da37). The optional error
       // code maps to specific copy; unknown values fall back to generic.
-      setOauthResult({ kind: "failed", errorCode: params.get("google_play_oauth_error") });
+      setOauthResult({ kind: "failed", errorCode: params.get("google_play_oauth_error"), purpose });
     } else if (result === "cancelled") {
-      setOauthResult({ kind: "cancelled" });
+      setOauthResult({ kind: "cancelled", purpose });
     }
   }, [query.isLoading, meta, toast]);
 
   const authorize = useMutation({
-    mutationFn: () => startGooglePlayOAuth(appId),
+    mutationFn: (purpose: "publishing" | "reports" = "publishing") => startGooglePlayOAuth(appId, purpose),
     onSuccess: ({ authorization_url }) => {
       const url = new URL(authorization_url);
       if (url.origin !== "https://accounts.google.com") { fail(new Error(gp("oauthFailed"))); return; }
@@ -189,7 +196,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   // The connector stays mounted across apps; a hint about one app's grant must not carry over.
   useEffect(() => { setTokenRejected(false); }, [appId]);
   const [oauthResult, setOauthResult] = useState<
-    { kind: "failed"; errorCode: string | null } | { kind: "cancelled" } | null
+    { kind: "failed"; errorCode: string | null; purpose: "publishing" | "reports" } | { kind: "cancelled"; purpose: "publishing" | "reports" } | null
   >(null);
   // Only a connected binding opens the detail; an unconfigured connector stays
   // a single row with Connect.
@@ -205,8 +212,17 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   const startConnect = () => {
     setOauthResult(null);
     setTokenRejected(false);
-    authorize.mutate();
+    authorize.mutate("publishing");
   };
+  const startReports = () => {
+    setOauthResult(null);
+    authorize.mutate("reports");
+  };
+  const removeReports = useMutation({
+    mutationFn: () => deleteGooglePlayReportsGrant(appId),
+    onSuccess: () => { refresh(); toast.show({ kind: "success", title: gp("reportsRemoved") }); },
+    onError: fail,
+  });
 
   const packageTrackFields = (
     <div className="grid gap-3 md:grid-cols-2">
@@ -343,7 +359,7 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
               ? googlePlayOAuthFailureMessage(oauthResult.errorCode)
               : gp("oauthCancelled")}
           </span>
-          <Button size="xs" variant="outline" onClick={startConnect}>
+          <Button size="xs" variant="outline" onClick={oauthResult.purpose === "reports" ? startReports : startConnect}>
             {gp("retry")}
           </Button>
         </div>
@@ -399,6 +415,23 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
                 }}>{gp("unbind")}</Button>
               </div>}
               {reauthorizable && !editing && <p className="text-xs text-foreground-muted">{gp("reauthorizeHelp")}</p>}
+              {meta.package_name && !editing && (
+                <div className="space-y-1 rounded-md border border-line-hairline p-3" data-testid="google-play-reports">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 flex-1 text-xs font-medium text-foreground">{gp("reportsTitle")}</span>
+                    <Button size="xs" variant="outline" disabled={authorize.isPending || !query.data?.oauth_available} onClick={startReports}>
+                      {gp(reportsGrant ? "reportsReauthorize" : "reportsAuthorize")}
+                    </Button>
+                    {reportsGrant && (
+                      <Button size="xs" variant="outline" disabled={removeReports.isPending} onClick={() => {
+                        if (window.confirm(gp("reportsConfirmRemove"))) removeReports.mutate();
+                      }}>{gp("reportsRemove")}</Button>
+                    )}
+                  </div>
+                  {reportsGrant && <div className="break-all font-mono text-xs text-foreground-muted">{gp("reportsAccount")}: {reportsGrant.account_email}</div>}
+                  <p className="text-xs text-foreground-muted">{gp("reportsHelp")}</p>
+                </div>
+              )}
               {meta.credential_kind === "authorized_user" && <p className="text-xs text-foreground-muted">{gp("disconnectHelp")}{" "}
                 <a className="text-info-strong hover:underline" href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
               </p>}

@@ -4,8 +4,10 @@ import { insertAuditLog, ensureAppRole } from "../lib/permissions";
 import {
   assertGooglePlayCredentialKeyring,
   deleteGooglePlayBinding,
+  deleteGooglePlayReportsGrant,
   getGooglePlayBinding,
   getGooglePlayBindingMeta,
+  getGooglePlayReportsGrantMeta,
   normalizeGooglePlayPackage,
   normalizeGooglePlayTracks,
   parseGoogleServiceAccount,
@@ -69,8 +71,12 @@ export async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBin
 export async function handleGetGooglePlayBinding(c: AdminContext) {
   const invalid = await requireAndroidApp(c);
   if (invalid) return invalid;
+  const appId = c.req.param("appId") ?? "";
+  const reports = await getGooglePlayReportsGrantMeta(c.env.DB, appId);
   return c.json({
-    google_play: safeMeta(await getGooglePlayBindingMeta(c.env.DB, c.req.param("appId") ?? "")),
+    google_play: safeMeta(await getGooglePlayBindingMeta(c.env.DB, appId)),
+    // The separate statistics-reports authorization: the account only, never the credential.
+    reports_grant: reports ? { account_email: reports.account_email, updated_at: reports.updated_at } : null,
     oauth_available: Boolean(c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID && c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET && c.env.PLAY_RELEASE_SERVICE && c.env.PLAY_CRED_ENC_KEYS && c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION),
   });
 }
@@ -250,5 +256,15 @@ export async function handleDeleteGooglePlayBinding(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   await deleteGooglePlayBinding(c.env.DB, appId);
   await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.binding.delete", payload: {} });
+  return c.json({ ok: true });
+}
+
+export async function handleDeleteGooglePlayReportsGrant(c: AdminContext) {
+  const invalid = await requireAndroidApp(c);
+  if (invalid) return invalid;
+  const appId = c.req.param("appId") ?? "";
+  const removed = await deleteGooglePlayReportsGrant(c.env.DB, appId);
+  if (!removed) return c.json({ error: "No statistics reports authorization for this app", code: "PLAY_REPORTS_GRANT_MISSING" }, 404);
+  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.reports_grant.delete", payload: {} });
   return c.json({ ok: true });
 }

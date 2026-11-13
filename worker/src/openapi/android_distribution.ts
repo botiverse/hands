@@ -151,10 +151,14 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     method: "post", path: "/api/apps/{appId}/google-play-oauth/start",
     tags: ["Android distribution"], summary: "Start human Google Play OAuth authorization",
     security: auth,
-    request: { params: AppIdParam, body: { required: false, content: json(GooglePlayBindingInput.omit({ service_account_json: true }).partial()) } },
+    description: "purpose \"publishing\" (default) asks only for androidpublisher. purpose \"reports\" asks only for read-only Cloud Storage access to Play Console statistics reports and stores a separate grant, so an expired reports grant never stops publishing; it takes no package or tracks and needs a configured binding.",
+    request: { params: AppIdParam, body: { required: false, content: json(GooglePlayBindingInput.omit({ service_account_json: true }).partial().extend({
+      purpose: z.enum(["publishing", "reports"]).optional(),
+    })) } },
     responses: { 200: success("Google authorization URL; no credential is returned.", GenericObject),
-      400: error("Invalid package or tracks."), 403: error("Human app administrator required."),
-      404: error("Android app not found."), 503: error("OAuth or credential encryption unavailable.") },
+      400: error("Invalid package, tracks or purpose."), 403: error("Human app administrator required."),
+      404: error("Android app not found."), 409: error("Statistics reports need a configured Google Play binding first."),
+      503: error("OAuth or credential encryption unavailable.") },
   });
   routes.push({
     method: "get", path: "/api/google-play/oauth/callback",
@@ -259,8 +263,23 @@ export function registerAndroidDistributionRoutes(): RouteConfigList {
     security: auth,
     request: { params: AppIdParam },
     responses: {
-      200: success("Binding and encrypted credential deleted.", GenericObject),
+      200: success("Binding, encrypted credential and any statistics reports authorization deleted.", GenericObject),
       403: error("App admin role is required."),
+    },
+  });
+
+  routes.push({
+    method: "delete",
+    path: "/api/apps/{appId}/google-play-reports-grant",
+    tags: ["Android distribution"],
+    summary: "Delete this app's Google Play statistics reports authorization",
+    description: "Removes only the separate statistics grant. Publishing is unaffected; statistics fall back to the publishing credential.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Statistics reports authorization deleted.", GenericObject),
+      403: error("App admin role is required."),
+      404: error("No statistics reports authorization for this app."),
     },
   });
 

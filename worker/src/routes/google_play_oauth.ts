@@ -4,15 +4,17 @@ import { currentActor, accountActor, googlePlayOAuthCookieName, SESSION_COOKIE, 
 import { currentAccount, ensureAppRole, insertAuditLog } from "../lib/permissions";
 import { businessOrigin, dashboardOrigin, configuredProductionHost, sharedCookieDomain } from "../lib/origin";
 import { decryptGooglePlayValue, encryptGooglePlayValue, getGooglePlayBindingMeta,
-  normalizeGooglePlayPackage, normalizeGooglePlayTracks, storeGooglePlayBinding,
+  normalizeGooglePlayPackage, normalizeGooglePlayTracks, storeGooglePlayBinding, storeGooglePlayReportsGrant,
   parseGooglePlayCredential, type GooglePlayTracks } from "../lib/google_play_bindings";
 import { requireAndroidApp, verifyBinding } from "./google_play_bindings";
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
 // Play Console statistics exports (installs, active devices) are CSV files in a
-// Google-owned Cloud Storage bucket. Requested alongside publishing so one
-// consent covers both; optional, because Google lets the user deselect it and
-// publishing must keep working without it.
+// Google-owned Cloud Storage bucket. This is a Google Cloud scope: Workspace
+// "Google Cloud session control" expires any grant holding one after the
+// organization's reauthentication interval, and then the whole refresh token
+// fails. So it is requested in its own authorization (purpose "reports"), never
+// together with publishing, and an expired reports grant only stops statistics.
 export const GOOGLE_PLAY_REPORTS_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
 function callbackUri(env: Env) { return businessOrigin(env) + "/api/google-play/oauth/callback"; }
 function cookieDomain(c: AdminContext): { domain: string } | Record<string, never> {
@@ -51,16 +53,26 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   }
   let packageName: string | null = null;
   let tracks: GooglePlayTracks | null = null;
+  let purpose: "publishing" | "reports" = "publishing";
   try {
     const text = await c.req.text();
     const body = text.trim() ? JSON.parse(text) : {};
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Object required");
+    if (body.purpose !== undefined) {
+      if (body.purpose !== "publishing" && body.purpose !== "reports") throw new Error("Unknown purpose");
+      purpose = body.purpose;
+    }
+    if (purpose === "reports" && (body.package_name !== undefined || body.tracks !== undefined)) throw new Error("Reports take no binding");
     if (body.package_name !== undefined || body.tracks !== undefined) {
       packageName = normalizeGooglePlayPackage(body.package_name);
       tracks = normalizeGooglePlayTracks(body.tracks);
     }
   } catch { return c.json({ code: "INVALID_PLAY_BINDING", error: "Valid package and tracks are required" }, 400); }
   const meta = await getGooglePlayBindingMeta(c.env.DB, appId);
+  // Statistics read the publishing binding's package; authorize them for a configured app only.
+  if (purpose === "reports" && !meta?.package_name) {
+    return c.json({ code: "PLAY_CONFIGURATION_REQUIRED", error: "Connect Google Play and choose the package before authorizing statistics reports" }, 409);
+  }
   // Reauthorizing a Google-account binding without a body keeps its package and
   // tracks; otherwise the new credential would be stored unconfigured and
   // publishing would stop until an admin re-entered them. The callback still
@@ -69,7 +81,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   // is exactly when reauthorizing is needed. One an admin disabled while it was
   // still verified is left alone, so reauthorizing never silently re-enables it.
   const reauthorizable = meta?.enabled === 1 || meta?.verification_state === "stale";
-  if (packageName === null && tracks === null && reauthorizable && meta?.credential_kind === "authorized_user" && meta.package_name
+  if (purpose === "publishing" && packageName === null && tracks === null && reauthorizable && meta?.credential_kind === "authorized_user" && meta.package_name
     && meta.internal_track && meta.closed_track && meta.production_track) {
     packageName = meta.package_name;
     tracks = { internal: meta.internal_track, closed: meta.closed_track, production: meta.production_track };
@@ -87,15 +99,19 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
   const now = Date.now();
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE expires_at<=?1").bind(now),
-    c.env.DB.prepare("INSERT INTO google_play_oauth_requests (state_hash, app_id, account_id, authenticated_account_id, org_id, client_id, package_name, tracks_json, expected_binding_version, verifier_ciphertext_b64, verifier_iv_b64, verifier_key_version, expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)")
+    c.env.DB.prepare("INSERT INTO google_play_oauth_requests (state_hash, app_id, account_id, authenticated_account_id, org_id, client_id, package_name, tracks_json, expected_binding_version, verifier_ciphertext_b64, verifier_iv_b64, verifier_key_version, expires_at, purpose) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
       .bind(await oauthStateHash(state), appId, account.id, authenticated.id, role.org_id, c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID, packageName,
-        tracks === null ? null : JSON.stringify(tracks), meta ? meta.credential_fingerprint + ":" + meta.updated_at + ":" + meta.enabled : null,
-        encrypted.ciphertext_b64, encrypted.iv_b64, encrypted.key_version, now + 10 * 60_000),
+        tracks === null ? null : JSON.stringify(tracks),
+        purpose === "publishing" && meta ? meta.credential_fingerprint + ":" + meta.updated_at + ":" + meta.enabled : null,
+        encrypted.ciphertext_b64, encrypted.iv_b64, encrypted.key_version, now + 10 * 60_000, purpose),
   ]);
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID, redirect_uri: callbackUri(c.env), response_type: "code",
-    scope: [SCOPE, GOOGLE_PLAY_REPORTS_SCOPE, "openid", "email"].join(" "), include_granted_scopes: "true",
+    // Each authorization asks only for its own scope, and without
+    // include_granted_scopes: a publishing grant must not inherit the Cloud
+    // scope from an earlier consent.
+    scope: [purpose === "reports" ? GOOGLE_PLAY_REPORTS_SCOPE : SCOPE, "openid", "email"].join(" "),
     access_type: "offline", prompt: "consent select_account",
     state, code_challenge: await challenge(verifier), code_challenge_method: "S256",
   }).toString();
@@ -103,7 +119,7 @@ export async function handleStartGooglePlayOAuth(c: AdminContext) {
     httpOnly: true, secure: new URL(callbackUri(c.env)).protocol === "https:",
     ...domainOption, sameSite: "Lax", path: "/api/google-play/oauth/callback", maxAge: 600,
   });
-  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.oauth.start", payload: { package_name: packageName } });
+  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.oauth.start", payload: { package_name: packageName, purpose } });
   return c.json({ authorization_url: url.toString() });
 }
 type OAuthFailure = "missing_code" | "server_configuration" | "token_exchange" | "offline_access" | "google_permissions" | "account_identity" | "play_permissions" | "access_changed" | "connection_changed" | "credential_storage";
@@ -111,6 +127,7 @@ type ExchangeFailure = "timeout" | "transport" | "response_body" | "invalid_resp
 type Pending = {
   state_hash: string; app_id: string; account_id: string; authenticated_account_id: string; org_id: string | null; client_id: string; package_name: string | null;
   tracks_json: string | null; expected_binding_version: string | null; expires_at: number; consumed_at: number | null;
+  purpose: "publishing" | "reports";
   verifier_ciphertext_b64: string; verifier_iv_b64: string; verifier_key_version: string;
 };
 export async function handleGooglePlayOAuthCallback(c: AdminContext) {
@@ -147,6 +164,8 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     .bind(hash, effective.id, Date.now()).first<{ state_hash: string }>();
   if (!claimed) return c.json({ error: "Authorization was already consumed", code: "INVALID_OAUTH_STATE" }, 400);
   const resultUrl = new URL(dashboardOrigin(c.env) + "/apps/" + pending.app_id + "/integrations");
+  // Lets the page retry the same authorization after a failure or cancellation.
+  if (pending.purpose === "reports") resultUrl.searchParams.set("google_play_oauth_purpose", "reports");
   const finish = (result: string) => { resultUrl.searchParams.set("google_play_oauth", result); return c.redirect(resultUrl.toString(), 303); };
   // Only allowlisted enums and HTTP statuses cross the diagnostic boundary.
   // Never log the callback URL, code, state, provider bodies or credentials.
@@ -197,8 +216,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       || typeof token.access_token !== "string" || !token.access_token) return fail("token_exchange", response.status, undefined, "invalid_response");
     if (typeof token.refresh_token !== "string" || !token.refresh_token) return fail("offline_access");
     const grantedScopes = typeof token.scope === "string" ? token.scope.split(/\s+/) : [];
+    const reportsPurpose = pending.purpose === "reports";
     // Exact token equality; a substring match would accept look-alike scopes.
-    if (!grantedScopes.some((scope) => scope === SCOPE)) return fail("google_permissions");
+    if (!grantedScopes.some((scope) => scope === (reportsPurpose ? GOOGLE_PLAY_REPORTS_SCOPE : SCOPE))) return fail("google_permissions");
     const reportAccess = grantedScopes.some((scope) => scope === GOOGLE_PLAY_REPORTS_SCOPE);
     stage = "account_identity";
     const profileResponse = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
@@ -211,6 +231,21 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       type: "authorized_user", client_id: c.env.GOOGLE_PLAY_OAUTH_CLIENT_ID,
       client_secret: c.env.GOOGLE_PLAY_OAUTH_CLIENT_SECRET, refresh_token: token.refresh_token, client_email: profile.email,
     });
+    if (reportsPurpose) {
+      stage = "access_changed";
+      const changedRole = await ensureAppRole(c, pending.app_id, "admin");
+      if (!changedRole.ok) return fail("access_changed");
+      stage = "credential_storage";
+      const grant = await storeGooglePlayReportsGrant(c.env.DB, {
+        appId: pending.app_id, credential, actor: currentActor(c),
+        keyringJson: c.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION,
+      });
+      stored = true;
+      await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.reports_oauth.connect",
+        payload: { credential_fingerprint: grant.credential_fingerprint } });
+      await c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE state_hash=?1").bind(hash).run();
+      return finish("reports_connected");
+    }
     stage = "server_configuration";
     const tracks = pending.tracks_json === null ? null : normalizeGooglePlayTracks(JSON.parse(pending.tracks_json));
     if (pending.package_name !== null || tracks !== null) {
@@ -240,7 +275,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     // their Google connection failed. The consumed row still prevents replay.
     if (stored) {
       console.warn("google_play.oauth.post_connect_bookkeeping_failed", { app_id: pending.app_id });
-      return finish("connected");
+      return finish(pending.purpose === "reports" ? "reports_connected" : "connected");
     }
     const reason = stage === "credential_storage" && error instanceof Error
       && error.message === "Google Play binding changed during authorization" ? "connection_changed" : stage;

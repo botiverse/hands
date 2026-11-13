@@ -770,7 +770,7 @@ Play Console 会把每月的统计 CSV 导出到 Google 自有的 Cloud Storage 
 
 需要满足两点：
 
-1. 应用的 Google Play 连接有报表权限。OAuth 连接在授权时须允许 Cloud Storage 只读权限（`devstorage.read_only`，用于读取 Play Console 报表）；没有勾选的，在集成页点「重新向 Google 授权」（包名和轨道会保留）。服务账号需要在 Play Console 中授予下载报表的权限。
+1. 应用能读取报表。Google 账号连接：在 Google Play 集成页「统计报表」一栏点「授权读取统计报表」。这是单独的只读授权（`devstorage.read_only`），即使组织设置让它过期，也只影响统计，发布不受影响。授权之前，Hands 会先尝试用发布连接读取。服务账号需要在 Play Console 中授予下载报表的权限。
 2. 应用管理员设置一次报表存储桶。在 Play Console「下载报告 > 统计信息」中复制 Cloud Storage URI，形如 `gs://pubsite_prod_rev_<数字>/`（较早的开发者账号为 `gs://pubsite_prod_<数字>/`）。`gs://` URI 或纯存储桶名都可以：
 
 ```bash

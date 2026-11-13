@@ -485,5 +485,7 @@
   "provide exactly one of app_ids (non-empty array) or all_apps: true": "app_ids（非空数组）和 all_apps: true 必须且只能提供一个",
   "stats_bucket is required (string or null)": "需要提供 stats_bucket（字符串或 null）",
   "the main channel has no App Store bundle id": "主渠道没有设置 App Store bundle id",
-  "this app has no App Store Connect API key": "这个 app 没有 App Store Connect API 密钥"
+  "this app has no App Store Connect API key": "这个 app 没有 App Store Connect API 密钥",
+  "Connect Google Play and choose the package before authorizing statistics reports": "请先连接 Google Play 并选择包名，再授权统计报表",
+  "No statistics reports authorization for this app": "此应用没有统计报表授权"
 }

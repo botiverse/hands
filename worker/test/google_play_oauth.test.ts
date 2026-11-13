@@ -6,8 +6,8 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { registerAndroidDistributionRoutes } from "../src/openapi/android_distribution";
 import { authMiddleware, type AdminEnv, type AdminAccount } from "../src/middleware/auth";
 import { handleStartGooglePlayOAuth, handleGooglePlayOAuthCallback } from "../src/routes/google_play_oauth";
-import { handleDeleteGooglePlayBinding, handlePutGooglePlayBinding, handleGetGooglePlayBinding, handleEnableGooglePlayBinding } from "../src/routes/google_play_bindings";
-import { getGooglePlayBinding, storeGooglePlayBinding, getGooglePlayBindingMeta } from "../src/lib/google_play_bindings";
+import { handleDeleteGooglePlayBinding, handleDeleteGooglePlayReportsGrant, handlePutGooglePlayBinding, handleGetGooglePlayBinding, handleEnableGooglePlayBinding } from "../src/routes/google_play_bindings";
+import { getGooglePlayBinding, storeGooglePlayBinding, getGooglePlayBindingMeta, getGooglePlayReportsCredential, storeGooglePlayReportsGrant } from "../src/lib/google_play_bindings";
 function d1(sqlite: Database.Database): D1Database {
   const prepare = (sql: string) => {
     const indexes: number[] = [];
@@ -73,6 +73,7 @@ function harness(realAuth = false, beforeConnectMigration = false) {
   app.get("/api/apps/:appId/google-play-binding", handleGetGooglePlayBinding);
   app.post("/api/apps/:appId/google-play-binding/enable", handleEnableGooglePlayBinding);
   app.delete("/api/apps/:appId/google-play-binding", handleDeleteGooglePlayBinding);
+  app.delete("/api/apps/:appId/google-play-reports-grant", handleDeleteGooglePlayReportsGrant);
   const request = (path: string, init?: RequestInit, origin = "https://hands.test") => app.fetch(new Request(origin + path, init), env);
   const start = async (origin = "https://hands.test") => {
     const response = await request("/api/apps/" + appId + "/google-play-oauth/start", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer browser-session" }, body: JSON.stringify(input) }, origin);
@@ -211,7 +212,11 @@ describe("Google Play OAuth", () => {
     await h.start();
     const before = h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get();
     const pending = h.sqlite.prepare('SELECT * FROM google_play_oauth_requests').get();
+    // 0080 rebuilds the requests table from its pre-0092 shape: take 0092's column off,
+    // replay 0080, then 0092 again, as a database upgraded in order would see it.
+    h.sqlite.exec('ALTER TABLE google_play_oauth_requests DROP COLUMN purpose');
     h.sqlite.exec(readFileSync(new URL('../../migrations/sql/0080_google_play_connect_first.sql', import.meta.url), 'utf8'));
+    h.sqlite.exec(readFileSync(new URL('../../migrations/sql/0092_google_play_reports_grant.sql', import.meta.url), 'utf8'));
     expect(h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get()).toEqual(before);
     expect(h.sqlite.prepare('SELECT * FROM google_play_oauth_requests').get()).toEqual(pending);
     expect(() => h.sqlite.exec('UPDATE app_google_play_bindings SET package_name=NULL')).toThrow();
@@ -242,12 +247,76 @@ describe("Google Play OAuth", () => {
     expect(h.verify.mock.calls[0]![0].credential).toEqual(oauth);
     expect((await saved.json() as any).google_play).toMatchObject({package_name:input.package_name, enabled:true, verification_state:'verified'});
   });
-  it('requests optional read-only report access alongside publishing', async () => {
+  describe('statistics reports authorization', () => {
+    const reportsScope = 'https://www.googleapis.com/auth/devstorage.read_only';
+    const startReports = (h: ReturnType<typeof harness>, body: unknown = {purpose:'reports'}) =>
+      h.request('/api/apps/' + appId + '/google-play-oauth/start', {method:'POST', headers:{authorization:'Bearer browser-session','content-type':'application/json'}, body:JSON.stringify(body)});
+    const googleReports = (scope = 'openid email ' + reportsScope) => vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => String(url) === 'https://oauth2.googleapis.com/token'
+      ? Response.json({access_token:'access', refresh_token:'reports-refresh', token_type:'Bearer', scope})
+      : Response.json({email:'stats@example.com', email_verified:true}));
+
+    it('needs a configured binding and takes no package or tracks', async () => {
+      const h = harness();
+      expect((await startReports(h)).status).toBe(409);
+      await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+      expect((await startReports(h, {purpose:'reports', package_name:input.package_name})).status).toBe(400);
+      expect((await startReports(h, {purpose:'billing'})).status).toBe(400);
+      expect(h.sqlite.prepare('SELECT count(*) n FROM google_play_oauth_requests').get()).toEqual({n:0});
+    });
+
+    it('asks only for the reports scope and stores a separate grant without touching publishing', async () => {
+      const h = harness();
+      await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:{...oauth, refresh_token:'publish-refresh'}, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+      const before = h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get();
+      const response = await startReports(h);
+      const url = new URL((await response.json() as any).authorization_url);
+      expect(url.searchParams.get('scope')!.split(' ')).toEqual([reportsScope, 'openid', 'email']);
+      expect(url.searchParams.get('include_granted_scopes')).toBeNull();
+      expect(h.sqlite.prepare('SELECT purpose, package_name, tracks_json, expected_binding_version FROM google_play_oauth_requests').get())
+        .toEqual({purpose:'reports', package_name:null, tracks_json:null, expected_binding_version:null});
+      googleReports();
+      const location = (await h.callback(url.searchParams.get('state')!)).headers.get('location')!;
+      expect(new URL(location).searchParams.get('google_play_oauth')).toBe('reports_connected');
+      expect(h.verify).not.toHaveBeenCalled();
+      expect(h.sqlite.prepare('SELECT * FROM app_google_play_bindings').get()).toEqual(before);
+      expect((await getGooglePlayReportsCredential(h.env.DB, appId, keyring))).toMatchObject({type:'authorized_user', refresh_token:'reports-refresh', client_email:'stats@example.com'});
+      expect((await getGooglePlayBinding(h.env.DB, appId, keyring))!.credential).toMatchObject({refresh_token:'publish-refresh'});
+      const got = await (await h.request('/api/apps/' + appId + '/google-play-binding', {headers:{authorization:'Bearer browser-session'}})).json() as any;
+      expect(got.reports_grant).toEqual({account_email:'stats@example.com', updated_at:expect.any(Number)});
+      expect(JSON.stringify(got)).not.toContain('reports-refresh');
+    });
+
+    it('refuses a reports grant that lacks the reports scope', async () => {
+      const h = harness(); vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+      const url = new URL((await (await startReports(h)).json() as any).authorization_url);
+      googleReports('openid email https://www.googleapis.com/auth/androidpublisher');
+      const location = (await h.callback(url.searchParams.get('state')!)).headers.get('location')!;
+      expect(new URL(location).searchParams.get('google_play_oauth_error')).toBe('google_permissions');
+      expect(await getGooglePlayReportsCredential(h.env.DB, appId, keyring)).toBeNull();
+    });
+
+    it('removes only the reports grant, and unbinding removes both', async () => {
+      const h = harness();
+      await storeGooglePlayBinding(h.env.DB, {appId, packageName:input.package_name, tracks:input.tracks, credential:oauth, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'});
+      const grant = {appId, credential:{...oauth, refresh_token:'reports-refresh'}, actor:'human', keyringJson:keyring, activeKeyVersion:'v1'};
+      await storeGooglePlayReportsGrant(h.env.DB, grant);
+      const del = () => h.request('/api/apps/' + appId + '/google-play-reports-grant', {method:'DELETE', headers:{authorization:'Bearer browser-session'}});
+      expect((await del()).status).toBe(200);
+      expect((await del()).status).toBe(404);
+      expect(h.sqlite.prepare('SELECT count(*) n FROM app_google_play_bindings').get()).toEqual({n:1});
+      await storeGooglePlayReportsGrant(h.env.DB, grant);
+      await h.request('/api/apps/' + appId + '/google-play-binding', {method:'DELETE', headers:{authorization:'Bearer browser-session'}});
+      expect(h.sqlite.prepare('SELECT count(*) n FROM google_play_reports_grants').get()).toEqual({n:0});
+    });
+  });
+
+  it('requests publishing alone, without the Cloud reports scope or earlier grants', async () => {
     const h = harness();
     const { url } = await h.start();
-    expect(url!.searchParams.get('scope')!.split(' ')).toEqual([
-      'https://www.googleapis.com/auth/androidpublisher', 'https://www.googleapis.com/auth/devstorage.read_only', 'openid', 'email']);
-    expect(url!.searchParams.get('include_granted_scopes')).toBe('true');
+    expect(url!.searchParams.get('scope')!.split(' ')).toEqual(['https://www.googleapis.com/auth/androidpublisher', 'openid', 'email']);
+    expect(url!.searchParams.get('include_granted_scopes')).toBeNull();
+    expect(h.sqlite.prepare('SELECT purpose FROM google_play_oauth_requests').get()).toEqual({purpose:'publishing'});
   });
   it.each([true, false])('reauthorizes an enabled binding without a body, keeping its configuration (report access granted=%s)', async (granted) => {
     const h = harness();

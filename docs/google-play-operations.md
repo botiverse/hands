@@ -33,11 +33,11 @@ Internal repository reference for Hands operators and release engineers. The pub
 | 权限 | 用途 |
 | --- | --- |
 | https://www.googleapis.com/auth/androidpublisher | 访问 Google Play 发布 API |
-| https://www.googleapis.com/auth/devstorage.read_only | 只读下载 Play Console 统计报表（安装量、活跃设备）。可选：授权时不勾选不影响发布 |
+| https://www.googleapis.com/auth/devstorage.read_only | 只读下载 Play Console 统计报表（安装量、活跃设备）。单独授权，不和发布权限放在一起 |
 | openid | 识别授权账号 |
 | email | 展示已授权的 Google 账号 |
 
-已连接的 Google 账号要获得统计报表读取权限，需要在 Hands 集成页点「重新向 Google 授权」，包名和轨道会保留。新增权限后 Google 可能要求重新审核授权页面，审核完成前授权页可能显示未验证提示。
+发布和统计报表是两个独立的 Google 授权：「重新向 Google 授权」只申请发布权限，包名和轨道会保留；统计报表在集成页「统计报表」一栏点「授权读取统计报表」单独授权。分开的原因：`devstorage.read_only` 属于 Google Cloud 权限，如果 Workspace 开了「Google Cloud 会话控制」，带这类权限的授权会按组织设定的间隔过期，整个授权随之失效；分开后过期只影响统计，不影响发布。新增权限后 Google 可能要求重新审核授权页面，审核完成前授权页可能显示未验证提示。
 
 受众按实际使用范围选择。使用外部应用的测试模式时，把准备授权的真人 Google 账号添加为测试用户。测试模式的刷新令牌可能在七天后过期，长期自动发布前应完成适合正式使用的受众、发布状态和 Google 要求的审核。参见 [Google 对刷新令牌的说明](https://developers.google.com/identity/protocols/oauth2#expiration)。
 
