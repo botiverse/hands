@@ -545,6 +545,11 @@ without it, iOS crashes for that version show only raw frames.
 recorded as build metadata. `publish-ios` creates the Hands build/release; it
 does not itself upload to Apple or activate TestFlight testing.
 
+Since CLI 0.5.49 the `.ipa`, dSYM archive and metadata file go straight to
+storage through presigned uploads (up to 5 GiB each), so an IPA larger than
+100 MiB no longer fails with HTTP 413. The build stays pending until every file
+is verified by SHA-256 and size; a mismatch leaves it pending with no release.
+
 An app publisher then starts the **server-side upload** through the Hands console,
 API, or CLI. Poll the returned Apple Build Upload id with the upload-status API until `COMPLETE` or
 `FAILED` (`response.state.state`; Apple errors/warnings/infos remain alongside
