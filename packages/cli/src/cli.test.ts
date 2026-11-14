@@ -2918,6 +2918,7 @@ describe("builds publish-ios direct upload", () => {
   let requests: Array<{ method: string; url: string; body?: any }>;
   let uploaded: Map<string, Buffer>;
   let tamperComplete: boolean;
+  let completeFailures: Array<{ status: number; body: Record<string, unknown> }>;
   let originalApi: string | undefined;
   let originalToken: string | undefined;
 
@@ -2926,6 +2927,7 @@ describe("builds publish-ios direct upload", () => {
     requests = [];
     uploaded = new Map();
     tamperComplete = false;
+    completeFailures = [];
     let nextAsset = 1;
     server = createServer(async (req, res) => {
       let body: any;
@@ -2960,6 +2962,11 @@ describe("builds publish-ios direct upload", () => {
       }
       const complete = /^\/api\/apps\/app-1\/builds\/build-1\/assets\/(asset-\d+)\/upload\/complete$/.exec(req.url ?? "");
       if (complete && req.method === "POST") {
+        const failure = completeFailures.shift();
+        if (failure) {
+          res.statusCode = failure.status;
+          return res.end(JSON.stringify(failure.body));
+        }
         const bytes = uploaded.get(complete[1]!) ?? Buffer.alloc(0);
         return res.end(JSON.stringify({
           asset_id: complete[1],
@@ -2985,6 +2992,8 @@ describe("builds publish-ios direct upload", () => {
     // Earlier suites pin a module-level API base; point it at this server.
     const { setApiBase } = await import("../src/lib/api.js");
     setApiBase(process.env.HANDS_API);
+    const { setCompleteRetryBaseMsForTests } = await import("../src/commands/builds.js");
+    setCompleteRetryBaseMsForTests(1);
   });
 
   afterEach(async () => {
@@ -3001,16 +3010,18 @@ describe("builds publish-ios direct upload", () => {
     const dsym = join(dir, "Raft.app.dSYM.zip");
     writeFileSync(ipa, Buffer.from("signed ipa bytes"));
     writeFileSync(dsym, Buffer.from("dsym archive bytes"));
+    const metadata = join(dir, "build-metadata.json");
+    writeFileSync(metadata, JSON.stringify({ bundle_id: "build.raft.app" }));
     const { registerBuildCommands } = await import("../src/commands/builds.js");
     const program = new Command().version("0.5.49").option("--json", "JSON output", false);
     registerBuildCommands(program);
-    await program.parseAsync(["node", "hands", "builds", "publish-ios", "raft-ios", "--ipa", ipa, "--dsym", dsym,
+    await program.parseAsync(["node", "hands", "builds", "publish-ios", "raft-ios", "--ipa", ipa, "--dsym", dsym, "--metadata", metadata,
       "--version-name", "1.25.0", "--version-code", "12500002", "--json"]);
-    return { ipa, dsym };
+    return { ipa, dsym, metadata };
   }
 
   it("uploads the IPA and dSYM through presigned PUTs, never the Worker body, and activates after verification", async () => {
-    const { ipa, dsym } = await run();
+    const { ipa, dsym, metadata } = await run();
     expect(requests.some((r) => r.url === "/api/apps/app-1/upload")).toBe(false);
     const build = requests.find((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds");
     expect(build?.body).toMatchObject({
@@ -3020,13 +3031,20 @@ describe("builds publish-ios direct upload", () => {
       required_asset_slots_json: [
         { artifact_kind: "installable", platform: "ios", arch: null, variant: null, filetype: "ipa" },
         { artifact_kind: "dsym", platform: "ios", arch: null, variant: null, filetype: "dsym.zip" },
+        { artifact_kind: "metadata-file", platform: "ios", arch: null, variant: null, filetype: "metadata.json" },
       ],
     });
-    expect([...uploaded.values()]).toEqual([readFileSync(ipa), readFileSync(dsym)]);
+    // The server refuses a declaration whose slot was not required at creation
+    // (ASSET_SLOT_NOT_REQUIRED), so every declared slot must be one of them.
+    const slotOf = (x: any) => JSON.stringify([x.artifact_kind, x.platform, x.arch ?? null, x.variant ?? null, x.filetype]);
+    const required = new Set((build!.body.required_asset_slots_json as any[]).map(slotOf));
+    const declared = requests.filter((r) => r.method === "POST" && r.url.endsWith("/assets/uploads")).map((r) => r.body);
+    expect(declared.map(slotOf).sort()).toEqual([...required].sort());
+    expect([...uploaded.values()]).toEqual([readFileSync(ipa), readFileSync(dsym), readFileSync(metadata)]);
     const sequence = requests.map((r) => `${r.method} ${r.url}`);
     const activate = sequence.indexOf("PATCH /api/apps/app-1/builds/build-1");
     const release = sequence.indexOf("POST /api/apps/app-1/releases");
-    expect(activate).toBeGreaterThan(sequence.lastIndexOf("POST /api/apps/app-1/builds/build-1/assets/asset-2/upload/complete"));
+    expect(activate).toBeGreaterThan(sequence.lastIndexOf("POST /api/apps/app-1/builds/build-1/assets/asset-3/upload/complete"));
     expect(release).toBeGreaterThan(activate);
     expect(requests[activate]?.body).toEqual({ status: "succeeded" });
   });
@@ -3036,5 +3054,22 @@ describe("builds publish-ios direct upload", () => {
     await expect(run()).rejects.toThrow(/does not match local bytes.*left pending/);
     expect(requests.some((r) => r.method === "PATCH")).toBe(false);
     expect(requests.some((r) => r.method === "POST" && r.url === "/api/apps/app-1/releases")).toBe(false);
+  });
+
+  it("retries completion while the server reports verification busy or a retryable storage failure", async () => {
+    completeFailures = [
+      { status: 409, body: { error: "asset verification is in progress", code: "ASSET_UPLOAD_BUSY" } },
+      { status: 503, body: { error: "storage copy failed", code: "ASSET_UPLOAD_STORAGE_FAILED", retryable: true } },
+    ];
+    await run();
+    expect(requests.some((r) => r.method === "POST" && r.url === "/api/apps/app-1/releases")).toBe(true);
+  });
+
+  it("does not retry a completion refusal the server does not mark transient", async () => {
+    completeFailures = [{ status: 409, body: { error: "asset upload expired", code: "ASSET_UPLOAD_EXPIRED" } }];
+    await expect(run()).rejects.toThrow();
+    const completes = requests.filter((r) => r.url.endsWith("/upload/complete"));
+    expect(completes).toHaveLength(1);
+    expect(requests.some((r) => r.method === "PATCH")).toBe(false);
   });
 });

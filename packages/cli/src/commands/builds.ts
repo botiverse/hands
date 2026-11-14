@@ -2604,15 +2604,26 @@ async function symbolPlatform(appId: string, buildId: string, kind: string): Pro
 }
 
 /**
- * POST the completion step, retrying transient transport failures.
+ * POST the completion step, retrying transient transport failures and the
+ * server's own transient answers (ASSET_UPLOAD_BUSY, `retryable: true`).
  *
  * Safe because the endpoint is a replay when the asset is already committed
  * (build_asset_uploads.ts returns the stored row when state='ready'), so a retry
- * can only produce the same result. Bounded: three attempts with short backoff,
+ * can only produce the same result. Bounded (three attempts for transport
+ * failures, six for server-marked ones) with growing backoff,
  * then surface the last error so a real failure is not hidden.
  */
+/** Backoff unit for completeWithRetry; tests shorten it. */
+let completeRetryBaseMs = 1000;
+export function setCompleteRetryBaseMsForTests(ms: number): void {
+  completeRetryBaseMs = ms;
+}
+
 async function completeWithRetry(appId: string, buildId: string, assetId: string) {
-  const attempts = 3;
+  // Transport failures: three attempts. Server-marked transient answers (a large
+  // file's verification can take a while): up to six.
+  const attempts = 6;
+  const transportAttempts = 3;
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -2626,9 +2637,17 @@ async function completeWithRetry(appId: string, buildId: string, assetId: string
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
-      const transient = /fetch failed|network|timeout|socket hang up|ECONNRESET|EAI_AGAIN/i.test(message);
-      if (!transient || attempt === attempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      const transport = /fetch failed|network|timeout|socket hang up|ECONNRESET|EAI_AGAIN/i.test(message);
+      // The server marks its own transient answers: verification still running on
+      // another request (ASSET_UPLOAD_BUSY) or a storage copy that failed with
+      // `retryable: true`. Large files make both likelier.
+      const body = error instanceof QuiverApiError && error.body && typeof error.body === "object"
+        ? error.body as { code?: unknown; retryable?: unknown }
+        : null;
+      const serverTransient = !!body && (body.retryable === true || body.code === "ASSET_UPLOAD_BUSY");
+      if (!(transport || serverTransient) || attempt === attempts) throw error;
+      if (!serverTransient && attempt >= transportAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(completeRetryBaseMs * attempt, 10 * completeRetryBaseMs)));
     }
   }
   throw lastError;
