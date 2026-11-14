@@ -63,6 +63,9 @@ interface PlayWriteResult {
     reason?: string;
     lifecycle_before?: string | null;
     lifecycle_after?: string | null;
+    cancel_in_review_requested?: number[];
+    cancelled_in_review?: boolean;
+    in_review_before?: Array<{ track: string; release_name: string; version_codes: number[] }> | null;
   } | null;
   /** Present for play-release-notes. */
   release_notes?: {
@@ -735,11 +738,15 @@ export function registerReleaseCommands(program: Command): void {
       "Upload and commit with changesNotSentForReview=true (always ERROR_IF_IN_REVIEW): saved on Play, NOT sent for review. Use while another release is in review; send it later with `hands releases play-send-for-review`.",
       false,
     )
+    .option(
+      "--cancel-in-review <versionCodes>",
+      "Withdraw the release(s) now in review and submit this one instead (CANCEL_IN_REVIEW_AND_SUBMIT). Name every in-review versionCode, comma-separated (e.g. 12400004); Hands reads the tracks first and refuses on any mismatch. Google withdraws everything in review for the app: store listing or form reviews and releases on tracks not bound in Hands are not visible to Hands and are withdrawn too.",
+    )
     .option("--json", "Output JSON.", false)
     .action(async (
       appIdOrSlug: string,
       releaseId: string,
-      opts: { track: string; rolloutPercent?: string; note: string; changesNotSentForReview?: boolean; json?: boolean },
+      opts: { track: string; rolloutPercent?: string; note: string; changesNotSentForReview?: boolean; cancelInReview?: string; json?: boolean },
       command: Command,
     ) => {
       const track = parsePlayTrack(opts.track);
@@ -755,6 +762,14 @@ export function registerReleaseCommands(program: Command): void {
       if (rolloutPercent !== undefined) body.rollout_percent = rolloutPercent;
       // Sent only when set, so a plain promote is the same request as before.
       if (opts.changesNotSentForReview) body.changes_not_sent_for_review = true;
+      if (opts.cancelInReview !== undefined) {
+        if (opts.changesNotSentForReview) throw new Error("--cancel-in-review cannot be combined with --changes-not-sent-for-review");
+        const codes = opts.cancelInReview.split(",").map((part) => part.trim()).filter(Boolean).map(Number);
+        if (codes.length === 0 || codes.some((code) => !Number.isSafeInteger(code) || code < 1)) {
+          throw new Error("--cancel-in-review takes the in-review versionCodes, comma-separated (e.g. 12400004)");
+        }
+        body.cancel_in_review_version_codes = codes;
+      }
       let res: PlayWriteResult;
       try {
         res = await apiRequest<PlayWriteResult>(
@@ -774,6 +789,14 @@ export function registerReleaseCommands(program: Command): void {
       console.log(`  track:       ${res.track ?? track}`);
       console.log(`  versionCode: ${res.version_code ?? "unavailable"}`);
       if (res.rollout_percent != null) console.log(`  rollout:     ${res.rollout_percent}%`);
+      if (opts.cancelInReview !== undefined) {
+        const review = res.review;
+        const before = (review?.in_review_before ?? [])
+          .map((release) => `${release.track} ${release.release_name} (${release.version_codes.join(", ")})`).join("; ");
+        console.log(review?.cancelled_in_review === true
+          ? `  review:      withdrew ${before || "the named release"} and submitted this release for review.`
+          : "  review:      the server did not confirm the withdrawal; check Play Console.");
+      }
       if (opts.changesNotSentForReview) {
         const review = res.review;
         if (review?.requested === false) {

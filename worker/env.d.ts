@@ -128,6 +128,8 @@ interface GooglePlayAdapterService {
       releaseNotes?: Array<{ language: string; text: string }> | null;
       /** Commit every edit with changesNotSentForReview=true. Omitted = sent for review (unchanged). */
       changesNotSentForReview?: boolean;
+      /** Commit the release edit with CANCEL_IN_REVIEW_AND_SUBMIT (withdraws what is in review). */
+      cancelInReview?: boolean;
     },
     body: ReadableStream<Uint8Array>,
     symbolsBody: ReadableStream<Uint8Array> | null,
@@ -161,6 +163,8 @@ interface GooglePlayAdapterService {
     release_notes_languages?: string[];
     /** true only when the adapter committed with changesNotSentForReview; older adapters omit it. */
     changes_not_sent_for_review?: boolean;
+    /** true only when the adapter committed the release edit with CANCEL_IN_REVIEW_AND_SUBMIT. */
+    cancelled_in_review?: boolean;
   }>>;
   /** Separate RPC rejects missing/mismatched bundles rather than uploading without mapping. */
   promoteWithPriorMapping?(

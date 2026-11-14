@@ -2376,6 +2376,40 @@ describe("play distribution commands", () => {
     }
   });
 
+  it("sends cancel_in_review_version_codes with --cancel-in-review and prints what was withdrawn", async () => {
+    const harness = await startPlayHarness({ writeExtra: { review: {
+      requested: true, cancel_in_review_requested: [12400004], cancelled_in_review: true,
+      in_review_before: [{ track: "production", release_name: "1.24.0", version_codes: [12400004] }],
+    } } });
+    try {
+      await harness.run(
+        "releases", "play-promote", "raft-android", "release-1",
+        "--track", "production", "--note", "replace 1.24.0 with 1.25.0", "--cancel-in-review", "12400004",
+      );
+      const post = harness.requests.find((request) => request.method === "POST");
+      expect(post?.body).toEqual({
+        track: "production", expected_revision: 7, approval: { note: "replace 1.24.0 with 1.25.0" },
+        cancel_in_review_version_codes: [12400004],
+      });
+      expect(harness.logs.join("\n")).toContain("withdrew production 1.24.0 (12400004)");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("refuses --cancel-in-review with --changes-not-sent-for-review or without valid versionCodes, before any write", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await expect(harness.run("releases", "play-promote", "raft-android", "release-1", "--track", "production", "--note", "n",
+        "--cancel-in-review", "12400004", "--changes-not-sent-for-review")).rejects.toThrow(/cannot be combined/);
+      await expect(harness.run("releases", "play-promote", "raft-android", "release-1", "--track", "production", "--note", "n",
+        "--cancel-in-review", "1.24.0")).rejects.toThrow(/versionCodes/);
+      expect(harness.requests.some((request) => request.method === "POST")).toBe(false);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("warns when the server did not confirm changesNotSentForReview", async () => {
     const harness = await startPlayHarness();
     try {
