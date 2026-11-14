@@ -1622,6 +1622,42 @@ export function registerBuildCommands(program: Command): void {
           ci_run_id: opts.ciRunId ?? null,
           ci_url: opts.ciUrl ?? null,
         };
+        // Files go straight to R2 through presigned PUTs (direct asset ingest
+        // protocol v1), not through the Worker: a signed .ipa can exceed the
+        // 100 MiB request body limit in front of /api/apps/:id/upload. The build
+        // stays pending until every declared slot is verified by sha256 and size.
+        const planned: Array<{
+          path: string;
+          artifact_kind: string;
+          filetype: string;
+          metadata_json: Record<string, unknown>;
+        }> = [
+          {
+            path: opts.ipa,
+            artifact_kind: "installable",
+            filetype: inferIosFiletype(opts.ipa),
+            metadata_json: { filename: ipaName, signed: true, distribution: "testflight" },
+          },
+        ];
+        if (opts.dsym) {
+          planned.push({
+            path: opts.dsym,
+            artifact_kind: "dsym",
+            filetype: inferIosFiletype(opts.dsym),
+            metadata_json: { filename: basename(opts.dsym) },
+          });
+        }
+        if (opts.metadata) {
+          planned.push({
+            path: opts.metadata,
+            artifact_kind: "metadata-file",
+            filetype: inferIosFiletype(opts.metadata),
+            metadata_json: { filename: basename(opts.metadata) },
+          });
+        }
+        const localDigests = new Map<string, { sha256: string; sizeBytes: number }>();
+        for (const entry of planned) localDigests.set(entry.path, await sha256File(entry.path));
+
         const build = await createAdmittedPublishBuild({
           appId,
           channelId,
@@ -1637,7 +1673,15 @@ export function registerBuildCommands(program: Command): void {
             version_code: versionCode,
             changelog,
             source: "cli",
-            status: "succeeded",
+            status: "pending",
+            asset_ingest_protocol_version: 1,
+            required_asset_slots_json: planned.map((entry) => ({
+              artifact_kind: entry.artifact_kind,
+              platform: "ios",
+              arch: null,
+              variant: null,
+              filetype: entry.filetype,
+            })),
             build_metadata_json: buildMetadata,
             provenance_json: provenance,
             should_force_update: Boolean(opts.forceUpdate),
@@ -1645,41 +1689,28 @@ export function registerBuildCommands(program: Command): void {
         });
 
         const assets = [];
-        assets.push(
-          await uploadAndRegisterAsset(appId, build.id, opts.ipa, {
-            artifact_kind: "installable",
+        for (const entry of planned) {
+          const local = localDigests.get(entry.path)!;
+          const asset = await uploadDirectBuildAsset(appId, build.id, entry.path, {
+            artifact_kind: entry.artifact_kind,
             platform: "ios",
             arch: null,
-            filetype: inferIosFiletype(opts.ipa),
-            metadata_json: {
-              filename: ipaName,
-              signed: true,
-              distribution: "testflight",
-            },
-          }),
-        );
-        if (opts.dsym) {
-          assets.push(
-            await uploadAndRegisterAsset(appId, build.id, opts.dsym, {
-              artifact_kind: "dsym",
-              platform: "ios",
-              arch: null,
-              filetype: inferIosFiletype(opts.dsym),
-              metadata_json: { filename: basename(opts.dsym) },
-            }),
-          );
+            filetype: entry.filetype,
+            metadata_json: entry.metadata_json,
+          });
+          if (asset.file_hash !== local.sha256 || asset.size_bytes !== local.sizeBytes) {
+            throw new Error(
+              `uploaded ${basename(entry.path)} (${asset.file_hash}, ${asset.size_bytes} bytes) does not match local bytes ` +
+                `(${local.sha256}, ${local.sizeBytes} bytes); build ${build.id} left pending for inspection`,
+            );
+          }
+          assets.push(asset);
         }
-        if (opts.metadata) {
-          assets.push(
-            await uploadAndRegisterAsset(appId, build.id, opts.metadata, {
-              artifact_kind: "metadata-file",
-              platform: "ios",
-              arch: null,
-              filetype: inferIosFiletype(opts.metadata),
-              metadata_json: { filename: basename(opts.metadata) },
-            }),
-          );
-        }
+
+        await apiRequest(`/api/apps/${appId}/builds/${build.id}`, {
+          method: "PATCH",
+          body: { status: "succeeded" },
+        });
 
         const release = await createReleaseOrTerminalizeVersionConflict({
           appId,

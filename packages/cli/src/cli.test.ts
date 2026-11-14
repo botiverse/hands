@@ -1222,6 +1222,7 @@ describe("publish lane release-version admission", () => {
     let mode: "occupied" | "race" = "occupied";
     let buildCounter = 0;
     let uploadCounter = 0;
+    const directDeclared = new Map<string, { sha256: string; size: number }>();
     const server = createServer(async (req, res) => {
       let body: Record<string, any> | undefined;
       if (req.headers["content-type"]?.includes("application/json")) {
@@ -1265,6 +1266,31 @@ describe("publish lane release-version admission", () => {
           r2_key: `apps/app-1/upload-${uploadCounter}`,
           size_bytes: 10 + uploadCounter,
           original_filename: `upload-${uploadCounter}`,
+        }));
+      }
+      // Direct asset ingest (publish-ios): declare, presigned PUT, complete.
+      if (req.method === "POST" && req.url?.endsWith("/assets/uploads")) {
+        uploadCounter += 1;
+        const assetId = `asset-${uploadCounter}`;
+        directDeclared.set(assetId, { sha256: body?.sha256, size: body?.size_bytes });
+        return res.end(JSON.stringify({
+          asset_id: assetId,
+          state: "pending",
+          upload: { url: `http://${req.headers.host}/r2-upload/${assetId}`, headers: {} },
+        }));
+      }
+      if (req.method === "PUT" && req.url?.startsWith("/r2-upload/")) {
+        res.statusCode = 200;
+        return res.end();
+      }
+      const directComplete = /\/assets\/(asset-\d+)\/upload\/complete$/.exec(req.url ?? "");
+      if (req.method === "POST" && directComplete) {
+        const declared = directDeclared.get(directComplete[1]!);
+        return res.end(JSON.stringify({
+          asset_id: directComplete[1],
+          state: "ready",
+          file_hash: declared?.sha256,
+          size_bytes: declared?.size,
         }));
       }
       if (req.method === "POST" && req.url?.endsWith("/assets")) {
@@ -2883,5 +2909,132 @@ describe("webhook commands", () => {
       else process.env.HANDS_BEARER_TOKEN = originalToken;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("builds publish-ios direct upload", () => {
+  let dir: string;
+  let server: ReturnType<typeof createServer>;
+  let requests: Array<{ method: string; url: string; body?: any }>;
+  let uploaded: Map<string, Buffer>;
+  let tamperComplete: boolean;
+  let originalApi: string | undefined;
+  let originalToken: string | undefined;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "hands-publish-ios-"));
+    requests = [];
+    uploaded = new Map();
+    tamperComplete = false;
+    let nextAsset = 1;
+    server = createServer(async (req, res) => {
+      let body: any;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-ios" }] }));
+      if (req.url === "/api/apps/app-1/channels") {
+        return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "main" }] }));
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/apps/app-1/releases?")) {
+        return res.end(JSON.stringify({ releases: [] }));
+      }
+      if (req.url === "/api/apps/app-1/builds" && req.method === "POST") return res.end(JSON.stringify({ id: "build-1" }));
+      if (req.url === "/api/apps/app-1/builds/build-1/assets/uploads" && req.method === "POST") {
+        const assetId = `asset-${nextAsset++}`;
+        return res.end(JSON.stringify({
+          asset_id: assetId,
+          state: "pending",
+          upload: { url: `http://${req.headers.host}/r2-upload/${assetId}`, headers: { "content-type": body.content_type } },
+        }));
+      }
+      if (req.url?.startsWith("/r2-upload/") && req.method === "PUT") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        uploaded.set(req.url.split("/").at(-1)!, Buffer.concat(chunks));
+        return res.end();
+      }
+      const complete = /^\/api\/apps\/app-1\/builds\/build-1\/assets\/(asset-\d+)\/upload\/complete$/.exec(req.url ?? "");
+      if (complete && req.method === "POST") {
+        const bytes = uploaded.get(complete[1]!) ?? Buffer.alloc(0);
+        return res.end(JSON.stringify({
+          asset_id: complete[1],
+          state: "ready",
+          file_hash: tamperComplete ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex"),
+          size_bytes: bytes.length,
+        }));
+      }
+      if (req.url === "/api/apps/app-1/builds/build-1" && req.method === "PATCH") {
+        return res.end(JSON.stringify({ id: "build-1", status: body.status }));
+      }
+      if (req.url === "/api/apps/app-1/releases" && req.method === "POST") return res.end(JSON.stringify({ id: "release-1" }));
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    originalApi = process.env.HANDS_API;
+    originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    // Earlier suites pin a module-level API base; point it at this server.
+    const { setApiBase } = await import("../src/lib/api.js");
+    setApiBase(process.env.HANDS_API);
+  });
+
+  afterEach(async () => {
+    if (originalApi === undefined) delete process.env.HANDS_API;
+    else process.env.HANDS_API = originalApi;
+    if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+    else process.env.HANDS_BEARER_TOKEN = originalToken;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function run() {
+    const ipa = join(dir, "Raft.ipa");
+    const dsym = join(dir, "Raft.app.dSYM.zip");
+    writeFileSync(ipa, Buffer.from("signed ipa bytes"));
+    writeFileSync(dsym, Buffer.from("dsym archive bytes"));
+    const { registerBuildCommands } = await import("../src/commands/builds.js");
+    const program = new Command().version("0.5.49").option("--json", "JSON output", false);
+    registerBuildCommands(program);
+    await program.parseAsync(["node", "hands", "builds", "publish-ios", "raft-ios", "--ipa", ipa, "--dsym", dsym,
+      "--version-name", "1.25.0", "--version-code", "12500002", "--json"]);
+    return { ipa, dsym };
+  }
+
+  it("uploads the IPA and dSYM through presigned PUTs, never the Worker body, and activates after verification", async () => {
+    const { ipa, dsym } = await run();
+    expect(requests.some((r) => r.url === "/api/apps/app-1/upload")).toBe(false);
+    const build = requests.find((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds");
+    expect(build?.body).toMatchObject({
+      product_type: "ios-ipa",
+      status: "pending",
+      asset_ingest_protocol_version: 1,
+      required_asset_slots_json: [
+        { artifact_kind: "installable", platform: "ios", arch: null, variant: null, filetype: "ipa" },
+        { artifact_kind: "dsym", platform: "ios", arch: null, variant: null, filetype: "dsym.zip" },
+      ],
+    });
+    expect([...uploaded.values()]).toEqual([readFileSync(ipa), readFileSync(dsym)]);
+    const sequence = requests.map((r) => `${r.method} ${r.url}`);
+    const activate = sequence.indexOf("PATCH /api/apps/app-1/builds/build-1");
+    const release = sequence.indexOf("POST /api/apps/app-1/releases");
+    expect(activate).toBeGreaterThan(sequence.lastIndexOf("POST /api/apps/app-1/builds/build-1/assets/asset-2/upload/complete"));
+    expect(release).toBeGreaterThan(activate);
+    expect(requests[activate]?.body).toEqual({ status: "succeeded" });
+  });
+
+  it("leaves the build pending and creates no release when the stored digest differs from the local bytes", async () => {
+    tamperComplete = true;
+    await expect(run()).rejects.toThrow(/does not match local bytes.*left pending/);
+    expect(requests.some((r) => r.method === "PATCH")).toBe(false);
+    expect(requests.some((r) => r.method === "POST" && r.url === "/api/apps/app-1/releases")).toBe(false);
   });
 });
