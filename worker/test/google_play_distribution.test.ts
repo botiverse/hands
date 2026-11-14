@@ -2451,6 +2451,34 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
       expect(await response.json()).toMatchObject({ error: { failure_code: "review_state_unreadable" } });
     }, 20_000);
 
+    it("refuses when a release in review has no versionCode to name", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: inReview({ production: [
+        ...productionInReview.production,
+        { name: "", codes: [], state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" },
+      ] }), promote: async () => { throw new Error("must not promote"); } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { failure_code: "in_review_unnamed" } });
+    });
+
+    it("a commit that fails after the check still records what was in review on the failed receipt", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: inReview(productionInReview),
+        promote: async (_input: unknown, stream: ReadableStream) => {
+          await new Response(stream).arrayBuffer();
+          return { ok: false, error: { status: 502, code: "play_api_unavailable", message: "Google Play API request failed" } };
+        } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(502);
+      const [receipt] = receipts(h);
+      expect(receipt).toMatchObject({ verdict: "failed-closed" });
+      expect(receipt!.payload.review).toMatchObject({
+        cancel_in_review_requested: [12400004],
+        in_review_before: [{ track: "production", release_name: "1.24.0", version_codes: [12400004] }],
+      });
+    });
+
     it("rejects combining it with changes_not_sent_for_review", async () => {
       const h = await readyRelease();
       h.env.PLAY_RELEASE_SERVICE = promoteStub({});

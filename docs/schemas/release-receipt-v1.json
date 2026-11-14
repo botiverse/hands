@@ -87,7 +87,7 @@
     "actor": { "type": "string", "minLength": 1 },
     "action": { "enum": ["accept", "promote", "send-for-review", "release-notes", "halt", "resume", "rollback-republish"] },
     "review": {
-      "description": "Play review mode of this operation's commit (independent of result). promote: requested=true unless changes_not_sent_for_review; requested=null with reason not_acknowledged when the adapter did not confirm the flag. send-for-review: requested=true plus the release lifecycle read before/after.",
+      "description": "Play review mode of this operation's commit (independent of result). promote: requested=true unless changes_not_sent_for_review; requested=null with reason not_acknowledged when the adapter did not confirm the flag. send-for-review: requested=true plus the release lifecycle read before/after. promote with cancel_in_review_version_codes adds cancel_in_review_requested, in_review_before and (on success) cancelled_in_review.",
       "type": "object",
       "additionalProperties": false,
       "required": ["requested", "changes_not_sent_for_review"],
@@ -97,7 +97,28 @@
         "changes_in_review_behavior": { "const": "ERROR_IF_IN_REVIEW" },
         "reason": { "const": "not_acknowledged" },
         "lifecycle_before": { "type": ["string", "null"] },
-        "lifecycle_after": { "type": ["string", "null"] }
+        "lifecycle_after": { "type": ["string", "null"] },
+        "cancel_in_review_requested": {
+          "description": "promote with cancel_in_review_version_codes: the versionCodes the caller named for withdrawal.",
+          "type": "array", "items": { "type": "integer" }, "minItems": 1
+        },
+        "in_review_before": {
+          "description": "Releases Hands read as IN_REVIEW on the bound tracks right before the commit (null when the read did not happen).",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["track", "release_name", "version_codes"],
+            "properties": {
+              "track": { "type": "string" },
+              "release_name": { "type": "string" },
+              "version_codes": { "type": "array", "items": { "type": "integer" } }
+            }
+          }
+        },
+        "cancelled_in_review": {
+          "description": "true when the adapter committed the release edit with CANCEL_IN_REVIEW_AND_SUBMIT. It records the request sent, not Google's outcome.",
+          "type": "boolean"
+        }
       }
     },
     "approvals": {

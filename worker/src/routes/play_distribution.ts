@@ -938,7 +938,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   const cancelCodes = input.cancel_in_review_version_codes ?? null;
   // Failed receipts carry the requested review mode too; the webhook gains
   // action/review_requested only for the non-default mode.
-  const promoteReceipt = {
+  const promoteReceipt: { review: Record<string, unknown>; notification?: { action: string; review_requested: boolean } } = {
     review: { ...promotionReview(input), ...(cancelCodes ? { cancel_in_review_requested: cancelCodes } : {}) },
     ...(notSentForReview ? { notification: { action: "promote", review_requested: false } } : {}),
   };
@@ -976,6 +976,13 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
         return fail(c, 502, { code: "play_api_error", gate: "review_state", failure_code: "review_state_unreadable",
           message: `Hands could not read which releases are in review (tracks: ${read.failed_tracks.join(", ")}); nothing was withdrawn. Try again in a minute.` });
       }
+      // A release in review without versionCodes cannot be named, so it cannot be
+      // withdrawn knowingly: refuse rather than withdraw it alongside the named one.
+      const unnamed = read.releases.filter((release) => release.version_codes.length === 0);
+      if (unnamed.length > 0) {
+        return fail(c, 409, { code: "gate_failed", gate: "review_state", failure_code: "in_review_unnamed",
+          message: `A release in review has no versionCode (${unnamed.map((r) => `${r.track} ${r.release_name}`.trim()).join("; ")}); withdraw it in Play Console. Nothing was withdrawn.` });
+      }
       const actual = [...new Set(read.releases.flatMap((release) => release.version_codes))].sort((a, b) => a - b);
       const describe = (codes: number[]) => codes.length ? codes.join(", ") : "none";
       if (actual.length === 0) {
@@ -987,6 +994,9 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
           message: `In review now: ${describe(actual)} (${read.releases.map((r) => `${r.track} ${r.release_name}`.trim()).join("; ")}); requested to withdraw: ${describe(cancelCodes)}. Nothing was withdrawn.` });
       }
       inReviewBefore = read.releases;
+      // Failed receipts written after this point (including a commit that failed
+      // or timed out after Google may have applied it) record what was in review.
+      promoteReceipt.review = { ...promoteReceipt.review, in_review_before: inReviewBefore };
     }
     const reserved = await c.env.DB.prepare(
       `UPDATE releases SET revision = revision + 1, updated_at = ?1

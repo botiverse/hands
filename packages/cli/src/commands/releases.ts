@@ -740,7 +740,7 @@ export function registerReleaseCommands(program: Command): void {
     )
     .option(
       "--cancel-in-review <versionCodes>",
-      "Withdraw the release(s) now in review and submit this one instead (CANCEL_IN_REVIEW_AND_SUBMIT). Name every in-review versionCode, comma-separated (e.g. 12400004); Hands reads the tracks first and refuses on any mismatch. Store listing or form reviews are not visible to Hands and are withdrawn too.",
+      "Withdraw the release(s) now in review and submit this one instead (CANCEL_IN_REVIEW_AND_SUBMIT). Name every in-review versionCode, comma-separated (e.g. 12400004); Hands reads the tracks first and refuses on any mismatch. Google withdraws everything in review for the app: store listing or form reviews and releases on tracks not bound in Hands are not visible to Hands and are withdrawn too.",
     )
     .option("--json", "Output JSON.", false)
     .action(async (
