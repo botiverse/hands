@@ -24,6 +24,13 @@ export interface PlayPromotionInput {
    * later with the send-for-review action (or Play Console). Default false.
    */
   changes_not_sent_for_review?: boolean;
+  /**
+   * Withdraw what is in review and submit this promotion instead
+   * (changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT). The caller names every
+   * versionCode currently in review on the bound tracks; Hands reads the tracks
+   * right before the edit and refuses unless the sets are equal.
+   */
+  cancel_in_review_version_codes?: number[];
 }
 
 export interface PlaySendForReviewInput {
@@ -67,7 +74,7 @@ interface PlayReadback {
 interface GateFailure {
   code: "gate_failed" | "edit_conflict" | "version_conflict" | "play_api_error" | "hold_active" | "forbidden"
     | "edit_in_review" | "edit_state_unknown";
-  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes"
+  gate: "immutable_binding" | "acceptance_receipt" | "channel" | "version_code" | "edit_lock" | "live_hold" | "permission" | "release_notes" | "review_state"
     | "deobfuscation_files" | null;
   message: string;
   receipt_id?: string | null;
@@ -113,6 +120,16 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
   if (notSent !== undefined && typeof notSent !== "boolean") {
     throw new Error("changes_not_sent_for_review must be a boolean");
   }
+  const cancel = input.cancel_in_review_version_codes;
+  let cancelCodes: number[] | undefined;
+  if (cancel !== undefined) {
+    if (!Array.isArray(cancel) || cancel.length === 0 || cancel.length > 20
+      || cancel.some((code) => !Number.isSafeInteger(code) || code < 1 || code > 2_100_000_000)) {
+      throw new Error("cancel_in_review_version_codes must be a non-empty list of versionCodes");
+    }
+    if (notSent === true) throw new Error("cancel_in_review_version_codes cannot be combined with changes_not_sent_for_review");
+    cancelCodes = [...new Set(cancel)].sort((a, b) => a - b);
+  }
   return {
     track: input.track,
     expected_revision: expectedRevision,
@@ -120,7 +137,58 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
     ...(rollout === undefined ? {} : { rollout_percent: rollout }),
     // Only carried when true: a request without it is normalized exactly as before.
     ...(notSent === true ? { changes_not_sent_for_review: true } : {}),
+    ...(cancelCodes ? { cancel_in_review_version_codes: cancelCodes } : {}),
   };
+}
+
+export type InReviewRead =
+  | { ok: true; releases: Array<{ track: string; release_name: string; version_codes: number[] }> }
+  | { ok: false; failed_tracks: string[] };
+
+/**
+ * Every release currently IN_REVIEW on the bound tracks. tracks.releases.list
+ * answers 403 intermittently, so each track is tried up to four times; a track
+ * that never answers makes the whole read fail (never a partial "nothing in review").
+ */
+export async function readInReviewReleases(
+  service: Pick<GooglePlayAdapterService, "listReleaseStates">,
+  binding: { credential: unknown; package_name: string; tracks: Record<"internal" | "closed" | "production", string> },
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<InReviewRead> {
+  const releases: Array<{ track: string; release_name: string; version_codes: number[] }> = [];
+  const failed: string[] = [];
+  const seen = new Set<string>();
+  for (const handsTrack of ["internal", "closed", "production"] as const) {
+    const playTrack = binding.tracks[handsTrack];
+    if (seen.has(playTrack)) continue;
+    seen.add(playTrack);
+    let answered = false;
+    for (let attempt = 0; attempt < 4 && !answered; attempt += 1) {
+      if (attempt > 0) await sleep(500 * 2 ** (attempt - 1));
+      try {
+        const reply = await service.listReleaseStates({
+          credential: binding.credential as never,
+          packageName: binding.package_name,
+          tracks: binding.tracks,
+          handsTrack,
+        });
+        if (!reply.ok) continue;
+        answered = true;
+        for (const release of reply.value) {
+          if (release.releaseLifecycleState !== "RELEASE_LIFECYCLE_STATE_IN_REVIEW") continue;
+          releases.push({
+            track: playTrack,
+            release_name: typeof release.releaseName === "string" ? release.releaseName : "",
+            version_codes: release.activeArtifacts.map((artifact) => artifact.versionCode).filter(Number.isSafeInteger),
+          });
+        }
+      } catch {
+        // retried
+      }
+    }
+    if (!answered) failed.push(playTrack);
+  }
+  return failed.length > 0 ? { ok: false, failed_tracks: failed } : { ok: true, releases };
 }
 
 export function normalizePlaySendForReviewInput(input: PlaySendForReviewInput): PlaySendForReviewInput {
@@ -867,10 +935,11 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
   const actor = currentActor(c);
   const operationId = crypto.randomUUID();
   const notSentForReview = input.changes_not_sent_for_review === true;
+  const cancelCodes = input.cancel_in_review_version_codes ?? null;
   // Failed receipts carry the requested review mode too; the webhook gains
   // action/review_requested only for the non-default mode.
   const promoteReceipt = {
-    review: promotionReview(input),
+    review: { ...promotionReview(input), ...(cancelCodes ? { cancel_in_review_requested: cancelCodes } : {}) },
     ...(notSentForReview ? { notification: { action: "promote", review_requested: false } } : {}),
   };
   if (!(await takeLock(c.env.DB, appId, artifact, operationId, actor))) {
@@ -897,6 +966,27 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     }
     if (artifact.version_code <= maxVersionCode || artifact.version_code > 2_100_000_000) {
       return fail(c, 409, { code: "version_conflict", gate: "version_code", message: `artifact versionCode ${artifact.version_code} must be greater than Play ${input.track} max (${maxVersionCode}) and no greater than 2100000000` });
+    }
+    // Withdrawing a review is only done when the caller named exactly what is in
+    // review now: a fresh read of every bound track, inside the edit lock.
+    let inReviewBefore: Array<{ track: string; release_name: string; version_codes: number[] }> | null = null;
+    if (cancelCodes) {
+      const read = await readInReviewReleases(playService, binding);
+      if (!read.ok) {
+        return fail(c, 502, { code: "play_api_error", gate: "review_state", failure_code: "review_state_unreadable",
+          message: `Hands could not read which releases are in review (tracks: ${read.failed_tracks.join(", ")}); nothing was withdrawn. Try again in a minute.` });
+      }
+      const actual = [...new Set(read.releases.flatMap((release) => release.version_codes))].sort((a, b) => a - b);
+      const describe = (codes: number[]) => codes.length ? codes.join(", ") : "none";
+      if (actual.length === 0) {
+        return fail(c, 409, { code: "gate_failed", gate: "review_state", failure_code: "nothing_in_review",
+          message: "No release is in review on the bound tracks; promote without --cancel-in-review. Store listing or form reviews are not visible to Hands." });
+      }
+      if (actual.join(",") !== cancelCodes.join(",")) {
+        return fail(c, 409, { code: "gate_failed", gate: "review_state", failure_code: "in_review_mismatch",
+          message: `In review now: ${describe(actual)} (${read.releases.map((r) => `${r.track} ${r.release_name}`.trim()).join("; ")}); requested to withdraw: ${describe(cancelCodes)}. Nothing was withdrawn.` });
+      }
+      inReviewBefore = read.releases;
     }
     const reserved = await c.env.DB.prepare(
       `UPDATE releases SET revision = revision + 1, updated_at = ?1
@@ -976,6 +1066,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       releaseNotes: releaseNotes.present && releaseNotes.notes.length > 0 ? releaseNotes.notes : null,
       // Sent only when requested, so the default RPC input is unchanged.
       ...(notSentForReview ? { changesNotSentForReview: true } : {}),
+      ...(cancelCodes ? { cancelInReview: true } : {}),
     };
     const uploadResponsePromise = Promise.resolve().then(() => {
       const adapter = c.env.PLAY_RELEASE_SERVICE!;
@@ -1076,9 +1167,19 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       deobfuscation_files?: AdapterDeobfuscationFile[];
       release_notes_languages?: unknown;
       changes_not_sent_for_review?: unknown;
+      cancelled_in_review?: unknown;
     };
     // An adapter older than the flag omits the field: recorded as not acknowledged.
-    const review = promotionReview(input, notSentForReview ? reported.changes_not_sent_for_review ?? false : undefined);
+    const review = {
+      ...promotionReview(input, notSentForReview ? reported.changes_not_sent_for_review ?? false : undefined),
+      // What was in review right before the commit, and whether the adapter
+      // confirmed committing with CANCEL_IN_REVIEW_AND_SUBMIT.
+      ...(cancelCodes ? {
+        cancel_in_review_requested: cancelCodes,
+        in_review_before: inReviewBefore,
+        cancelled_in_review: reported.cancelled_in_review === true,
+      } : {}),
+    };
     const reportedFiles = Array.isArray(reported.deobfuscation_files) ? reported.deobfuscation_files : undefined;
     const receiptId = crypto.randomUUID();
     await insertReceipt(c.env.DB, {
@@ -1154,7 +1255,7 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     return c.json({
       receipt_id: receiptId, edit_id: readback.edit_id, track: input.track, version_code: artifact.version_code, revision: input.expected_revision + 1,
       // Only with the flag, so the default response is unchanged.
-      ...(notSentForReview ? { review } : {}),
+      ...(notSentForReview || cancelCodes ? { review } : {}),
     });
   });
 }

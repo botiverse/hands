@@ -2389,6 +2389,76 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     expect(JSON.parse(delivery.payload_json).payload).toMatchObject({ action: "promote", review_requested: false });
   });
 
+  describe("cancel_in_review_version_codes", () => {
+    const inReview = (tracks: Record<string, Array<{ name: string; codes: number[]; state: string }>>, failing: string[] = []) =>
+      async (input: { handsTrack: string; tracks: Record<string, string> }) => {
+        const playTrack = input.tracks[input.handsTrack]!;
+        if (failing.includes(playTrack)) return { ok: false as const, error: { status: 403, code: "play_api_rejected", message: "403" } };
+        return { ok: true as const, value: (tracks[playTrack] ?? []).map((release) => ({
+          releaseName: release.name, track: playTrack,
+          activeArtifacts: release.codes.map((versionCode) => ({ versionCode })), releaseLifecycleState: release.state,
+        })) };
+      };
+    const productionInReview = { production: [
+      { name: "1.24.0", codes: [12400004], state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" },
+      { name: "1.23.0", codes: [12300006], state: "RELEASE_LIFECYCLE_STATE_PUBLISHED" },
+    ] };
+
+    it("withdraws exactly the named in-review release, threads cancelInReview, and records what was in review", async () => {
+      const h = await readyRelease();
+      const seen: { input?: Record<string, unknown> } = {};
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub(seen, { cancelled_in_review: true }), listReleaseStates: inReview(productionInReview) } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(200);
+      expect(seen.input).toMatchObject({ handsTrack: "production", cancelInReview: true });
+      expect("changesNotSentForReview" in seen.input!).toBe(false);
+      const review = receipts(h)[0]!.payload.review;
+      expect(review).toMatchObject({
+        requested: true,
+        cancel_in_review_requested: [12400004],
+        cancelled_in_review: true,
+        in_review_before: [{ track: "production", release_name: "1.24.0", version_codes: [12400004] }],
+      });
+      expect(await response.json()).toMatchObject({ review: { cancelled_in_review: true } });
+    });
+
+    it("refuses when the named versionCodes differ from what is in review, before reserving or calling promote", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: inReview(productionInReview),
+        promote: async () => { throw new Error("must not promote"); } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400003] });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { gate: "review_state", failure_code: "in_review_mismatch" } });
+      const revision = h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get() as { revision: number };
+      expect(revision.revision).toBe(1);
+    });
+
+    it("refuses when nothing is in review", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: inReview({}),
+        promote: async () => { throw new Error("must not promote"); } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { failure_code: "nothing_in_review" } });
+    });
+
+    it("never treats an unreadable track as 'nothing in review'", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: inReview(productionInReview, ["closed"]),
+        promote: async () => { throw new Error("must not promote"); } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: { failure_code: "review_state_unreadable" } });
+    }, 20_000);
+
+    it("rejects combining it with changes_not_sent_for_review", async () => {
+      const h = await readyRelease();
+      h.env.PLAY_RELEASE_SERVICE = promoteStub({});
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004], changes_not_sent_for_review: true });
+      expect(response.status).toBe(400);
+    });
+  });
+
   it("records an adapter that did not acknowledge the flag as not_acknowledged, never as not sent", async () => {
     const h = await readyRelease();
     h.env.PLAY_RELEASE_SERVICE = promoteStub({});

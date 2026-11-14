@@ -103,6 +103,14 @@ export interface PromotionRpcInput extends TrackMaximumRpcInput {
    * false: the parameter is not sent, exactly as before.
    */
   changesNotSentForReview?: boolean;
+  /**
+   * Commit the release edit with `changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT`:
+   * Google withdraws every change currently in review for the app and submits this
+   * edit instead. Only the worker sets it, after the caller named the exact in-review
+   * versionCodes and a fresh read matched them. Never combined with
+   * changesNotSentForReview.
+   */
+  cancelInReview?: boolean;
 }
 
 /** sendForReview: one Hands release (versionCode) on one Hands track. */
@@ -315,6 +323,8 @@ export interface PromotionRequest {
   releaseNotes?: LocalizedReleaseNote[] | null;
   /** Commit with changesNotSentForReview=true (every edit of this promotion). */
   changesNotSentForReview?: boolean;
+  /** Commit the release edit with CANCEL_IN_REVIEW_AND_SUBMIT (see PromotionRpcInput). */
+  cancelInReview?: boolean;
   /** Internal RPC contract: do not upload a new bundle if mapping was omitted. */
   requireExistingBundle?: boolean;
 }

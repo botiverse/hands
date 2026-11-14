@@ -776,14 +776,24 @@ export class GooglePlayClient {
   }
 
   /**
-   * edits.commit. Always `changesInReviewBehavior=ERROR_IF_IN_REVIEW`: Hands never
-   * cancels someone else's in-review submission. `changesNotSentForReview=true` is
-   * sent only when the caller opts in; omitted otherwise (Google's default).
+   * edits.commit. `changesInReviewBehavior=ERROR_IF_IN_REVIEW` unless `cancelInReview`:
+   * only an explicit promote whose caller named the in-review versionCodes (checked by
+   * the worker against a fresh read) withdraws a review, with CANCEL_IN_REVIEW_AND_SUBMIT.
+   * `changesNotSentForReview=true` is sent only when the caller opts in.
    */
-  async commitEdit(packageName: string, editId: string, options: { changesNotSentForReview?: boolean } = {}): Promise<string | null> {
-    const query = options.changesNotSentForReview
-      ? "changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"
-      : "changesInReviewBehavior=ERROR_IF_IN_REVIEW";
+  async commitEdit(
+    packageName: string,
+    editId: string,
+    options: { changesNotSentForReview?: boolean; cancelInReview?: boolean } = {},
+  ): Promise<string | null> {
+    if (options.cancelInReview && options.changesNotSentForReview) {
+      throw new PlayAdapterError(400, "promotion_request_invalid", "cancelInReview cannot be combined with changesNotSentForReview");
+    }
+    const query = options.cancelInReview
+      ? "changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT"
+      : options.changesNotSentForReview
+        ? "changesInReviewBehavior=ERROR_IF_IN_REVIEW&changesNotSentForReview=true"
+        : "changesInReviewBehavior=ERROR_IF_IN_REVIEW";
     const body = await this.requestJson<{ id?: unknown }>(
       `${this.editRoot(packageName, editId)}:commit?${query}`,
       { method: "POST", body: "{}" },
@@ -1072,6 +1082,8 @@ export class GooglePlayClient {
         } catch (error) {
           throw releaseEditStateRejection(error, "release");
         }
+      } else if (request.cancelInReview === true) {
+        await this.commitEdit(request.packageName, editId, { cancelInReview: true });
       } else {
         await this.commitEdit(request.packageName, editId);
       }
@@ -1100,6 +1112,9 @@ export class GooglePlayClient {
       // Present only when requested, so a promotion without the flag returns exactly
       // what it always did. true = every edit was committed changesNotSentForReview.
       ...(notSentForReview ? { changes_not_sent_for_review: true as const } : {}),
+      // Present only when requested: the release edit was committed with
+      // CANCEL_IN_REVIEW_AND_SUBMIT.
+      ...(request.cancelInReview === true ? { cancelled_in_review: true as const } : {}),
     };
   }
 

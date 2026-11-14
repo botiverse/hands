@@ -956,6 +956,34 @@ describe("changesNotSentForReview and sendForReview", () => {
     expect(fixture.requests.some((request) => /CANCEL_IN_REVIEW/.test(request.url))).toBe(false);
   });
 
+  it("promote with cancelInReview commits the release edit with CANCEL_IN_REVIEW_AND_SUBMIT and says so", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ cancelInReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: true, value: { edit_id: "edit-1", version_code: 42, cancelled_in_review: true } });
+    expect(commits(fixture)).toEqual(["edit-1?changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT"]);
+  });
+
+  it("cancelInReview with an existing bundle cancels only in the release edit, never in the side edit", async () => {
+    const fixture = googleFixture({ trackMaximum: 0 });
+    fixture.alreadyOnPlay(42, digest);
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    await service.promote(promotion({ mapping: mappingDeclaration(), cancelInReview: true }), body(), null, environment(), mappingBody());
+    expect(commits(fixture)).toEqual([
+      "edit-1?changesInReviewBehavior=ERROR_IF_IN_REVIEW",
+      "edit-2?changesInReviewBehavior=CANCEL_IN_REVIEW_AND_SUBMIT",
+    ]);
+  });
+
+  it("refuses cancelInReview combined with changesNotSentForReview before any Google call", async () => {
+    const fixture = googleFixture();
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    const result = await service.promote(promotion({ cancelInReview: true, changesNotSentForReview: true }), body(), null, environment());
+    expect(result).toMatchObject({ ok: false, error: { status: 400, code: "promotion_request_invalid" } });
+    expect(fixture.requests.some((request) => /CANCEL_IN_REVIEW/.test(request.url))).toBe(false);
+    expect(commits(fixture)).toEqual([]);
+  });
+
   it("with the flag, the existing-bundle side edit is not sent for review either", async () => {
     const fixture = googleFixture({ trackMaximum: 0 });
     fixture.alreadyOnPlay(42, digest);

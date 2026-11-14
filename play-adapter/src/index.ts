@@ -192,6 +192,12 @@ function promotionInput(
   if (input.changesNotSentForReview !== undefined && typeof input.changesNotSentForReview !== "boolean") {
     throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
   }
+  if (input.cancelInReview !== undefined && typeof input.cancelInReview !== "boolean") {
+    throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
+  }
+  if (input.cancelInReview === true && input.changesNotSentForReview === true) {
+    throw new PlayAdapterError(400, "promotion_request_invalid", "cancelInReview cannot be combined with changesNotSentForReview");
+  }
   const symbols = deobfuscationInput("nativeCode", input.symbols, symbolsBody);
   const mapping = deobfuscationInput("proguard", input.mapping, mappingBody);
   const releaseNotes = releaseNotesInput(input.releaseNotes);
@@ -210,6 +216,7 @@ function promotionInput(
     releaseNotes,
     // Only carried when true, so a promotion without the flag is the same request as before.
     ...(input.changesNotSentForReview === true ? { changesNotSentForReview: true } : {}),
+    ...(input.cancelInReview === true ? { cancelInReview: true } : {}),
   };
 }
 
