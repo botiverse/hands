@@ -151,7 +151,7 @@ export type InReviewRead =
  * that never answers makes the whole read fail (never a partial "nothing in review").
  */
 export async function readInReviewReleases(
-  service: Pick<GooglePlayAdapterService, "listReleaseStates">,
+  service: Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listReleaseStates">,
   binding: { credential: unknown; package_name: string; tracks: Record<"internal" | "closed" | "production", string> },
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<InReviewRead> {
