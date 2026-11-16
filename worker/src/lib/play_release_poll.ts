@@ -92,6 +92,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
     } catch {
       // No credential, URL, provider message or release content in logs.
       console.warn("hands_play_poll_failure", JSON.stringify({ code: "poll_unavailable" }));
+      await recordPlayAccessFailure(env.DB, row.app_id, "publishing", "poll_unavailable", now).catch(() => undefined);
     }
   }
   await enqueueDueDeliveries(env, Date.now()).catch(() => 0);

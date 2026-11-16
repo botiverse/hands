@@ -16,7 +16,6 @@ const AUTHORIZATION_CODES = new Set([
   "play_reports_token_rejected",
   "play_reports_not_authorized",
   "play_reports_scope_missing",
-  "play_permission_denied",
 ]);
 export const PLAY_ACCESS_ALERT_AFTER_MS = 60 * 60 * 1000;
 
@@ -29,7 +28,7 @@ function hint(access: PlayAccess, code: string): string {
   if (code === "play_reports_token_rejected" || code === "play_reports_not_authorized" || code === "play_reports_scope_missing") {
     return "An app admin chooses \"Authorize statistics reports\" in the app's Google Play settings in Hands. Publishing is not affected.";
   }
-  if (code === "play_token_rejected" || code === "play_permission_denied") {
+  if (code === "play_token_rejected") {
     return access === "publishing"
       ? "An app admin reconnects Google Play (\"Reauthorize\") in the app's Google Play settings in Hands."
       : "An app admin reauthorizes Google Play in the app's Google Play settings in Hands.";
@@ -54,28 +53,32 @@ export async function recordPlayAccessFailure(db: D1Database, appId: string, acc
   const state = await readState(db, appId, access);
   if (!state || state.alerted_at !== null) return;
   if (!AUTHORIZATION_CODES.has(code) && now - state.failing_since < PLAY_ACCESS_ALERT_AFTER_MS) return;
-  const claim = await db.prepare(
-    "UPDATE google_play_access_state SET alerted_at = ?1 WHERE app_id = ?2 AND access = ?3 AND alerted_at IS NULL",
-  ).bind(now, appId, access).run();
-  if (Number(claim.meta?.changes ?? 0) !== 1) return;
-  await playDeliveryStatement(db, appId, "google_play:access_failed",
-    `hands-play-access:${appId}:${access}:${state.failing_since}:failed`, {
-      access,
-      access_label: ACCESS_LABEL[access],
-      error_code: code,
-      failing_since: new Date(state.failing_since).toISOString(),
-      hint: hint(access, code),
-      occurred_at: new Date(now).toISOString(),
-    }, now, "SELECT 1", []).run();
+  // The claim and the delivery commit together: an episode is marked alerted
+  // only if its alert was queued, and only one concurrent caller queues it.
+  await db.batch([
+    db.prepare(
+      "UPDATE google_play_access_state SET alerted_at = ?1 WHERE app_id = ?2 AND access = ?3 AND alerted_at IS NULL AND failing_since = ?4",
+    ).bind(now, appId, access, state.failing_since),
+    playDeliveryStatement(db, appId, "google_play:access_failed",
+      `hands-play-access:${appId}:${access}:${state.failing_since}:failed`, {
+        access,
+        access_label: ACCESS_LABEL[access],
+        error_code: code,
+        failing_since: new Date(state.failing_since).toISOString(),
+        hint: hint(access, code),
+        occurred_at: new Date(now).toISOString(),
+      }, now,
+      "SELECT 1 FROM google_play_access_state WHERE app_id = ?6 AND access = ?7 AND alerted_at = ?8 AND failing_since = ?9",
+      [appId, access, now, state.failing_since]),
+  ]);
 }
 
 export async function recordPlayAccessSuccess(db: D1Database, appId: string, access: PlayAccess, now = Date.now()) {
-  const state = await readState(db, appId, access);
-  if (!state) return;
-  const cleared = await db.prepare(
-    "DELETE FROM google_play_access_state WHERE app_id = ?1 AND access = ?2 AND failing_since = ?3",
-  ).bind(appId, access, state.failing_since).run();
-  if (Number(cleared.meta?.changes ?? 0) !== 1 || state.alerted_at === null) return;
+  // Read alerted_at from the deleted row itself, so an alert claimed concurrently is not missed.
+  const state = await db.prepare(
+    "DELETE FROM google_play_access_state WHERE app_id = ?1 AND access = ?2 RETURNING failing_since, last_error_code, alerted_at",
+  ).bind(appId, access).first<StateRow>();
+  if (!state || state.alerted_at === null) return;
   await playDeliveryStatement(db, appId, "google_play:access_restored",
     `hands-play-access:${appId}:${access}:${state.failing_since}:restored`, {
       access,

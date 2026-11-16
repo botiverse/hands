@@ -68,6 +68,13 @@ describe("Google Play access alerts", () => {
     expect(JSON.parse(deliveries()[0].payload_json).payload).toMatchObject({ access: "publishing", access_label: "release status" });
   });
 
+  it("queues exactly one alert when failures race", async () => {
+    const { db, deliveries } = setup();
+    const t0 = 1_800_000_000_000;
+    await Promise.all([1, 2, 3].map(() => recordPlayAccessFailure(db, "app", "statistics", "play_reports_token_rejected", t0)));
+    expect(deliveries()).toHaveLength(1);
+  });
+
   it("renders a readable Raft message", () => {
     const text = formatRaftNotificationMessage({
       event: "google_play:access_failed",
