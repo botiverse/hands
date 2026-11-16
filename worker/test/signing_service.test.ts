@@ -64,7 +64,10 @@ function environment() {
     R2_BUCKET_NAME: "bucket",
     R2_S3_ACCESS_KEY_ID: "AKID",
     R2_S3_SECRET_ACCESS_KEY: "secret",
-    APK_BUCKET: { head: async (key: string) => (objects.has(key) ? { size: objects.get(key) } : null) },
+    APK_BUCKET: {
+      head: async (key: string) => (objects.has(key) ? { size: objects.get(key) } : null),
+      delete: async (key: string) => { objects.delete(key); },
+    },
   } as unknown as Env;
   return { sqlite, env, objects };
 }
@@ -129,14 +132,17 @@ describe("signing identities", () => {
     recorder(() => ({ status: 400, body: { error: "keystore, password or alias is wrong", code: "signing_identity_invalid" } }));
     expect((await uploadAndroid(env)).body.code).toBe("signing_identity_invalid");
     expect((await uploadAndroid(env, { keystore_b64: "not base64!" })).status).toBe(400);
+    expect((await uploadAndroid(env, { key_alias: "-J-Dx=1" })).status).toBe(400);
+    expect((await uploadAndroid(env, { key_alias: "a b" })).status).toBe(400);
+    expect((await uploadAndroid(env, { key_alias: "-Jfoo" })).status).toBe(400);
     expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, { kind: "windows", name: "x" })).status).toBe(400);
     expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
       kind: "apple_developer_id", name: "Dev ID", p12_b64: "QUJD", p12_password: "x", notary: { key_id: "K", issuer_id: "I", p8: "nope" },
     })).status).toBe(400);
   });
 
-  it("generates an Android key in Hands and gives out its backup exactly once", async () => {
-    const { env } = environment();
+  it("generates an Android key in Hands and gives out its backup once", async () => {
+    const { env, sqlite } = environment();
     recorder((path) => path === "/signing/generate-android"
       ? { body: { secret: { kind: "android_keystore", keystore_b64: "R0VO", store_password: "gen-pw", key_alias: "release", key_password: "gen-pw" }, metadata: ANDROID_META } }
       : { body: { metadata: ANDROID_META } });
@@ -146,6 +152,9 @@ describe("signing identities", () => {
     const id = generated.body.signing_identity.id;
     const backup = await call(handleExportSigningIdentityBackup, env, { orgId: ORG, identityId: id });
     expect(backup.body).toMatchObject({ keystore_b64: "R0VO", store_password: "gen-pw", key_alias: "release", format: "PKCS12" });
+    // A lost response can be retried for a short while, then the backup is gone.
+    expect((await call(handleExportSigningIdentityBackup, env, { orgId: ORG, identityId: id })).status).toBe(200);
+    sqlite.prepare("UPDATE signing_identities SET backup_exported_at = ? WHERE id = ?").run(Date.now() - 11 * 60 * 1000, id);
     const again = await call(handleExportSigningIdentityBackup, env, { orgId: ORG, identityId: id });
     expect([again.status, again.body.code]).toEqual([409, "backup_already_exported"]);
     const uploaded = await uploadAndroid(env);
@@ -204,7 +213,7 @@ describe("signing jobs", () => {
   });
 
   it("refuses ungranted, mismatched, revoked and unsupported requests", async () => {
-    const { env, objects, identityId } = await grantedAndroid();
+    const { env, sqlite, objects, identityId } = await grantedAndroid();
     expect((await call(handleCreateSigningJob, env, { appId: "app-mac" }, jobBody())).body.code).toBe("signing_identity_not_granted");
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ artifact_type: "macos", filename: "x.app.zip" }))).body.code).toBe("signing_identity_not_granted");
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ artifact_type: "ipa" }))).body.code).toBe("signing_unsupported");
@@ -231,8 +240,26 @@ describe("signing jobs", () => {
     const calls = recorder(() => ({ body: {} }));
     expect((await call(handleRunSigningJob, env, { appId: APP, jobId: late })).body.job.error_code).toBe("signing_identity_revoked");
     expect(calls).toHaveLength(0);
+    // An app moved to another org keeps none of the old org's keys, even if a grant row lingers.
+    recorder(() => ({ body: { metadata: ANDROID_META } }));
+    const fresh = (await uploadAndroid(env)).body.signing_identity.id;
+    await call(handleGrantSigningIdentity, env, { orgId: ORG, identityId: fresh, appId: APP });
+    sqlite.prepare("UPDATE apps SET org_id = 'org2' WHERE id = ?").run(APP);
+    expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ identity_id: fresh }))).body.code).toBe("signing_identity_not_granted");
+    expect((await call(handleListSigningIdentities, env, { orgId: ORG })).body.signing_identities.find((i: any) => i.id === fresh).apps).toEqual([]);
+    sqlite.prepare("UPDATE apps SET org_id = ? WHERE id = ?").run(ORG, APP);
     // Jobs are app-scoped.
     expect((await call(handleGetSigningJob, env, { appId: "app-mac", jobId: late })).status).toBe(404);
+  });
+
+  it("fails a job whose signing request was lost", async () => {
+    const { env, sqlite, objects } = await grantedAndroid();
+    const jobId = (await call(handleCreateSigningJob, env, { appId: APP }, jobBody())).body.job.id;
+    objects.set(`signing/${APP}/${jobId}/input`, 1234);
+    sqlite.prepare("UPDATE signing_jobs SET status = 'signing', updated_at = ? WHERE id = ?").run(Date.now() - 10 * 60 * 1000, jobId);
+    expect((await call(handleGetSigningJob, env, { appId: APP, jobId })).body.job.status).toBe("signing");
+    sqlite.prepare("UPDATE signing_jobs SET updated_at = ? WHERE id = ?").run(Date.now() - 31 * 60 * 1000, jobId);
+    expect((await call(handleGetSigningJob, env, { appId: APP, jobId })).body.job).toMatchObject({ status: "failed", error_code: "signing_interrupted" });
   });
 
   it("notarizes a macOS app: polls Apple, staples when accepted, fails when rejected", async () => {
@@ -259,12 +286,18 @@ describe("signing jobs", () => {
 
     let appleStatus = "In Progress";
     const appleCalls: string[] = [];
+    let appleDown = false;
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       appleCalls.push(String(url));
+      if (appleDown) throw new TypeError("network down");
       expect(String((init.headers as Record<string, string>).authorization)).toMatch(/^Bearer ey/);
       return new Response(JSON.stringify({ data: { attributes: { status: appleStatus } } }));
     }));
     expect((await call(handleGetSigningJob, env, { appId: "app-mac", jobId })).body.job.status).toBe("notarizing");
+    // A network failure talking to Apple is not a verdict.
+    appleDown = true;
+    expect((await call(handleGetSigningJob, env, { appId: "app-mac", jobId })).body.job.status).toBe("notarizing");
+    appleDown = false;
     appleStatus = "Accepted";
     const done = await call(handleGetSigningJob, env, { appId: "app-mac", jobId });
     expect(done.body.job).toMatchObject({ status: "succeeded", output_sha256: "d".repeat(64), notary_status: "Accepted" });
@@ -278,5 +311,9 @@ describe("signing jobs", () => {
     appleStatus = "Invalid";
     const failed = await call(handleGetSigningJob, env, { appId: "app-mac", jobId: second.body.job.id });
     expect(failed.body.job).toMatchObject({ status: "failed", error_code: "signing_notary_rejected" });
+    // A finished job is never turned into a failure later.
+    expect((await call(handleGetSigningJob, env, { appId: "app-mac", jobId })).body.job.status).toBe("succeeded");
+    // The unstapled output was removed after stapling.
+    expect(objects.has(`signing/app-mac/${jobId}/input`)).toBe(false);
   });
 });

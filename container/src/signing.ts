@@ -13,14 +13,20 @@
 
 import type { Hono } from "hono";
 import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
+/** Uncompressed size and entry count an uploaded .app archive may expand to. */
+const MAX_UNPACKED_BYTES = 4 * 1024 * 1024 * 1024;
+const MAX_UNPACKED_ENTRIES = 200_000;
 const APKSIGNER = join(process.env.SIGNING_BUILD_TOOLS ?? "/opt/android-sdk/build-tools/35.0.0", "apksigner");
 
 type AndroidSecret = { kind: "android_keystore"; keystore_b64: string; store_password: string; key_alias: string; key_password: string };
@@ -66,24 +72,60 @@ async function writeSecretFile(dir: string, name: string, content: string | Buff
   return path;
 }
 
-async function download(url: string, dest: string) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(600_000) });
-  if (!response.ok) throw new SignError(502, "signing_input_unavailable", `input download returned ${response.status}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length > MAX_ARTIFACT_BYTES) throw new SignError(400, "signing_input_too_large", "input is too large");
-  await writeFile(dest, bytes);
+/** Stream the input to disk, hashing as it goes; never more than one chunk in memory. */
+async function download(url: string, dest: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(600_000) });
+  } catch {
+    throw new SignError(502, "signing_input_unavailable", "input download failed");
+  }
+  if (!response.ok || !response.body) throw new SignError(502, "signing_input_unavailable", `input download returned ${response.status}`);
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > MAX_ARTIFACT_BYTES) throw new SignError(400, "signing_input_too_large", "input is too large");
+  const hash = createHash("sha256");
+  let total = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      total += chunk.length;
+      if (total > MAX_ARTIFACT_BYTES) return done(new SignError(400, "signing_input_too_large", "input is too large"));
+      hash.update(chunk);
+      done(null, chunk);
+    },
+  });
+  try {
+    await pipeline(Readable.fromWeb(response.body as never), limiter, createWriteStream(dest, { mode: 0o600 }));
+  } catch (error) {
+    if (error instanceof SignError) throw error;
+    throw new SignError(502, "signing_input_unavailable", "input download was interrupted");
+  }
+  return hash.digest("hex");
 }
 
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
+}
+
+/** Stream the output to its presigned URL. */
 async function upload(url: string, path: string) {
-  const bytes = await readFile(path);
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: { "content-type": "application/octet-stream" },
-    body: bytes,
-    signal: AbortSignal.timeout(600_000),
-  });
+  const { size } = await stat(path);
+  const sha256 = await sha256File(path);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "PUT",
+      headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+      body: Readable.toWeb(createReadStream(path)) as never,
+      duplex: "half",
+      signal: AbortSignal.timeout(600_000),
+    } as RequestInit);
+  } catch {
+    throw new SignError(502, "signing_output_upload_failed", "output upload failed");
+  }
   if (!response.ok) throw new SignError(502, "signing_output_upload_failed", `output upload returned ${response.status}`);
-  return { output_size: bytes.length, output_sha256: createHash("sha256").update(bytes).digest("hex") };
+  return { output_size: size, output_sha256: sha256 };
 }
 
 // ---------- Certificate facts ----------
@@ -112,7 +154,15 @@ async function certFacts(dir: string, certPem: string) {
   return parseX509Text(stdout);
 }
 
+function assertAlias(alias: string) {
+  // JDK launchers treat an argument starting with -J as a JVM option.
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(alias) || alias.startsWith("-")) {
+    throw new SignError(400, "signing_identity_invalid", "key alias may contain only letters, digits, . _ - and cannot start with -");
+  }
+}
+
 async function inspectAndroid(dir: string, secret: AndroidSecret) {
+  assertAlias(secret.key_alias);
   const ks = await writeSecretFile(dir, "ks.p12", Buffer.from(secret.keystore_b64, "base64"));
   const storePass = await writeSecretFile(dir, "store.pass", secret.store_password);
   const { stdout } = await run("keytool", [
@@ -176,6 +226,7 @@ function inspect(dir: string, secret: Secret): Promise<Record<string, unknown>> 
 // ---------- Signing ----------
 
 async function signAndroid(dir: string, secret: AndroidSecret, type: "apk" | "aab", input: string, output: string) {
+  assertAlias(secret.key_alias);
   const ks = await writeSecretFile(dir, "ks.p12", Buffer.from(secret.keystore_b64, "base64"));
   const storePass = await writeSecretFile(dir, "store.pass", secret.store_password);
   const keyPass = await writeSecretFile(dir, "key.pass", secret.key_password);
@@ -198,12 +249,47 @@ async function signAndroid(dir: string, secret: AndroidSecret, type: "apk" | "aa
 
 /** Unzip a .app archive and return the single .app bundle inside. */
 async function unpackApp(dir: string, archive: string) {
+  // Refuse archives that would expand past the limits before writing anything.
+  const { stdout } = await run("unzip", ["-Zt", archive], { failCode: "signing_input_invalid", failMessage: "input is not a zip archive" });
+  const totals = stdout.match(/(\d+) files?, (\d+) bytes uncompressed/);
+  if (!totals || Number(totals[1]) > MAX_UNPACKED_ENTRIES || Number(totals[2]) > MAX_UNPACKED_BYTES) {
+    throw new SignError(400, "signing_input_too_large", "the archive expands past the allowed size");
+  }
   const root = join(dir, "app");
   await mkdir(root);
   await run("unzip", ["-q", archive, "-d", root], { failCode: "signing_input_invalid", failMessage: "input is not a zip archive" });
   const apps = (await readdir(root)).filter((name) => name.endsWith(".app"));
   if (apps.length !== 1) throw new SignError(400, "signing_input_invalid", "the zip must contain exactly one .app at its top level");
+  const appPath = join(root, apps[0]!);
+  if ((await lstat(appPath)).isSymbolicLink() || !(await lstat(appPath)).isDirectory()) {
+    throw new SignError(400, "signing_input_invalid", "the .app must be a directory");
+  }
+  await assertContained(root, appPath);
   return { root, app: apps[0]! };
+}
+
+/** Every symlink inside the bundle must resolve to a path inside it (frameworks use relative links). */
+async function assertContained(root: string, path: string) {
+  const realRoot = await realpath(root);
+  const walk = async (current: string): Promise<void> => {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const full = join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = await realpath(full);
+        } catch {
+          throw new SignError(400, "signing_input_invalid", "the bundle contains a broken symbolic link");
+        }
+        if (target !== realRoot && !target.startsWith(`${realRoot}/`)) {
+          throw new SignError(400, "signing_input_invalid", "the bundle contains a symbolic link that points outside it");
+        }
+      } else if (entry.isDirectory()) {
+        await walk(full);
+      }
+    }
+  };
+  await walk(path);
 }
 
 async function zipApp(root: string, app: string, output: string) {
@@ -243,8 +329,7 @@ async function signMac(dir: string, secret: AppleSecret, input: string, output: 
   const { stdout, stderr } = await run("rcodesign", ["notary-submit", "--api-key-file", key, output], {
     failCode: "signing_notary_submit_failed", failMessage: "Apple did not accept the notarization upload", timeout: 1_200_000,
   });
-  const id = `${stdout}\n${stderr}`.match(/created submission ID: ([0-9a-f-]{36})/i)?.[1]
-    ?? `${stdout}\n${stderr}`.match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i)?.[1];
+  const id = `${stdout}\n${stderr}`.match(/created submission ID: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1];
   if (!id) throw new SignError(502, "signing_notary_submit_failed", "Apple returned no submission id");
   return id;
 }
@@ -324,9 +409,8 @@ export function registerSigningRoutes(app: Hono) {
       const result = await withWorkdir(async (dir) => {
         const input = join(dir, "input");
         const output = join(dir, "output");
-        await download(body.input_url, input);
+        const actual = await download(body.input_url, input);
         if (body.expected_input_sha256) {
-          const actual = createHash("sha256").update(await readFile(input)).digest("hex");
           if (actual !== body.expected_input_sha256) {
             throw new SignError(400, "signing_input_mismatch", "uploaded file does not match the declared SHA-256");
           }

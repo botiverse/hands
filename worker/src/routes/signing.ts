@@ -3,6 +3,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { currentAccount, insertAuditLog } from "../lib/permissions";
 import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { createAscJwt } from "../lib/asc_api";
+import { sha256Hex } from "../lib/deploy_tokens";
 import {
   ARTIFACT_TYPES,
   KIND_FOR_ARTIFACT,
@@ -23,6 +24,10 @@ const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SECRET_FILE_BYTES = 64 * 1024;
 const NAME_PATTERN = /^[\p{L}\p{N} ._()-]{1,80}$/u;
 const SIGN_TIMEOUT_MS = 25 * 60 * 1000;
+/** After the first backup download, a retry is allowed for this long. */
+const BACKUP_RETRY_WINDOW_MS = 10 * 60 * 1000;
+/** A job still `signing` after this long lost its request; it is failed. */
+const STALE_SIGNING_MS = SIGN_TIMEOUT_MS + 5 * 60 * 1000;
 
 type IdentityRow = {
   id: string;
@@ -77,8 +82,9 @@ function parseMetadata(json: string): SigningMetadata {
 
 async function identityResponse(db: D1Database, row: IdentityRow) {
   const { results } = await db.prepare(
-    `SELECT g.app_id, a.slug FROM signing_identity_apps g JOIN apps a ON a.id = g.app_id WHERE g.identity_id = ?1 ORDER BY a.slug`,
-  ).bind(row.id).all<{ app_id: string; slug: string }>();
+    `SELECT g.app_id, a.slug FROM signing_identity_apps g JOIN apps a ON a.id = g.app_id AND a.org_id = ?2
+     WHERE g.identity_id = ?1 ORDER BY a.slug`,
+  ).bind(row.id, row.org_id).all<{ app_id: string; slug: string }>();
   return {
     id: row.id,
     org_id: row.org_id,
@@ -112,9 +118,16 @@ async function orgAuditApp(db: D1Database, orgId: string): Promise<string | null
 async function auditIdentity(c: AdminContext, orgId: string, identityId: string, action: string, payload: Record<string, unknown>) {
   const { results } = await c.env.DB.prepare("SELECT app_id FROM signing_identity_apps WHERE identity_id = ?1")
     .bind(identityId).all<{ app_id: string }>();
-  const appIds = results.length > 0 ? results.map((r) => r.app_id) : [await orgAuditApp(c.env.DB, orgId)].filter((id): id is string => !!id);
+  const granted = results.length > 0;
+  const appIds = granted ? results.map((r) => r.app_id) : [await orgAuditApp(c.env.DB, orgId)].filter((id): id is string => !!id);
   for (const appId of appIds) {
-    await insertAuditLog(c.env.DB, c, { app_id: appId, action, payload: { org_id: orgId, identity_id: identityId, ...payload } });
+    // Before any grant the event lands in an unrelated app's log: record only
+    // that it happened, not which key it was.
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action,
+      payload: granted ? { org_id: orgId, identity_id: identityId, ...payload } : { org_id: orgId, identity_id: identityId },
+    });
   }
 }
 
@@ -132,9 +145,9 @@ function secretFromBody(kind: SigningKind, body: Record<string, unknown>): Signi
   if (kind === "android_keystore") {
     const keystore = b64(body.keystore_b64);
     const storePassword = str(body.store_password, 256);
-    const alias = str(body.key_alias, 128);
+    const alias = typeof body.key_alias === "string" && /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/.test(body.key_alias) ? body.key_alias : null;
     if (!keystore || !storePassword || !alias) {
-      throw new SigningError(400, "invalid_request", "keystore_b64, store_password and key_alias are required");
+      throw new SigningError(400, "invalid_request", "keystore_b64, store_password and key_alias (letters, digits, . _ -) are required");
     }
     return {
       kind,
@@ -250,10 +263,14 @@ export async function handleExportSigningIdentityBackup(c: AdminContext) {
     if (row.origin !== "generated" || row.kind !== "android_keystore") {
       throw new SigningError(409, "backup_not_available", "only keys generated in Hands have a backup");
     }
+    // The first download opens a short window for a retry if that response
+    // was lost; after it closes the backup is gone for good.
+    const now = Date.now();
     const claim = await c.env.DB.prepare(
-      "UPDATE signing_identities SET backup_exported_at = ?1 WHERE id = ?2 AND backup_exported_at IS NULL",
-    ).bind(Date.now(), id).run();
-    if (Number(claim.meta?.changes ?? 0) !== 1) throw new SigningError(409, "backup_already_exported", "the backup was already downloaded once");
+      `UPDATE signing_identities SET backup_exported_at = COALESCE(backup_exported_at, ?1)
+       WHERE id = ?2 AND (backup_exported_at IS NULL OR backup_exported_at > ?3)`,
+    ).bind(now, id, now - BACKUP_RETRY_WINDOW_MS).run();
+    if (Number(claim.meta?.changes ?? 0) !== 1) throw new SigningError(409, "backup_already_exported", "the backup was already downloaded");
     const secret = await decryptSigningSecret(row, c.env.ASC_CRED_ENC_KEY);
     await auditIdentity(c, orgId, id, "signing_identity.backup_export", {});
     if (secret.kind !== "android_keystore") throw new SigningError(500, "signing_internal", "unexpected secret");
@@ -353,6 +370,7 @@ async function identityForApp(db: D1Database, appId: string, kind: SigningKind, 
   const { results } = await db.prepare(
     `SELECT ${IDENTITY_COLUMNS.split(",").map((col) => `i.${col.trim()}`).join(", ")}
      FROM signing_identities i JOIN signing_identity_apps g ON g.identity_id = i.id
+     JOIN apps a ON a.id = g.app_id AND a.org_id = i.org_id
      WHERE g.app_id = ?1 AND i.kind = ?2 AND i.revoked_at IS NULL AND (?3 IS NULL OR i.id = ?3)`,
   ).bind(appId, kind, identityId).all<IdentityRow>();
   if (results.length === 0) {
@@ -362,12 +380,6 @@ async function identityForApp(db: D1Database, appId: string, kind: SigningKind, 
     throw new SigningError(409, "signing_identity_ambiguous", "several identities are granted; pass identity_id");
   }
   return results[0]!;
-}
-
-async function setJob(db: D1Database, jobId: string, fields: Partial<JobRow>) {
-  const entries = Object.entries({ ...fields, updated_at: Date.now() });
-  await db.prepare(`UPDATE signing_jobs SET ${entries.map(([k], i) => `${k} = ?${i + 2}`).join(", ")} WHERE id = ?1`)
-    .bind(jobId, ...entries.map(([, v]) => v ?? null)).run();
 }
 
 export async function handleCreateSigningJob(c: AdminContext) {
@@ -416,10 +428,14 @@ export async function handleCreateSigningJob(c: AdminContext) {
   }
 }
 
-async function failJob(c: AdminContext, job: JobRow, error: unknown) {
+/** Fail a job only from the state the caller observed, so a late error never overwrites a success. */
+async function failJob(c: AdminContext, job: JobRow, error: unknown, from: JobRow["status"]) {
   const code = error instanceof SigningError ? error.code : "signing_internal";
   const message = error instanceof SigningError ? error.message : "signing failed unexpectedly";
-  await setJob(c.env.DB, job.id, { status: "failed", error_code: code, error_message: message.slice(0, 1000) });
+  const result = await c.env.DB.prepare(
+    `UPDATE signing_jobs SET status = 'failed', error_code = ?1, error_message = ?2, updated_at = ?3 WHERE id = ?4 AND status = ?5`,
+  ).bind(code, message.slice(0, 1000), Date.now(), job.id, from).run();
+  if (Number(result.meta?.changes ?? 0) !== 1) return;
   await insertAuditLog(c.env.DB, c, { app_id: job.app_id, action: "signing_job.fail", payload: { job_id: job.id, error_code: code } });
 }
 
@@ -441,8 +457,10 @@ export async function handleRunSigningJob(c: AdminContext) {
     const identity = await c.env.DB.prepare(`SELECT ${IDENTITY_COLUMNS} FROM signing_identities WHERE id = ?1`)
       .bind(job.identity_id).first<IdentityRow>();
     if (!identity || identity.revoked_at !== null) throw new SigningError(403, "signing_identity_revoked", "the signing identity was revoked");
-    const granted = await c.env.DB.prepare("SELECT 1 FROM signing_identity_apps WHERE identity_id = ?1 AND app_id = ?2")
-      .bind(identity.id, appId).first();
+    const granted = await c.env.DB.prepare(
+      `SELECT 1 FROM signing_identity_apps g JOIN apps a ON a.id = g.app_id AND a.org_id = ?3
+       WHERE g.identity_id = ?1 AND g.app_id = ?2`,
+    ).bind(identity.id, appId, identity.org_id).first();
     if (!granted) throw new SigningError(403, "signing_identity_not_granted", "the signing identity is no longer granted to this app");
     const secret = await decryptSigningSecret(identity, c.env.ASC_CRED_ENC_KEY);
     const outputKey = `signing/${appId}/${jobId}/output`;
@@ -465,25 +483,33 @@ export async function handleRunSigningJob(c: AdminContext) {
       SIGN_TIMEOUT_MS,
     );
     const notarizing = job.notarize === 1 && !!result.notary_submission_id;
-    await setJob(c.env.DB, jobId, {
-      status: notarizing ? "notarizing" : "succeeded",
-      output_r2_key: outputKey,
-      output_size: result.output_size,
-      output_sha256: result.output_sha256,
-      notary_submission_id: result.notary_submission_id,
-      notary_status: notarizing ? "In Progress" : null,
-    });
-    await insertAuditLog(c.env.DB, c, {
-      app_id: appId,
-      action: "signing_job.sign",
-      payload: {
-        job_id: jobId, identity_id: identity.id, artifact_type: job.artifact_type, input_sha256: job.input_sha256,
-        output_sha256: result.output_sha256, notary_submission_id: result.notary_submission_id,
-        fingerprint: parseMetadata(identity.metadata_json).sha256_fingerprint ?? null,
-      },
-    });
+    if (job.notarize === 1 && !result.notary_submission_id) {
+      throw new SigningError(502, "signing_notary_submit_failed", "Apple returned no submission id");
+    }
+    const done = await c.env.DB.prepare(
+      `UPDATE signing_jobs SET status = ?1, output_r2_key = ?2, output_size = ?3, output_sha256 = ?4,
+         notary_submission_id = ?5, notary_status = ?6, updated_at = ?7
+       WHERE id = ?8 AND status = 'signing'`,
+    ).bind(
+      notarizing ? "notarizing" : "succeeded", outputKey, result.output_size, result.output_sha256,
+      result.notary_submission_id, notarizing ? "In Progress" : null, Date.now(), jobId,
+    ).run();
+    if (Number(done.meta?.changes ?? 0) === 1) {
+      // The input is no longer needed; the output stays for download.
+      await c.env.APK_BUCKET.delete(job.input_r2_key).catch(() => undefined);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: "signing_job.sign",
+        payload: {
+          job_id: jobId, identity_id: identity.id, artifact_type: job.artifact_type, input_sha256: job.input_sha256,
+          output_sha256: result.output_sha256, notary_submission_id: result.notary_submission_id,
+          fingerprint: parseMetadata(identity.metadata_json).sha256_fingerprint ?? null,
+          entitlements_sha256: entitlements ? await sha256Hex(entitlements) : null,
+        },
+      }).catch(() => undefined);
+    }
   } catch (error) {
-    await failJob(c, job, error);
+    await failJob(c, job, error, "signing");
   }
   return c.json({ job: await jobResponse(c.env, (await loadJob(c.env.DB, appId, jobId))!) });
 }
@@ -492,13 +518,17 @@ export async function handleRunSigningJob(c: AdminContext) {
 async function notaryStatus(secret: SigningSecret, submissionId: string) {
   if (secret.kind !== "apple_developer_id" || !secret.notary) throw new SigningError(500, "signing_internal", "no notary key");
   const jwt = await createAscJwt(secret.notary);
-  const response = await fetch(`https://appstoreconnect.apple.com/notary/v2/submissions/${encodeURIComponent(submissionId)}`, {
-    headers: { authorization: `Bearer ${jwt}` },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) throw new SigningError(502, "signing_notary_status_unavailable", `Apple notary status returned ${response.status}`);
-  const body = await response.json() as { data?: { attributes?: { status?: string } } };
-  return body.data?.attributes?.status ?? "unknown";
+  try {
+    const response = await fetch(`https://appstoreconnect.apple.com/notary/v2/submissions/${encodeURIComponent(submissionId)}`, {
+      headers: { authorization: `Bearer ${jwt}` },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json() as { data?: { attributes?: { status?: string } } };
+    return body.data?.attributes?.status ?? "unknown";
+  } catch (error) {
+    throw new SigningError(502, "signing_notary_status_unavailable", `Apple notary status unavailable: ${error instanceof Error ? error.message.slice(0, 100) : "error"}`);
+  }
 }
 
 export async function handleGetSigningJob(c: AdminContext) {
@@ -506,6 +536,11 @@ export async function handleGetSigningJob(c: AdminContext) {
   const jobId = c.req.param("jobId") ?? "";
   let job = await loadJob(c.env.DB, appId, jobId);
   if (!job) return c.json({ error: "signing job not found" }, 404);
+  if (job.status === "signing" && job.updated_at < Date.now() - STALE_SIGNING_MS) {
+    // The request that was signing it is gone (client or Worker cancelled).
+    await failJob(c, job, new SigningError(502, "signing_interrupted", "signing was interrupted; start a new job"), "signing");
+    job = (await loadJob(c.env.DB, appId, jobId))!;
+  }
   if (job.status === "stapling" && job.updated_at < Date.now() - 15 * 60 * 1000) {
     // A stapling request that died mid-way: let the next poll staple again.
     await c.env.DB.prepare("UPDATE signing_jobs SET status = 'notarizing', updated_at = ?1 WHERE id = ?2 AND status = 'stapling' AND updated_at = ?3")
@@ -513,18 +548,23 @@ export async function handleGetSigningJob(c: AdminContext) {
     job = (await loadJob(c.env.DB, appId, jobId))!;
   }
   if (job.status === "notarizing" && job.notary_submission_id) {
+    const current = job;
+    let phase: "notarizing" | "stapling" = "notarizing";
     try {
       const identity = await c.env.DB.prepare(`SELECT ${IDENTITY_COLUMNS} FROM signing_identities WHERE id = ?1`)
-        .bind(job.identity_id).first<IdentityRow>();
+        .bind(current.identity_id).first<IdentityRow>();
       if (!identity) throw new SigningError(403, "signing_identity_revoked", "the signing identity is gone");
+      // A job already submitted to Apple finishes even if the identity was
+      // revoked since: the key is only used to read its status and staple.
       const secret = await decryptSigningSecret(identity, c.env.ASC_CRED_ENC_KEY);
-      const status = await notaryStatus(secret, job.notary_submission_id);
+      const status = await notaryStatus(secret, current.notary_submission_id!);
       if (status === "Accepted") {
         const claim = await c.env.DB.prepare(
           "UPDATE signing_jobs SET status = 'stapling', notary_status = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'notarizing'",
         ).bind(status, Date.now(), jobId).run();
         if (Number(claim.meta?.changes ?? 0) === 1) {
-          const key = job.output_r2_key!;
+          phase = "stapling";
+          const key = current.output_r2_key!;
           const inputUrl = await presignR2DownloadUrl(c.env, { key, filetype: "bin", contentDisposition: "attachment" }, 3600);
           const stapledKey = `${key}-stapled`;
           const outputUrl = await presignR2UploadUrl(c.env, stapledKey, "application/octet-stream", 3600);
@@ -532,19 +572,36 @@ export async function handleGetSigningJob(c: AdminContext) {
           const stapled = await callSigningContainer<{ output_size: number; output_sha256: string }>(
             c.env, "/signing/staple", { input_url: inputUrl, output_url: outputUrl }, 10 * 60 * 1000,
           );
-          await setJob(c.env.DB, jobId, { status: "succeeded", output_r2_key: stapledKey, output_size: stapled.output_size, output_sha256: stapled.output_sha256 });
-          await insertAuditLog(c.env.DB, c, { app_id: appId, action: "signing_job.notarized", payload: { job_id: jobId, notary_submission_id: job.notary_submission_id, output_sha256: stapled.output_sha256 } });
+          const done = await c.env.DB.prepare(
+            `UPDATE signing_jobs SET status = 'succeeded', output_r2_key = ?1, output_size = ?2, output_sha256 = ?3, updated_at = ?4
+             WHERE id = ?5 AND status = 'stapling'`,
+          ).bind(stapledKey, stapled.output_size, stapled.output_sha256, Date.now(), jobId).run();
+          if (Number(done.meta?.changes ?? 0) === 1) {
+            await c.env.APK_BUCKET.delete(key).catch(() => undefined);
+            await insertAuditLog(c.env.DB, c, {
+              app_id: appId, action: "signing_job.notarized",
+              payload: { job_id: jobId, notary_submission_id: current.notary_submission_id, output_sha256: stapled.output_sha256 },
+            }).catch(() => undefined);
+          }
         }
       } else if (status === "Invalid" || status === "Rejected") {
-        throw new SigningError(400, "signing_notary_rejected", `Apple notarization ${status.toLowerCase()}; see the notary log for submission ${job.notary_submission_id}`);
-      } else if (status !== job.notary_status) {
-        await setJob(c.env.DB, jobId, { notary_status: status });
+        throw new SigningError(400, "signing_notary_rejected", `Apple notarization ${status.toLowerCase()}; see the notary log for submission ${current.notary_submission_id}`);
+      } else if (status !== current.notary_status) {
+        await c.env.DB.prepare("UPDATE signing_jobs SET notary_status = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'notarizing'")
+          .bind(status, Date.now(), jobId).run();
       }
     } catch (error) {
-      if (error instanceof SigningError && error.code === "signing_notary_status_unavailable") {
-        // Transient: report the current state, try again on the next poll.
+      const transient = error instanceof SigningError
+        && (error.code === "signing_notary_status_unavailable" || error.status === 502 || error.status === 503)
+        && error.code !== "signing_notary_rejected";
+      if (transient) {
+        // Try again on the next poll; a stapling attempt goes back to notarizing.
+        if (phase === "stapling") {
+          await c.env.DB.prepare("UPDATE signing_jobs SET status = 'notarizing', updated_at = ?1 WHERE id = ?2 AND status = 'stapling'")
+            .bind(Date.now(), jobId).run();
+        }
       } else {
-        await failJob(c, job, error);
+        await failJob(c, current, error, phase);
       }
     }
     job = (await loadJob(c.env.DB, appId, jobId))!;

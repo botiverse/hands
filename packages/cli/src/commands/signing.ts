@@ -8,7 +8,10 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile, rename } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdtemp, open, readFile, rm, stat, writeFile, rename } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -99,8 +102,10 @@ export async function signFile(opts: {
   const work = await mkdtemp(join(tmpdir(), "hands-sign-"));
   try {
     const input = await packInput(opts.file, work);
-    const bytes = await readFile(input);
-    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const size = (await stat(input)).size;
+    const inputHash = createHash("sha256");
+    await pipeline(createReadStream(input), inputHash);
+    const sha256 = inputHash.digest("hex");
     const created = await apiRequest<{ job: SigningJob; upload_url: string; upload_headers: Record<string, string> }>(
       `/api/apps/${appId}/signing/jobs`,
       {
@@ -108,7 +113,7 @@ export async function signFile(opts: {
         body: {
           artifact_type: type,
           filename: basename(input),
-          size: bytes.length,
+          size,
           sha256,
           notarize: opts.notarize === true,
           ...(opts.identity ? { identity_id: opts.identity } : {}),
@@ -116,8 +121,13 @@ export async function signFile(opts: {
         retryOnUnauthorized: false,
       },
     );
-    opts.log(`Signing job ${created.job.id}: uploading ${bytes.length} bytes`);
-    const put = await fetch(created.upload_url, { method: "PUT", headers: created.upload_headers, body: bytes });
+    opts.log(`Signing job ${created.job.id}: uploading ${size} bytes`);
+    const put = await fetch(created.upload_url, {
+      method: "PUT",
+      headers: { ...created.upload_headers, "content-length": String(size) },
+      body: Readable.toWeb(createReadStream(input)) as never,
+      duplex: "half",
+    } as RequestInit);
     if (!put.ok) throw new Error(`upload failed (${put.status})`);
     const entitlements = opts.entitlements ? (await readFile(opts.entitlements)).toString("base64") : undefined;
     let { job } = await apiRequest<{ job: SigningJob }>(`/api/apps/${appId}/signing/jobs/${created.job.id}/sign`, {
@@ -138,16 +148,20 @@ export async function signFile(opts: {
     if (job.status === "failed") throw new Error(`signing failed: ${job.error_code ?? "error"}: ${job.error_message ?? ""}`);
     if (!job.download_url) throw new Error("signed file has no download URL");
     const response = await fetch(job.download_url);
-    if (!response.ok) throw new Error(`download failed (${response.status})`);
-    const signed = Buffer.from(await response.arrayBuffer());
-    const actual = createHash("sha256").update(signed).digest("hex");
-    if (actual !== job.output_sha256) throw new Error("downloaded file does not match the signed file's SHA-256");
+    if (!response.ok || !response.body) throw new Error(`download failed (${response.status})`);
+    // Stream to a temporary file while hashing; only a verified file replaces the target.
+    const downloaded = join(work, "signed.bin");
+    const outputHash = createHash("sha256");
+    const tap = new Transform({ transform(chunk: Buffer, _enc, done) { outputHash.update(chunk); done(null, chunk); } });
+    await pipeline(Readable.fromWeb(response.body as never), tap, createWriteStream(downloaded));
+    if (outputHash.digest("hex") !== job.output_sha256) throw new Error("downloaded file does not match the signed file's SHA-256");
     if (type === "macos" && (await stat(opts.file)).isDirectory()) {
-      const zip = join(work, "signed.zip");
-      await writeFile(zip, signed);
-      await unpackOutput(zip, opts.out ?? opts.file, work);
+      await unpackOutput(downloaded, opts.out ?? opts.file, work);
     } else {
-      await writeFile(opts.out ?? opts.file, signed);
+      await rename(downloaded, opts.out ?? opts.file).catch(async () => {
+        // Across filesystems: copy instead.
+        await pipeline(createReadStream(downloaded), createWriteStream(opts.out ?? opts.file));
+      });
     }
     return job;
   } finally {
@@ -331,8 +345,15 @@ export function registerSigningCommands(program: Command): void {
         `/api/orgs/${orgId}/signing-identities/${identityId}/backup`,
         { method: "POST", retryOnUnauthorized: false },
       );
-      await writeFile(outFile, Buffer.from(res.keystore_b64, "base64"), { mode: 0o600 });
-      await writeFile(`${outFile}.password`, `${res.store_password}\n`, { mode: 0o600 });
+      // Never overwrite an existing file: create both exclusively, owner-only.
+      for (const [path, content] of [[outFile, Buffer.from(res.keystore_b64, "base64")], [`${outFile}.password`, `${res.store_password}\n`]] as const) {
+        const handle = await open(path, "wx", 0o600);
+        try {
+          await handle.writeFile(content);
+        } finally {
+          await handle.close();
+        }
+      }
       console.log(`Wrote ${outFile} (alias ${res.key_alias}) and ${outFile}.password. Store both offline; this was the only copy Hands will give out.`);
     });
 }

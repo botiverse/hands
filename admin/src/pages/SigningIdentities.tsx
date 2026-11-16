@@ -45,7 +45,8 @@ function download(name: string, bytes: Uint8Array | string) {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  // Revoking right after click() can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boolean }) {
@@ -77,11 +78,18 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
   const backup = useMutation({
     mutationFn: (identity: SigningIdentity) => exportSigningIdentityBackup(orgId, identity.id).then((res) => ({ res, identity })),
     onSuccess: ({ res, identity }) => {
-      const bytes = Uint8Array.from(atob(res.keystore_b64), (ch) => ch.charCodeAt(0));
+      // One file holding the keystore and its passwords, so nothing is half-delivered.
       const base = identity.name.replace(/[^A-Za-z0-9._-]+/g, "-");
-      download(`${base}.p12`, bytes);
-      download(`${base}.password.txt`, `store password: ${res.store_password}\nkey alias: ${res.key_alias}\nkey password: ${res.key_password}\n`);
-      toast.show({ kind: "success", title: t("Backup downloaded. Store it offline; it cannot be downloaded again.", "备份已下载。请离线保存，之后不能再次下载。") });
+      download(`${base}.hands-key-backup.json`, `${JSON.stringify({
+        format: "PKCS12 keystore, base64",
+        keystore_b64: res.keystore_b64,
+        key_alias: res.key_alias,
+        store_password: res.store_password,
+        key_password: res.key_password,
+        restore: "Decode keystore_b64 from base64 into a .p12 file; open it with store_password.",
+      }, null, 2)}\n`);
+      backup.reset();
+      toast.show({ kind: "success", title: t("Backup downloaded. Store it offline; if it did not arrive, retry within 10 minutes.", "备份已下载。请离线保存；如果没有收到，10 分钟内可以重试。") });
       qc.invalidateQueries({ queryKey: key });
     },
     onError: onError(t("Backup failed", "备份失败")),
