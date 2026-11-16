@@ -365,7 +365,7 @@ under the title. Leave `latestComment` out when your proxy doesn't have it;
 the row then has no preview line. Map `client_kind` to `client` only when it is
 one of `web`, `desktop`, `android`, `ios` or `ohos`, and pass the host's own
 client as `currentClient` on `FeedbackProvider`: a ticket filed on another
-client then names that client on its first message.
+client then names that client on its list row and on its first message.
 
 ### Page header
 

@@ -1356,7 +1356,9 @@ function FeedbackTicketRow({
   message: ReturnType<typeof useHandsFeedback>["message"];
   onSelect(): void;
 }) {
+  const { currentClient } = useHandsFeedback();
   const title = ticket.message.split("\n", 1)[0];
+  const otherClient = filedElsewhere(currentClient, ticket.client);
   const latest = ticket.latestComment;
   const preview = latest ? previewLine(latest.bodyPreview) : "";
   // The list orders by the latest conversation activity; show that time.
@@ -1375,11 +1377,15 @@ function FeedbackTicketRow({
           className="hands-feedback-ticket-open"
           data-ticket-id={ticket.id}
           data-unread={ticket.unread || undefined}
-          aria-label={
-            unreadCount
-              ? `${title}, ${message("unreadCount", { count: unreadCount })}`
-              : title
-          }
+          aria-label={[
+            title,
+            unreadCount ? message("unreadCount", { count: unreadCount }) : "",
+            otherClient
+              ? message("filedOn", { client: feedbackClientName(otherClient) })
+              : "",
+          ]
+            .filter(Boolean)
+            .join(", ")}
           onClick={onSelect}
         />
         <InboxItemContent>
@@ -1425,6 +1431,12 @@ function FeedbackTicketRow({
                   count: unreadCount > 99 ? "99+" : unreadCount,
                 })}
               </Badge>
+            )}
+            {otherClient && (
+              <FeedbackClientBadge
+                client={otherClient}
+                className="hands-feedback-ticket-client"
+              />
             )}
           </InboxItemMetadata>
         </InboxItemContent>
@@ -1599,6 +1611,20 @@ function FeedbackDateDivider({ at }: { at: number }) {
   );
 }
 
+/**
+ * A person's list merges every Raft client's tickets: a ticket filed on
+ * another client is named, on its list row and on its first message. Same
+ * client, or a host that doesn't say which client it is, names nothing.
+ */
+function filedElsewhere(
+  currentClient: FeedbackClient | undefined,
+  client: unknown,
+): FeedbackClient | undefined {
+  return currentClient && isFeedbackClient(client) && client !== currentClient
+    ? client
+    : undefined;
+}
+
 const clientIcons = {
   web: Globe,
   desktop: Monitor,
@@ -1608,7 +1634,13 @@ const clientIcons = {
 } satisfies Record<FeedbackClient, unknown>;
 
 /** Names the Raft client a ticket was filed on ("Filed on Android" to a screen reader). */
-function FeedbackClientBadge({ client }: { client: FeedbackClient }) {
+function FeedbackClientBadge({
+  client,
+  className = "hands-feedback-message-client",
+}: {
+  client: FeedbackClient;
+  className?: string;
+}) {
   const { message } = useHandsFeedback();
   const ClientIcon = clientIcons[client];
   const name = feedbackClientName(client);
@@ -1616,7 +1648,7 @@ function FeedbackClientBadge({ client }: { client: FeedbackClient }) {
     <Badge
       appearance="outline"
       variant="muted"
-      className="hands-feedback-message-client"
+      className={className}
       data-feedback-client={client}
     >
       <ClientIcon aria-hidden="true" />
@@ -2086,15 +2118,7 @@ export function FeedbackTicket({
     setConfirmingClose(true);
   };
   const title = ticket?.message.split("\n", 1)[0] || message("workspaceTitle");
-  // A person's list merges every Raft client's tickets: one filed on another
-  // client names it once, on its first message. Same client, or a host that
-  // doesn't say which client it is, shows nothing.
-  const filedElsewhere =
-    currentClient &&
-    isFeedbackClient(ticket?.client) &&
-    ticket.client !== currentClient
-      ? ticket.client
-      : undefined;
+  const otherClient = filedElsewhere(currentClient, ticket?.client);
 
   return (
     <section
@@ -2216,7 +2240,7 @@ export function FeedbackTicket({
                   ticketId={ticketId}
                   attachments={detail.attachments}
                   {...(onOpenAttachment ? { onOpenAttachment } : {})}
-                  {...(filedElsewhere ? { client: filedElsewhere } : {})}
+                  {...(otherClient ? { client: otherClient } : {})}
                 />
                 {detail.comments.map((comment, index) => {
                   const previous =

@@ -110,8 +110,10 @@ async function openTicket(options: {
     name: new RegExp(`^${summary.message}`),
   });
   const list = container.querySelector<HTMLElement>(".hands-feedback-ticket-list")!;
-  const rowText = list.textContent ?? "";
-  const rowBadges = list.querySelectorAll("[data-feedback-client]").length;
+  const rowLabel = row.getAttribute("aria-label") ?? "";
+  const rowBadges = Array.from(
+    list.querySelectorAll<HTMLElement>("[data-feedback-client]"),
+  );
   fireEvent.click(row);
   await screen.findByText("The latest one");
   const messages = Array.from(
@@ -119,18 +121,31 @@ async function openTicket(options: {
       ".hands-feedback-detail [data-slot='message-item']",
     ),
   );
-  return { container, messages, rowText, rowBadges };
+  return { container, messages, rowLabel, rowBadges };
 }
 
 describe("ticket filed on another client", () => {
-  it("names the other client once, after the first message's time", async () => {
-    const { container, messages, rowText, rowBadges } = await openTicket({
+  it("names the other client on its list row", async () => {
+    const { rowLabel, rowBadges } = await openTicket({ currentClient: "web" });
+
+    // One badge, last in the row's metadata, after the state and the replies.
+    expect(rowBadges).toHaveLength(1);
+    const badge = rowBadges[0]!;
+    expect(badge.dataset.feedbackClient).toBe("android");
+    expect(badge.classList.contains("hands-feedback-ticket-client")).toBe(true);
+    expect(badge.parentElement?.classList.contains("hands-feedback-ticket-meta")).toBe(true);
+    expect(badge.nextElementSibling).toBeNull();
+    expect(badge.querySelector(".hands-feedback-sr-only")?.textContent).toBe(
+      "Filed on Android",
+    );
+    // The row's button carries the label, since it covers the row.
+    expect(rowLabel).toBe("Crash when opening a thread, Filed on Android");
+  });
+
+  it("names the other client once in the ticket, after the first message's time", async () => {
+    const { container, messages } = await openTicket({
       currentClient: "web",
     });
-
-    // Rows are unchanged: no client name anywhere in the inbox row.
-    expect(rowBadges).toBe(0);
-    expect(rowText).not.toMatch(/Android/);
 
     // Ticket message (you), Which version? (team), The latest one (you).
     expect(messages).toHaveLength(3);
@@ -163,7 +178,9 @@ describe("ticket filed on another client", () => {
     // Replies and the ticket's header don't name it.
     for (const reply of messages.slice(1))
       expect(reply.querySelector("[data-feedback-client]")).toBeNull();
-    expect(container.querySelectorAll("[data-feedback-client]")).toHaveLength(1);
+    expect(
+      container.querySelectorAll(".hands-feedback-detail [data-feedback-client]"),
+    ).toHaveLength(1);
     expect(
       container.querySelector(
         ".hands-feedback-detail [data-slot='panel-header'] [data-feedback-client]",
@@ -184,7 +201,11 @@ describe("ticket filed on another client", () => {
   });
 
   it("shows nothing for a ticket filed on the current client", async () => {
-    const { container } = await openTicket({ currentClient: "android" });
+    const { container, rowBadges, rowLabel } = await openTicket({
+      currentClient: "android",
+    });
+    expect(rowBadges).toHaveLength(0);
+    expect(rowLabel).toBe("Crash when opening a thread");
     expect(container.querySelector("[data-feedback-client]")).toBeNull();
     expect(screen.queryByText("Android")).toBeNull();
   });
