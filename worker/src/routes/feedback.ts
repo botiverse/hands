@@ -399,7 +399,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   if (submissionIdRaw && !SUBMISSION_ID_PATTERN.test(submissionIdRaw)) {
     return c.json({ error: "submission_id must be a UUID" }, 400);
   }
-  const submissionId = submissionIdRaw?.toLowerCase() ?? null;
+  const clientSubmissionId = submissionIdRaw?.toLowerCase() ?? null;
 
   let metadata: Record<string, unknown> = {};
   const metadataRaw = form.get("metadata");
@@ -421,6 +421,13 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return Math.trunc(Number(raw.trim()));
     return null;
   };
+  // A system kill carries a stable per-exit id; without an explicit
+  // submission_id it becomes the idempotency key, so a resend of the same exit
+  // (lost response, deferred queue) returns the first ticket instead of a new one.
+  const exitEventSubmissionId = !clientSubmissionId && (kind === "crash" || kind === "error")
+    ? await systemKillExitSubmissionId(metadata)
+    : null;
+  const submissionId = clientSubmissionId ?? exitEventSubmissionId;
   const versionName = meta("version_name") ?? meta("fallback_version_name");
   const versionCode = parseVersionCode(metadata["version_code"]) ?? parseVersionCode(metadata["fallback_version_code"]);
   const backgroundSystemKill =
@@ -638,7 +645,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     : null;
 
   if (existingSubmission && submissionFingerprint) {
-    if (existingSubmission.submission_fingerprint !== submissionFingerprint) {
+    if (
+      existingSubmission.submission_fingerprint !== submissionFingerprint
+      && !(exitEventSubmissionId && existingSubmission.reporter_id === (reporterId || null))
+    ) {
       return submissionPayloadMismatch(c, existingSubmission, reporterId);
     }
     return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
@@ -882,7 +892,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
             code: "submission_reporter_mismatch",
           }, 409);
         }
-        if (existing.submission_fingerprint !== submissionFingerprint) {
+        if (existing.submission_fingerprint !== submissionFingerprint && !exitEventSubmissionId) {
           return submissionPayloadMismatch(c, existing, reporterId);
         }
         return feedbackSubmitResponse(c, app, existing.id, 200, true);
@@ -2232,40 +2242,41 @@ const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
  * / `REASON_ANR` (4/5/6)) are routine
  * OS background reclamations rather than foreground crashes. When the exit
  * record carries `crash_exit_importance` (the system's value at the moment of
- * exit), it alone decides: `>= 400` is background, anything lower is not. Only
+ * exit), it decides: `>= 400` is background, anything lower is not. Only
  * when it is missing do the app-recorded `crash_foreground` and then the
- * background memory-trim state decide; both can be seconds stale. They are grouped
+ * background memory-trim state decide; both can be seconds stale.
+ *
+ * Apps that also report `crash_recent_foreground` (a foreground memory sample
+ * or a user interaction shortly before exit) refine this: `true` is never
+ * background, whatever the importance; `false` with an importance makes every
+ * non-visible importance (`>= 125`, except visible 200) background. `false`
+ * only means no recent foreground evidence was recorded, so it never overrides
+ * a visible importance, and without an importance today's fallback applies.
+ * When the field is absent (older apps, or the app could not tell) the rule
+ * above is unchanged. They are grouped
  * into `SystemKill@background` ("后台被系统结束"), auto-closed as `not_planned`,
  * and alerted only on per-device daily repeats or version-over-version spikes.
  */
 export function isBackgroundSystemKill(metadata: Record<string, unknown>): boolean {
   if (metadata["crash_type"] !== "system_kill") return false;
-  const reasonCodeRaw = metadata["crash_exit_reason_code"];
-  const reasonCode =
-    typeof reasonCodeRaw === "number" && Number.isFinite(reasonCodeRaw)
-      ? Math.trunc(reasonCodeRaw)
-      : typeof reasonCodeRaw === "string" && /^\d+$/.test(reasonCodeRaw.trim())
-        ? Math.trunc(Number(reasonCodeRaw.trim()))
-        : null;
+  const reasonCode = systemKillInteger(metadata["crash_exit_reason_code"]);
   if (reasonCode !== null && ACTIONABLE_SYSTEM_KILL_REASON_CODES.has(reasonCode)) {
     return false;
   }
-  const reason = String(metadata["crash_exit_reason"] ?? metadata["crash_reason"] ?? "")
-    .trim()
+  const reason = asciiTrim(String(metadata["crash_exit_reason"] ?? metadata["crash_reason"] ?? ""))
     .toLowerCase();
   if (ACTIONABLE_SYSTEM_KILL_REASONS.has(reason)) return false;
 
-  const importanceRaw = metadata["crash_exit_importance"];
-  const importance =
-    typeof importanceRaw === "number" && Number.isFinite(importanceRaw)
-      ? Math.trunc(importanceRaw)
-      : typeof importanceRaw === "string" && /^\d+$/.test(importanceRaw.trim())
-        ? Math.trunc(Number(importanceRaw.trim()))
-        : null;
+  const importance = systemKillInteger(metadata["crash_exit_importance"]);
+  const recentForeground = systemKillRecentForeground(metadata);
+  if (recentForeground === true) return false;
+  if (recentForeground === false && importance !== null) {
+    return importance >= 125 && importance !== 200;
+  }
   if (importance !== null) return importance >= 400;
   if (metadata["crash_foreground"] === true) return false;
   if (metadata["crash_foreground"] === false) return true;
-  const trim = String(metadata["crash_trim"] ?? "").trim().toLowerCase();
+  const trim = asciiTrim(String(metadata["crash_trim"] ?? "")).toLowerCase();
   if (
     trim === "ui_hidden"
     || trim === "background"
@@ -2277,27 +2288,82 @@ export function isBackgroundSystemKill(metadata: Record<string, unknown>): boole
   return false;
 }
 
-// Mirrors isBackgroundSystemKill: an integer, or an all-digit string (ASCII
-// whitespace trimmed, as JS trim() does), else NULL. Migration 0091 repeats it.
-const SYSTEM_KILL_IMPORTANCE_SQL = `(CASE
-    WHEN json_type(t.metadata_json, '$.crash_exit_importance') IN ('integer', 'real')
-      THEN CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER)
-    WHEN json_type(t.metadata_json, '$.crash_exit_importance') = 'text'
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) <> ''
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) NOT GLOB '*[^0-9]*'
-      THEN CAST(TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) AS INTEGER)
+const SYSTEM_KILL_EXIT_EVENT_ID_PATTERN = /^[0-9a-f]{16,64}$/;
+
+/**
+ * The idempotency key for a system kill's `crash_exit_event_id` (hex, unique
+ * per install and exit): a UUIDv8 derived from it, so it fits the
+ * submission_id column and index. Null when the report is not a system kill
+ * or carries no valid id.
+ */
+export async function systemKillExitSubmissionId(
+  metadata: Record<string, unknown>,
+): Promise<string | null> {
+  if (metadata["crash_type"] !== "system_kill") return null;
+  const raw = metadata["crash_exit_event_id"];
+  if (typeof raw !== "string") return null;
+  const eventId = raw.trim().toLowerCase();
+  if (!SYSTEM_KILL_EXIT_EVENT_ID_PATTERN.test(eventId)) return null;
+  const hex = (await sha256Hex(`hands.system_kill_exit.v1:${eventId}`)).slice(0, 32).split("");
+  hex[12] = "8";
+  hex[16] = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  const h = hex.join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** ASCII whitespace only, exactly what the SQL mirror's TRIM strips. */
+function asciiTrim(value: string): string {
+  return value.replace(/^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g, "");
+}
+
+/** A finite number (truncated) or an all-digit string, else null. */
+function systemKillInteger(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.trunc(raw);
+  if (typeof raw === "string" && /^\d+$/.test(asciiTrim(raw))) return Math.trunc(Number(asciiTrim(raw)));
+  return null;
+}
+
+/**
+ * `crash_recent_foreground` as true / false; null when absent or not a JSON
+ * boolean (the app sends it only when it has valid evidence either way).
+ */
+function systemKillRecentForeground(metadata: Record<string, unknown>): boolean | null {
+  const raw = metadata["crash_recent_foreground"];
+  return typeof raw === "boolean" ? raw : null;
+}
+
+// Mirrors systemKillRecentForeground: 1 for true, 0 for false, else NULL.
+const SYSTEM_KILL_RECENT_FOREGROUND_SQL = `(CASE json_type(t.metadata_json, '$.crash_recent_foreground')
+    WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)`;
+
+const SQL_ASCII_WS = `' ' || char(9, 10, 11, 12, 13)`;
+
+// Mirrors systemKillInteger: an integer, or an all-digit string (ASCII
+// whitespace trimmed), else NULL. Migration 0091 repeats it for importance.
+const systemKillIntegerSql = (path: string) => `(CASE
+    WHEN json_type(t.metadata_json, '${path}') IN ('integer', 'real')
+      THEN CAST(json_extract(t.metadata_json, '${path}') AS INTEGER)
+    WHEN json_type(t.metadata_json, '${path}') = 'text'
+      AND TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) <> ''
+      AND TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) NOT GLOB '*[^0-9]*'
+      THEN CAST(TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) AS INTEGER)
   END)`;
+const SYSTEM_KILL_IMPORTANCE_SQL = systemKillIntegerSql("$.crash_exit_importance");
+const SYSTEM_KILL_REASON_CODE_SQL = systemKillIntegerSql("$.crash_exit_reason_code");
 
 export const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
   json_valid(t.metadata_json)
   AND json_extract(t.metadata_json, '$.crash_type') = 'system_kill'
-  AND COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_reason_code') AS INTEGER), -1) NOT IN (4, 5, 6, 9)
-  AND LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), '')) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
+  AND COALESCE(${SYSTEM_KILL_REASON_CODE_SQL}, -1) NOT IN (4, 5, 6, 9)
+  AND LOWER(TRIM(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), ''), ${SQL_ASCII_WS})) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
   AND (CASE
+    WHEN ${SYSTEM_KILL_RECENT_FOREGROUND_SQL} = 1 THEN 0
+    WHEN ${SYSTEM_KILL_RECENT_FOREGROUND_SQL} = 0 AND ${SYSTEM_KILL_IMPORTANCE_SQL} IS NOT NULL
+      THEN ${SYSTEM_KILL_IMPORTANCE_SQL} >= 125 AND ${SYSTEM_KILL_IMPORTANCE_SQL} <> 200
     WHEN ${SYSTEM_KILL_IMPORTANCE_SQL} IS NOT NULL THEN ${SYSTEM_KILL_IMPORTANCE_SQL} >= 400
     WHEN json_type(t.metadata_json, '$.crash_foreground') = 'true' THEN 0
     WHEN json_type(t.metadata_json, '$.crash_foreground') = 'false' THEN 1
-    ELSE LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), '')) IN ('ui_hidden', 'background', 'moderate', 'complete')
+    ELSE LOWER(TRIM(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), ''), ${SQL_ASCII_WS})) IN ('ui_hidden', 'background', 'moderate', 'complete')
   END)
 ))`;
 

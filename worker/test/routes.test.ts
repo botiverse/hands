@@ -11887,6 +11887,54 @@ describe("quiver public API v2 — scope resolution", () => {
       ["imp400-reason-anr", { ...base, crash_exit_importance: 400, crash_exit_reason_code: 6 }, false],
       ["imp400-reason-label-crash", { ...base, crash_exit_importance: 400, crash_exit_reason_code: undefined, crash_exit_reason: "crash" }, false],
       ["not-system-kill", { crash_type: "anr", crash_exit_importance: 400 }, false],
+      // crash_recent_foreground (hands#955): true always keeps a ticket.
+      ["rf-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: true, crash_recent_foreground_source: "interaction" }, false],
+      ["rf-true-imp125", { ...base, crash_exit_importance: 125, crash_recent_foreground: true }, false],
+      ["rf-true-no-imp-fg-false", { ...base, crash_recent_foreground: true, crash_foreground: false }, false],
+      // Only JSON booleans count; anything else is absent (today's rule).
+      ["rf-str-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: "true" }, true],
+      ["rf-nbsp-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: "\u00a0true" }, true],
+      ["rf-bom-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: "\ufefffalse" }, false],
+      // false: non-visible importance archives, visible never does.
+      ["rf-false-imp100", { ...base, crash_exit_importance: 100, crash_recent_foreground: false, crash_recent_foreground_source: "none" }, false],
+      ["rf-false-imp200", { ...base, crash_exit_importance: 200, crash_recent_foreground: false }, false],
+      ["rf-false-imp-str-200", { ...base, crash_exit_importance: "200", crash_recent_foreground: false }, false],
+      ["rf-false-imp124", { ...base, crash_exit_importance: 124, crash_recent_foreground: false }, false],
+      ["rf-false-imp125", { ...base, crash_exit_importance: 125, crash_recent_foreground: false }, true],
+      ["rf-false-imp230", { ...base, crash_exit_importance: 230, crash_recent_foreground: false }, true],
+      ["rf-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: false }, true],
+      ["rf-false-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: false }, true],
+      ["rf-str-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: "false" }, false],
+      // Reason fields parse the same way in ingest and SQL.
+      ["rf-false-imp300-reason-label-ws-anr", { ...base, crash_exit_importance: 300, crash_exit_reason_code: undefined, crash_exit_reason: " anr ", crash_recent_foreground: false }, false],
+      ["rf-false-imp300-reason-code-9.0", { ...base, crash_exit_importance: 300, crash_exit_reason_code: "9.0", crash_recent_foreground: false }, true],
+      ["rf-false-imp300-reason-code-str-9", { ...base, crash_exit_importance: 300, crash_exit_reason_code: " 9 ", crash_recent_foreground: false }, false],
+      ["rf-false-imp300-nbsp-importance", { ...base, crash_exit_importance: "\u00a0300", crash_recent_foreground: false, crash_foreground: true }, false],
+      ["no-imp-trim-ws-bg", { ...base, crash_trim: " ui_hidden " }, true],
+      // false without importance falls back to today's rule.
+      ["rf-false-no-imp-fg-true", { ...base, crash_recent_foreground: false, crash_foreground: true }, false],
+      ["rf-false-no-imp-trim-bg", { ...base, crash_recent_foreground: false, crash_trim: "ui_hidden" }, true],
+      // Absent / unknown / garbage: today's rule.
+      ["rf-unknown-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground_source: "unknown" }, false],
+      ["rf-unknown-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground_source: "unknown" }, true],
+      ["rf-null-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: null }, true],
+      ["rf-number-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: 0 }, false],
+      // Actionable exits stay excluded, whatever the signal.
+      ["rf-false-imp400-reason9", { ...base, crash_exit_importance: 400, crash_exit_reason_code: 9, crash_recent_foreground: false }, false],
+      ["rf-false-imp400-reason-label-excessive", { ...base, crash_exit_importance: 400, crash_exit_reason_code: undefined, crash_exit_reason: "excessive_resource_usage", crash_recent_foreground: false }, false],
+      ["rf-false-imp400-anr", { ...base, crash_exit_importance: 400, crash_exit_reason_code: 6, crash_recent_foreground: false }, false],
+      // The new fields an app may carry are tolerated.
+      ["rf-false-imp300-with-counts", {
+        ...base,
+        crash_exit_importance: 300,
+        crash_recent_foreground: false,
+        crash_recent_foreground_age_s: 600,
+        crash_exit_event_id: "0123456789abcdef0123456789abcdef",
+        crash_background_dropped_id: "batch-1",
+        crash_background_dropped: [{ version_code: 12600001, exit_day_utc: "2026-11-15", count: 3 }],
+        crash_pending_evicted: [{ version_code: 12600001, exit_day_utc: "2026-11-15", category: "background", count: 1 }],
+        crash_rejected: [{ version_code: 12600001, exit_day_utc: "2026-11-15", http_status: 400, count: 1 }],
+      }, true],
     ];
     const now = Date.now();
     for (const [id, meta, expected] of cases) {
@@ -13239,6 +13287,82 @@ describe("quiver public API v2 — scope resolution", () => {
     ).bind("app-scope", submissionId).all();
     expect(rows.results).toHaveLength(1);
     expect((rows.results[0] as any).submission_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("feedback: a system kill's crash_exit_event_id deduplicates resends without a submission_id", async () => {
+    const env = makeEnv();
+    const { handlePublicFeedbackSubmit, systemKillExitSubmissionId } = await import("../src/routes/feedback");
+    const exitEventId = "0123456789abcdef0123456789abcdef";
+    const kill = (extra: Record<string, unknown> = {}) => ({
+      crash_type: "system_kill",
+      crash_exception_class: "SystemKill",
+      crash_top_frame: "other",
+      crash_exit_reason_code: 13,
+      crash_exit_importance: 300,
+      crash_recent_foreground: false,
+      crash_recent_foreground_source: "none",
+      crash_exit_event_id: exitEventId,
+      ...extra,
+    });
+    const submit = (metadata: Record<string, unknown>, opts: { kind?: string; submissionId?: string } = {}) => {
+      const form = new FormData();
+      form.set("message", "System kill");
+      form.set("kind", opts.kind ?? "crash");
+      if (opts.submissionId) form.set("submission_id", opts.submissionId);
+      form.set("metadata", JSON.stringify(metadata));
+      return handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.72" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+    };
+
+    const derived = await systemKillExitSubmissionId(kill());
+    expect(derived).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(await systemKillExitSubmissionId(kill({ crash_exit_event_id: exitEventId.toUpperCase() }))).toBe(derived);
+    expect(await systemKillExitSubmissionId(kill({ crash_exit_event_id: "fedcba9876543210fedcba9876543210" }))).not.toBe(derived);
+    expect(await systemKillExitSubmissionId(kill({ crash_exit_event_id: "not-hex" }))).toBeNull();
+    expect(await systemKillExitSubmissionId(kill({ crash_exit_event_id: 42 }))).toBeNull();
+    expect(await systemKillExitSubmissionId({ crash_type: "anr", crash_exit_event_id: exitEventId })).toBeNull();
+
+    const first = await submit(kill());
+    expect(first.status).toBe(201);
+    const firstBody = await responseJson<any>(first);
+    // A resend of the same exit may carry other batch counts; it is still the same exit.
+    const resend = await submit(kill({
+      crash_background_dropped_id: "batch-2",
+      crash_background_dropped: [{ version_code: 12600001, exit_day_utc: "2026-11-15", count: 2 }],
+    }));
+    expect(resend.status).toBe(200);
+    const resendBody = await responseJson<any>(resend);
+    expect(resendBody.id).toBe(firstBody.id);
+    expect(resendBody.idempotent_replay).toBe(true);
+
+    const other = await submit(kill({ crash_exit_event_id: "fedcba9876543210fedcba9876543210" }));
+    expect(other.status).toBe(201);
+    const noId = await submit(kill({ crash_exit_event_id: undefined }));
+    expect(noId.status).toBe(201);
+    const noIdAgain = await submit(kill({ crash_exit_event_id: undefined }));
+    expect(noIdAgain.status).toBe(201);
+    // An explicit submission_id keeps its own strict replay semantics.
+    const explicitId = "33333333-3333-4333-8333-333333333333";
+    expect((await submit(kill(), { submissionId: explicitId })).status).toBe(201);
+    expect((await submit(kill({ crash_trim: "complete" }), { submissionId: explicitId })).status).toBe(409);
+
+    const rows = await env.DB.prepare(
+      "SELECT id, status, closure_reason, submission_id, metadata_json FROM feedback_tickets WHERE app_id = 'app-scope' AND kind = 'crash' ORDER BY created_at",
+    ).all();
+    expect(rows.results).toHaveLength(5);
+    const firstRow = (rows.results as any[]).find((r) => r.id === firstBody.id);
+    expect(firstRow).toMatchObject({ status: "closed", closure_reason: "not_planned", submission_id: derived });
+    expect(JSON.parse(firstRow.metadata_json).crash_exit_event_id).toBe(exitEventId);
   });
 
   it("feedback: over-limit new submissions stop before R2 HEAD while known replays remain recoverable", async () => {
