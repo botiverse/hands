@@ -12,7 +12,7 @@ import {
   type GithubOidcClaims,
   type TrustedPublisher,
 } from "../lib/github_oidc";
-import { requestOrigin } from "../lib/origin";
+import { businessOrigin, requestOrigin } from "../lib/origin";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -25,6 +25,7 @@ type PublisherRow = {
   app_id: string;
   repository: string;
   repository_id: string | null;
+  repository_owner_id: string | null;
   workflow_path: string;
   ref_patterns_json: string;
   environment: string | null;
@@ -50,6 +51,7 @@ function toPublisher(row: PublisherRow): TrustedPublisher {
     app_id: row.app_id,
     repository: row.repository,
     repository_id: row.repository_id,
+    repository_owner_id: row.repository_owner_id,
     workflow_path: row.workflow_path,
     ref_patterns: parseRefPatterns(row.ref_patterns_json),
     environment: row.environment,
@@ -61,7 +63,7 @@ function toResponse(row: PublisherRow) {
   return { ...rest, provider: "github", ref_patterns: parseRefPatterns(row.ref_patterns_json) };
 }
 
-const SELECT_COLUMNS = `id, app_id, repository, repository_id, workflow_path, ref_patterns_json, environment,
+const SELECT_COLUMNS = `id, app_id, repository, repository_id, repository_owner_id, workflow_path, ref_patterns_json, environment,
   app_role, created_by, created_by_actor, created_at, last_used_at, revoked_at`;
 
 export async function handleListTrustedPublishers(c: AdminContext) {
@@ -163,7 +165,9 @@ export async function handleGithubOidcExchange(c: Context<{ Bindings: Env }>) {
   if (!appRef || !token) return c.json({ error: "app and token are required", code: "invalid_request" }, 400);
   if (token.length > 16_384) return c.json({ error: "token too large", code: "invalid_request" }, 400);
 
-  const audience = requestOrigin(c);
+  // The configured public origin, so a workers.dev or preview hostname is not
+  // also an accepted audience.
+  const audience = businessOrigin(c.env, () => requestOrigin(c));
   let claims: GithubOidcClaims;
   try {
     claims = await verifyGithubOidcToken(token, audience);
@@ -183,26 +187,18 @@ export async function handleGithubOidcExchange(c: Context<{ Bindings: Env }>) {
        ORDER BY created_at`,
     ).bind(app.id).all<PublisherRow>()
     : { results: [] as PublisherRow[] };
-  let match: PublisherRow | null = null;
-  const mismatches: string[] = [];
-  for (const row of results) {
-    const reason = trustedPublisherMismatch(toPublisher(row), claims);
-    if (reason === null) {
-      match = row;
-      break;
-    }
-    mismatches.push(reason);
-  }
+  const match = results.find((row) => trustedPublisherMismatch(toPublisher(row), claims) === null) ?? null;
   if (!app || !match) {
-    // The mismatch reasons name only which configured check failed (never the
-    // configured values), so a misconfigured workflow can be fixed from its log.
+    // One answer whether the app is unknown, has no publishers, or none match,
+    // so the endpoint cannot be used to probe apps. It echoes only the caller's
+    // own claims, which is what a workflow author needs to compare.
     return c.json({
       error: "no trusted publisher on this app matches this workflow run",
       code: "github_oidc_no_trusted_publisher",
       repository: claims.repository,
       workflow_ref: claims.workflow_ref,
       ref: claims.ref,
-      ...(app && mismatches.length > 0 ? { mismatch: [...new Set(mismatches)] } : {}),
+      event_name: claims.event_name,
     }, 403);
   }
 
@@ -226,9 +222,10 @@ export async function handleGithubOidcExchange(c: Context<{ Bindings: Env }>) {
       ).bind(deployTokenId, app.id, name, token_prefix, await hashDeployToken(deployToken), match.app_role, actor, now, expiresAt),
       // Pin the repository id the first time a run is accepted.
       c.env.DB.prepare(
-        `UPDATE app_github_trusted_publishers SET last_used_at = ?1, repository_id = COALESCE(repository_id, ?2)
+        `UPDATE app_github_trusted_publishers SET last_used_at = ?1, repository_id = COALESCE(repository_id, ?2),
+           repository_owner_id = COALESCE(repository_owner_id, ?4)
          WHERE id = ?3`,
-      ).bind(now, claims.repository_id, match.id),
+      ).bind(now, claims.repository_id, match.id, claims.repository_owner_id ?? null),
       c.env.DB.prepare(
         `INSERT INTO audit_logs (id, app_id, action, actor, actor_id, actor_type, payload, created_at)
          VALUES (?1, ?2, 'trusted_publisher.exchange', ?3, NULL, 'system', ?4, ?5)`,

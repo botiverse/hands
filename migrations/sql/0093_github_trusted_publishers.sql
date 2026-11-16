@@ -9,6 +9,8 @@ CREATE TABLE app_github_trusted_publishers (
   -- GitHub's numeric repository id, pinned on first use when not given, so a
   -- deleted and re-created repository of the same name cannot publish.
   repository_id TEXT,
+  -- The owner's numeric id, pinned the same way.
+  repository_owner_id TEXT,
   -- Path of the calling workflow inside the repository, e.g.
   -- .github/workflows/desktop.yml; matched against `workflow_ref`.
   workflow_path TEXT NOT NULL,

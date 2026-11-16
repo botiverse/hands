@@ -26,6 +26,7 @@ export type GithubOidcClaims = {
   repository: string;
   repository_id: string;
   repository_owner: string;
+  repository_owner_id?: string;
   workflow_ref: string;
   job_workflow_ref?: string;
   ref: string;
@@ -47,6 +48,8 @@ type Jwk = JsonWebKey & { kid?: string };
 type JwksFetcher = () => Promise<Jwk[]>;
 
 let jwksCache: { keys: Jwk[]; fetchedAt: number } | null = null;
+/** An unknown kid refetches the keys at most this often. */
+const JWKS_REFETCH_MIN_MS = 60 * 1000;
 
 async function fetchGithubJwks(): Promise<Jwk[]> {
   const response = await fetch(GITHUB_OIDC_JWKS_URL, {
@@ -67,8 +70,8 @@ export function resetGithubJwksCache() {
 async function keyFor(kid: string, fetcher: JwksFetcher, now: number): Promise<Jwk> {
   const fresh = jwksCache && now - jwksCache.fetchedAt < JWKS_TTL_MS;
   let key = fresh ? jwksCache!.keys.find((k) => k.kid === kid) : undefined;
-  if (!key) {
-    // Unknown kid: GitHub may have rotated keys, so refetch once.
+  if (!key && !(jwksCache && now - jwksCache.fetchedAt < JWKS_REFETCH_MIN_MS)) {
+    // Unknown kid: GitHub may have rotated keys, so refetch (rate-limited).
     const keys = await fetcher();
     jwksCache = { keys, fetchedAt: now };
     key = keys.find((k) => k.kid === kid);
@@ -79,8 +82,14 @@ async function keyFor(kid: string, fetcher: JwksFetcher, now: number): Promise<J
 
 function base64UrlDecode(input: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(input)) throw new GithubOidcError("malformed_token", "token is not base64url");
+  if (input.length % 4 === 1) throw new GithubOidcError("malformed_token", "token is not base64url");
   const padded = input.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((input.length + 3) % 4);
-  const binary = atob(padded);
+  let binary: string;
+  try {
+    binary = atob(padded);
+  } catch {
+    throw new GithubOidcError("malformed_token", "token is not base64url");
+  }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
@@ -165,6 +174,7 @@ export type TrustedPublisher = {
   app_id: string;
   repository: string;
   repository_id: string | null;
+  repository_owner_id: string | null;
   workflow_path: string;
   ref_patterns: string[];
   environment: string | null;
@@ -195,7 +205,8 @@ export function normalizeRefPatterns(value: unknown): string[] | null {
     if (typeof raw !== "string") return null;
     const pattern = raw.trim();
     if (!REF_PATTERN.test(pattern) || pattern.length > 200) return null;
-    // A bare `refs/heads/*` style wildcard is allowed but must be explicit.
+    // Bounded wildcards keep matching linear: no `**`, at most three `*`.
+    if (pattern.includes("**") || pattern.split("*").length - 1 > 3) return null;
     patterns.push(pattern);
   }
   return [...new Set(patterns)];
@@ -209,6 +220,14 @@ export function refMatches(pattern: string, ref: string): boolean {
 }
 
 /**
+ * Events whose runs execute trusted workflow code on a protected ref. Events
+ * such as pull_request_target, workflow_run and issue_comment report the
+ * default branch as their ref while acting on input from outside the
+ * repository, so they never match.
+ */
+export const TRUSTED_PUBLISHER_EVENTS = new Set(["push", "workflow_dispatch", "release", "schedule"]);
+
+/**
  * Why a token does not match a publisher, or null when it matches. The token's
  * `workflow_ref` is `<owner>/<repo>/<path>@<ref>` for the workflow that started
  * the run, so a reusable workflow from another repository cannot stand in.
@@ -216,11 +235,18 @@ export function refMatches(pattern: string, ref: string): boolean {
 export function trustedPublisherMismatch(publisher: TrustedPublisher, claims: GithubOidcClaims): string | null {
   if (claims.repository.toLowerCase() !== publisher.repository) return "repository";
   if (publisher.repository_id !== null && claims.repository_id !== publisher.repository_id) return "repository_id";
+  if (publisher.repository_owner_id !== null && claims.repository_owner_id !== publisher.repository_owner_id) {
+    return "repository_owner_id";
+  }
+  if (!TRUSTED_PUBLISHER_EVENTS.has(claims.event_name)) return "event";
   const at = claims.workflow_ref.lastIndexOf("@");
   if (at < 0) return "workflow";
   const workflow = claims.workflow_ref.slice(0, at);
   const workflowRef = claims.workflow_ref.slice(at + 1);
-  if (workflow.toLowerCase() !== `${publisher.repository}/${publisher.workflow_path}`.toLowerCase()) return "workflow";
+  // owner/repo is case-insensitive on GitHub; the file path is not.
+  const repoPrefix = `${publisher.repository}/`;
+  if (workflow.slice(0, repoPrefix.length).toLowerCase() !== repoPrefix) return "workflow";
+  if (workflow.slice(repoPrefix.length) !== publisher.workflow_path) return "workflow";
   // The run's ref and the workflow file's ref are the same for push/tag runs;
   // requiring both keeps a workflow taken from another branch from matching.
   if (workflowRef !== claims.ref) return "ref";

@@ -58,10 +58,10 @@ describe("github-oidc-login", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       error: "no trusted publisher on this app matches this workflow run",
       code: "github_oidc_no_trusted_publisher",
-      mismatch: ["ref"],
       workflow_ref: "o/r/.github/workflows/x.yml@refs/heads/dev",
+      event_name: "push",
     }), { status: 403 })));
     await expect(exchangeGithubOidcToken("raft-deck", "jwt", "https://hands.example.test"))
-      .rejects.toThrow(/github_oidc_no_trusted_publisher.*mismatch: ref.*refs\/heads\/dev/);
+      .rejects.toThrow(/github_oidc_no_trusted_publisher.*refs\/heads\/dev.*event: push/);
   });
 });

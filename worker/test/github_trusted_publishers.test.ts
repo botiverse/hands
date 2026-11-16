@@ -15,7 +15,7 @@ import {
   handleRevokeTrustedPublisher,
 } from "../src/routes/trusted_publishers";
 import { loadDeployToken } from "../src/lib/deploy_tokens";
-import { refMatches, resetGithubJwksCache, verifyGithubOidcToken } from "../src/lib/github_oidc";
+import { normalizeRefPatterns, refMatches, resetGithubJwksCache, trustedPublisherMismatch, verifyGithubOidcToken } from "../src/lib/github_oidc";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const ORIGIN = "https://hands.example.test";
@@ -65,7 +65,7 @@ function environment() {
     `INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at)
      VALUES ('app-other','org','other','Other','electron','ck2',1)`,
   ).run();
-  return { sqlite, env: { DB: d1(sqlite) } as unknown as Env };
+  return { sqlite, env: { DB: d1(sqlite), BUSINESS_ORIGIN: ORIGIN } as unknown as Env };
 }
 
 function adminCtx(env: Env, params: Record<string, string>, body: unknown = {}, query: Record<string, string> = {}) {
@@ -129,6 +129,7 @@ function claims(overrides: Record<string, unknown> = {}) {
     repository: "botiverse/raft-deck",
     repository_id: "123456",
     repository_owner: "botiverse",
+    repository_owner_id: "777",
     workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/heads/main",
     job_workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/heads/main",
     ref: "refs/heads/main",
@@ -189,6 +190,9 @@ describe("GitHub OIDC token verification", () => {
     for (const [label, token, code] of cases) {
       await expect(verifyGithubOidcToken(await token, ORIGIN), label).rejects.toMatchObject({ code });
     }
+    // A signature segment that is not valid base64url is a 401, not a crash.
+    const [h0, p0] = (await signJwt(claims())).split(".");
+    await expect(verifyGithubOidcToken(`${h0}.${p0}.abcde`, ORIGIN)).rejects.toMatchObject({ code: "malformed_token" });
     // A tampered payload under a valid signature.
     const [h, , s] = (await signJwt(claims())).split(".");
     const tampered = `${h}.${b64url(JSON.stringify(claims({ repository: "evil/repo" })))}.${s}`;
@@ -201,6 +205,9 @@ describe("GitHub OIDC token verification", () => {
     expect(refMatches("refs/heads/main", "refs/heads/main-old")).toBe(false);
     expect(refMatches("refs/heads/*", "refs/heads/feature/x")).toBe(false);
     expect(refMatches("refs/heads/release.*", "refs/heads/releaseX1")).toBe(false);
+    expect(normalizeRefPatterns(["refs/tags/**"])).toBeNull();
+    expect(normalizeRefPatterns(["refs/tags/a*b*c*d*"])).toBeNull();
+    expect(normalizeRefPatterns(["refs/tags/v*.*.*"])).toEqual(["refs/tags/v*.*.*"]);
   });
 });
 
@@ -250,8 +257,8 @@ describe("trusted publishers", () => {
     const loaded = await loadDeployToken(env, result.body.token);
     expect(loaded).toMatchObject({ app_id: APP, app_role: "publisher" });
     // The repository id is pinned on first use.
-    expect(sqlite.prepare("SELECT repository_id FROM app_github_trusted_publishers WHERE id = ?").get(publisher.id))
-      .toEqual({ repository_id: "123456" });
+    expect(sqlite.prepare("SELECT repository_id, repository_owner_id FROM app_github_trusted_publishers WHERE id = ?").get(publisher.id))
+      .toEqual({ repository_id: "123456", repository_owner_id: "777" });
     const audit = sqlite.prepare("SELECT action, actor, actor_type, payload FROM audit_logs WHERE action = 'trusted_publisher.exchange'").get() as any;
     expect(audit).toMatchObject({ actor: "github:botiverse/raft-deck/.github/workflows/desktop.yml", actor_type: "system" });
     expect(JSON.parse(audit.payload)).toMatchObject({ run_id: "987", sha: "a".repeat(40), ref: "refs/heads/main" });
@@ -271,17 +278,30 @@ describe("trusted publishers", () => {
       ["fork", { repository: "evil/raft-deck", workflow_ref: "evil/raft-deck/.github/workflows/desktop.yml@refs/heads/main" }, "repository"],
       ["other workflow", { workflow_ref: "botiverse/raft-deck/.github/workflows/mobile.yml@refs/heads/main" }, "workflow"],
       ["feature branch", { ref: "refs/heads/feature", workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/heads/feature" }, "ref"],
-      ["pull request", { ref: "refs/pull/7/merge", workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/pull/7/merge", event_name: "pull_request" }, "ref"],
+      ["pull request", { ref: "refs/pull/7/merge", workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/pull/7/merge", event_name: "pull_request" }, "event"],
       ["workflow file from another ref", { workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/heads/feature" }, "ref"],
       ["other tag", { ref: "refs/tags/mobile-v1", workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/tags/mobile-v1" }, "ref"],
+      ["workflow file differs only in case", { workflow_ref: "botiverse/raft-deck/.github/workflows/Desktop.yml@refs/heads/main" }, "workflow"],
+      ["pull_request_target on main", { event_name: "pull_request_target" }, "event"],
+      ["workflow_run on main", { event_name: "workflow_run" }, "event"],
+      ["issue_comment on main", { event_name: "issue_comment" }, "event"],
     ];
+    const configured = {
+      id: publisher.id, app_id: APP, repository: "botiverse/raft-deck", repository_id: null, repository_owner_id: null,
+      workflow_path: ".github/workflows/desktop.yml", ref_patterns: ["refs/heads/main", "refs/tags/desktop-v*"], environment: null,
+    };
     for (const [label, overrides, reason] of cases) {
       const result = await deny(overrides);
       expect([label, result.status, result.body.code]).toEqual([label, 403, "github_oidc_no_trusted_publisher"]);
-      expect(result.body.mismatch, label).toContain(reason);
+      expect([label, trustedPublisherMismatch(configured, claims(overrides) as any)]).toEqual([label, reason]);
     }
-    expect((await deny({}, "other")).status).toBe(403);
-    expect((await deny({}, "no-such-app")).status).toBe(403);
+    // The same answer for another app, an unknown app and a non-matching run.
+    const otherApp = await deny({}, "other");
+    const unknownApp = await deny({}, "no-such-app");
+    const nonMatching = await deny({ ref: "refs/heads/x", workflow_ref: "botiverse/raft-deck/.github/workflows/desktop.yml@refs/heads/x" });
+    expect(otherApp.status).toBe(403);
+    expect(Object.keys(unknownApp.body).sort()).toEqual(Object.keys(otherApp.body).sort());
+    expect(Object.keys(nonMatching.body).sort()).toEqual(Object.keys(otherApp.body).sort());
     expect((await exchange(env, { app: "raft-deck", token: await signJwt(claims({ aud: "https://other.example" })) })).body.code).toBe("github_oidc_wrong_audience");
     expect((await exchange(env, { app: "raft-deck" })).status).toBe(400);
 
@@ -291,9 +311,12 @@ describe("trusted publishers", () => {
     const replay = await exchange(env, { app: "raft-deck", token });
     expect([replay.status, replay.body.code]).toEqual([409, "github_oidc_token_reused"]);
 
-    // Pinned repository id: a re-created repository with the same name cannot publish.
-    const recreated = await deny({ repository_id: "999" });
-    expect(recreated.body.mismatch).toContain("repository_id");
+    // Pinned repository and owner ids: a re-created repository or owner with the same name cannot publish.
+    expect((await deny({ repository_id: "999" })).status).toBe(403);
+    expect((await deny({ repository_owner_id: "999" })).status).toBe(403);
+    const pinned = { ...configured, repository_id: "123456", repository_owner_id: "777" };
+    expect(trustedPublisherMismatch(pinned, claims({ repository_id: "999" }) as any)).toBe("repository_id");
+    expect(trustedPublisherMismatch(pinned, claims({ repository_owner_id: "999" }) as any)).toBe("repository_owner_id");
 
     // Revoking the publisher revokes the tokens it minted.
     const minted = await exchange(env, { app: "raft-deck", token: await signJwt(claims()) });
@@ -306,7 +329,7 @@ describe("trusted publishers", () => {
   it("requires the configured GitHub environment when one is set", async () => {
     const { env } = environment();
     await addPublisher(env, { environment: "release" });
-    expect((await exchange(env, { app: "raft-deck", token: await signJwt(claims()) })).body.mismatch).toContain("environment");
+    expect((await exchange(env, { app: "raft-deck", token: await signJwt(claims()) })).status).toBe(403);
     expect((await exchange(env, { app: "raft-deck", token: await signJwt(claims({ environment: "release" })) })).status).toBe(201);
   });
 });

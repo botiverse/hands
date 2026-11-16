@@ -1172,6 +1172,7 @@ export interface TrustedPublisher {
   provider: "github";
   repository: string;
   repository_id: string | null;
+  repository_owner_id: string | null;
   workflow_path: string;
   ref_patterns: string[];
   environment: string | null;

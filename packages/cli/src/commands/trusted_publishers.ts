@@ -67,11 +67,31 @@ export async function exchangeGithubOidcToken(app: string, githubToken: string, 
   if (!response.ok) {
     const detail = [body.error ?? `${response.status}`];
     if (body.code) detail.push(`(${String(body.code)})`);
-    if (Array.isArray(body.mismatch)) detail.push(`mismatch: ${body.mismatch.join(", ")}`);
     if (body.workflow_ref) detail.push(`workflow_ref: ${String(body.workflow_ref)}`);
+    if (body.event_name) detail.push(`event: ${String(body.event_name)}`);
     throw new Error(`Hands refused the exchange: ${detail.join(" ")}`);
   }
   return body as unknown as ExchangeResponse;
+}
+
+/**
+ * GitHub's numeric id for a repository, so the publisher is pinned to it from
+ * the start. Uses GH_TOKEN / GITHUB_TOKEN when set (private repositories);
+ * returns null when GitHub cannot tell us, and the id is then pinned on first use.
+ */
+export async function lookupGithubRepositoryId(repository: string, env = process.env): Promise<string | null> {
+  const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
+  try {
+    const response = await fetch(`https://api.github.com/repos/${repository}`, {
+      headers: { accept: "application/vnd.github+json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json() as { id?: unknown };
+    return typeof body.id === "number" ? String(body.id) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function registerTrustedPublisherCommands(program: Command): void {
@@ -113,11 +133,19 @@ export function registerTrustedPublisherCommands(program: Command): void {
     .requiredOption("--repository <owner/repo>", "GitHub repository, e.g. botiverse/raft-deck.")
     .requiredOption("--workflow <path>", "Workflow file, e.g. .github/workflows/desktop.yml.")
     .option("--ref <pattern...>", "Allowed refs: refs/heads/<branch> or refs/tags/<pattern>; `*` matches within one segment.", ["refs/heads/main"])
-    .option("--environment <name>", "Require this GitHub environment.")
+    .option("--environment <name>", "Require this GitHub environment (recommended: protect it in the repository settings).")
+    .option("--repository-id <id>", "GitHub's numeric repository id; looked up automatically when omitted.")
     .option("--role <role>", "publisher | viewer", "publisher")
     .option("--json", "Output JSON.", false)
-    .action(async (appIdOrSlug: string, opts: { repository: string; workflow: string; ref: string[]; environment?: string; role: string; json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { repository: string; workflow: string; ref: string[]; environment?: string; repositoryId?: string; role: string; json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
+      const repositoryId = opts.repositoryId ?? await lookupGithubRepositoryId(opts.repository.trim());
+      if (!repositoryId) {
+        console.error(
+          `Could not look up ${opts.repository} on GitHub (set GH_TOKEN for a private repository, or pass --repository-id). ` +
+          "Continuing: the id will be pinned on the first accepted run.",
+        );
+      }
       const res = await apiRequest<{ trusted_publisher: TrustedPublisher }>(`/api/apps/${appId}/trusted-publishers`, {
         method: "POST",
         body: {
@@ -125,6 +153,7 @@ export function registerTrustedPublisherCommands(program: Command): void {
           workflow_path: opts.workflow,
           ref_patterns: opts.ref,
           ...(opts.environment ? { environment: opts.environment } : {}),
+          ...(repositoryId ? { repository_id: repositoryId } : {}),
           app_role: opts.role,
         },
       });
