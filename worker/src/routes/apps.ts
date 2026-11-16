@@ -507,8 +507,8 @@ export async function handlePurgeApp(c: AdminContext) {
   const startedAt = Date.now();
 
   // Open a purge INTENT before anything destructive happens, in a table that does not cascade
-  // from `apps` (audit_logs.app_id does, so an audit row would be deleted with the app and could
-  // not answer "who purged this"). The purge spans two systems - R2 and D1 - and cannot be atomic
+  // from `apps` (audit_logs.app_id does: since 0095 its rows move to audit_logs_archive when the
+  // app is deleted, but the purge intent must exist before anything is deleted at all). The purge spans two systems - R2 and D1 - and cannot be atomic
   // across them, so a single row written at the end would claim a COMPLETED purge even when the
   // final DELETE failed. That is worse than no record: it would read as "purged" while the app
   // still existed. The intent is visible from the outset; only the receipt below may complete it.
