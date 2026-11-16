@@ -8234,10 +8234,10 @@ describe("quiver public API v2 — scope resolution", () => {
     };
     const audits = async () => Number((await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope' AND action = 'release.check'",
-    ).first<{ n: number }>())?.n ?? 0);
+    ).first() as { n: number } | null)?.n ?? 0);
     const stored = async (source: string) => env.DB.prepare(
       "SELECT run_id, verdict, reviewed_at FROM release_checks WHERE release_id = 'rel-order' AND source = ?1",
-    ).bind(source).first<any>();
+    ).bind(source).first() as Promise<any>;
 
     // Legacy caller without reviewed_at: replaces, and an identical repost is a no-op.
     expect((await post({ source: "legacy", run_id: "l1", verdict: "failed" })).status).toBe(201);
@@ -8268,6 +8268,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await post({ source: "legacy", run_id: "l3", verdict: "passed", reviewed_at: 10 })).status).toBe(201);
     expect(await stored("legacy")).toEqual({ run_id: "l3", verdict: "passed", reviewed_at: 10 });
     expect(await audits()).toBe(5);
+
+    // Values are clipped on code points, so a long emoji summary reposted is still a duplicate.
+    const long = "🙂".repeat(4001);
+    expect((await post({ source: "emoji", verdict: "passed", summary: long, reviewed_at: 1 })).status).toBe(201);
+    expect(await post({ source: "emoji", verdict: "passed", summary: long, reviewed_at: 1 })).toMatchObject({ status: 200, body: { duplicate: true } });
+    expect((await post({ source: "bad", verdict: "passed", run_id: 7 })).status).toBe(400);
   });
 
   it("share fallback: the newest active release wins over an older release's apk", async () => {

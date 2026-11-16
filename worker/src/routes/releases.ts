@@ -1049,18 +1049,26 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
   }
   const intOrNull = (v: unknown) =>
     typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : null;
+  for (const key of ["run_id", "run_url", "summary", "reviewer"] as const) {
+    if (body[key] !== undefined && body[key] !== null && typeof body[key] !== "string") {
+      return c.json({ error: `${key} must be a string` }, 400);
+    }
+  }
+  // Cut on code points so a stored value reads back exactly as sent.
+  const clip = (v: string | null | undefined, max: number) =>
+    typeof v === "string" ? Array.from(v).slice(0, max).join("") : null;
 
   const now = Date.now();
   const id = crypto.randomUUID();
   const reviewedAt = intOrNull(body.reviewed_at);
   const values = {
-    run_id: body.run_id?.slice(0, 200) ?? null,
+    run_id: clip(body.run_id, 200),
     run_url: body.run_url ?? null,
     verdict: body.verdict,
     cases_total: intOrNull(body.cases_total),
     cases_passed: intOrNull(body.cases_passed),
-    summary: body.summary?.slice(0, 4000) ?? null,
-    reviewer: body.reviewer?.slice(0, 200) ?? null,
+    summary: clip(body.summary, 4000),
+    reviewer: clip(body.reviewer, 200),
     reviewed_at: reviewedAt,
   };
   // Ordering per (release, source): a result carrying reviewed_at replaces the
@@ -1139,12 +1147,17 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
   )
     .bind(releaseId, source)
     .first<Record<string, unknown>>();
-  if (written || !saved) return c.json({ check: saved }, 201);
+  if (!saved) return c.json({ error: "not found" }, 404);
+  if (written) return c.json({ check: saved }, 201);
 
   const same = (Object.keys(values) as Array<keyof typeof values>)
     .every((key) => (saved[key] ?? null) === values[key]);
-  if (same) return c.json({ check: saved, duplicate: true }, 200);
   const storedReviewedAt = typeof saved.reviewed_at === "number" ? saved.reviewed_at : null;
+  // Untimed over untimed only skips an identical write; a concurrent change
+  // read back here is still reported as a duplicate of this request.
+  if (same || (reviewedAt === null && storedReviewedAt === null)) {
+    return c.json({ check: saved, duplicate: true }, 200);
+  }
   if (reviewedAt === null && storedReviewedAt !== null) {
     return c.json({
       error: "this check has a reviewed_at; send reviewed_at to replace it",
