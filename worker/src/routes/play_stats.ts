@@ -6,6 +6,7 @@
  *   PUT  /api/apps/:appId/google-play/stats-bucket   {"stats_bucket": "pubsite_prod_rev_123" | null}
  *   POST /api/apps/:appId/stats/google-play/ingest
  */
+import { recordPlayAccessFailure, recordPlayAccessSuccess } from "../lib/play_access_alerts";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
@@ -71,6 +72,14 @@ export async function handleIngestPlayStats(c: AdminContext) {
       const [status, code, error] = STATUS_RESPONSES[summary.status];
       return c.json({ error, code }, status);
     }
+    // A successful manual run is current evidence: clear the scheduled run's
+    // stale error and end any access-failure episode.
+    const now = Date.now();
+    const fileCode = summary.files_failed[0]?.code ?? summary.files_over_limit[0]?.code ?? summary.files_incomplete[0]?.code ?? null;
+    await c.env.DB.prepare(
+      "UPDATE google_play_stats_ingest_schedule SET last_run_at = ?1, last_error_code = ?2 WHERE app_id = ?3",
+    ).bind(now, fileCode, appId).run().catch(() => undefined);
+    await recordPlayAccessSuccess(c.env.DB, appId, "statistics", now).catch(() => undefined);
     await insertAuditLog(c.env.DB, c, {
       app_id: appId,
       action: "google_play.stats.ingest",
@@ -79,6 +88,7 @@ export async function handleIngestPlayStats(c: AdminContext) {
     return c.json({ ...summary, note: PLAY_STATS_NOTE });
   } catch (err) {
     if (err instanceof PlayStatsError) {
+      await recordPlayAccessFailure(c.env.DB, appId, "statistics", err.code).catch(() => undefined);
       const bucket = await getPlayStatsBucket(c.env.DB, appId).catch(() => null);
       return c.json({
         error: "Google Play statistics reports could not be listed",

@@ -19,6 +19,7 @@
  * failed and over_limit ones are retried with back-off, or at once when a new
  * generation appears.
  */
+import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 import { createHash } from "node:crypto";
 import { getGooglePlayBinding, getGooglePlayReportsCredential, hasGooglePlayConfiguration } from "./google_play_bindings";
 
@@ -597,6 +598,8 @@ export async function pollGooglePlayStats(env: Env, now = Date.now()) {
     let code: string | null = null;
     try {
       const summary = await ingestGooglePlayStatsForApp(env, row.app_id, PLAY_STATS_SCHEDULED_BUDGET, now);
+      // Reaching Google is what access health tracks; per-file problems are not access failures.
+      if (summary.status === "ok") await recordPlayAccessSuccess(env.DB, row.app_id, "statistics", now).catch(() => undefined);
       if (summary.status !== "ok") code = summary.status;
       else code = summary.files_failed[0]?.code ?? summary.files_over_limit[0]?.code ?? summary.files_incomplete[0]?.code ?? null;
       // Backlog left: continue on a following tick instead of in six hours.
@@ -604,6 +607,9 @@ export async function pollGooglePlayStats(env: Env, now = Date.now()) {
     } catch (err) {
       code = err instanceof PlayStatsError ? err.code : "unexpected";
       logFailure(row.app_id, code);
+      if (err instanceof PlayStatsError) {
+        await recordPlayAccessFailure(env.DB, row.app_id, "statistics", err.code, now).catch(() => undefined);
+      }
     }
     await env.DB.prepare(`UPDATE google_play_stats_ingest_schedule SET next_run_at = ?1, last_run_at = ?2, last_error_code = ?3
       WHERE app_id = ?4`).bind(next, now, code, row.app_id).run().catch(() => undefined);

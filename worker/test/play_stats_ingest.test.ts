@@ -453,6 +453,21 @@ describe("Google Play statistics ingest", () => {
     expect(body).toMatchObject({ provider_code: "play_reports_token_rejected" });
     expect(body.hint).toMatch(/reauthorize statistics reports/);
     expect(body.hint).toMatch(/publishing is not affected/);
+
+    // The rejection opens an access-failure episode; a scheduled run records the error.
+    const sqliteState = async () => h.env.DB.prepare("SELECT access, last_error_code, alerted_at FROM google_play_access_state WHERE app_id = 'app'").first<any>();
+    expect(await sqliteState()).toMatchObject({ access: "statistics", last_error_code: "play_reports_token_rejected" });
+    expect((await sqliteState()).alerted_at).not.toBeNull();
+    await pollGooglePlayStats(h.env, Date.now());
+    expect((await queryGooglePlayStatsDaily(h.env.DB, "app", "2026-01-01")).ingest.last_error_code).toBe("play_reports_token_rejected");
+
+    // After reauthorizing, a successful manual run clears the stale error and ends the episode.
+    delete h.g.tokenStatus;
+    await storeGooglePlayReportsGrant(h.env.DB, { appId: "app", credential: { ...credential, refresh_token: "reports-refresh-2" },
+      actor: "raft:acct@test", keyringJson: h.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: "v1" });
+    expect((await h.call("/api/apps/app/stats/google-play/ingest", "POST")).status).toBe(200);
+    expect((await queryGooglePlayStatsDaily(h.env.DB, "app", "2026-01-01")).ingest.last_error_code).toBeNull();
+    expect(await sqliteState()).toBeNull();
   });
 
   it("falls back to the publishing credential before a statistics grant exists", async () => {

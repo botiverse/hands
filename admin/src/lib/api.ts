@@ -1637,6 +1637,8 @@ export type WebhookEventType =
   | "google_play:submission_succeeded"
   | "google_play:submission_failed"
   | "google_play:release_state_changed"
+  | "google_play:access_failed"
+  | "google_play:access_restored"
   | "release:new"
   | "release:draft_created"
   | "release:superseded"
@@ -1666,6 +1668,8 @@ export const WEBHOOK_EVENT_TYPES: WebhookEventType[] = [
   "google_play:submission_succeeded",
   "google_play:submission_failed",
   "google_play:release_state_changed",
+  "google_play:access_failed",
+  "google_play:access_restored",
   "release:new",
   "release:draft_created",
   "release:superseded",
