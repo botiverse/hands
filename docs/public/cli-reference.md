@@ -73,6 +73,33 @@ hands deploy-tokens revoke raft-android <tokenId>
 
 The created token is what you set as `HANDS_BEARER_TOKEN` in CI. The server stores only a hash, so a lost token can only be revoked and re-minted, never recovered.
 
+## GitHub Actions without a stored token (trusted publishers)
+
+An app admin can trust a GitHub workflow to publish an app. A matching run exchanges its GitHub OIDC token for a one-hour deploy token, so no Hands secret lives in the repository.
+
+```bash
+# Trust botiverse/raft-deck's desktop.yml on main and desktop-v* tags
+hands trusted-publishers add raft-deck --repository botiverse/raft-deck \
+  --workflow .github/workflows/desktop.yml --ref refs/heads/main 'refs/tags/desktop-v*'
+
+hands trusted-publishers list raft-deck
+hands trusted-publishers remove raft-deck <publisherId>   # tokens it minted stop working
+```
+
+In the workflow:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+steps:
+  - run: npm install -g @botiverse/hands-cli
+  - run: hands github-oidc-login --app raft-deck
+  - run: hands builds publish-electron raft-deck ...   # uses HANDS_BEARER_TOKEN
+```
+
+`hands github-oidc-login` masks the token and exports it as `HANDS_BEARER_TOKEN` for later steps (`--print` writes it to stdout instead). The run must come from the named repository and workflow file, on a ref matching one of the patterns (`*` matches within one path segment), and in the GitHub environment when one is set. Only `push`, `workflow_dispatch`, `release` and `schedule` runs match: events such as `pull_request_target`, `workflow_run` and `issue_comment` report the default branch while acting on outside input, so they are refused. The workflow path is case-sensitive. `add` looks up the repository's numeric id on GitHub (set `GH_TOKEN` for a private repository); the repository and owner ids are otherwise pinned on the first accepted run, so a deleted and re-created repository or owner of the same name is refused. Prefer a protected GitHub environment (`--environment`). Third-party actions and reusable workflows that the trusted job calls run with the same identity, so treat them as trusted code. Each GitHub token can be exchanged once, and every exchange is in the app's audit log with the run id, commit and ref. The same settings are under App settings › Access › Trusted publishers.
+
 ## Org Access Tokens
 
 Read-only, fine-grained tokens for one organization: pick the apps (or `--all-apps`, which also covers apps created later) and the scopes (`app:read`, `feedback:read`). A token can select apps the org owns or co-owns as an owner server (an app whose owner-server grant names the org's Raft server); `--all-apps` covers both. Access to a co-owned app ends as soon as the co-ownership is removed. Co-owned apps count only on tokens created by an org member whose own Raft account is on the co-owning server, the same rule that gives members access to those apps, and they leave the token if that creator leaves the org. The token works only on `/api/apps/<appId>/...` for apps it covers. Managing them requires **org admin** from a signed-in session; `--org` defaults to your current org.

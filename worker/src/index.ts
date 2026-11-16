@@ -145,6 +145,12 @@ import {
   handleRevokeAppDeployToken,
 } from "./routes/deploy_tokens";
 import {
+  handleCreateTrustedPublisher,
+  handleGithubOidcExchange,
+  handleListTrustedPublishers,
+  handleRevokeTrustedPublisher,
+} from "./routes/trusted_publishers";
+import {
   handleCreateOrgAccessToken,
   handleListOrgAccessTokens,
   handleRevokeOrgAccessToken,
@@ -834,6 +840,7 @@ bindApp("get", "/share/:token", handlePublicReleaseShare);
 bindApp("post", "/share/:token/unlock", handlePublicReleaseShareUnlock);
 bindApp("get", "/share/:token/icon", handlePublicReleaseShareIcon);
 bindApp("post", "/public/v2/apps/:slug/feedback", handlePublicFeedbackSubmit);
+bindApp("post", "/public/v2/oidc/github/token", handleGithubOidcExchange);
 bindApp("post", "/public/v2/apps/:slug/minidump", handlePublicMinidumpSubmit);
 bindApp("post", "/public/v2/apps/:slug/devices", handleDeviceRegister);
 bindApp("post", "/public/v2/apps/:slug/metrics", handleDeviceRegister);
@@ -1406,6 +1413,9 @@ bindAdmin("get", "/api/apps/:appId/deploy-tokens", requireAppRole("admin"), hand
 bindAdmin("get", "/api/app-permissions", handleGetAppPermissionModel);
 bindAdmin("post", "/api/apps/:appId/deploy-tokens", requireAppRole("admin"), handleCreateAppDeployToken);
 bindAdmin("delete", "/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("admin"), handleRevokeAppDeployToken);
+bindAdmin("get", "/api/apps/:appId/trusted-publishers", requireAppRole("admin"), handleListTrustedPublishers);
+bindAdmin("post", "/api/apps/:appId/trusted-publishers", requireAppRole("admin"), handleCreateTrustedPublisher);
+bindAdmin("delete", "/api/apps/:appId/trusted-publishers/:publisherId", requireAppRole("admin"), handleRevokeTrustedPublisher);
 bindAdmin("get", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
 bindAdmin("post", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
 bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",
