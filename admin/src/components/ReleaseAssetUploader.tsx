@@ -33,6 +33,7 @@ import {
 import {
   createBuildAsset,
   deleteBuildAsset,
+  getBuildAssetDownloadUrl,
   listBuildAssets,
   uploadApk,
   type BuildAsset,
@@ -93,6 +94,23 @@ export function ReleaseAssetUploader(props: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [removeTarget, setRemoveTarget] = useState<BuildAsset | null>(null);
+  // Per-asset in-flight guard so a double click does not request two presigned URLs.
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(new Set());
+  const download = async (asset: BuildAsset) => {
+    setDownloading((current) => new Set(current).add(asset.id));
+    try {
+      const { download_url } = await getBuildAssetDownloadUrl(appId, buildId, asset.id);
+      window.location.href = download_url;
+    } catch (e) {
+      toast.show({ kind: "error", title: t("Download failed", "下载失败"), description: errorMessage(e) });
+    } finally {
+      setDownloading((current) => {
+        const next = new Set(current);
+        next.delete(asset.id);
+        return next;
+      });
+    }
+  };
 
   // Panel-only: query existing assets so the user sees what's already there.
   const assetsQuery = useQuery({
@@ -207,7 +225,6 @@ export function ReleaseAssetUploader(props: Props) {
                 <th className="py-1 pr-3 font-normal">{t("Platform", "平台")}</th>
                 <th className="py-1 pr-3 font-normal">{t("Arch", "架构")}</th>
                 <th className="py-1 pr-3 font-normal">{t("Size", "大小")}</th>
-                <th className="py-1 pr-2 font-normal"></th>
               </tr>
             </thead>
             <tbody>
@@ -222,6 +239,27 @@ export function ReleaseAssetUploader(props: Props) {
                       <div className="mt-0.5 break-all font-mono text-[10px] text-foreground-hint">
                         {a.id}
                       </div>
+                      {/* Actions sit under the name so they stay on screen on a phone. */}
+                      <div className="mt-1 flex gap-2">
+                        <Button
+                          variant="outline"
+                          className="text-[10px]"
+                          aria-label={t(`Download ${filename}`, `下载 ${filename}`)}
+                          onClick={() => void download(a)}
+                          disabled={downloading.has(a.id)}
+                        >
+                          {downloading.has(a.id) ? t("Preparing…", "准备中…") : t("Download", "下载")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="text-[10px]"
+                          aria-label={t(`Remove ${filename}`, `移除 ${filename}`)}
+                          onClick={() => setRemoveTarget(a)}
+                          disabled={remove.isPending}
+                        >
+                          {t("Remove", "移除")}
+                        </Button>
+                      </div>
                     </td>
                     <td className="py-2 pr-3 font-mono">
                       <div>{a.artifact_kind}</div>
@@ -233,17 +271,6 @@ export function ReleaseAssetUploader(props: Props) {
                     <td className="py-2 pr-3 font-mono">{a.arch ?? "—"}</td>
                     <td className="py-2 pr-3 font-mono whitespace-nowrap">
                       {formatBuildAssetSize(a.size_bytes, locale)}
-                    </td>
-                    <td className="py-2 pr-2 text-right">
-                      <Button
-                        variant="outline"
-                        className="text-[10px]"
-                        aria-label={t(`Remove ${filename}`, `移除 ${filename}`)}
-                        onClick={() => setRemoveTarget(a)}
-                        disabled={remove.isPending}
-                      >
-                        {t("Remove", "移除")}
-                      </Button>
                     </td>
                   </tr>
                 );

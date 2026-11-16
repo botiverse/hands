@@ -1245,6 +1245,7 @@ export function AppSettings({ appId }: { appId: string }) {
             body={
               <>
                 {t("Deletes the app and", "将删除应用及其")} <strong>{t("everything it owns", "所有内容")}</strong>{t(" — builds, releases, share links, feedback tickets, and uploaded files.", "，包括构建、版本、分享链接、反馈工单和上传文件。")}{" "}
+                {t("Its audit history is kept for the record.", "审计记录会保留存档。")}{" "}
                 <strong>{t("This cannot be undone.", "此操作无法撤销。")}</strong>
               </>
             }
