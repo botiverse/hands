@@ -242,18 +242,15 @@ export async function handleRetryOperation(c: Context<{ Bindings: Env }>) {
   return c.json(retried);
 }
 
+/**
+ * Operation logs are records of what happened to an app's builds and store
+ * submissions; nobody deletes them from the console or the API.
+ */
 export async function handleDeleteOperation(c: Context<{ Bindings: Env }>) {
-  const id = c.req.param("opId") ?? "";
-  const existing = await getOperation(c.env.DB, id);
-  if (!existing || existing.app_id !== c.req.param("appId")) return c.json({ error: "not found" }, 404);
-  if (existing.kind === "testflight-expire" || existing.kind === "app-store-release") {
-    return c.json(
-      { error: "durable TestFlight expire and App Store release receipts cannot be deleted" },
-      409,
-    );
-  }
-  await c.env.DB.prepare("DELETE FROM operation_logs WHERE id = ?").bind(id).run();
-  return c.json({ ok: true, id });
+  return c.json(
+    { error: "operation logs are records and cannot be deleted", code: "OPERATION_LOG_IMMUTABLE" },
+    405,
+  );
 }
 
 /**

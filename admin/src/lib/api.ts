@@ -1249,15 +1249,6 @@ export const retryOperation = (appId: string, opId: string) =>
     admin: true,
   });
 
-export const deleteOperation = (appId: string, opId: string) =>
-  request<{ ok: boolean; id: string }>(
-    `/api/apps/${appId}/operations/${opId}`,
-    {
-      method: "DELETE",
-      admin: true,
-    },
-  );
-
 /**
  * Open a bearer-authenticated SSE subscription for operation updates.
  */

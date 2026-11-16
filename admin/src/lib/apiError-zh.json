@@ -504,5 +504,6 @@
   "this check has a reviewed_at; send reviewed_at to replace it": "这条检查已有 reviewed_at，替换时必须带上 reviewed_at",
   "token too large": "令牌过大",
   "trusted publisher not found": "未找到可信发布者",
-  "workflow_path must be .github/workflows/<file>.yml": "workflow_path 必须是 .github/workflows/<文件>.yml"
+  "workflow_path must be .github/workflows/<file>.yml": "workflow_path 必须是 .github/workflows/<文件>.yml",
+  "operation logs are records and cannot be deleted": "操作记录不能删除"
 }
