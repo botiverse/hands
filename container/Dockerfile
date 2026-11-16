@@ -17,7 +17,16 @@ ARG MINIDUMP_STACKWALK_VERSION=0.22.0
 RUN cargo install minidump-stackwalk --version ${MINIDUMP_STACKWALK_VERSION} \
     && cp "$(command -v minidump-stackwalk)" /minidump-stackwalk
 
+# rcodesign (apple-codesign) for the signing service: signs and notarizes
+# macOS/iOS code on Linux, no Mac or Xcode needed.
+FROM rust:1-bookworm AS rcodesign-builder
+ARG APPLE_CODESIGN_VERSION=0.29.0
+RUN cargo install apple-codesign --version ${APPLE_CODESIGN_VERSION} --locked --bin rcodesign \
+    && cp "$(command -v rcodesign)" /rcodesign
+
 FROM node:24-bookworm-slim AS base
+
+COPY --from=rcodesign-builder /rcodesign /usr/local/bin/rcodesign
 
 # minidump-stackwalk binary for the Electron/Crashpad symbolication lane.
 COPY --from=minidump-builder /minidump-stackwalk /usr/local/bin/minidump-stackwalk
@@ -26,6 +35,10 @@ COPY --from=minidump-builder /minidump-stackwalk /usr/local/bin/minidump-stackwa
 # Source: https://github.com/iBotPeaches/Apktool/blob/master/INSTALL.md
 # We grab the official Google command-line tools and extract just build-tools.
 ARG ANDROID_SDK_VERSION=34.0.0
+# The signing service uses a newer apksigner/zipalign (16 KB page alignment,
+# --alignment-preserved) without changing the parser's build-tools.
+ARG SIGNING_BUILD_TOOLS_VERSION=35.0.0
+ENV SIGNING_BUILD_TOOLS=/opt/android-sdk/build-tools/${SIGNING_BUILD_TOOLS_VERSION}
 ARG ANDROID_CMDLINE_TOOLS_URL=https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
 
 # Install JDK + unzip + wget + ca-certificates. JDK (not JRE) so we can
@@ -37,6 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     llvm \
     binutils \
+    openssl \
+    zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Download Android command-line tools + accept licenses + install build-tools
@@ -52,7 +67,7 @@ ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/build-
 
 # Accept licenses + install build-tools (aapt + apksigner are inside)
 RUN yes | sdkmanager --licenses >/dev/null 2>&1 || true && \
-    sdkmanager "build-tools;${ANDROID_SDK_VERSION}" >/dev/null 2>&1
+    sdkmanager "build-tools;${ANDROID_SDK_VERSION}" "build-tools;${SIGNING_BUILD_TOOLS_VERSION}" >/dev/null 2>&1
 
 # Compile a narrow wrapper around Google's apksig library. Unlike parsing
 # `apksigner --print-certs`, this preserves verified v3/v3.1 proof-of-rotation

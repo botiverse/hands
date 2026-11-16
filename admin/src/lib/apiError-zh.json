@@ -487,5 +487,22 @@
   "the main channel has no App Store bundle id": "主渠道没有设置 App Store bundle id",
   "this app has no App Store Connect API key": "这个 app 没有 App Store Connect API 密钥",
   "Connect Google Play and choose the package before authorizing statistics reports": "请先连接 Google Play 并选择包名，再授权统计报表",
-  "No statistics reports authorization for this app": "此应用没有统计报表授权"
+  "No statistics reports authorization for this app": "此应用没有统计报表授权",
+  "a different result with the same reviewed_at is already stored": "已存在同一 reviewed_at 但内容不同的结果",
+  "app and token are required": "必须提供 app 和 token",
+  "app not found in this organization": "该组织中没有这个应用",
+  "environment must be a GitHub environment name": "environment 必须是 GitHub environment 名称",
+  "grant not found": "未找到该授权",
+  "no trusted publisher on this app matches this workflow run": "此应用没有与这次 workflow 运行匹配的可信发布者",
+  "provider must be github": "provider 必须是 github",
+  "ref_patterns must be 1-20 patterns like refs/heads/main or refs/tags/v*": "ref_patterns 必须是 1 到 20 个形如 refs/heads/main 或 refs/tags/v* 的模式",
+  "repository must be owner/repo": "repository 必须是 owner/repo 格式",
+  "repository_id must be numeric": "repository_id 必须是数字",
+  "signing identity not found": "未找到签名身份",
+  "signing job not found": "未找到签名任务",
+  "this GitHub token was already exchanged; request a new one": "这个 GitHub 令牌已经兑换过，请重新申请",
+  "this check has a reviewed_at; send reviewed_at to replace it": "这条检查已有 reviewed_at，替换时必须带上 reviewed_at",
+  "token too large": "令牌过大",
+  "trusted publisher not found": "未找到可信发布者",
+  "workflow_path must be .github/workflows/<file>.yml": "workflow_path 必须是 .github/workflows/<文件>.yml"
 }

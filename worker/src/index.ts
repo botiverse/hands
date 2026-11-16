@@ -151,6 +151,18 @@ import {
   handleRevokeTrustedPublisher,
 } from "./routes/trusted_publishers";
 import {
+  handleCreateSigningJob,
+  handleExportSigningIdentityBackup,
+  handleGenerateAndroidSigningIdentity,
+  handleGetSigningJob,
+  handleGrantSigningIdentity,
+  handleListSigningIdentities,
+  handleRevokeSigningIdentity,
+  handleRunSigningJob,
+  handleUngrantSigningIdentity,
+  handleUploadSigningIdentity,
+} from "./routes/signing";
+import {
   handleCreateOrgAccessToken,
   handleListOrgAccessTokens,
   handleRevokeOrgAccessToken,
@@ -1416,6 +1428,16 @@ bindAdmin("delete", "/api/apps/:appId/deploy-tokens/:tokenId", requireAppRole("a
 bindAdmin("get", "/api/apps/:appId/trusted-publishers", requireAppRole("admin"), handleListTrustedPublishers);
 bindAdmin("post", "/api/apps/:appId/trusted-publishers", requireAppRole("admin"), handleCreateTrustedPublisher);
 bindAdmin("delete", "/api/apps/:appId/trusted-publishers/:publisherId", requireAppRole("admin"), handleRevokeTrustedPublisher);
+bindAdmin("get", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", "admin"), handleListSigningIdentities);
+bindAdmin("post", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", "admin"), handleUploadSigningIdentity);
+bindAdmin("post", "/api/orgs/:orgId/signing-identities/generate-android", requireOrgRole("orgId", "admin"), handleGenerateAndroidSigningIdentity);
+bindAdmin("post", "/api/orgs/:orgId/signing-identities/:identityId/backup", requireOrgRole("orgId", "admin"), handleExportSigningIdentityBackup);
+bindAdmin("delete", "/api/orgs/:orgId/signing-identities/:identityId", requireOrgRole("orgId", "admin"), handleRevokeSigningIdentity);
+bindAdmin("put", "/api/orgs/:orgId/signing-identities/:identityId/apps/:appId", requireOrgRole("orgId", "admin"), handleGrantSigningIdentity);
+bindAdmin("delete", "/api/orgs/:orgId/signing-identities/:identityId/apps/:appId", requireOrgRole("orgId", "admin"), handleUngrantSigningIdentity);
+bindAdmin("post", "/api/apps/:appId/signing/jobs", requireAppRole("publisher"), handleCreateSigningJob);
+bindAdmin("post", "/api/apps/:appId/signing/jobs/:jobId/sign", requireAppRole("publisher"), handleRunSigningJob);
+bindAdmin("get", "/api/apps/:appId/signing/jobs/:jobId", requireAppRole("publisher"), handleGetSigningJob);
 bindAdmin("get", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
 bindAdmin("post", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
 bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",

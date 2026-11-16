@@ -14,6 +14,7 @@ import { errorMessage } from "../lib/errorMessage";
  * General tab still shows /me context (display name, principal_type, org).
  */
 
+import { SigningTab } from "./SigningIdentities";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -88,8 +89,9 @@ const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   invites: "Invites",
   audit: "Audit",
   webhooks: "Webhooks",
+  signing: "Signing",
 };
-const ORG_SETTINGS_TAB_LABELS_ZH: Record<OrgSettingsTab, string> = { general: "常规", members: "成员", invites: "邀请", audit: "审计", webhooks: "Webhook" };
+const ORG_SETTINGS_TAB_LABELS_ZH: Record<OrgSettingsTab, string> = { general: "常规", members: "成员", invites: "邀请", audit: "审计", webhooks: "Webhook", signing: "签名" };
 const ROLE_ZH: Record<string, string> = { owner: "所有者", admin: "管理员", member: "成员", viewer: "查看者", publisher: "发布者" };
 const INVITE_ZH: Record<string, string> = { pending: "待接受", accepted: "已接受", revoked: "已撤销", expired: "已过期" };
 const roleText = (role: string, t: (english: string, chinese: string) => string) => t(role, ROLE_ZH[role] ?? role);
@@ -100,6 +102,7 @@ export const ORG_SETTINGS_TABS = [
   "invites",
   "audit",
   "webhooks",
+  "signing",
 ] as const;
 
 export type OrgSettingsTab = (typeof ORG_SETTINGS_TABS)[number];
@@ -216,6 +219,10 @@ export function OrgSettings({
 
       {tab === "webhooks" && (
         <WebhooksTab orgId={orgId} canManage={isOwnerOrAdmin} />
+      )}
+
+      {tab === "signing" && (
+        <SigningTab orgId={orgId} canManage={isOwnerOrAdmin} />
       )}
     </div>
   );
