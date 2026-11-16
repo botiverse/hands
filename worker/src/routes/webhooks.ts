@@ -34,6 +34,7 @@ export const WEBHOOK_EVENT_TYPES = [
   "appgallery:invitation_state_changed",
   "appgallery:package_state_changed",
   "google_play:submission_succeeded", "google_play:submission_failed", "google_play:release_state_changed",
+  "google_play:access_failed", "google_play:access_restored",
   "release:new", "release:draft_created", "release:superseded", "release:rolled_back", "release:channel_emptied", "release:cancelled",
   "release:published",
   "build:succeeded", "build:failed",

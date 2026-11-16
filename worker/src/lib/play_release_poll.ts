@@ -1,6 +1,7 @@
 import { enqueueDueDeliveries } from "../routes/webhooks";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_bindings";
 import { playDeliveryStatement, playStateLabel } from "./play_notifications";
+import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 
 type Summary = { releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string };
 /** A changed observation and its deliveries commit atomically. The nonce and
@@ -59,6 +60,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
       const binding = await getGooglePlayBinding(env.DB, row.app_id, env.PLAY_CRED_ENC_KEYS);
       if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") continue;
       const seenTracks = new Set<string>();
+      let failureCode: string | null = null;
       for (const handsTrack of ["internal", "closed", "production"] as const) {
         const track = binding.tracks[handsTrack];
         if (seenTracks.has(track)) continue;
@@ -67,6 +69,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           packageName: binding.package_name, tracks: binding.tracks, handsTrack });
         if (!reply.ok) {
           console.warn("hands_play_poll_failure", JSON.stringify({ code: reply.error.code }));
+          failureCode ??= reply.error.code;
           continue;
         }
         // Duplicate version codes with conflicting states are ambiguous: omit
@@ -84,6 +87,8 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           await observePlayRelease(env.DB, row.app_id, binding.package_name, track, release,
             version, binding.updated_at, now);
       }
+      if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now).catch(() => undefined);
+      else await recordPlayAccessSuccess(env.DB, row.app_id, "publishing", now).catch(() => undefined);
     } catch {
       // No credential, URL, provider message or release content in logs.
       console.warn("hands_play_poll_failure", JSON.stringify({ code: "poll_unavailable" }));

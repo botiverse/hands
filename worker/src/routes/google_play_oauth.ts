@@ -241,6 +241,11 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
         keyringJson: c.env.PLAY_CRED_ENC_KEYS, activeKeyVersion: c.env.PLAY_CRED_ENC_ACTIVE_KEY_VERSION,
       });
       stored = true;
+      // A new statistics authorization is worth trying now, and the error from
+      // the old one no longer describes it.
+      await c.env.DB.prepare(
+        "UPDATE google_play_stats_ingest_schedule SET next_run_at = 0, last_error_code = NULL WHERE app_id = ?1",
+      ).bind(pending.app_id).run().catch(() => undefined);
       await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.reports_oauth.connect",
         payload: { credential_fingerprint: grant.credential_fingerprint } });
       await c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE state_hash=?1").bind(hash).run();
@@ -266,6 +271,9 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
       expectedBindingVersion: pending.expected_binding_version, expectedOAuthStateHash: hash,
     });
     stored = true;
+    // Poll release status with the new authorization on the next tick.
+    await c.env.DB.prepare("UPDATE google_play_poll_schedule SET next_poll_at = 0 WHERE app_id = ?1")
+      .bind(pending.app_id).run().catch(() => undefined);
     await insertAuditLog(c.env.DB, c, { app_id: pending.app_id, action: "google_play.oauth.connect",
       payload: { package_name: pending.package_name, credential_kind: credential.type, credential_fingerprint: meta.credential_fingerprint, report_access: reportAccess } });
     await c.env.DB.prepare("DELETE FROM google_play_oauth_requests WHERE state_hash=?1").bind(hash).run();

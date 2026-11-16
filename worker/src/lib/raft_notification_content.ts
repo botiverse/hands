@@ -108,6 +108,8 @@ const PRESENTATIONS = new Map<string, Presentation>([
   ["google_play:release_state_changed", { icon: "▶️", title: "Google Play release status changed" }],
   ["google_play:submission_succeeded", { icon: "✅", title: "Google Play submission succeeded" }],
   ["google_play:submission_failed", { icon: "⚠️", title: "Google Play submission failed" }],
+  ["google_play:access_failed", { icon: "🔑", title: "Google Play access failing" }],
+  ["google_play:access_restored", { icon: "✅", title: "Google Play access restored" }],
   ["appgallery:invitation_state_changed", { icon: "📱", title: "AppGallery test status changed" }],
   ["appgallery:package_state_changed", { icon: "📦", title: "AppGallery package status changed" }],
   ["release:new", { icon: "📦", title: "Release activated" }],
@@ -631,6 +633,19 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   if (MARKET_EVENTS.has(event)) return marketMessage(event, payload, build, appName ?? appIdDisplay, cliApp, ticketId, occurred);
   if (PRESENTATIONS.has(event) && (event.startsWith("release:") || event.startsWith("build:"))) {
     return releaseBuildMessage(event, payload, build, appName ?? appIdDisplay, occurred);
+  }
+  if (event === "google_play:access_failed" || event === "google_play:access_restored") {
+    if (appName || appIdDisplay) lines.push(`App: ${appName ?? appIdDisplay}`);
+    const label = safePreview(payload.access_label, 80);
+    if (label) lines.push(`Access: ${label}`);
+    const code = safeValue(event === "google_play:access_failed" ? payload.error_code : payload.previous_error_code);
+    if (code) lines.push(`${event === "google_play:access_failed" ? "Error" : "Was"}: ${code}`);
+    const since = safePreview(payload.failing_since, 40);
+    if (since) lines.push(`Failing since: ${since}`);
+    const help = safePreview(payload.hint, 400);
+    if (help && event === "google_play:access_failed") lines.push(`What to do: ${help}`);
+    if (occurred) lines.push(`occurred: ${occurred}`);
+    return truncateMessage(lines.join("\n"), MAX_MESSAGE_LENGTH);
   }
   const isIssueAlert = /^(crash|error):(new_group|spike)$/.test(event);
   if (isIssueAlert) return issueAlertMessage(event, payload, appName ?? appIdDisplay, appId, cliApp, ticketId, knownApp?.dashboardOrigin, occurred);
