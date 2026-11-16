@@ -100,6 +100,36 @@ steps:
 
 `hands github-oidc-login` masks the token and exports it as `HANDS_BEARER_TOKEN` for later steps (`--print` writes it to stdout instead). The run must come from the named repository and workflow file, on a ref matching one of the patterns (`*` matches within one path segment), and in the GitHub environment when one is set. Only `push`, `workflow_dispatch`, `release` and `schedule` runs match: events such as `pull_request_target`, `workflow_run` and `issue_comment` report the default branch while acting on outside input, so they are refused. The workflow path is case-sensitive. `add` looks up the repository's numeric id on GitHub (set `GH_TOKEN` for a private repository); the repository and owner ids are otherwise pinned on the first accepted run, so a deleted and re-created repository or owner of the same name is refused. Prefer a protected GitHub environment (`--environment`). Third-party actions and reusable workflows that the trusted job calls run with the same identity, so treat them as trusted code. Each GitHub token can be exchanged once, and every exchange is in the app's audit log with the run id, commit and ref. The same settings are under App settings › Access › Trusted publishers.
 
+## Signing (Android, macOS)
+
+Hands holds signing keys and certificates for an organization, encrypted, and signs files for the apps they are granted to. Keys never reach CI: the CLI uploads the unsigned file, Hands signs it (macOS: also notarizes with Apple and staples the ticket) and the CLI downloads the signed file, checking its SHA-256.
+
+Org admins manage identities under Organization › Signing, or with the CLI:
+
+```bash
+# A new Android key created inside Hands (RSA 4096, valid 30 years)
+hands signing identities generate-android "Deck release" --common-name "Raft Deck" --organization Botiverse
+# ...or an existing keystore (PKCS12); passwords from the environment
+HANDS_KEYSTORE_PASSWORD=... hands signing identities upload-android "Raft release" release.p12 --alias release
+# A Developer ID Application certificate, with an App Store Connect API key for notarization
+HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 \
+  --notary-key-id ABC123 --notary-issuer-id <issuer> --notary-key AuthKey_ABC123.p8
+
+hands signing identities grant <identityId> raft-deck-android
+hands signing identities list
+hands signing identities backup <identityId> deck-release.p12   # generated keys only, once
+```
+
+In CI (after `hands github-oidc-login`, or with any publisher token for the app):
+
+```bash
+hands sign app-release-unsigned.apk --app raft-deck-android            # signed in place; --out to write elsewhere
+hands sign app-release.aab --app raft-deck-android
+hands sign "dist/mac-arm64/Raft Deck.app" --app raft-deck --notarize --entitlements entitlements.mac.plist
+```
+
+APKs are signed with apksigner (v1–v4 schemes as applicable; native libraries aligned to 16 KB pages), AABs with jarsigner. A macOS `.app` (directory or `.app.zip`) is signed with hardened runtime and a secure timestamp, then optionally notarized; package it into a dmg or zip after signing. A key generated in Hands can be downloaded once as a backup; after that Hands is its only holder. Every identity change and signing job is in the audit log with the file hashes and the key fingerprint.
+
 ## Org Access Tokens
 
 Read-only, fine-grained tokens for one organization: pick the apps (or `--all-apps`, which also covers apps created later) and the scopes (`app:read`, `feedback:read`). A token can select apps the org owns or co-owns as an owner server (an app whose owner-server grant names the org's Raft server); `--all-apps` covers both. Access to a co-owned app ends as soon as the co-ownership is removed. Co-owned apps count only on tokens created by an org member whose own Raft account is on the co-owning server, the same rule that gives members access to those apps, and they leave the token if that creator leaves the org. The token works only on `/api/apps/<appId>/...` for apps it covers. Managing them requires **org admin** from a signed-in session; `--org` defaults to your current org.
@@ -920,8 +950,8 @@ release APIs directly. Register the original filenames using the same fields:
 
 Keep the same draft-first policy as Android: CI creates a draft Electron
 release, then a human or agent reviews release notes and explicitly publishes.
-macOS update artifacts must be signed before upload; Hands hosts the signed
-files but does not sign Electron applications.
+macOS update artifacts must be signed before upload; `hands sign --notarize`
+(see Signing) signs and notarizes the `.app` before it is packaged.
 
 ## Review and Publish (draft flow)
 

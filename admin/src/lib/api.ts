@@ -1706,6 +1706,60 @@ export interface WebhookDelivery {
   completed_at: number | null;
 }
 
+export interface SigningIdentity {
+  id: string;
+  org_id: string;
+  kind: "android_keystore" | "apple_developer_id" | "apple_ios_distribution";
+  name: string;
+  origin: "generated" | "uploaded";
+  metadata: {
+    subject?: string;
+    sha256_fingerprint?: string;
+    not_after?: string;
+    key_alias?: string;
+    team_id?: string;
+    notary_key_id?: string | null;
+  };
+  backup_exported_at: number | null;
+  created_by_actor: string;
+  created_at: number;
+  revoked_at: number | null;
+  apps: Array<{ app_id: string; slug: string }>;
+}
+
+export const listSigningIdentities = (orgId: string) =>
+  request<{ signing_identities: SigningIdentity[] }>(`/api/orgs/${orgId}/signing-identities`, { admin: true });
+
+export const uploadSigningIdentity = (orgId: string, input: Record<string, unknown>) =>
+  request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities`, {
+    method: "POST", admin: true, body: JSON.stringify(input),
+  });
+
+export const generateAndroidSigningIdentity = (orgId: string, input: { name: string; common_name?: string; organization?: string }) =>
+  request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities/generate-android`, {
+    method: "POST", admin: true, body: JSON.stringify(input),
+  });
+
+export const exportSigningIdentityBackup = (orgId: string, identityId: string) =>
+  request<{ keystore_b64: string; store_password: string; key_alias: string; key_password: string }>(
+    `/api/orgs/${orgId}/signing-identities/${encodeURIComponent(identityId)}/backup`, { method: "POST", admin: true },
+  );
+
+export const revokeSigningIdentity = (orgId: string, identityId: string) =>
+  request<{ revoked: boolean }>(`/api/orgs/${orgId}/signing-identities/${encodeURIComponent(identityId)}`, { method: "DELETE", admin: true });
+
+export const grantSigningIdentity = (orgId: string, identityId: string, appId: string) =>
+  request<{ signing_identity: SigningIdentity }>(
+    `/api/orgs/${orgId}/signing-identities/${encodeURIComponent(identityId)}/apps/${encodeURIComponent(appId)}`,
+    { method: "PUT", admin: true },
+  );
+
+export const ungrantSigningIdentity = (orgId: string, identityId: string, appId: string) =>
+  request<{ signing_identity: SigningIdentity }>(
+    `/api/orgs/${orgId}/signing-identities/${encodeURIComponent(identityId)}/apps/${encodeURIComponent(appId)}`,
+    { method: "DELETE", admin: true },
+  );
+
 export const listOrgWebhooks = (orgId: string) =>
   request<{ webhooks: Webhook[] }>(`/api/orgs/${orgId}/webhooks`, { admin: true });
 

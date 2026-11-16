@@ -400,6 +400,10 @@ export async function handleTransferApp(c: AdminContext) {
     c.env.DB.prepare(`UPDATE invites SET org_id = ?1 WHERE app_id = ?2 AND org_id = ?3
       AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?4)`)
       .bind(body.target_org_id, appId, body.expected_source_org_id, auditId),
+    // Signing keys belong to the source org: the app leaves with none of them.
+    c.env.DB.prepare(`DELETE FROM signing_identity_apps WHERE app_id = ?1
+      AND EXISTS (SELECT 1 FROM audit_logs WHERE id = ?2)`)
+      .bind(appId, auditId),
   ]);
   if (results[0]?.meta.changes !== 1) {
     // Another transfer with this key can have committed after our first read.

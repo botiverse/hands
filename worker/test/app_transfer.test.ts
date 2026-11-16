@@ -51,6 +51,7 @@ function harness() {
     CREATE TABLE app_server_grants (app_id TEXT, server_id TEXT, server_slug TEXT, app_role TEXT, access_model TEXT);
     CREATE TABLE webhooks (id TEXT PRIMARY KEY, org_id TEXT, app_id TEXT);
     CREATE TABLE invites (id TEXT PRIMARY KEY, org_id TEXT, app_id TEXT);
+    CREATE TABLE signing_identity_apps (identity_id TEXT, app_id TEXT, created_by_actor TEXT, created_at INTEGER);
     CREATE TABLE audit_logs (id TEXT PRIMARY KEY, app_id TEXT, action TEXT, actor TEXT, actor_id TEXT, actor_type TEXT, payload TEXT, created_at INTEGER);
     INSERT INTO organizations VALUES ('source', 'Source', 'raft', 'server-source', 0), ('target', 'Target', 'raft', 'server-target', 0), ('third', 'Third', 'raft', 'server-third', 0);
     INSERT INTO raft_accounts VALUES ('actor', 'raft', 'same-person', 'human', 'server-source', 'source'), ('linked', 'raft', 'same-person', 'human', 'server-target', 'target');
@@ -59,6 +60,7 @@ function harness() {
     INSERT INTO app_members VALUES ('app-1', 'actor', 'admin');
     INSERT INTO webhooks VALUES ('webhook', 'source', 'app-1');
     INSERT INTO invites VALUES ('invite', 'source', 'app-1');
+    INSERT INTO signing_identity_apps VALUES ('source-key', 'app-1', 'admin', 1);
   `);
   let beforeBatch = () => {};
   const env = { DB: d1(sqlite, () => beforeBatch()), DASHBOARD_ORIGIN: "https://dashboard.test" } as unknown as Env;
@@ -73,11 +75,12 @@ function harness() {
     webhook: sqlite.prepare("SELECT org_id FROM webhooks WHERE id = 'webhook'").pluck().get(),
     invite: sqlite.prepare("SELECT org_id FROM invites WHERE id = 'invite'").pluck().get(),
     audit: sqlite.prepare("SELECT COUNT(*) FROM audit_logs WHERE action = 'app.transfer'").pluck().get(),
+    signingGrants: sqlite.prepare("SELECT COUNT(*) FROM signing_identity_apps WHERE app_id = 'app-1'").pluck().get(),
   });
   return { sqlite, request, snapshot, onBatch: (fn: () => void) => { beforeBatch = fn; } };
 }
 
-const unchanged = { app: "source", webhook: "source", invite: "source", audit: 0 };
+const unchanged = { app: "source", webhook: "source", invite: "source", audit: 0, signingGrants: 1 };
 
 describe("app transfer authority and atomicity", () => {
   it("allows a source org admin with linked target membership and moves all scoped rows once", async () => {
@@ -85,7 +88,8 @@ describe("app transfer authority and atomicity", () => {
     const response = await h.request();
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, idempotent: false, target_org_id: "target" });
-    expect(h.snapshot()).toEqual({ app: "target", webhook: "target", invite: "target", audit: 1 });
+    // The source org's signing keys stay behind.
+    expect(h.snapshot()).toEqual({ app: "target", webhook: "target", invite: "target", audit: 1, signingGrants: 0 });
     expect(h.sqlite.prepare("SELECT actor_id, actor_type FROM audit_logs").get()).toEqual({ actor_id: "actor", actor_type: "human" });
     const replay = await h.request();
     expect(await replay.json()).toMatchObject({ ok: true, idempotent: true });
@@ -138,7 +142,7 @@ describe("app transfer authority and atomicity", () => {
     const response = await h.request({ ...body, expected_source_org_id: "third" });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ code: "OWNING_ORG_ADMIN_REQUIRED" });
-    expect(h.snapshot()).toEqual({ app: "third", webhook: "third", invite: "third", audit: 0 });
+    expect(h.snapshot()).toEqual({ app: "third", webhook: "third", invite: "third", audit: 0, signingGrants: 1 });
   });
 
   it("fails closed if the authenticated account identity changes before the write", async () => {
@@ -205,6 +209,7 @@ describe("app transfer authority and atomicity", () => {
         h.sqlite.prepare("UPDATE apps SET org_id='target' WHERE id='app-1'").run();
         h.sqlite.prepare("UPDATE webhooks SET org_id='target' WHERE app_id='app-1'").run();
         h.sqlite.prepare("UPDATE invites SET org_id='target' WHERE app_id='app-1'").run();
+        h.sqlite.prepare("DELETE FROM signing_identity_apps WHERE app_id='app-1'").run();
         h.sqlite.prepare("INSERT INTO audit_logs VALUES ('winner', 'app-1', 'app.transfer', 'actor', 'actor', 'human', ?, 1)")
           .run(JSON.stringify({ idempotency_key: body.idempotency_key, from_org_id: "source", target_org_id: "target" }));
       })();
@@ -212,6 +217,6 @@ describe("app transfer authority and atomicity", () => {
     const response = await h.request();
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ idempotent: true });
-    expect(h.snapshot()).toEqual({ app: "target", webhook: "target", invite: "target", audit: 1 });
+    expect(h.snapshot()).toEqual({ app: "target", webhook: "target", invite: "target", audit: 1, signingGrants: 0 });
   });
 });

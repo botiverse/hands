@@ -91,6 +91,36 @@ steps:
 
 `hands github-oidc-login` 会屏蔽令牌并以 `HANDS_BEARER_TOKEN` 导出给后续步骤（`--print` 改为输出到 stdout）。运行必须来自指定的仓库和 workflow 文件，ref 匹配其中一个模式（`*` 只匹配一个路径段内的字符），设置了 GitHub environment 时还必须在该 environment 中。只有 `push`、`workflow_dispatch`、`release` 和 `schedule` 触发的运行会匹配：`pull_request_target`、`workflow_run`、`issue_comment` 等事件报告的是默认分支却处理外部输入，一律拒绝。workflow 路径区分大小写。`add` 会在 GitHub 上查询仓库的数字 ID（私有仓库需设置 `GH_TOKEN`）；否则仓库和所有者的数字 ID 在首次被接受的运行时固定，删除后重建的同名仓库或所有者会被拒绝。建议配合受保护的 GitHub environment（`--environment`）。受信任 job 调用的第三方 action 和可复用 workflow 拥有同样的身份，应视为受信任代码。每个 GitHub 令牌只能兑换一次，每次兑换都会以运行 ID、commit 和 ref 记入应用审计日志。同样的设置也在应用设置 › 访问 › 可信发布者中。
 
+## 签名（安卓、macOS）
+
+Hands 以组织为单位加密保存签名密钥和证书，为被授权的应用签名。密钥不会发到 CI：命令行上传未签名的文件，Hands 签名（macOS 还会向 Apple 公证并 staple 票据），命令行再下载签好的文件并核对 SHA-256。
+
+组织管理员在 组织 › 签名 中管理，或用命令行：
+
+```bash
+# 在 Hands 内新建安卓密钥（RSA 4096，有效期 30 年）
+hands signing identities generate-android "Deck release" --common-name "Raft Deck" --organization Botiverse
+# 或上传已有 keystore（PKCS12），密码从环境变量读取
+HANDS_KEYSTORE_PASSWORD=... hands signing identities upload-android "Raft release" release.p12 --alias release
+# Developer ID Application 证书，加上用于公证的 App Store Connect API key
+HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 \
+  --notary-key-id ABC123 --notary-issuer-id <issuer> --notary-key AuthKey_ABC123.p8
+
+hands signing identities grant <identityId> raft-deck-android
+hands signing identities list
+hands signing identities backup <identityId> deck-release.p12   # 仅限在 Hands 内生成的密钥，只能一次
+```
+
+在 CI 中（先运行 `hands github-oidc-login`，或使用该应用的任意发布者令牌）：
+
+```bash
+hands sign app-release-unsigned.apk --app raft-deck-android            # 原地替换；--out 写到别处
+hands sign app-release.aab --app raft-deck-android
+hands sign "dist/mac-arm64/Raft Deck.app" --app raft-deck --notarize --entitlements entitlements.mac.plist
+```
+
+APK 用 apksigner 签名（按需使用 v1–v4 方案，native 库按 16 KB 页对齐），AAB 用 jarsigner。macOS 的 `.app`（目录或 `.app.zip`）以 hardened runtime 和安全时间戳签名，可选公证；签名后再打包成 dmg 或 zip。在 Hands 内生成的密钥可以下载一次备份，之后 Hands 是唯一持有者。每次身份变更和签名任务都会连同文件哈希和密钥指纹记入审计日志。
+
 ## 组织访问令牌
 
 面向单个组织的只读细粒度令牌：选择应用（或使用 `--all-apps`，同时覆盖之后创建的应用）和权限范围（`app:read`、`feedback:read`）。令牌可以选择该组织拥有的应用，或以所有者服务器（owner server）身份共同拥有的应用（即所有者服务器授权指向该组织 Raft 服务器的应用）；`--all-apps` 两者都覆盖。共同所有权一旦被移除，对该应用的访问立即终止。共同拥有的应用只对这样的令牌生效：创建者是该组织成员，且本人的 Raft 账号属于共同拥有的服务器（与成员访问这些应用的规则相同）；创建者离开组织后，这些应用随即从令牌中移除。令牌只能用于其覆盖应用的 `/api/apps/<appId>/...`。管理令牌需要通过已登录会话且具备**组织管理员**权限；`--org` 默认为当前组织。
@@ -611,7 +641,7 @@ hands builds publish-electron raft-desktop \
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` | `metadata_json.filename` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` | `metadata_json.filename` |
 
-与 Android 一样遵循先草稿规则：CI 创建 Electron 版本草稿，用户或智能体审核更新说明后明确发布。macOS 更新文件必须在上传前签名；Hands 托管已签名文件，但不会为 Electron 应用签名。
+与 Android 一样遵循先草稿规则：CI 创建 Electron 版本草稿，用户或智能体审核更新说明后明确发布。macOS 更新文件必须在上传前签名；可在打包前用 `hands sign --notarize`（见“签名”）为 `.app` 签名并公证。
 
 ## 审核并发布（草稿流程）
 

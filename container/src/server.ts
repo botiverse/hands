@@ -32,8 +32,10 @@ import {
   type ParserKind,
 } from "./parsers/index.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
+import { registerSigningRoutes } from "./signing.js";
 
 const app = new Hono();
+registerSigningRoutes(app);
 
 const execFileAsync = promisify(execFile);
 
