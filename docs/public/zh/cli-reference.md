@@ -64,6 +64,33 @@ hands deploy-tokens revoke raft-android <tokenId>
 
 创建的令牌应在 CI 中设置为 `HANDS_BEARER_TOKEN`。服务端只保存哈希，因此令牌丢失后只能撤销并重新创建，无法恢复原值。
 
+## 不存令牌的 GitHub Actions（可信发布者）
+
+应用管理员可以信任某个 GitHub workflow 发布应用。匹配的运行用它的 GitHub OIDC 令牌换取一小时有效的部署令牌，仓库里不存放任何 Hands 密钥。
+
+```bash
+# 信任 botiverse/raft-deck 的 desktop.yml，限 main 分支和 desktop-v* tag
+hands trusted-publishers add raft-deck --repository botiverse/raft-deck \
+  --workflow .github/workflows/desktop.yml --ref refs/heads/main 'refs/tags/desktop-v*'
+
+hands trusted-publishers list raft-deck
+hands trusted-publishers remove raft-deck <publisherId>   # 它签发的令牌随即失效
+```
+
+在 workflow 中：
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+steps:
+  - run: npm install -g @botiverse/hands-cli
+  - run: hands github-oidc-login --app raft-deck
+  - run: hands builds publish-electron raft-deck ...   # 使用 HANDS_BEARER_TOKEN
+```
+
+`hands github-oidc-login` 会屏蔽令牌并以 `HANDS_BEARER_TOKEN` 导出给后续步骤（`--print` 改为输出到 stdout）。运行必须来自指定的仓库和 workflow 文件，ref 匹配其中一个模式（`*` 只匹配一个路径段内的字符），设置了 GitHub environment 时还必须在该 environment 中。Pull request 的运行不会匹配 `refs/heads/...` 或 `refs/tags/...`。仓库的数字 ID 在首次使用时固定，删除后重建的同名仓库会被拒绝。每个 GitHub 令牌只能兑换一次，每次兑换都会以运行 ID、commit 和 ref 记入应用审计日志。同样的设置也在应用设置 › 访问 › 可信发布者中。
+
 ## 组织访问令牌
 
 面向单个组织的只读细粒度令牌：选择应用（或使用 `--all-apps`，同时覆盖之后创建的应用）和权限范围（`app:read`、`feedback:read`）。令牌可以选择该组织拥有的应用，或以所有者服务器（owner server）身份共同拥有的应用（即所有者服务器授权指向该组织 Raft 服务器的应用）；`--all-apps` 两者都覆盖。共同所有权一旦被移除，对该应用的访问立即终止。共同拥有的应用只对这样的令牌生效：创建者是该组织成员，且本人的 Raft 账号属于共同拥有的服务器（与成员访问这些应用的规则相同）；创建者离开组织后，这些应用随即从令牌中移除。令牌只能用于其覆盖应用的 `/api/apps/<appId>/...`。管理令牌需要通过已登录会话且具备**组织管理员**权限；`--org` 默认为当前组织。

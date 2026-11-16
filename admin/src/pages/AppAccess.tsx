@@ -36,6 +36,7 @@ import {
   type App,
 } from "../lib/api";
 import { appAccessMessage } from "../lib/appAccessMessages";
+import { TrustedPublisherList } from "./TrustedPublishers";
 import { PERMISSION_ZH } from "../lib/permissionMessages";
 import { useLocale, useText } from "../lib/locale";
 import {
@@ -157,6 +158,7 @@ export function AppAccess({ appId }: { appId: string }) {
           onAdd={() => setShowAddDeployToken(true)}
         />
       )}
+      {canManage && <TrustedPublisherList appId={appId} appSlug={app?.slug} />}
       {canManage && <InviteToAppForm appId={appId} />}
       {showAddServer && (
         <AddAppServerGrantDialog

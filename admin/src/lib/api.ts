@@ -1166,6 +1166,43 @@ export const revokeAppDeployToken = (appId: string, tokenId: string) =>
     },
   );
 
+export interface TrustedPublisher {
+  id: string;
+  app_id: string;
+  provider: "github";
+  repository: string;
+  repository_id: string | null;
+  workflow_path: string;
+  ref_patterns: string[];
+  environment: string | null;
+  app_role: "publisher" | "viewer";
+  created_by_actor: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
+export const listTrustedPublishers = (appId: string) =>
+  request<{ trusted_publishers: TrustedPublisher[] }>(
+    `/api/apps/${appId}/trusted-publishers`,
+    { admin: true },
+  );
+
+export const createTrustedPublisher = (
+  appId: string,
+  input: { repository: string; workflow_path: string; ref_patterns: string[]; environment?: string },
+) =>
+  request<{ trusted_publisher: TrustedPublisher }>(
+    `/api/apps/${appId}/trusted-publishers`,
+    { method: "POST", admin: true, body: JSON.stringify(input) },
+  );
+
+export const revokeTrustedPublisher = (appId: string, publisherId: string) =>
+  request<{ revoked: boolean }>(
+    `/api/apps/${appId}/trusted-publishers/${encodeURIComponent(publisherId)}`,
+    { method: "DELETE", admin: true },
+  );
+
 export const listReporterIntegrations = (appId: string, includeArchived = false) =>
   request<{ reporter_integrations: ReporterIntegration[] }>(
     `/api/apps/${appId}/reporter-integrations${includeArchived ? "?include_archived=1" : ""}`,
