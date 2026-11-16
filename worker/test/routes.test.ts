@@ -8190,7 +8190,7 @@ describe("quiver public API v2 — scope resolution", () => {
     const second = await handleUpsertReleaseCheck(
       ctx(
         { appId: "app-scope", releaseId: "rel-check" },
-        { source: "stamp", run_id: "run-2", verdict: "passed", cases_total: 5, cases_passed: 5 },
+        { source: "stamp", run_id: "run-2", verdict: "passed", cases_total: 5, cases_passed: 5, reviewed_at: 2000 },
       ),
     );
     expect(second.status).toBe(201);
@@ -8212,6 +8212,62 @@ describe("quiver public API v2 — scope resolution", () => {
     );
     expect(detail.checks).toHaveLength(1);
     expect(detail.checks[0].verdict).toBe("passed");
+  });
+
+  it("release checks: ordered by reviewed_at, duplicates and conflicts never overwrite, audit only on writes", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-order", "build-order", [["full", "all"]]);
+    const { handleUpsertReleaseCheck } = await import("../src/routes/releases");
+    const post = async (body: Record<string, unknown>) => {
+      const res = await handleUpsertReleaseCheck({
+        env,
+        req: {
+          url: "https://quiver-worker.test/api/apps/app-scope/releases/rel-order/checks",
+          param: (name: string) => ({ appId: "app-scope", releaseId: "rel-order" } as Record<string, string>)[name] ?? "",
+          query: () => undefined,
+          json: async () => body,
+        },
+        get: (name: string) => (name === "admin_actor" ? "testbed" : undefined),
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+      return { status: res.status, body: await responseJson<any>(res) };
+    };
+    const audits = async () => Number((await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope' AND action = 'release.check'",
+    ).first<{ n: number }>())?.n ?? 0);
+    const stored = async (source: string) => env.DB.prepare(
+      "SELECT run_id, verdict, reviewed_at FROM release_checks WHERE release_id = 'rel-order' AND source = ?1",
+    ).bind(source).first<any>();
+
+    // Legacy caller without reviewed_at: replaces, and an identical repost is a no-op.
+    expect((await post({ source: "legacy", run_id: "l1", verdict: "failed" })).status).toBe(201);
+    expect((await post({ source: "legacy", run_id: "l2", verdict: "passed" })).status).toBe(201);
+    const legacyDup = await post({ source: "legacy", run_id: "l2", verdict: "passed" });
+    expect(legacyDup).toMatchObject({ status: 200, body: { duplicate: true, check: { run_id: "l2" } } });
+    expect(await audits()).toBe(2);
+
+    expect((await post({ source: "tb", run_id: "r2", verdict: "passed", reviewed_at: 2000 })).status).toBe(201);
+    // A late older result does not overwrite the newer one.
+    const late = await post({ source: "tb", run_id: "r1", verdict: "failed", reviewed_at: 1000 });
+    expect(late).toMatchObject({ status: 200, body: { stale: true, check: { run_id: "r2", verdict: "passed", reviewed_at: 2000 } } });
+    // A retried identical result is a duplicate, not a new write.
+    const dup = await post({ source: "tb", run_id: "r2", verdict: "passed", reviewed_at: 2000 });
+    expect(dup).toMatchObject({ status: 200, body: { duplicate: true } });
+    // Same reviewed_at, different content: conflict, stored row kept.
+    const conflict = await post({ source: "tb", run_id: "r2", verdict: "failed", reviewed_at: 2000 });
+    expect(conflict).toMatchObject({ status: 409, body: { code: "reviewed_at_conflict", check: { verdict: "passed" } } });
+    // Once a row has reviewed_at, a write without it cannot replace it.
+    const untimed = await post({ source: "tb", run_id: "r9", verdict: "failed" });
+    expect(untimed).toMatchObject({ status: 409, body: { code: "reviewed_at_required" } });
+    expect(await stored("tb")).toEqual({ run_id: "r2", verdict: "passed", reviewed_at: 2000 });
+    expect(await audits()).toBe(3);
+
+    // A newer result replaces it; a timed result also replaces an untimed legacy row.
+    expect((await post({ source: "tb", run_id: "r3", verdict: "warning", reviewed_at: 3000 })).status).toBe(201);
+    expect(await stored("tb")).toEqual({ run_id: "r3", verdict: "warning", reviewed_at: 3000 });
+    expect((await post({ source: "legacy", run_id: "l3", verdict: "passed", reviewed_at: 10 })).status).toBe(201);
+    expect(await stored("legacy")).toEqual({ run_id: "l3", verdict: "passed", reviewed_at: 10 });
+    expect(await audits()).toBe(5);
   });
 
   it("share fallback: the newest active release wins over an older release's apk", async () => {

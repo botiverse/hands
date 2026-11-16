@@ -1052,7 +1052,23 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
 
   const now = Date.now();
   const id = crypto.randomUUID();
-  await c.env.DB.batch([
+  const reviewedAt = intOrNull(body.reviewed_at);
+  const values = {
+    run_id: body.run_id?.slice(0, 200) ?? null,
+    run_url: body.run_url ?? null,
+    verdict: body.verdict,
+    cases_total: intOrNull(body.cases_total),
+    cases_passed: intOrNull(body.cases_passed),
+    summary: body.summary?.slice(0, 4000) ?? null,
+    reviewer: body.reviewer?.slice(0, 200) ?? null,
+    reviewed_at: reviewedAt,
+  };
+  // Ordering per (release, source): a result carrying reviewed_at replaces the
+  // stored one only when it is newer (or the stored one has none). Once a row
+  // has reviewed_at, a write without it no longer replaces it. A write that
+  // changes nothing is not a write. The condition, the update and its audit
+  // row commit together: the audit insert runs only when the upsert changed a row.
+  const results = await c.env.DB.batch([
     c.env.DB
       .prepare(
         `INSERT INTO release_checks
@@ -1069,37 +1085,52 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
            summary = excluded.summary,
            reviewer = excluded.reviewer,
            reviewed_at = excluded.reviewed_at,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at
+         WHERE (
+             (excluded.reviewed_at IS NULL AND release_checks.reviewed_at IS NULL)
+             OR (excluded.reviewed_at IS NOT NULL
+                 AND (release_checks.reviewed_at IS NULL OR excluded.reviewed_at > release_checks.reviewed_at))
+           )
+           AND (release_checks.run_id IS NOT excluded.run_id
+             OR release_checks.run_url IS NOT excluded.run_url
+             OR release_checks.verdict IS NOT excluded.verdict
+             OR release_checks.cases_total IS NOT excluded.cases_total
+             OR release_checks.cases_passed IS NOT excluded.cases_passed
+             OR release_checks.summary IS NOT excluded.summary
+             OR release_checks.reviewer IS NOT excluded.reviewer
+             OR release_checks.reviewed_at IS NOT excluded.reviewed_at)`,
       )
       .bind(
         id,
         releaseId,
         appId,
         source,
-        body.run_id?.slice(0, 200) ?? null,
-        body.run_url ?? null,
-        body.verdict,
-        intOrNull(body.cases_total),
-        intOrNull(body.cases_passed),
-        body.summary?.slice(0, 4000) ?? null,
-        body.reviewer?.slice(0, 200) ?? null,
-        intOrNull(body.reviewed_at),
+        values.run_id,
+        values.run_url,
+        values.verdict,
+        values.cases_total,
+        values.cases_passed,
+        values.summary,
+        values.reviewer,
+        values.reviewed_at,
         now,
         now,
       ),
     c.env.DB
       .prepare(
-        "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE changes() = 1`,
       )
       .bind(
         crypto.randomUUID(),
         appId,
         "release.check",
         currentActor(c),
-        JSON.stringify({ release_id: releaseId, source, verdict: body.verdict, run_id: body.run_id ?? null }),
+        JSON.stringify({ release_id: releaseId, source, verdict: body.verdict, run_id: body.run_id ?? null, reviewed_at: reviewedAt }),
         now,
       ),
   ]);
+  const written = Number(results[0]?.meta?.changes ?? 0) === 1;
 
   const saved = await c.env.DB.prepare(
     `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
@@ -1107,8 +1138,29 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
      FROM release_checks WHERE release_id = ?1 AND source = ?2`,
   )
     .bind(releaseId, source)
-    .first();
-  return c.json({ check: saved }, 201);
+    .first<Record<string, unknown>>();
+  if (written || !saved) return c.json({ check: saved }, 201);
+
+  const same = (Object.keys(values) as Array<keyof typeof values>)
+    .every((key) => (saved[key] ?? null) === values[key]);
+  if (same) return c.json({ check: saved, duplicate: true }, 200);
+  const storedReviewedAt = typeof saved.reviewed_at === "number" ? saved.reviewed_at : null;
+  if (reviewedAt === null && storedReviewedAt !== null) {
+    return c.json({
+      error: "this check has a reviewed_at; send reviewed_at to replace it",
+      code: "reviewed_at_required",
+      check: saved,
+    }, 409);
+  }
+  if (reviewedAt !== null && storedReviewedAt === reviewedAt) {
+    return c.json({
+      error: "a different result with the same reviewed_at is already stored",
+      code: "reviewed_at_conflict",
+      check: saved,
+    }, 409);
+  }
+  // An older result: the newer stored one stays.
+  return c.json({ check: saved, stale: true }, 200);
 }
 
 export async function handleListReleaseChecks(c: AdminContext) {
