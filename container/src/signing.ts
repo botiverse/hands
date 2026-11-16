@@ -312,6 +312,7 @@ async function notaryKeyFile(dir: string, notary: NonNullable<AppleSecret["notar
 async function signMac(dir: string, secret: AppleSecret, input: string, output: string, entitlementsB64: string | undefined, notarize: boolean) {
   const pem = await p12ToPem(dir, secret);
   const { root, app } = await unpackApp(dir, input);
+  await rm(input, { force: true }); // free disk before signing
   // --for-notarization: hardened runtime and a secure timestamp on every signed item.
   // rcodesign refuses it for a non-Apple certificate, so local tests with a
   // self-signed certificate set HANDS_SIGNING_TEST_SELF_SIGNED=1 (never set in
@@ -336,6 +337,7 @@ async function signMac(dir: string, secret: AppleSecret, input: string, output: 
 
 async function staple(dir: string, input: string, output: string) {
   const { root, app } = await unpackApp(dir, input);
+  await rm(input, { force: true });
   await run("rcodesign", ["staple", join(root, app)], { failCode: "signing_staple_failed", failMessage: "could not staple the notarization ticket" });
   await zipApp(root, app, output);
 }
@@ -365,7 +367,8 @@ export function registerSigningRoutes(app: Hono) {
   app.post("/signing/generate-android", async (c) => {
     try {
       const body = await c.req.json() as { common_name?: string; organization?: string; alias?: string };
-      const alias = /^[A-Za-z0-9_-]{1,64}$/.test(body.alias ?? "") ? body.alias! : "release";
+      const alias = typeof body.alias === "string" && body.alias !== "" ? body.alias : "release";
+      assertAlias(alias);
       const clean = (v: unknown, fallback: string) =>
         typeof v === "string" && /^[\p{L}\p{N} ._-]{1,64}$/u.test(v) ? v : fallback;
       const dname = `CN=${clean(body.common_name, "Android")}, O=${clean(body.organization, "Hands")}`;

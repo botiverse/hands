@@ -133,7 +133,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
               {identity.metadata.subject && <div className="text-xs text-foreground-muted">{identity.metadata.subject}</div>}
             </div>
             <div className="flex gap-2">
-              {identity.origin === "generated" && identity.backup_exported_at === null && (
+              {identity.origin === "generated" && (identity.backup_exported_at === null || identity.backup_exported_at > Date.now() - 10 * 60 * 1000) && (
                 <Button
                   variant="outline"
                   size="sm"
