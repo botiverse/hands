@@ -11891,7 +11891,10 @@ describe("quiver public API v2 — scope resolution", () => {
       ["rf-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: true, crash_recent_foreground_source: "interaction" }, false],
       ["rf-true-imp125", { ...base, crash_exit_importance: 125, crash_recent_foreground: true }, false],
       ["rf-true-no-imp-fg-false", { ...base, crash_recent_foreground: true, crash_foreground: false }, false],
-      ["rf-str-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: " TRUE " }, false],
+      // Only JSON booleans count; anything else is absent (today's rule).
+      ["rf-str-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: "true" }, true],
+      ["rf-nbsp-true-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: "\u00a0true" }, true],
+      ["rf-bom-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: "\ufefffalse" }, false],
       // false: non-visible importance archives, visible never does.
       ["rf-false-imp100", { ...base, crash_exit_importance: 100, crash_recent_foreground: false, crash_recent_foreground_source: "none" }, false],
       ["rf-false-imp200", { ...base, crash_exit_importance: 200, crash_recent_foreground: false }, false],
@@ -11901,7 +11904,13 @@ describe("quiver public API v2 — scope resolution", () => {
       ["rf-false-imp230", { ...base, crash_exit_importance: 230, crash_recent_foreground: false }, true],
       ["rf-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: false }, true],
       ["rf-false-imp400", { ...base, crash_exit_importance: 400, crash_recent_foreground: false }, true],
-      ["rf-str-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: "false" }, true],
+      ["rf-str-false-imp300", { ...base, crash_exit_importance: 300, crash_recent_foreground: "false" }, false],
+      // Reason fields parse the same way in ingest and SQL.
+      ["rf-false-imp300-reason-label-ws-anr", { ...base, crash_exit_importance: 300, crash_exit_reason_code: undefined, crash_exit_reason: " anr ", crash_recent_foreground: false }, false],
+      ["rf-false-imp300-reason-code-9.0", { ...base, crash_exit_importance: 300, crash_exit_reason_code: "9.0", crash_recent_foreground: false }, true],
+      ["rf-false-imp300-reason-code-str-9", { ...base, crash_exit_importance: 300, crash_exit_reason_code: " 9 ", crash_recent_foreground: false }, false],
+      ["rf-false-imp300-nbsp-importance", { ...base, crash_exit_importance: "\u00a0300", crash_recent_foreground: false, crash_foreground: true }, false],
+      ["no-imp-trim-ws-bg", { ...base, crash_trim: " ui_hidden " }, true],
       // false without importance falls back to today's rule.
       ["rf-false-no-imp-fg-true", { ...base, crash_recent_foreground: false, crash_foreground: true }, false],
       ["rf-false-no-imp-trim-bg", { ...base, crash_recent_foreground: false, crash_trim: "ui_hidden" }, true],

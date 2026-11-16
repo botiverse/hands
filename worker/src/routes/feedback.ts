@@ -2259,28 +2259,15 @@ const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
  */
 export function isBackgroundSystemKill(metadata: Record<string, unknown>): boolean {
   if (metadata["crash_type"] !== "system_kill") return false;
-  const reasonCodeRaw = metadata["crash_exit_reason_code"];
-  const reasonCode =
-    typeof reasonCodeRaw === "number" && Number.isFinite(reasonCodeRaw)
-      ? Math.trunc(reasonCodeRaw)
-      : typeof reasonCodeRaw === "string" && /^\d+$/.test(reasonCodeRaw.trim())
-        ? Math.trunc(Number(reasonCodeRaw.trim()))
-        : null;
+  const reasonCode = systemKillInteger(metadata["crash_exit_reason_code"]);
   if (reasonCode !== null && ACTIONABLE_SYSTEM_KILL_REASON_CODES.has(reasonCode)) {
     return false;
   }
-  const reason = String(metadata["crash_exit_reason"] ?? metadata["crash_reason"] ?? "")
-    .trim()
+  const reason = asciiTrim(String(metadata["crash_exit_reason"] ?? metadata["crash_reason"] ?? ""))
     .toLowerCase();
   if (ACTIONABLE_SYSTEM_KILL_REASONS.has(reason)) return false;
 
-  const importanceRaw = metadata["crash_exit_importance"];
-  const importance =
-    typeof importanceRaw === "number" && Number.isFinite(importanceRaw)
-      ? Math.trunc(importanceRaw)
-      : typeof importanceRaw === "string" && /^\d+$/.test(importanceRaw.trim())
-        ? Math.trunc(Number(importanceRaw.trim()))
-        : null;
+  const importance = systemKillInteger(metadata["crash_exit_importance"]);
   const recentForeground = systemKillRecentForeground(metadata);
   if (recentForeground === true) return false;
   if (recentForeground === false && importance !== null) {
@@ -2289,7 +2276,7 @@ export function isBackgroundSystemKill(metadata: Record<string, unknown>): boole
   if (importance !== null) return importance >= 400;
   if (metadata["crash_foreground"] === true) return false;
   if (metadata["crash_foreground"] === false) return true;
-  const trim = String(metadata["crash_trim"] ?? "").trim().toLowerCase();
+  const trim = asciiTrim(String(metadata["crash_trim"] ?? "")).toLowerCase();
   if (
     trim === "ui_hidden"
     || trim === "background"
@@ -2324,47 +2311,51 @@ export async function systemKillExitSubmissionId(
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
+/** ASCII whitespace only, exactly what the SQL mirror's TRIM strips. */
+function asciiTrim(value: string): string {
+  return value.replace(/^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g, "");
+}
+
+/** A finite number (truncated) or an all-digit string, else null. */
+function systemKillInteger(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return Math.trunc(raw);
+  if (typeof raw === "string" && /^\d+$/.test(asciiTrim(raw))) return Math.trunc(Number(asciiTrim(raw)));
+  return null;
+}
+
 /**
- * `crash_recent_foreground` as true / false, or null when absent or not a
+ * `crash_recent_foreground` as true / false; null when absent or not a JSON
  * boolean (the app sends it only when it has valid evidence either way).
  */
 function systemKillRecentForeground(metadata: Record<string, unknown>): boolean | null {
   const raw = metadata["crash_recent_foreground"];
-  if (typeof raw === "boolean") return raw;
-  if (typeof raw === "string") {
-    const value = raw.trim().toLowerCase();
-    if (value === "true") return true;
-    if (value === "false") return false;
-  }
-  return null;
+  return typeof raw === "boolean" ? raw : null;
 }
 
 // Mirrors systemKillRecentForeground: 1 for true, 0 for false, else NULL.
-const SYSTEM_KILL_RECENT_FOREGROUND_SQL = `(CASE
-    WHEN json_type(t.metadata_json, '$.crash_recent_foreground') = 'true' THEN 1
-    WHEN json_type(t.metadata_json, '$.crash_recent_foreground') = 'false' THEN 0
-    WHEN json_type(t.metadata_json, '$.crash_recent_foreground') = 'text'
-      AND LOWER(TRIM(json_extract(t.metadata_json, '$.crash_recent_foreground'), ' ' || char(9, 10, 11, 12, 13))) = 'true' THEN 1
-    WHEN json_type(t.metadata_json, '$.crash_recent_foreground') = 'text'
-      AND LOWER(TRIM(json_extract(t.metadata_json, '$.crash_recent_foreground'), ' ' || char(9, 10, 11, 12, 13))) = 'false' THEN 0
-  END)`;
+const SYSTEM_KILL_RECENT_FOREGROUND_SQL = `(CASE json_type(t.metadata_json, '$.crash_recent_foreground')
+    WHEN 'true' THEN 1 WHEN 'false' THEN 0 END)`;
 
-// Mirrors isBackgroundSystemKill: an integer, or an all-digit string (ASCII
-// whitespace trimmed, as JS trim() does), else NULL. Migration 0091 repeats it.
-const SYSTEM_KILL_IMPORTANCE_SQL = `(CASE
-    WHEN json_type(t.metadata_json, '$.crash_exit_importance') IN ('integer', 'real')
-      THEN CAST(json_extract(t.metadata_json, '$.crash_exit_importance') AS INTEGER)
-    WHEN json_type(t.metadata_json, '$.crash_exit_importance') = 'text'
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) <> ''
-      AND TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) NOT GLOB '*[^0-9]*'
-      THEN CAST(TRIM(json_extract(t.metadata_json, '$.crash_exit_importance'), ' ' || char(9, 10, 11, 12, 13)) AS INTEGER)
+const SQL_ASCII_WS = `' ' || char(9, 10, 11, 12, 13)`;
+
+// Mirrors systemKillInteger: an integer, or an all-digit string (ASCII
+// whitespace trimmed), else NULL. Migration 0091 repeats it for importance.
+const systemKillIntegerSql = (path: string) => `(CASE
+    WHEN json_type(t.metadata_json, '${path}') IN ('integer', 'real')
+      THEN CAST(json_extract(t.metadata_json, '${path}') AS INTEGER)
+    WHEN json_type(t.metadata_json, '${path}') = 'text'
+      AND TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) <> ''
+      AND TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) NOT GLOB '*[^0-9]*'
+      THEN CAST(TRIM(json_extract(t.metadata_json, '${path}'), ${SQL_ASCII_WS}) AS INTEGER)
   END)`;
+const SYSTEM_KILL_IMPORTANCE_SQL = systemKillIntegerSql("$.crash_exit_importance");
+const SYSTEM_KILL_REASON_CODE_SQL = systemKillIntegerSql("$.crash_exit_reason_code");
 
 export const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_KILL_SIGNATURE}' OR (
   json_valid(t.metadata_json)
   AND json_extract(t.metadata_json, '$.crash_type') = 'system_kill'
-  AND COALESCE(CAST(json_extract(t.metadata_json, '$.crash_exit_reason_code') AS INTEGER), -1) NOT IN (4, 5, 6, 9)
-  AND LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), '')) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
+  AND COALESCE(${SYSTEM_KILL_REASON_CODE_SQL}, -1) NOT IN (4, 5, 6, 9)
+  AND LOWER(TRIM(COALESCE(json_extract(t.metadata_json, '$.crash_exit_reason'), json_extract(t.metadata_json, '$.crash_reason'), ''), ${SQL_ASCII_WS})) NOT IN ('crash', 'crash_native', 'anr', 'excessive_resource_usage')
   AND (CASE
     WHEN ${SYSTEM_KILL_RECENT_FOREGROUND_SQL} = 1 THEN 0
     WHEN ${SYSTEM_KILL_RECENT_FOREGROUND_SQL} = 0 AND ${SYSTEM_KILL_IMPORTANCE_SQL} IS NOT NULL
@@ -2372,7 +2363,7 @@ export const BACKGROUND_SYSTEM_KILL_SQL = `(t.signature = '${BACKGROUND_SYSTEM_K
     WHEN ${SYSTEM_KILL_IMPORTANCE_SQL} IS NOT NULL THEN ${SYSTEM_KILL_IMPORTANCE_SQL} >= 400
     WHEN json_type(t.metadata_json, '$.crash_foreground') = 'true' THEN 0
     WHEN json_type(t.metadata_json, '$.crash_foreground') = 'false' THEN 1
-    ELSE LOWER(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), '')) IN ('ui_hidden', 'background', 'moderate', 'complete')
+    ELSE LOWER(TRIM(COALESCE(json_extract(t.metadata_json, '$.crash_trim'), ''), ${SQL_ASCII_WS})) IN ('ui_hidden', 'background', 'moderate', 'complete')
   END)
 ))`;
 
