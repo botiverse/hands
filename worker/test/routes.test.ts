@@ -3087,7 +3087,7 @@ describe("quiver operation retry — legacy publish is not replayed", () => {
         new Response(JSON.stringify(body), { status }),
     } as any;
     expect((await handleRetryOperation(context)).status).toBe(400);
-    expect((await handleDeleteOperation(context)).status).toBe(409);
+    expect((await handleDeleteOperation(context)).status).toBe(405);
 
     const preserved = await env.DB.prepare(
       `SELECT status, output, progress, retry_count, completed_at

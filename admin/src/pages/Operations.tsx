@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   listOperations,
   retryOperation,
-  deleteOperation,
   streamOperations,
   type Operation,
 } from "../lib/api";
@@ -79,19 +78,6 @@ export function Operations({ appId }: { appId: string }) {
     },
   });
 
-  const remove = useMutation({
-    mutationFn: (opId: string) => deleteOperation(appId, opId),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: t("Operation log removed", "操作日志已删除") });
-      qc.invalidateQueries({ queryKey: ["operations", appId] });
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: t("Delete failed", "删除失败"),
-        description: errorMessage(e),
-      }),
-  });
 
   return (
     <div>
@@ -117,8 +103,7 @@ export function Operations({ appId }: { appId: string }) {
             op={op}
             isLive={live.has(op.id)}
             onRetry={() => retry.mutate(op.id)}
-            onDelete={() => remove.mutate(op.id)}
-            busy={retry.isPending || remove.isPending}
+            busy={retry.isPending}
           />
         ))}
       </div>
@@ -130,13 +115,11 @@ function OperationRow({
   op,
   isLive,
   onRetry,
-  onDelete,
   busy,
 }: {
   op: Operation;
   isLive: boolean;
   onRetry: () => void;
-  onDelete: () => void;
   busy: boolean;
 }) {
   const t = useText();
@@ -184,16 +167,6 @@ function OperationRow({
           aria-label={expanded ? t("Collapse", "收起") : t("Expand", "展开")}
         >
           {expanded ? "▲" : "▼"}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="hover:text-danger"
-          onClick={onDelete}
-          disabled={busy}
-          aria-label={t("Delete", "删除")}
-        >
-          ×
         </Button>
       </div>
 
