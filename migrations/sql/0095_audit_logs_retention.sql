@@ -8,7 +8,12 @@
 -- by anything else. The archive has no foreign keys, so nothing removes it.
 --
 -- Audit rows are also made immutable: nothing in the Worker updates them, and a
--- trigger now refuses any UPDATE.
+-- trigger now refuses any UPDATE. A future migration that must backfill
+-- audit_logs drops trg_audit_logs_no_update, runs its UPDATE, and recreates it
+-- in the same file.
+--
+-- Archived rows have no automatic expiry; a retention or erasure policy for
+-- audit_logs_archive is a separate decision.
 CREATE TABLE IF NOT EXISTS audit_logs_archive (
   id          TEXT PRIMARY KEY,
   app_id      TEXT NOT NULL,
