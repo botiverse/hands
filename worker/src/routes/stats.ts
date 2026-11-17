@@ -10,6 +10,7 @@
  *    via the app's stored ASC credentials (without exposing credentials), plus the
  *    daily App Store metrics Hands ingested from Analytics Reports (D1, no live call).
  */
+import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
@@ -305,7 +306,7 @@ async function queryGooglePlayStats(
     liveTracks = [];
     for (const handsTrack of ["production", "closed", "internal"] as const) {
       try {
-        const res = await c.env.PLAY_RELEASE_SERVICE.listReleaseStates({
+        const res = await listReleaseStatesWithRetry(c.env.PLAY_RELEASE_SERVICE, {
           credential: binding.credential,
           packageName: pkgName,
           tracks,

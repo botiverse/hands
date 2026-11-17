@@ -2298,11 +2298,12 @@ describe("durable Google Play notifications", () => {
       return input.handsTrack === "internal" ? { ok: true, value: [stateSummary] }
         : { ok: false, error: { status: 403, code: "play_api_rejected", message: "not authorized" } };
     } });
-    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(3);
+    // Three tracks; each refused read is retried once.
+    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(5);
     expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 1 });
-    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(3);
+    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(5);
     h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
-    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(3);
+    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(5);
   });
 });
 

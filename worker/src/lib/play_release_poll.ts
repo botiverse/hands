@@ -66,7 +66,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
         const track = binding.tracks[handsTrack];
         if (seenTracks.has(track)) continue;
         seenTracks.add(track);
-        const reply = await env.PLAY_RELEASE_SERVICE.listReleaseStates({ credential: binding.credential,
+        const reply = await listReleaseStatesWithRetry(env.PLAY_RELEASE_SERVICE, { credential: binding.credential,
           packageName: binding.package_name, tracks: binding.tracks, handsTrack });
         if (!reply.ok) {
           console.warn("hands_play_poll_failure", JSON.stringify({ code: reply.error.code }));
@@ -97,4 +97,22 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
     }
   }
   await enqueueDueDeliveries(env, Date.now()).catch(() => 0);
+}
+
+type ReleaseStateService = Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listReleaseStates">;
+
+/**
+ * Google intermittently refuses tracks.releases.list with PERMISSION_DENIED
+ * while the same grant reads the same track a moment later. The read has no
+ * side effects, so a refusal is retried once after a short pause.
+ */
+export async function listReleaseStatesWithRetry(
+  service: ReleaseStateService,
+  input: Parameters<ReleaseStateService["listReleaseStates"]>[0],
+  pauseMs = 1500,
+) {
+  const first = await service.listReleaseStates(input);
+  if (first.ok || first.error.code !== "play_api_rejected") return first;
+  await new Promise((resolve) => setTimeout(resolve, pauseMs));
+  return service.listReleaseStates(input);
 }
