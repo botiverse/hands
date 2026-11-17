@@ -23,7 +23,7 @@ interface TicketRow {
   attachment_count: number;
   comment_count: number;
   build_origin?: "configured" | "external" | "unknown" | null;
-  crash_type?: "anr" | "system_kill" | "native" | "exception" | null;
+  crash_type?: "anr" | "system_kill" | "native" | "exception" | "webview_renderer_gone" | null;
   background_system_kill?: number;
 }
 
@@ -56,7 +56,7 @@ export function registerFeedbackCommands(program: Command): void {
     .description("List tickets, newest first.")
     .option("--status <status>", "Filter: open | in_progress | resolved | closed.")
     .option("--kind <kind>", "Filter: feedback | bug | crash | error.")
-    .option("--crash-type <type>", "Filter crashes by type: exception | native | anr | system_kill.")
+    .option("--crash-type <type>", "Filter crashes by type: exception | native | anr | system_kill | webview_renderer_gone.")
     .option("--signature <signature>", "Filter crashes by signature (e.g. SystemKill@background).")
     .option("--device-id <deviceId>", "Filter tickets by device_id.")
     .option("--version-code <code>", "Filter tickets by version_code.")

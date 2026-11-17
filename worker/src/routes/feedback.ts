@@ -930,18 +930,24 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     const orgId = app.org_id;
     const eventPrefix = kind === "crash" ? "crash" : "error";
     const alert = async () => {
+      const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
       const base = {
         app_slug: app.slug,
         signature,
         crash_type: crashTypeOf(metadata),
+        ...(nonFatal ? { fatal: false } : {}),
         ticket_id: ticketId,
         message: message.slice(0, 300),
         version_name: versionName,
         version_code: versionCode,
       };
+      // A fatal ticket announces its group the first time the signature is seen
+      // fatally, even if non-fatal tickets came first; a non-fatal ticket only
+      // when the signature has never been seen at all.
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets t
          WHERE app_id = ?1 AND signature = ?2 AND id != ?3
+           ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
            AND ${feedbackBuildScopeClause("standard")}`,
       )
         .bind(app.id, signature, ticketId)
@@ -954,14 +960,17 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           // A signature is first seen once, so (app, signature) is the
           // occurrence. This also makes concurrent submissions that both read
           // prior.n === 0 collapse instead of double-notifying.
-          eventId: `${eventPrefix}:new_group:${app.id}:${signature}`,
+          eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${app.id}:${signature}`,
           body: base,
         });
         return;
       }
+      // Non-fatal crashes are grouped and announced once, but never counted as a spike.
+      if (nonFatal) return;
       const recent = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets t
          WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3
+           AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
            AND ${feedbackBuildScopeClause("standard")}`,
       )
         .bind(app.id, signature, now - 60 * 60 * 1000)
@@ -2654,15 +2663,32 @@ export async function dispatchBackgroundSystemKillDailySummaries(
 const CRASH_TYPE_SQL = `CASE WHEN json_valid(metadata_json) THEN CASE
     WHEN json_extract(metadata_json, '$.crash_type') = 'anr' THEN 'anr'
     WHEN json_extract(metadata_json, '$.crash_type') = 'system_kill' THEN 'system_kill'
+    WHEN json_extract(metadata_json, '$.crash_type') = 'webview_renderer_gone' THEN 'webview_renderer_gone'
     WHEN json_extract(metadata_json, '$.crash_reason') = 'native_signal' THEN 'native'
     ELSE 'exception'
   END ELSE 'exception' END`;
-export const CRASH_TYPES = ["anr", "system_kill", "native", "exception"] as const;
+export const CRASH_TYPES = ["anr", "system_kill", "native", "exception", "webview_renderer_gone"] as const;
 export type CrashType = (typeof CRASH_TYPES)[number];
+
+/**
+ * A crash ticket the app explicitly reports as non-fatal (`crash_fatal: false`),
+ * such as a WebView renderer exit the app survived. It is still a crash ticket,
+ * grouped and triaged like any other, but it is not counted as a crash and does
+ * not raise spike alerts. A ticket without the field stays fatal.
+ */
+export function isNonFatalCrash(metadata: Record<string, unknown>): boolean {
+  return metadata["crash_fatal"] === false;
+}
+
+/** Mirrors isNonFatalCrash for stored tickets (alias `t` or the bare table). */
+// IFNULL: json_type is NULL when the field is absent, and NULL must read as
+// "fatal", never as unknown (NOT NULL would drop the row from counts).
+export const NON_FATAL_CRASH_SQL = `(json_valid(metadata_json) AND IFNULL(json_type(metadata_json, '$.crash_fatal') = 'false', 0))`;
 
 export function crashTypeOf(metadata: Record<string, unknown>): CrashType {
   if (metadata["crash_type"] === "anr") return "anr";
   if (metadata["crash_type"] === "system_kill") return "system_kill";
+  if (metadata["crash_type"] === "webview_renderer_gone") return "webview_renderer_gone";
   if (metadata["crash_reason"] === "native_signal") return "native";
   return "exception";
 }
@@ -2692,6 +2718,7 @@ export async function handleListCrashGroups(c: AdminContext) {
     `SELECT
        ${EFFECTIVE_CRASH_SIGNATURE_SQL} AS signature,
        MAX(${CRASH_TYPE_SQL}) AS crash_type,
+       MAX(CASE WHEN kind = 'crash' AND ${NON_FATAL_CRASH_SQL} THEN 0 ELSE 1 END) AS fatal,
        COUNT(*) AS count,
        COUNT(DISTINCT device_id) AS device_count,
        MIN(created_at) AS first_seen,
@@ -2709,6 +2736,7 @@ export async function handleListCrashGroups(c: AdminContext) {
     .all<{
       signature: string;
       crash_type: CrashType;
+      fatal: number;
       count: number;
       device_count: number;
       first_seen: number;
@@ -2797,6 +2825,7 @@ export async function handleFeedbackStats(c: AdminContext) {
               ${EFFECTIVE_VERSION_CODE_SQL} AS version_code, COUNT(*) AS n
        FROM feedback_tickets t
        WHERE app_id = ?1 AND kind IN ('crash', 'error')
+         AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
          AND ${feedbackBuildScopeClause(scope)}
        GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
        ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC

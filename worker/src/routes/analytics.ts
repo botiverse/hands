@@ -218,7 +218,10 @@ export async function handleVersionAnalytics(c: AdminContext) {
        feedback AS (
          SELECT version_code, COALESCE(channel, 'unknown') AS channel,
                 COUNT(*) AS feedback_count,
-                SUM(CASE WHEN kind = 'crash' THEN 1 ELSE 0 END) AS crash_count
+                -- Explicitly non-fatal crash tickets (crash_fatal: false) are not crashes.
+                SUM(CASE WHEN kind = 'crash'
+                  AND NOT (json_valid(metadata_json) AND IFNULL(json_type(metadata_json, '$.crash_fatal') = 'false', 0))
+                  THEN 1 ELSE 0 END) AS crash_count
          FROM feedback_tickets
          WHERE app_id = ?
          GROUP BY version_code, COALESCE(channel, 'unknown')
