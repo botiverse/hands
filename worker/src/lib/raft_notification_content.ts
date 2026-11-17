@@ -649,6 +649,10 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
     if (since) lines.push(`Failing since: ${since}`);
     const help = safePreview(payload.hint, 400);
     if (help && event === "google_play:access_failed") lines.push(`What to do: ${help}`);
+    const settings = safeValue(payload.settings_url);
+    if (settings && /^https:\/\/[^\s]+\/apps\/[^/\s]+\/integrations$/.test(settings) && event === "google_play:access_failed") {
+      lines.push(`[Open Google Play settings](${settings})`);
+    }
     if (occurred) lines.push(`occurred: ${occurred}`);
     return truncateMessage(lines.join("\n"), MAX_MESSAGE_LENGTH);
   }

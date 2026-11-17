@@ -1,3 +1,4 @@
+import { settingsOrigin } from "./play_access_origin";
 import { enqueueDueDeliveries } from "../routes/webhooks";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_bindings";
 import { playDeliveryStatement, playStateLabel } from "./play_notifications";
@@ -87,12 +88,12 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           await observePlayRelease(env.DB, row.app_id, binding.package_name, track, release,
             version, binding.updated_at, now);
       }
-      if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now).catch(() => undefined);
+      if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now, settingsOrigin(env)).catch(() => undefined);
       else await recordPlayAccessSuccess(env.DB, row.app_id, "publishing", now).catch(() => undefined);
     } catch {
       // No credential, URL, provider message or release content in logs.
       console.warn("hands_play_poll_failure", JSON.stringify({ code: "poll_unavailable" }));
-      await recordPlayAccessFailure(env.DB, row.app_id, "publishing", "poll_unavailable", now).catch(() => undefined);
+      await recordPlayAccessFailure(env.DB, row.app_id, "publishing", "poll_unavailable", now, settingsOrigin(env)).catch(() => undefined);
     }
   }
   await enqueueDueDeliveries(env, Date.now()).catch(() => 0);

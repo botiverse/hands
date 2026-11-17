@@ -6,6 +6,7 @@
  *   PUT  /api/apps/:appId/google-play/stats-bucket   {"stats_bucket": "pubsite_prod_rev_123" | null}
  *   POST /api/apps/:appId/stats/google-play/ingest
  */
+import { settingsOrigin } from "../lib/play_access_origin";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "../lib/play_access_alerts";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
@@ -88,7 +89,7 @@ export async function handleIngestPlayStats(c: AdminContext) {
     return c.json({ ...summary, note: PLAY_STATS_NOTE });
   } catch (err) {
     if (err instanceof PlayStatsError) {
-      await recordPlayAccessFailure(c.env.DB, appId, "statistics", err.code).catch(() => undefined);
+      await recordPlayAccessFailure(c.env.DB, appId, "statistics", err.code, Date.now(), settingsOrigin(c.env)).catch(() => undefined);
       const bucket = await getPlayStatsBucket(c.env.DB, appId).catch(() => null);
       return c.json({
         error: "Google Play statistics reports could not be listed",

@@ -40,12 +40,13 @@ describe("Google Play access alerts", () => {
   it("alerts at once on a rejected authorization, once per episode, and reports the recovery", async () => {
     const { db, deliveries } = setup();
     const t0 = 1_800_000_000_000;
-    await recordPlayAccessFailure(db, "app", "statistics", "play_reports_token_rejected", t0);
+    await recordPlayAccessFailure(db, "app", "statistics", "play_reports_token_rejected", t0, "https://app.hands.example/");
     await recordPlayAccessFailure(db, "app", "statistics", "play_reports_token_rejected", t0 + 6 * 3600_000);
     expect(deliveries().map((d) => d.event_type)).toEqual(["google_play:access_failed"]);
     const payload = JSON.parse(deliveries()[0].payload_json);
     expect(payload.payload).toMatchObject({ access: "statistics", error_code: "play_reports_token_rejected" });
     expect(payload.payload.hint).toMatch(/Authorize statistics reports/);
+    expect(payload.payload.settings_url).toBe("https://app.hands.example/apps/app/integrations");
     await recordPlayAccessSuccess(db, "app", "statistics", t0 + 7 * 3600_000);
     await recordPlayAccessSuccess(db, "app", "statistics", t0 + 8 * 3600_000);
     expect(deliveries().map((d) => d.event_type)).toEqual(["google_play:access_failed", "google_play:access_restored"]);
@@ -85,5 +86,9 @@ describe("Google Play access alerts", () => {
     expect(text).toContain("Access: statistics reports");
     expect(text).toContain("Error: play_reports_token_rejected");
     expect(text).toContain("What to do:");
+    const linked = formatRaftNotificationMessage({ event: "google_play:access_failed", payload: { access_label: "statistics reports", settings_url: "https://app.hands.build/apps/a1/integrations" } });
+    expect(linked).toContain("[Open Google Play settings](https://app.hands.build/apps/a1/integrations)");
+    const foreign = formatRaftNotificationMessage({ event: "google_play:access_failed", payload: { settings_url: "https://evil.example/phish" } });
+    expect(foreign).not.toContain("evil.example");
   });
 });
