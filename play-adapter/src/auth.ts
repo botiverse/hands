@@ -83,7 +83,10 @@ export async function createAccessToken(
     if (reports && !response.ok && body?.error === "invalid_scope") {
       throw new PlayAdapterError(403, "play_reports_scope_missing", "Google authorization does not include Play Console report access; reconnect Google Play and allow reports");
     }
-    if (!response.ok) throw new PlayAdapterError(response.status < 500 ? 403 : 502, "play_token_rejected", "Google OAuth authorization needs reconnection");
+    if (!response.ok) {
+      logTokenRejection(reports ? "reports" : "publishing", response.status, body);
+      throw new PlayAdapterError(response.status < 500 ? 403 : 502, "play_token_rejected", "Google OAuth authorization needs reconnection");
+    }
     if (typeof body?.access_token !== "string" || !body.access_token || body.token_type !== "Bearer") {
       throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
     }
@@ -134,4 +137,25 @@ export async function createAccessToken(
     throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
   }
   return body.access_token;
+}
+
+const OAUTH_CODE = /^[a-z_]{1,40}$/;
+
+/**
+ * Why Google refused to refresh a user grant, as its fixed OAuth codes only
+ * (`error`, `error_subtype`, e.g. invalid_grant / invalid_rapt for a Workspace
+ * re-verification policy). Never the description, the token or the client.
+ */
+function logTokenRejection(grant: "reports" | "publishing", status: number, body: Record<string, unknown> | null) {
+  const code = (value: unknown) => (typeof value === "string" && OAUTH_CODE.test(value) ? value : null);
+  const description = typeof body?.error_description === "string" ? body.error_description : "";
+  console.warn("hands_play_token_rejection", JSON.stringify({
+    grant,
+    status,
+    error: code(body?.error),
+    error_subtype: code(body?.error_subtype),
+    // Google's description is free text; keep only whether it names a known cause.
+    reauth_required: /invalid_rapt|reauth/i.test(description),
+    expired_or_revoked: /expired or revoked/i.test(description),
+  }));
 }
