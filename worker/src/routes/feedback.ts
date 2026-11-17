@@ -941,9 +941,13 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
         version_name: versionName,
         version_code: versionCode,
       };
+      // A fatal ticket announces its group the first time the signature is seen
+      // fatally, even if non-fatal tickets came first; a non-fatal ticket only
+      // when the signature has never been seen at all.
       const prior = await c.env.DB.prepare(
         `SELECT COUNT(*) AS n FROM feedback_tickets t
          WHERE app_id = ?1 AND signature = ?2 AND id != ?3
+           ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
            AND ${feedbackBuildScopeClause("standard")}`,
       )
         .bind(app.id, signature, ticketId)
@@ -956,7 +960,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           // A signature is first seen once, so (app, signature) is the
           // occurrence. This also makes concurrent submissions that both read
           // prior.n === 0 collapse instead of double-notifying.
-          eventId: `${eventPrefix}:new_group:${app.id}:${signature}`,
+          eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${app.id}:${signature}`,
           body: base,
         });
         return;
@@ -2821,6 +2825,7 @@ export async function handleFeedbackStats(c: AdminContext) {
               ${EFFECTIVE_VERSION_CODE_SQL} AS version_code, COUNT(*) AS n
        FROM feedback_tickets t
        WHERE app_id = ?1 AND kind IN ('crash', 'error')
+         AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
          AND ${feedbackBuildScopeClause(scope)}
        GROUP BY COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown'), ${EFFECTIVE_VERSION_CODE_SQL}
        ORDER BY COALESCE(${EFFECTIVE_VERSION_CODE_SQL}, 0) DESC

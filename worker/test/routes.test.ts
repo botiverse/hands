@@ -13043,6 +13043,11 @@ describe("quiver public API v2 — scope resolution", () => {
       "SELECT COUNT(*) AS n FROM webhook_deliveries WHERE webhook_id = 'wh-nf' AND event_type = 'crash:spike'",
     ).first()) as { n: number };
     expect(spikes.n).toBe(1);
+    // The first fatal ticket on a signature first seen non-fatally announces a fatal group too.
+    const groupsAnnounced = (await env.DB.prepare(
+      "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-nf' AND event_type = 'crash:new_group'",
+    ).all()).results as Array<{ payload_json: string }>;
+    expect(groupsAnnounced.map((d) => JSON.parse(d.payload_json).payload.fatal ?? true).sort()).toEqual([false, true]);
 
     const groups = await responseJson<any>(await handleListCrashGroups({
       env,
