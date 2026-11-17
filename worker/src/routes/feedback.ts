@@ -1239,8 +1239,10 @@ async function mergeCrashSubmission(
   } catch {
     // An unreadable stored object is treated as empty.
   }
+  // crash_merge is server-owned; a client cannot plant or replace it.
   const incoming = Object.fromEntries(
-    Object.entries(input.metadata).filter(([, value]) => value !== null && value !== undefined),
+    Object.entries(input.metadata)
+      .filter(([key, value]) => key !== "crash_merge" && value !== null && value !== undefined),
   );
   const existingNative = isNativeCrashMetadata(currentMetadata);
   const incomingNative = isNativeCrashMetadata(incoming);
@@ -1279,6 +1281,13 @@ async function mergeCrashSubmission(
       `SELECT 1 AS hit FROM feedback_attachments WHERE ticket_id = ?1 AND filename = ?2 AND size_bytes = ?3`,
     ).bind(existing.id, attachment.filename, attachment.sizeBytes).first<{ hit: number }>();
     if (duplicate) continue;
+    const count = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM feedback_attachments WHERE ticket_id = ?1`,
+    ).bind(existing.id).first<{ n: number }>();
+    if ((count?.n ?? 0) >= limit) {
+      dropped.push(attachment.filename);
+      continue;
+    }
     const id = crypto.randomUUID();
     const r2Key = attachment.inlineFile
       ? `feedback/${app.id}/${existing.id}/merge-${id.slice(0, 8)}-${index}-${attachment.filename}`
@@ -1308,9 +1317,19 @@ async function mergeCrashSubmission(
     }
   }
 
+  const priorRecords: Array<Record<string, unknown>> = Array.isArray(priorMerges) ? priorMerges : [];
+  // An attachment already recorded as dropped is not news on a resend.
+  const priorDropped = new Set(priorRecords.flatMap((record) =>
+    Array.isArray(record?.dropped_attachments) ? record.dropped_attachments as string[] : []));
+  const newlyDropped = dropped.filter((name) => !priorDropped.has(name));
   const fieldsChanged = !sameJson(merged, currentFields);
-  const changed = fieldsChanged || added.length > 0 || dropped.length > 0;
-  const mergeRecords = Array.isArray(priorMerges) ? priorMerges.slice(-(MAX_MERGE_RECORDS - 1)) : [];
+  const changed = fieldsChanged || added.length > 0 || newlyDropped.length > 0;
+  if (changed && !sameNativeRecord && priorRecords.length >= MAX_MERGE_RECORDS) {
+    // One event has two sides; a ticket that keeps changing under merges is
+    // not that, and a known submission_id must not be an unmetered write path.
+    return c.json({ error: "submission_id merge limit reached", code: "submission_merge_limit" }, 409);
+  }
+  const mergeRecords = priorRecords.slice(-(MAX_MERGE_RECORDS - 1));
   const finalMetadata: Record<string, unknown> = { ...merged };
   if (changed && !sameNativeRecord) {
     mergeRecords.push({
@@ -1318,7 +1337,7 @@ async function mergeCrashSubmission(
       precedence: nativeIncoming ? "incoming_native" : "existing_native",
       conflicts: JSON.parse(conflictJson),
       ...(conflictsTruncated ? { conflicts_truncated: true } : {}),
-      ...(dropped.length > 0 ? { dropped_attachments: dropped } : {}),
+      ...(newlyDropped.length > 0 ? { dropped_attachments: newlyDropped } : {}),
     });
   }
   if (mergeRecords.length > 0) finalMetadata["crash_merge"] = mergeRecords;
@@ -1380,7 +1399,7 @@ async function mergeCrashSubmission(
   // stopped being a background kill) is announced as any new crash would be.
   // Apps that separate external builds decide that at submission time; a merge
   // does not re-derive it, so it stays quiet rather than alert on one.
-  const alertsAllowed = app.feedback_origin_filter_enabled !== 1;
+  const alertsAllowed = !(app.platform === "ios" && app.feedback_origin_filter_enabled === 1);
   if (
     alertsAllowed && changed && app.org_id && nextSignature && !backgroundKill
     && nextSignature !== current.signature

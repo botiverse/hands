@@ -457,7 +457,8 @@ fire, when the merged report is no longer one. The response is `200`:
 `id` is included only for a trusted reporter that owns the ticket. Resending
 the same merge returns `idempotent_replay: true` and changes nothing. A `503`
 with code `submission_merge_conflict` means another merge changed the ticket at
-the same moment; retry with the same body.
+the same moment; retry with the same body. After five recorded merges a ticket
+accepts no further changing merges (`409`, code `submission_merge_limit`).
 
 #### `submission_id` conflicts {#submission-id-conflicts}
 

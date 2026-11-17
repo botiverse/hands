@@ -13525,6 +13525,11 @@ describe("quiver public API v2 — scope resolution", () => {
       });
       // Same ticket, same group: no second announcement.
       expect(await events()).toEqual(before);
+
+      // crash_merge is server-owned: a resend cannot plant or replace it.
+      const planted = await submit({ ...nativeRecord, metadata: { ...nativeRecord.metadata, crash_merge: "x" } });
+      expect(await responseJson(planted)).toMatchObject({ merged: true, idempotent_replay: true });
+      expect((await ticket()).metadata.crash_merge).toHaveLength(1);
     });
 
     it("pairs that are not one event seen from two sides are still rejected", async () => {

@@ -312,7 +312,7 @@ X-Hands-Client-Key: qk_...
 { "merged": true, "reopened": true, "attachments_added": 1, "attachments_dropped": 0, "idempotent_replay": false }
 ```
 
-只有拥有该票的受信 reporter 会拿到 `id`。重发同一次合并返回 `idempotent_replay: true`，不做任何改动。`503` 且 `code` 为 `submission_merge_conflict` 表示同一时刻另一次合并改了这张票，用同样内容重试即可。
+只有拥有该票的受信 reporter 会拿到 `id`。重发同一次合并返回 `idempotent_replay: true`，不做任何改动。`503` 且 `code` 为 `submission_merge_conflict` 表示同一时刻另一次合并改了这张票，用同样内容重试即可。一张票记录满五次合并后，不再接受会改动它的合并（`409`，`code` 为 `submission_merge_limit`）。
 
 #### `submission_id` 冲突 {#submission-id-conflicts}
 
