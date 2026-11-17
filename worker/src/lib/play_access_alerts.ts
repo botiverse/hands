@@ -44,7 +44,14 @@ async function readState(db: D1Database, appId: string, access: PlayAccess) {
   ).bind(appId, access).first<StateRow>();
 }
 
-export async function recordPlayAccessFailure(db: D1Database, appId: string, access: PlayAccess, code: string, now = Date.now()) {
+/** The app's Google Play settings page, where authorizations are redone. */
+export function playSettingsUrl(dashboardOrigin: string | null, appId: string): string | null {
+  return dashboardOrigin ? `${dashboardOrigin.replace(/\/+$/, "")}/apps/${encodeURIComponent(appId)}/integrations` : null;
+}
+
+export async function recordPlayAccessFailure(
+  db: D1Database, appId: string, access: PlayAccess, code: string, now = Date.now(), dashboardOrigin: string | null = null,
+) {
   await db.prepare(
     `INSERT INTO google_play_access_state (app_id, access, failing_since, last_failure_at, last_error_code)
      VALUES (?1, ?2, ?3, ?3, ?4)
@@ -66,6 +73,7 @@ export async function recordPlayAccessFailure(db: D1Database, appId: string, acc
         error_code: code,
         failing_since: new Date(state.failing_since).toISOString(),
         hint: hint(access, code),
+        settings_url: playSettingsUrl(dashboardOrigin, appId),
         occurred_at: new Date(now).toISOString(),
       }, now,
       "SELECT 1 FROM google_play_access_state WHERE app_id = ?6 AND access = ?7 AND alerted_at = ?8 AND failing_since = ?9",

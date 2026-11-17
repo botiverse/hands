@@ -19,6 +19,7 @@
  * failed and over_limit ones are retried with back-off, or at once when a new
  * generation appears.
  */
+import { settingsOrigin } from "./play_access_origin";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 import { createHash } from "node:crypto";
 import { getGooglePlayBinding, getGooglePlayReportsCredential, hasGooglePlayConfiguration } from "./google_play_bindings";
@@ -608,7 +609,7 @@ export async function pollGooglePlayStats(env: Env, now = Date.now()) {
       code = err instanceof PlayStatsError ? err.code : "unexpected";
       logFailure(row.app_id, code);
       if (err instanceof PlayStatsError) {
-        await recordPlayAccessFailure(env.DB, row.app_id, "statistics", err.code, now).catch(() => undefined);
+        await recordPlayAccessFailure(env.DB, row.app_id, "statistics", err.code, now, settingsOrigin(env)).catch(() => undefined);
       }
     }
     await env.DB.prepare(`UPDATE google_play_stats_ingest_schedule SET next_run_at = ?1, last_run_at = ?2, last_error_code = ?3
