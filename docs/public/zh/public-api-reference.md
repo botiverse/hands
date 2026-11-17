@@ -282,7 +282,7 @@ X-Hands-Client-Key: qk_...
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `message` | 是 | 反馈文本，最多 10,000 个字符。 |
-| `submission_id` | 否 | 客户端生成的 UUID，用于幂等重试；同一草稿保持不变。完全相同的重放返回原工单，相同 ID 使用不同内容返回 `409`（见 [`submission_id` 冲突](#submission-id-conflicts)）。 |
+| `submission_id` | 否 | 客户端生成的 UUID，用于幂等重试；同一草稿保持不变。完全相同的重放返回原工单，相同 ID 使用不同内容返回 `409`（见 [`submission_id` 冲突](#submission-id-conflicts)），下面的崩溃合并除外。 |
 | `kind` | 否 | `feedback`（默认）、`bug` 或 `crash`。 |
 | `contact` | 否 | 回复联系方式，例如电子邮件或 Raft 名称。 |
 | `metadata` | 否 | JSON 字符串：`version_name`、`version_code`、`channel`、`device_id`、`device_model`、`os_version`、`arch`、`locale` 及自定义键。崩溃工单附加 `crash_exception_class` / `crash_top_frame`（分组签名）。QNC2 Android 原生报告增加 `crash_native_frames`（`{ index, offset, soname, build_id, source }`）、`crash_registers`、崩溃线程字段及 `crash_native_images`；服务端符号化要求每帧 BuildId 与构建的 `native-symbols` 文件完全匹配。API 30 及以上报告还可能包含 `crash_exit_*` 元数据和保留的系统跟踪附件。 |
@@ -303,6 +303,16 @@ X-Hands-Client-Key: qk_...
   "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
 }
 ```
+
+#### 同一 `submission_id` 下的崩溃合并 {#crash-merge}
+
+同一 `submission_id` 下两份不同的 `crash`/`error` 报告，如果恰好一份是 Android SDK 的原生崩溃记录（`crash_reason: "native_signal"` 且带 `crash_native_frames`），即同一进程的 App 退出票和 SDK 原生票；或两份是同一条原生记录（`crash_process_event_id` 相同）的重发，就合并进第一张票，而不返回 `409`。分类字段（`crash_type`、`crash_reason`、异常类、栈顶）和分组签名以原生一方为准；其他字段两边都保留，落选一方不一致的值和因上限丢弃的附件记在票元数据的 `crash_merge` 里。被当作后台系统结束自动关闭的票，合并后不再是这一类时会重新打开并发崩溃通知。响应为 `200`：
+
+```json
+{ "merged": true, "reopened": true, "attachments_added": 1, "attachments_dropped": 0, "idempotent_replay": false }
+```
+
+只有拥有该票的受信 reporter 会拿到 `id`。重发同一次合并返回 `idempotent_replay: true`，不做任何改动。`503` 且 `code` 为 `submission_merge_conflict` 表示同一时刻另一次合并改了这张票，用同样内容重试即可。
 
 #### `submission_id` 冲突 {#submission-id-conflicts}
 

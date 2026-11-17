@@ -13352,6 +13352,194 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(tickets?.count).toBe(1);
   });
 
+  describe("feedback: an app exit report and the SDK native record under one submission_id", () => {
+    const appExit = {
+      message: "Process exited: signaled",
+      metadata: {
+        crash_type: "system_kill",
+        crash_reason: "system_kill",
+        crash_exception_class: "SystemKill",
+        crash_top_frame: "signaled",
+        crash_exit_reason: "signaled",
+        crash_exit_reason_code: 2,
+        crash_exit_importance: 125,
+        crash_foreground: false,
+        crash_recent_foreground: false,
+        crash_process_id: 4123,
+        crash_process_event_id: "3f2b9c1e-8d4a-4b6e-9c1f-2a7d5e8b0c34",
+        battery_level: 80,
+      },
+      file: ["app-exit.txt", [1, 2]] as [string, number[]],
+    };
+    const nativeRecord = {
+      message: "Native crash: SIGSEGV\nat libraft.so+0x1234",
+      metadata: {
+        crash_exception_class: "SIGSEGV",
+        crash_top_frame: "libraft.so+0x1234",
+        crash_reason: "native_signal",
+        crash_native_format: "QNC2",
+        crash_native_frames: JSON.stringify([{ index: 0, soname: "libraft.so", offset: 4660, build_id: "ab" }]),
+        crash_process_id: 4123,
+        crash_process_event_id: "3f2b9c1e-8d4a-4b6e-9c1f-2a7d5e8b0c34",
+        battery_level: 79,
+      },
+      file: ["1721810000123-4123.qnc", [9, 9, 9]] as [string, number[]],
+    };
+    const submissionId = "3f2b9c1e-8d4a-4b6e-9c1f-2a7d5e8b0c34";
+
+    const setup = async () => {
+      const env = makeEnv();
+      const putCalls: string[] = [];
+      env.APK_BUCKET = {
+        put: async (key: string) => { putCalls.push(key); },
+        delete: async () => {},
+        get: async () => null,
+        head: async () => null,
+      };
+      const now = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+         VALUES ('wh-merge', 'default', 'app-scope', 'https://hooks.example.test/merge', 'sec', ?1, 1, ?2, ?2)`,
+      ).bind(JSON.stringify(["feedback:new", "crash:new_group"]), now).run();
+      const { handlePublicFeedbackSubmit } = await import("../src/routes/feedback");
+      const submit = async (report: { message: string; metadata: Record<string, unknown>; file?: [string, number[]] }, kind = "crash") => {
+        const form = new FormData();
+        form.set("message", report.message);
+        form.set("kind", kind);
+        form.set("submission_id", submissionId);
+        form.set("metadata", JSON.stringify(report.metadata));
+        if (report.file) {
+          form.append("attachments", new File([new Uint8Array(report.file[1])], report.file[0], { type: "application/octet-stream" }));
+        }
+        const pending: Promise<unknown>[] = [];
+        const response = await handlePublicFeedbackSubmit({
+          env,
+          executionCtx: { waitUntil: (p: Promise<unknown>) => { pending.push(p.catch(() => {})); } },
+          req: {
+            param: (name: string) => (name === "slug" ? "scope-app" : ""),
+            header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+            query: () => undefined,
+            formData: async () => form,
+            raw: { cf: { clientIp: "203.0.113.72" } },
+          },
+          json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+        } as any);
+        await Promise.all(pending);
+        return response;
+      };
+      const ticket = async () => {
+        const rows = await env.DB.prepare(
+          "SELECT id, message, status, closure_reason, signature, metadata_json FROM feedback_tickets WHERE app_id = 'app-scope'",
+        ).all();
+        expect(rows.results).toHaveLength(1);
+        const row = rows.results[0] as any;
+        const files = await env.DB.prepare(
+          "SELECT filename FROM feedback_attachments WHERE ticket_id = ?1 ORDER BY filename",
+        ).bind(row.id).all();
+        return { ...row, metadata: JSON.parse(row.metadata_json), files: (files.results as any[]).map((f) => f.filename) };
+      };
+      const events = async () => {
+        const { results } = await env.DB.prepare(
+          "SELECT payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-merge' ORDER BY created_at, rowid",
+        ).all();
+        return (results as any[]).map((r) => JSON.parse(r.payload_json)).map((b: any) => `${b.event}:${b.payload.signature ?? ""}`);
+      };
+      return { submit, ticket, events, putCalls };
+    };
+
+    const expectNativeWins = (t: any) => {
+      // Native evidence decides classification and grouping in either order.
+      expect(t.signature).toBe("SIGSEGV@libraft.so+0x1234");
+      expect(t.status).toBe("open");
+      expect(t.closure_reason).toBeNull();
+      expect(t.metadata.crash_type).toBeUndefined();
+      expect(t.metadata.crash_reason).toBe("native_signal");
+      expect(t.metadata.crash_exception_class).toBe("SIGSEGV");
+      // The exit report's own evidence is kept alongside.
+      expect(t.metadata.crash_exit_reason).toBe("signaled");
+      expect(t.metadata.crash_exit_importance).toBe(125);
+      expect(t.metadata.crash_native_format).toBe("QNC2");
+      expect(t.files).toEqual(["1721810000123-4123.qnc", "app-exit.txt"]);
+    };
+
+    it("app first: auto-closed as a background kill, reopened and announced when the native record merges", async () => {
+      const { submit, ticket, events, putCalls } = await setup();
+      const first = await submit(appExit);
+      expect(first.status).toBe(201);
+      expect(await responseJson(first)).toMatchObject({ signature: "SystemKill@background", status: "closed" });
+      expect(await events()).toEqual([]);
+
+      const merged = await submit(nativeRecord);
+      expect(merged.status).toBe(200);
+      // Anonymous callers learn that it merged, never which ticket it joined.
+      expect(await responseJson(merged)).toEqual({
+        merged: true,
+        reopened: true,
+        attachments_added: 1,
+        attachments_dropped: 0,
+        idempotent_replay: false,
+      });
+      const t = await ticket();
+      expectNativeWins(t);
+      expect(t.message).toBe("Process exited: signaled");
+      // Losing values are kept, not dropped.
+      expect(t.metadata.crash_merge).toHaveLength(1);
+      expect(t.metadata.crash_merge[0]).toMatchObject({
+        precedence: "incoming_native",
+        conflicts: {
+          crash_type: "system_kill",
+          crash_reason: "system_kill",
+          crash_exception_class: "SystemKill",
+          crash_top_frame: "signaled",
+          battery_level: 80,
+        },
+      });
+      expect(await events()).toEqual(["crash:new_group:SIGSEGV@libraft.so+0x1234", "feedback:new:"]);
+
+      // Re-sending either side changes nothing more.
+      expect(await responseJson(await submit(nativeRecord))).toMatchObject({ merged: true, idempotent_replay: true });
+      // (the identical first report is a plain replay of its own submission)
+      expect(await responseJson(await submit(appExit))).toMatchObject({ idempotent_replay: true });
+      expect((await ticket()).metadata.crash_merge).toHaveLength(1);
+      expect(putCalls.filter((key) => key.includes("/merge-"))).toHaveLength(1);
+      expect(await events()).toHaveLength(2);
+    });
+
+    it("native first: the later exit report only adds its evidence", async () => {
+      const { submit, ticket, events } = await setup();
+      const first = await submit(nativeRecord);
+      expect(first.status).toBe(201);
+      expect(await responseJson(first)).toMatchObject({ signature: "SIGSEGV@libraft.so+0x1234", status: "open" });
+      const before = await events();
+      expect(before).toContain("crash:new_group:SIGSEGV@libraft.so+0x1234");
+
+      const merged = await submit(appExit);
+      expect(merged.status).toBe(200);
+      expect(await responseJson(merged)).toMatchObject({ merged: true, reopened: false, attachments_added: 1 });
+      const t = await ticket();
+      expectNativeWins(t);
+      expect(t.message).toBe("Native crash: SIGSEGV\nat libraft.so+0x1234");
+      expect(t.metadata.crash_merge[0]).toMatchObject({
+        precedence: "existing_native",
+        conflicts: { crash_type: "system_kill", crash_exception_class: "SystemKill", battery_level: 80 },
+      });
+      // Same ticket, same group: no second announcement.
+      expect(await events()).toEqual(before);
+    });
+
+    it("pairs that are not one event seen from two sides are still rejected", async () => {
+      const { submit } = await setup();
+      expect((await submit(appExit)).status).toBe(201);
+      // Two different non-native reports.
+      expect((await submit({ ...appExit, message: "another exit", metadata: { ...appExit.metadata, crash_top_frame: "x" } })).status).toBe(409);
+      // A non-crash kind.
+      expect((await submit({ message: "hello", metadata: {} }, "feedback")).status).toBe(409);
+      // A native record of a different process.
+      expect((await submit(nativeRecord)).status).toBe(200);
+      expect((await submit({ ...nativeRecord, metadata: { ...nativeRecord.metadata, crash_process_event_id: "00000000-0000-4000-8000-000000000000", crash_top_frame: "libother.so+0x1" } })).status).toBe(409);
+    });
+  });
+
   it("feedback: submission_id replays the original ticket and rejects payload conflicts", async () => {
     const env = makeEnv();
     const putCalls: string[] = [];
@@ -13491,7 +13679,8 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(noId.status).toBe(201);
     const noIdAgain = await submit(kill({ crash_exit_event_id: undefined }));
     expect(noIdAgain.status).toBe(201);
-    // An explicit submission_id keeps its own strict replay semantics.
+    // An explicit submission_id keeps its own strict replay semantics: two
+    // different exit reports are not one event seen from two sides.
     const explicitId = "33333333-3333-4333-8333-333333333333";
     expect((await submit(kill(), { submissionId: explicitId })).status).toBe(201);
     expect((await submit(kill({ crash_trim: "complete" }), { submissionId: explicitId })).status).toBe(409);
@@ -13896,7 +14085,7 @@ describe("quiver public API v2 — scope resolution", () => {
       env.DB = {
         ...dbBeforeSubmissionRace,
         prepare(sql: string) {
-          if (!preflightMissed && sql.includes("SELECT id, submission_fingerprint, reporter_id")) {
+          if (!preflightMissed && sql.includes("SELECT id, kind, submission_fingerprint, reporter_id")) {
             preflightMissed = true;
             return { bind: () => ({ first: async () => null }) } as any;
           }

@@ -185,6 +185,43 @@ match requires the recorded process id, native-crash reason, and a narrow
 timestamp window; retained evidence is assigned one-to-one and persisted for
 deterministic retry rather than guessed from the nearest package exit.
 
+### One ticket per crashed process
+
+Since `0.13.2`, every native crash record carries the crashed process's
+`HandsNativeCrash.processEventId` (a random UUID per process) and
+`processStartAt` (epoch ms), and is uploaded with that id as its
+`submission_id`. An app that also files its own report for the same process
+exit (for example from `ApplicationExitInfo`) should store both values with its
+launch record and send its report under the same id:
+
+```kotlin
+// at launch
+launchLog.save(pid = Process.myPid(), eventId = HandsNativeCrash.processEventId,
+               startedAt = HandsNativeCrash.processStartAt)
+
+// later, reporting that process's exit
+HandsFeedback(context, baseUrl, appSlug, clientKey = key).submitReport(
+    message = "Process exited: ${exit.reason}",
+    kind = "crash",
+    extras = exitFields,
+    submissionId = launch.eventId,
+)
+```
+
+Whichever report arrives second is merged into the first ticket: the native
+record decides the crash type and grouping signature, the exit report's fields
+are kept alongside, and values that disagree are preserved under the ticket's
+`crash_merge` metadata. A ticket auto-closed as a background system kill
+reopens when the native record shows it was a real crash.
+
+`HandsNativeCrash.uploadPending(...)` returns one `NativeCrashUpload` per
+record: `UPLOADED` (with `ticketId`), `MERGED` (`ticketId` is null for
+anonymous clients), `FAILED_WILL_RETRY` (the record is kept), or `DISCARDED`
+(unreadable or over the retention limit). Each carries `pid`,
+`processStartAt`, `processEventId`, `crashAt`, and the matched
+`exitTimestamp`; records written before 0.13.2 have no process id or start
+time.
+
 ### ANRs
 
 Since `0.13.0`, on Android 11+ (API 30) the SDK also reports ANRs

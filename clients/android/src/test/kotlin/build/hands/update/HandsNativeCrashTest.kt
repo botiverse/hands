@@ -215,4 +215,48 @@ class HandsNativeCrashTest {
         )
         assertTrue(assignments.isEmpty())
     }
+
+    private val minimalFrames = """
+        registers
+        pc 0x70001234
+        frames
+        0x70001234 context_pc
+        modules
+        0x70000000-0x70010000 1de2e1c0bc046f0654f9fdc8173912735aeea751 /data/app/lib/arm64/libraft.so
+        maps
+        70000000-70010000 r-xp 00000000 00:00 0 /data/app/lib/arm64/libraft.so
+    """.trimIndent()
+
+    @Test
+    fun parsesProcessIdentityAndRejectsMalformedEventIds() {
+        val withIdentity = HandsNativeCrash.parseRecord(
+            "QNC2\nsignal 11\ncrash_at 1721810000123\npid 4123\nprocess_start_at 1721809990000\n" +
+                "process_event_id 3F2B9C1E-8D4A-4B6E-9C1F-2A7D5E8B0C34\n" + minimalFrames,
+        )!!
+        assertEquals(1721809990000L, withIdentity.processStartAt)
+        assertEquals("3f2b9c1e-8d4a-4b6e-9c1f-2a7d5e8b0c34", withIdentity.processEventId)
+
+        val malformed = HandsNativeCrash.parseRecord(
+            "QNC2\nsignal 11\ncrash_at 1\npid 1\nprocess_start_at 0\nprocess_event_id not-a-uuid\n" + minimalFrames,
+        )!!
+        assertNull(malformed.processStartAt)
+        assertNull(malformed.processEventId)
+
+        val legacy = HandsNativeCrash.parseRecord("QNC2\nsignal 11\ncrash_at 1\npid 1\n" + minimalFrames)!!
+        assertNull(legacy.processEventId)
+    }
+
+    @Test
+    fun mergedResponsesAreSuccessWithOrWithoutAnId() {
+        assertEquals(HandsFeedback.Submission("t1", false), HandsFeedback.parseSubmission(201, """{"id":"t1","status":"open"}"""))
+        assertEquals(HandsFeedback.Submission(null, true), HandsFeedback.parseSubmission(200, """{"merged":true}"""))
+        assertEquals(HandsFeedback.Submission("t1", true), HandsFeedback.parseSubmission(200, """{"id":"t1","merged":true}"""))
+        assertTrue(runCatching { HandsFeedback.parseSubmission(200, """{"status":"open"}""") }.exceptionOrNull() is HandsFeedbackException)
+    }
+
+    @Test
+    fun submissionIdPatternMatchesTheServer() {
+        assertTrue(HandsFeedback.SUBMISSION_ID_PATTERN.matches(java.util.UUID.randomUUID().toString()))
+        assertTrue(!HandsFeedback.SUBMISSION_ID_PATTERN.matches("3f2b9c1e8d4a4b6e9c1f2a7d5e8b0c34"))
+    }
 }

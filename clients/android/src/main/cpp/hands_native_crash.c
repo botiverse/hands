@@ -49,6 +49,9 @@ static struct sigaction g_previous[sizeof(g_fatal_signals) / sizeof(int)];
 static char g_altstack[SIGSTKSZ * 2];
 static struct hands_module g_modules[HANDS_MAX_MODULES];
 static size_t g_module_count = 0;
+/* Per-process identity set once at install; read-only in the handler. */
+static uint64_t g_process_start_at = 0;
+static char g_process_event_id[40];
 
 static size_t hands_strlen(const char *text) {
   size_t n = 0;
@@ -409,6 +412,12 @@ static void hands_signal_handler(int signo, siginfo_t *info, void *ucontext) {
       hands_write_key_dec(fd, "crash_at", ts);
       hands_write_key_dec(fd, "pid", (uint64_t)getpid());
       hands_write_key_dec(fd, "tid", (uint64_t)tid);
+      if (g_process_start_at != 0) hands_write_key_dec(fd, "process_start_at", g_process_start_at);
+      if (g_process_event_id[0] != '\0') {
+        hands_write_text(fd, "process_event_id ");
+        hands_write_text(fd, g_process_event_id);
+        hands_write_text(fd, "\n");
+      }
       hands_write_thread_name(fd, tid);
       hands_write_context(fd, ucontext);
       hands_write_modules(fd);
@@ -431,8 +440,19 @@ static void hands_signal_handler(int signo, siginfo_t *info, void *ucontext) {
 }
 
 JNIEXPORT void JNICALL
-Java_build_hands_update_HandsNativeCrash_nativeInstall(JNIEnv *env, jclass clazz, jstring crash_dir) {
+Java_build_hands_update_HandsNativeCrash_nativeInstall(JNIEnv *env, jclass clazz, jstring crash_dir,
+                                                       jlong process_start_at, jstring process_event_id) {
   (void)clazz;
+  g_process_start_at = process_start_at > 0 ? (uint64_t)process_start_at : 0;
+  g_process_event_id[0] = '\0';
+  if (process_event_id != NULL) {
+    const char *event_id = (*env)->GetStringUTFChars(env, process_event_id, NULL);
+    if (event_id != NULL) {
+      strncpy(g_process_event_id, event_id, sizeof(g_process_event_id) - 1);
+      g_process_event_id[sizeof(g_process_event_id) - 1] = '\0';
+      (*env)->ReleaseStringUTFChars(env, process_event_id, event_id);
+    }
+  }
   const char *dir = (*env)->GetStringUTFChars(env, crash_dir, NULL);
   if (dir == NULL) return;
   strncpy(g_crash_dir, dir, sizeof(g_crash_dir) - 1);
