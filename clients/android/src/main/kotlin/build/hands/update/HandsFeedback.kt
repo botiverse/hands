@@ -56,7 +56,13 @@ class HandsFeedback(
      * @param attachments up to 9 files; ≤ 10 MB inline, up to 200 MB via
      *                    presigned direct-to-R2 upload (server enforced)
      * @param extras   extra metadata merged into the ticket's metadata_json
-     * @return ticket id
+     * @param submissionId optional UUID idempotency key. Hands keeps one ticket per
+     *                    key: resending the same report returns the first ticket; a
+     *                    different crash/error report under the same key is merged into
+     *                    that ticket; any other reuse fails with HTTP 409.
+     * @return ticket id, or "" when the report was merged into an existing ticket whose
+     *         id Hands does not disclose to anonymous clients. Use [submitReport] to
+     *         tell the two apart.
      */
     suspend fun submit(
         message: String,
@@ -64,8 +70,30 @@ class HandsFeedback(
         contact: String? = null,
         attachments: List<File> = emptyList(),
         extras: Map<String, Any?> = emptyMap(),
-    ): String = withContext(Dispatchers.IO) {
+        submissionId: String? = null,
+    ): String = submitReport(message, kind, contact, attachments, extras, submissionId).ticketId.orEmpty()
+
+    /** Outcome of [submitReport]. */
+    data class Submission(
+        /** The ticket id; null only when [merged] and the id was not disclosed. */
+        val ticketId: String?,
+        /** True when Hands merged this report into the ticket already holding its submissionId. */
+        val merged: Boolean,
+    )
+
+    /** Same as [submit], but reports whether the submission was merged. */
+    suspend fun submitReport(
+        message: String,
+        kind: String = "feedback",
+        contact: String? = null,
+        attachments: List<File> = emptyList(),
+        extras: Map<String, Any?> = emptyMap(),
+        submissionId: String? = null,
+    ): Submission = withContext(Dispatchers.IO) {
         require(message.isNotBlank()) { "message must not be blank" }
+        require(submissionId == null || SUBMISSION_ID_PATTERN.matches(submissionId)) {
+            "submissionId must be a UUID"
+        }
 
         val selected = attachments.filter { it.isFile }.take(MAX_ATTACHMENTS)
         for (file in selected) {
@@ -121,6 +149,9 @@ class HandsFeedback(
         if (!contact.isNullOrBlank()) {
             bodyBuilder.addFormDataPart("contact", contact)
         }
+        if (submissionId != null) {
+            bodyBuilder.addFormDataPart("submission_id", submissionId.lowercase(Locale.ROOT))
+        }
         for (file in inline) {
             bodyBuilder.addFormDataPart(
                 "attachments",
@@ -153,10 +184,8 @@ class HandsFeedback(
             if (response.code !in 200..299) {
                 throw HandsFeedbackException(response.code, body.take(300))
             }
-            // {"id":"…","status":"open","attachments":N}
-            JSONObject(body).optString("id").ifBlank {
-                throw HandsFeedbackException(response.code, "missing ticket id in response")
-            }
+            // {"id":"…","status":"open","attachments":N} or {"merged":true[,"id":"…"]}
+            parseSubmission(response.code, body)
         }
     }
 
@@ -248,8 +277,21 @@ class HandsFeedback(
     }
 
     companion object {
+        internal fun parseSubmission(code: Int, body: String): Submission {
+            val json = runCatching { JSONObject(body) }.getOrNull()
+                ?: throw HandsFeedbackException(code, "response is not JSON")
+            val id = json.optString("id").takeIf(String::isNotBlank)
+            val merged = json.optBoolean("merged", false)
+            if (id == null && !merged) throw HandsFeedbackException(code, "missing ticket id in response")
+            return Submission(ticketId = id, merged = merged)
+        }
+
         /** Hands Android SDK version reported in feedback/crash metadata. */
         const val SDK_VERSION = BuildConfig.HANDS_SDK_VERSION
+
+        /** Same shape the server accepts for submission_id (UUID versions 1-8). */
+        internal val SUBMISSION_ID_PATTERN =
+            Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
 
         /** Server-enforced: at most 9 attachments per ticket. */
         const val MAX_ATTACHMENTS = 9

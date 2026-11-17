@@ -644,11 +644,18 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       }))
     : null;
 
+  const mergeInput = {
+    app, kind, clientSubmissionId, metadata, attachmentRows, reporterId,
+  };
   if (existingSubmission && submissionFingerprint) {
     if (
       existingSubmission.submission_fingerprint !== submissionFingerprint
       && !(exitEventSubmissionId && existingSubmission.reporter_id === (reporterId || null))
     ) {
+      if (canMergeCrashSubmission(existingSubmission, mergeInput)) {
+        const mergedResponse = await mergeCrashSubmission(c, existingSubmission, mergeInput);
+        if (mergedResponse) return mergedResponse;
+      }
       return submissionPayloadMismatch(c, existingSubmission, reporterId);
     }
     return feedbackSubmitResponse(c, app, existingSubmission.id, 200, true);
@@ -893,6 +900,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
           }, 409);
         }
         if (existing.submission_fingerprint !== submissionFingerprint && !exitEventSubmissionId) {
+          if (canMergeCrashSubmission(existing, mergeInput)) {
+            const mergedResponse = await mergeCrashSubmission(c, existing, mergeInput);
+            if (mergedResponse) return mergedResponse;
+          }
           return submissionPayloadMismatch(c, existing, reporterId);
         }
         return feedbackSubmitResponse(c, app, existing.id, 200, true);
@@ -927,77 +938,9 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // spikes. Background system kills skip real-time alerts and are reported via
   // a once-a-day summary instead.
   if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id && !backgroundSystemKill) {
-    const orgId = app.org_id;
-    const eventPrefix = kind === "crash" ? "crash" : "error";
-    const alert = async () => {
-      const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
-      const base = {
-        app_slug: app.slug,
-        signature,
-        crash_type: crashTypeOf(metadata),
-        ...(nonFatal ? { fatal: false } : {}),
-        ticket_id: ticketId,
-        message: message.slice(0, 300),
-        version_name: versionName,
-        version_code: versionCode,
-      };
-      // A fatal ticket announces its group the first time the signature is seen
-      // fatally, even if non-fatal tickets came first; a non-fatal ticket only
-      // when the signature has never been seen at all.
-      const prior = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets t
-         WHERE app_id = ?1 AND signature = ?2 AND id != ?3
-           ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
-           AND ${feedbackBuildScopeClause("standard")}`,
-      )
-        .bind(app.id, signature, ticketId)
-        .first<{ n: number }>();
-      if ((prior?.n ?? 0) === 0) {
-        await emitWebhookEvent(c.env, {
-          orgId,
-          appId: app.id,
-          event: `${eventPrefix}:new_group`,
-          // A signature is first seen once, so (app, signature) is the
-          // occurrence. This also makes concurrent submissions that both read
-          // prior.n === 0 collapse instead of double-notifying.
-          eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${app.id}:${signature}`,
-          body: base,
-        });
-        return;
-      }
-      // Non-fatal crashes are grouped and announced once, but never counted as a spike.
-      if (nonFatal) return;
-      const recent = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS n FROM feedback_tickets t
-         WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3
-           AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
-           AND ${feedbackBuildScopeClause("standard")}`,
-      )
-        .bind(app.id, signature, now - 60 * 60 * 1000)
-        .first<{ n: number }>();
-      const hourCount = recent?.n ?? 0;
-      if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
-        await emitWebhookEvent(c.env, {
-          orgId,
-          appId: app.id,
-          event: `${eventPrefix}:spike`,
-          // The threshold alone is not enough: this fires only when the hourly
-          // count is exactly 10/50/100, so a later hour returning to 10 is a
-          // genuine second outbreak. Without the hour bucket that one collides
-          // with the earlier key and is silently dropped.
-          eventId: `${eventPrefix}:spike:${app.id}:${signature}:${Math.floor(now / 3_600_000)}:${hourCount}`,
-          body: { ...base, count_last_hour: hourCount },
-        });
-      }
-    };
-    const guarded = alert().catch(() => {
-      // alerting must never fail the submission
+    await scheduleCrashAlerts(c, app, app.org_id, {
+      kind, signature, metadata, ticketId, message, versionName, versionCode, now,
     });
-    try {
-      c.executionCtx.waitUntil(guarded);
-    } catch {
-      await guarded;
-    }
   }
 
   if (app.org_id && !reporterIntegrationId && !externalBuild && !backgroundSystemKill) {
@@ -1104,6 +1047,407 @@ function feedbackNewSubmitResponse(
 }
 
 /**
+ * Crash alerting: webhooks when a signature is first seen or when it spikes.
+ * Never fails the caller; runs in the background when an execution context
+ * exists.
+ */
+async function scheduleCrashAlerts(
+  c: Context<{ Bindings: Env }>,
+  app: FeedbackApp,
+  orgId: string,
+  input: {
+    kind: string;
+    signature: string;
+    metadata: Record<string, unknown>;
+    ticketId: string;
+    message: string;
+    versionName: string | null;
+    versionCode: number | null;
+    now: number;
+  },
+) {
+  const { kind, signature, metadata, ticketId, message, versionName, versionCode, now } = input;
+  const eventPrefix = kind === "crash" ? "crash" : "error";
+  const alert = async () => {
+    const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
+    const base = {
+      app_slug: app.slug,
+      signature,
+      crash_type: crashTypeOf(metadata),
+      ...(nonFatal ? { fatal: false } : {}),
+      ticket_id: ticketId,
+      message: message.slice(0, 300),
+      version_name: versionName,
+      version_code: versionCode,
+    };
+    // A fatal ticket announces its group the first time the signature is seen
+    // fatally, even if non-fatal tickets came first; a non-fatal ticket only
+    // when the signature has never been seen at all.
+    const prior = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM feedback_tickets t
+       WHERE app_id = ?1 AND signature = ?2 AND id != ?3
+         ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
+         AND ${feedbackBuildScopeClause("standard")}`,
+    )
+      .bind(app.id, signature, ticketId)
+      .first<{ n: number }>();
+    if ((prior?.n ?? 0) === 0) {
+      await emitWebhookEvent(c.env, {
+        orgId,
+        appId: app.id,
+        event: `${eventPrefix}:new_group`,
+        // A signature is first seen once, so (app, signature) is the
+        // occurrence. This also makes concurrent submissions that both read
+        // prior.n === 0 collapse instead of double-notifying.
+        eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${app.id}:${signature}`,
+        body: base,
+      });
+      return;
+    }
+    // Non-fatal crashes are grouped and announced once, but never counted as a spike.
+    if (nonFatal) return;
+    const recent = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM feedback_tickets t
+       WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3
+         AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
+         AND ${feedbackBuildScopeClause("standard")}`,
+    )
+      .bind(app.id, signature, now - 60 * 60 * 1000)
+      .first<{ n: number }>();
+    const hourCount = recent?.n ?? 0;
+    if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
+      await emitWebhookEvent(c.env, {
+        orgId,
+        appId: app.id,
+        event: `${eventPrefix}:spike`,
+        // The threshold alone is not enough: this fires only when the hourly
+        // count is exactly 10/50/100, so a later hour returning to 10 is a
+        // genuine second outbreak. Without the hour bucket that one collides
+        // with the earlier key and is silently dropped.
+        eventId: `${eventPrefix}:spike:${app.id}:${signature}:${Math.floor(now / 3_600_000)}:${hourCount}`,
+        body: { ...base, count_last_hour: hourCount },
+      });
+    }
+  };
+  const guarded = alert().catch(() => {
+    // alerting must never fail the submission
+  });
+  try {
+    c.executionCtx.waitUntil(guarded);
+  } catch {
+    await guarded;
+  }
+}
+
+type CrashMergeInput = {
+  app: FeedbackApp;
+  kind: string;
+  clientSubmissionId: string | null;
+  metadata: Record<string, unknown>;
+  attachmentRows: Array<{
+    r2Key: string;
+    filename: string;
+    contentType: string | null;
+    sizeBytes: number;
+    inlineFile?: File;
+  }>;
+  reporterId: string;
+};
+
+const MERGEABLE_KINDS = new Set(["crash", "error"]);
+
+/** Fields that classify and group a crash; native evidence decides them. */
+const CRASH_CLASSIFICATION_KEYS = [
+  "crash_type",
+  "crash_reason",
+  "crash_exception_class",
+  "exception_class",
+  "crash_top_frame",
+  "top_frame",
+  "crash_fatal",
+] as const;
+const MAX_MERGE_RECORDS = 5;
+const MAX_MERGE_CONFLICT_BYTES = 8 * 1024;
+/** Room past MAX_ATTACHMENTS kept for a native record and its tombstone. */
+const NATIVE_MERGE_ATTACHMENT_RESERVE = 2;
+
+function isNativeCrashMetadata(metadata: Record<string, unknown>): boolean {
+  return metadata["crash_reason"] === "native_signal" && metadata["crash_native_frames"] !== undefined;
+}
+
+/**
+ * Two different crash reports under one explicit client submission_id are one
+ * event seen from two sides only when exactly one of them is the SDK's native
+ * crash record (the other being the app's own exit report), or when both are
+ * the same native record resent. Those merge; derived system-kill ids, every
+ * other kind and every other pairing keep the strict replay/409 contract.
+ */
+function canMergeCrashSubmission(existing: FeedbackSubmissionRow, input: CrashMergeInput): boolean {
+  return Boolean(input.clientSubmissionId)
+    && MERGEABLE_KINDS.has(existing.kind)
+    && MERGEABLE_KINDS.has(input.kind)
+    && existing.reporter_id === (input.reporterId || null);
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return stableJson(a) === stableJson(b);
+}
+
+/**
+ * Merge a later crash submission into the ticket that owns its submission_id.
+ * Returns null when the pair is not one event seen from two sides (see
+ * canMergeCrashSubmission); the caller then answers 409.
+ *
+ * - Native evidence wins classification: whichever side is the native record
+ *   supplies crash_type/reason/exception/top frame, and the ticket's signature
+ *   is recomputed from it. Every other field from both sides is kept.
+ * - A conflicting value never disappears: the losing side's values are kept in
+ *   the ticket's `crash_merge` metadata, with any attachment dropped at the cap.
+ * - A ticket that was auto-closed as a background system kill and is no longer
+ *   one is reopened, and its crash alerts fire as for a new crash.
+ * - Attachments not already on the ticket (same filename and size) are added;
+ *   the native side may exceed the ticket limit by its record and tombstone.
+ * - Re-sending the same merge changes nothing.
+ *
+ * Only a trusted reporter that owns the ticket is told its id; an anonymous
+ * caller learns that the merge happened, never which ticket it joined.
+ */
+async function mergeCrashSubmission(
+  c: Context<{ Bindings: Env }>,
+  existing: FeedbackSubmissionRow,
+  input: CrashMergeInput,
+): Promise<Response | null> {
+  const { app } = input;
+  const now = Date.now();
+  const current = await c.env.DB.prepare(
+    `SELECT metadata_json, status, closure_reason, signature, message, version_name, version_code
+     FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
+  ).bind(app.id, existing.id).first<{
+    metadata_json: string | null;
+    status: string;
+    closure_reason: string | null;
+    signature: string | null;
+    message: string;
+    version_name: string | null;
+    version_code: number | null;
+  }>();
+  if (!current) return null;
+  let currentMetadata: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(current.metadata_json ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) currentMetadata = parsed;
+  } catch {
+    // An unreadable stored object is treated as empty.
+  }
+  // crash_merge is server-owned; a client cannot plant or replace it.
+  const incoming = Object.fromEntries(
+    Object.entries(input.metadata)
+      .filter(([key, value]) => key !== "crash_merge" && value !== null && value !== undefined),
+  );
+  const existingNative = isNativeCrashMetadata(currentMetadata);
+  const incomingNative = isNativeCrashMetadata(incoming);
+  const sameNativeRecord = existingNative && incomingNative
+    && typeof incoming["crash_process_event_id"] === "string"
+    && incoming["crash_process_event_id"] === currentMetadata["crash_process_event_id"];
+  if (existingNative === incomingNative && !sameNativeRecord) return null;
+
+  // primary wins conflicts; secondary fills what primary lacks.
+  const nativeIncoming = incomingNative && !existingNative;
+  const { crash_merge: priorMerges, ...currentFields } = currentMetadata;
+  const primary = nativeIncoming ? incoming : currentFields;
+  const secondary = nativeIncoming ? currentFields : incoming;
+  const merged: Record<string, unknown> = { ...secondary, ...primary };
+  if (existingNative !== incomingNative) {
+    for (const key of CRASH_CLASSIFICATION_KEYS) {
+      if (!(key in primary)) delete merged[key];
+    }
+  }
+  const conflicts: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(secondary)) {
+    if (key === "crash_merge") continue;
+    if (key in merged && sameJson(merged[key], value)) continue;
+    conflicts[key] = value;
+  }
+  let conflictJson = JSON.stringify(conflicts);
+  const conflictsTruncated = conflictJson.length > MAX_MERGE_CONFLICT_BYTES;
+  if (conflictsTruncated) conflictJson = "{}";
+
+  // Attachments.
+  const limit = MAX_ATTACHMENTS + (incomingNative && !existingNative ? NATIVE_MERGE_ATTACHMENT_RESERVE : 0);
+  const added: string[] = [];
+  const dropped: string[] = [];
+  for (const [index, attachment] of input.attachmentRows.entries()) {
+    const duplicate = await c.env.DB.prepare(
+      `SELECT 1 AS hit FROM feedback_attachments WHERE ticket_id = ?1 AND filename = ?2 AND size_bytes = ?3`,
+    ).bind(existing.id, attachment.filename, attachment.sizeBytes).first<{ hit: number }>();
+    if (duplicate) continue;
+    const count = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM feedback_attachments WHERE ticket_id = ?1`,
+    ).bind(existing.id).first<{ n: number }>();
+    if ((count?.n ?? 0) >= limit) {
+      dropped.push(attachment.filename);
+      continue;
+    }
+    const id = crypto.randomUUID();
+    const r2Key = attachment.inlineFile
+      ? `feedback/${app.id}/${existing.id}/merge-${id.slice(0, 8)}-${index}-${attachment.filename}`
+      : attachment.r2Key;
+    if (attachment.inlineFile) {
+      await c.env.APK_BUCKET.put(r2Key, await attachment.inlineFile.arrayBuffer(), {
+        httpMetadata: { contentType: attachment.contentType || "application/octet-stream" },
+      });
+    }
+    const inserted = await c.env.DB.prepare(
+      `INSERT INTO feedback_attachments
+       (id, ticket_id, r2_key, filename, content_type, size_bytes, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+       WHERE NOT EXISTS (
+         SELECT 1 FROM feedback_attachments
+         WHERE ticket_id = ?2 AND filename = ?4 AND size_bytes = ?6
+       )
+       AND (SELECT COUNT(*) FROM feedback_attachments WHERE ticket_id = ?2) < ?8
+       RETURNING id`,
+    ).bind(id, existing.id, r2Key, attachment.filename, attachment.contentType, attachment.sizeBytes, now, limit)
+      .first<{ id: string }>();
+    if (inserted) {
+      added.push(attachment.filename);
+    } else {
+      if (attachment.inlineFile) await c.env.APK_BUCKET.delete(r2Key).catch(() => {});
+      dropped.push(attachment.filename);
+    }
+  }
+
+  const priorRecords: Array<Record<string, unknown>> = Array.isArray(priorMerges) ? priorMerges : [];
+  // An attachment already recorded as dropped is not news on a resend.
+  const priorDropped = new Set(priorRecords.flatMap((record) =>
+    Array.isArray(record?.dropped_attachments) ? record.dropped_attachments as string[] : []));
+  const newlyDropped = dropped.filter((name) => !priorDropped.has(name));
+  const fieldsChanged = !sameJson(merged, currentFields);
+  const changed = fieldsChanged || added.length > 0 || newlyDropped.length > 0;
+  if (changed && !sameNativeRecord && priorRecords.length >= MAX_MERGE_RECORDS) {
+    // One event has two sides; a ticket that keeps changing under merges is
+    // not that, and a known submission_id must not be an unmetered write path.
+    return c.json({ error: "submission_id merge limit reached", code: "submission_merge_limit" }, 409);
+  }
+  const mergeRecords = priorRecords.slice(-(MAX_MERGE_RECORDS - 1));
+  const finalMetadata: Record<string, unknown> = { ...merged };
+  if (changed && !sameNativeRecord) {
+    mergeRecords.push({
+      merged_at: now,
+      precedence: nativeIncoming ? "incoming_native" : "existing_native",
+      conflicts: JSON.parse(conflictJson),
+      ...(conflictsTruncated ? { conflicts_truncated: true } : {}),
+      ...(newlyDropped.length > 0 ? { dropped_attachments: newlyDropped } : {}),
+    });
+  }
+  if (mergeRecords.length > 0) finalMetadata["crash_merge"] = mergeRecords;
+
+  const kind = existing.kind;
+  const signature = crashSignature(finalMetadata);
+  const wasBackgroundKill = current.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE;
+  const backgroundKill = isBackgroundSystemKill(finalMetadata);
+  const nextSignature = backgroundKill ? BACKGROUND_SYSTEM_KILL_SIGNATURE : signature;
+  const reopen = wasBackgroundKill && !backgroundKill
+    && current.status === "closed" && current.closure_reason === "not_planned";
+
+  if (changed) {
+    const updated = await c.env.DB.prepare(
+      `UPDATE feedback_tickets
+       SET metadata_json = ?1, signature = ?2, updated_at = ?3,
+           status = CASE WHEN ?4 THEN 'open' ELSE status END,
+           closure_reason = CASE WHEN ?4 THEN NULL ELSE closure_reason END
+       WHERE app_id = ?5 AND id = ?6 AND metadata_json IS ?7
+       RETURNING id`,
+    ).bind(
+      JSON.stringify(finalMetadata),
+      nextSignature,
+      now,
+      reopen ? 1 : 0,
+      app.id,
+      existing.id,
+      current.metadata_json,
+    ).first<{ id: string }>();
+    if (!updated) {
+      // A concurrent merge rewrote the ticket first; the client retries and
+      // its next attempt merges against the new state.
+      return c.json({ error: "ticket changed during merge; retry", code: "submission_merge_conflict" }, 503);
+    }
+  }
+
+  if (fieldsChanged && finalMetadata["crash_native_frames"] !== undefined && !existingNative) {
+    const run = async () => {
+      const first = await c.env.DB.prepare(
+        `SELECT r2_key FROM feedback_attachments WHERE ticket_id = ?1 ORDER BY created_at, id LIMIT 1`,
+      ).bind(existing.id).first<{ r2_key: string }>();
+      await dispatchSymbolication(
+        c.env,
+        { id: app.id, platform: app.platform },
+        existing.id,
+        existing.version_code,
+        finalMetadata,
+        first?.r2_key ?? null,
+      );
+    };
+    try {
+      c.executionCtx.waitUntil(run());
+    } catch {
+      run().catch(() => {});
+    }
+  }
+
+  // Alerts follow the merged classification: a new signature (or a ticket that
+  // stopped being a background kill) is announced as any new crash would be.
+  // Apps that separate external builds decide that at submission time; a merge
+  // does not re-derive it, so it stays quiet rather than alert on one.
+  const alertsAllowed = !(app.platform === "ios" && app.feedback_origin_filter_enabled === 1);
+  if (
+    alertsAllowed && changed && app.org_id && nextSignature && !backgroundKill
+    && nextSignature !== current.signature
+  ) {
+    await scheduleCrashAlerts(c, app, app.org_id, {
+      kind,
+      signature: nextSignature,
+      metadata: finalMetadata,
+      ticketId: existing.id,
+      message: current.message,
+      versionName: current.version_name,
+      versionCode: current.version_code,
+      now,
+    });
+  }
+  if (alertsAllowed && changed && wasBackgroundKill && !backgroundKill && app.org_id && !existing.reporter_id) {
+    await emitWebhookEvent(c.env, {
+      orgId: app.org_id,
+      appId: app.id,
+      event: "feedback:new",
+      eventId: `feedback:new:${existing.id}`,
+      body: {
+        ticket_id: existing.id,
+        app_slug: app.slug,
+        kind,
+        message: current.message.slice(0, 500),
+        version_name: current.version_name,
+        version_code: current.version_code,
+        attachments: added.length,
+        reporter_id: null,
+        reporter_integration_id: null,
+        author_actor: null,
+      },
+    }).catch(() => {});
+  }
+
+  const disclose = Boolean(input.reporterId) && existing.reporter_id === input.reporterId;
+  return c.json({
+    ...(disclose ? { id: existing.id } : {}),
+    merged: true,
+    reopened: reopen,
+    attachments_added: added.length,
+    attachments_dropped: dropped.length,
+    idempotent_replay: !changed,
+  }, 200);
+}
+
+/**
  * 409 for a submission_id that already created a ticket with a different
  * fingerprint. Callers must have already verified that the existing ticket
  * belongs to the requesting reporter. The existing ticket id is disclosed only
@@ -1124,6 +1468,14 @@ function submissionPayloadMismatch(
   }, 409);
 }
 
+type FeedbackSubmissionRow = {
+  id: string;
+  kind: string;
+  submission_fingerprint: string | null;
+  reporter_id: string | null;
+  version_code: number | null;
+};
+
 async function findFeedbackSubmission(
   db: D1Database,
   appId: string,
@@ -1131,17 +1483,13 @@ async function findFeedbackSubmission(
   reporterIntegrationId: string | null,
 ) {
   return db.prepare(
-    `SELECT id, submission_fingerprint, reporter_id
+    `SELECT id, kind, submission_fingerprint, reporter_id, version_code
      FROM feedback_tickets
      WHERE app_id = ?1 AND submission_id = ?2
        AND reporter_integration_id IS ?3`,
   )
     .bind(appId, submissionId, reporterIntegrationId)
-    .first<{
-      id: string;
-      submission_fingerprint: string | null;
-      reporter_id: string | null;
-    }>();
+    .first<FeedbackSubmissionRow>();
 }
 
 async function feedbackSubmitResponse(

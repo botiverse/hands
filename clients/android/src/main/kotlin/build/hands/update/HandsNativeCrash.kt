@@ -4,9 +4,12 @@ import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
+import android.os.Process
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 import kotlin.math.abs
 
 /**
@@ -32,7 +35,27 @@ object HandsNativeCrash {
     private const val MAX_EXIT_TRACE_BYTES = 2 * 1024 * 1024L
 
     @JvmStatic
-    private external fun nativeInstall(crashDir: String)
+    private external fun nativeInstall(crashDir: String, processStartAt: Long, processEventId: String)
+
+    /**
+     * A random UUID for this process, written into any native crash record it
+     * leaves and used as that crash ticket's `submission_id`. Store it with your
+     * own launch record: a system-exit report for the same process sent with
+     * `HandsFeedback.submit(submissionId = it)` then shares one ticket with the
+     * native crash instead of creating a second one.
+     */
+    @JvmStatic
+    val processEventId: String by lazy { UUID.randomUUID().toString() }
+
+    /**
+     * This process's start time, epoch milliseconds (from
+     * `Process.getStartElapsedRealtime`, so it does not depend on when the SDK
+     * is installed). Computed once per process.
+     */
+    @JvmStatic
+    val processStartAt: Long by lazy {
+        System.currentTimeMillis() - (SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime())
+    }
 
     internal fun crashDir(context: Context): File =
         File(context.filesDir, "quiver/native-crashes")
@@ -43,7 +66,7 @@ object HandsNativeCrash {
             val dir = crashDir(context)
             dir.mkdirs()
             System.loadLibrary("handscrash")
-            nativeInstall(dir.absolutePath)
+            nativeInstall(dir.absolutePath, processStartAt, processEventId)
             true
         }.getOrDefault(false)
     }
@@ -57,15 +80,17 @@ object HandsNativeCrash {
         versionCode: Long? = null,
         channel: String? = null,
         clientKey: String? = null,
-    ) {
+    ): List<NativeCrashUpload> {
+        val results = mutableListOf<NativeCrashUpload>()
         val dir = crashDir(context)
         val records = (dir.listFiles { f -> f.name.endsWith(".qnc") } ?: emptyArray())
             .sortedBy { it.name }
-        if (records.isEmpty()) return
+        if (records.isEmpty()) return results
         // Retention: newest survive, same policy as HandsCrash.
         records.dropLast(MAX_STORED).forEach {
             it.delete()
             deleteExitSidecars(it)
+            results += NativeCrashUpload.discarded()
         }
 
         val pending = records.takeLast(MAX_STORED).mapNotNull { record ->
@@ -73,12 +98,13 @@ object HandsNativeCrash {
             if (parsed == null) {
                 record.delete()
                 deleteExitSidecars(record)
+                results += NativeCrashUpload.discarded()
                 null
             } else {
                 PendingRecord(record, parsed)
             }
         }
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) return results
 
         // Reuse only a sidecar whose recorded QNC coordinates still match.
         // Valid bindings also reserve the system exit identity so another QNC
@@ -129,7 +155,7 @@ object HandsNativeCrash {
             }
             val top = parsed.frames.firstOrNull()
             val result = runCatching {
-                feedback.submit(
+                feedback.submitReport(
                     message = buildString {
                         append("Native crash: ").append(parsed.signalName)
                         parsed.threadName?.let { append(" on thread ").append(it) }
@@ -137,6 +163,7 @@ object HandsNativeCrash {
                     },
                     kind = "crash",
                     attachments = attachments,
+                    submissionId = parsed.processEventId,
                     extras = buildMap {
                         put("crash_exception_class", parsed.signalName)
                         put("crash_top_frame", top?.let { "${it.soname}+0x${it.offset.toString(16)}" } ?: "")
@@ -150,6 +177,8 @@ object HandsNativeCrash {
                         parsed.signalCode?.let { put("crash_signal_code", it) }
                         parsed.faultAddress?.let { put("crash_fault_addr", "0x${it.toString(16)}") }
                         parsed.pid?.let { put("crash_process_id", it) }
+                        parsed.processStartAt?.let { put("crash_process_start_at", it) }
+                        parsed.processEventId?.let { put("crash_process_event_id", it) }
                         parsed.tid?.let { put("crash_thread_id", it) }
                         parsed.threadName?.let { put("crash_thread_name", it) }
                         parsed.registers["pc"]?.let { put("crash_context_pc", it) }
@@ -171,10 +200,60 @@ object HandsNativeCrash {
                     },
                 )
             }
-            if (result.isSuccess) {
+            val submission = result.getOrNull()
+            val outcome = when {
+                submission == null -> NativeCrashUpload.Outcome.FAILED_WILL_RETRY
+                submission.merged -> NativeCrashUpload.Outcome.MERGED
+                else -> NativeCrashUpload.Outcome.UPLOADED
+            }
+            if (outcome != NativeCrashUpload.Outcome.FAILED_WILL_RETRY) {
                 record.delete()
                 deleteExitSidecars(record)
             }
+            results += NativeCrashUpload(
+                outcome = outcome,
+                pid = parsed.pid,
+                processStartAt = parsed.processStartAt,
+                processEventId = parsed.processEventId,
+                crashAt = parsed.crashAt,
+                exitTimestamp = exitEvidence?.timestamp,
+                ticketId = submission?.ticketId,
+            )
+        }
+        return results
+    }
+
+    /**
+     * What happened to one pending native crash record in [uploadPending].
+     *
+     * - [Outcome.UPLOADED]: Hands accepted it as ticket [ticketId]; the record is gone.
+     * - [Outcome.MERGED]: Hands already had a ticket under this record's [processEventId]
+     *   (for example the app reported the same process exit first, or an earlier upload's
+     *   response was lost) and merged this record into it; the record is gone. [ticketId]
+     *   is null unless the app submits as a trusted reporter.
+     * - [Outcome.FAILED_WILL_RETRY]: the upload failed; the record is kept for the next call.
+     * - [Outcome.DISCARDED]: the record was unreadable or over the retention limit and was
+     *   deleted without uploading; every other field is null.
+     *
+     * [pid], [processStartAt] and [processEventId] identify the crashed process
+     * ([processEventId] is the value [HandsNativeCrash.processEventId] had in it);
+     * the last two are null for records written by SDKs before 0.13.2. [crashAt] is
+     * the crash time (epoch ms) and [exitTimestamp] the matched ApplicationExitInfo
+     * timestamp, when one was matched.
+     */
+    data class NativeCrashUpload(
+        val outcome: Outcome,
+        val pid: Long?,
+        val processStartAt: Long?,
+        val processEventId: String?,
+        val crashAt: Long?,
+        val exitTimestamp: Long?,
+        val ticketId: String?,
+    ) {
+        enum class Outcome { UPLOADED, MERGED, FAILED_WILL_RETRY, DISCARDED }
+
+        internal companion object {
+            fun discarded() = NativeCrashUpload(Outcome.DISCARDED, null, null, null, null, null, null)
         }
     }
 
@@ -202,6 +281,8 @@ object HandsNativeCrash {
         val pid: Long?,
         val tid: Long?,
         val threadName: String?,
+        val processStartAt: Long? = null,
+        val processEventId: String? = null,
         val arch: String?,
         val registers: Map<String, String>,
         val modules: List<NativeModule>,
@@ -287,6 +368,8 @@ object HandsNativeCrash {
         var pid: Long? = null
         var tid: Long? = null
         var threadName: String? = null
+        var processStartAt: Long? = null
+        var processEventId: String? = null
         var arch: String? = null
         val contextFrames = mutableListOf<Pair<Long, String?>>()
         val maps = mutableListOf<MapEntry>()
@@ -312,6 +395,11 @@ object HandsNativeCrash {
                     pid = trimmed.removePrefix("pid ").trim().toLongOrNull()
                 section == "header" && trimmed.startsWith("tid ") ->
                     tid = trimmed.removePrefix("tid ").trim().toLongOrNull()
+                section == "header" && trimmed.startsWith("process_start_at ") ->
+                    processStartAt = trimmed.removePrefix("process_start_at ").trim().toLongOrNull()?.takeIf { it > 0 }
+                section == "header" && trimmed.startsWith("process_event_id ") ->
+                    processEventId = trimmed.removePrefix("process_event_id ").trim().lowercase()
+                        .takeIf { HandsFeedback.SUBMISSION_ID_PATTERN.matches(it) }
                 section == "header" && trimmed.startsWith("thread_name_hex ") ->
                     threadName = decodeHexUtf8(trimmed.removePrefix("thread_name_hex ").trim())
                 section == "registers" && trimmed.startsWith("arch ") ->
@@ -355,6 +443,8 @@ object HandsNativeCrash {
             pid = pid,
             tid = tid,
             threadName = threadName,
+            processStartAt = processStartAt,
+            processEventId = processEventId,
             arch = arch,
             registers = registers,
             modules = modules,

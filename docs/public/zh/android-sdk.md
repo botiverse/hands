@@ -138,6 +138,23 @@ class App : Application() {
 
 在 Android 11 及以上版本，如果操作系统保留了匹配的 `ApplicationExitInfo` 跟踪和退出描述，SDK 也会附加它们，提供受支持的 tombstone 或中止消息等效信息，无需读取 `/data/tombstones`。匹配要求已记录的进程 ID、原生崩溃原因和较窄的时间窗口；保留的证据一对一分配并持久化，以便确定性重试，而不是猜测最近的应用退出。
 
+### 同一进程只出一张票
+
+从 `0.13.2` 起，每条原生崩溃记录都带上崩溃进程的 `HandsNativeCrash.processEventId`（每个进程一个随机 UUID）和 `processStartAt`（进程启动时间，毫秒），并用这个 ID 作为 `submission_id` 上传。App 如果也会为同一次进程退出自己报一张票（例如读 `ApplicationExitInfo`），在启动时把这两个值和自己的启动记录存在一起，报票时用同一个 ID：
+
+```kotlin
+HandsFeedback(context, baseUrl, appSlug, clientKey = key).submitReport(
+    message = "Process exited: ${exit.reason}",
+    kind = "crash",
+    extras = exitFields,
+    submissionId = launch.eventId, // 启动时存下的 HandsNativeCrash.processEventId
+)
+```
+
+后到的一方会合并进第一张票：崩溃类型和分组签名以原生记录为准，退出票的字段一并保留，两边不一致的值记在票元数据的 `crash_merge` 里。若这张票原先被当作"后台被系统结束"自动关闭，原生记录证明是真崩溃后会重新打开。
+
+`HandsNativeCrash.uploadPending(...)` 为每条记录返回一个 `NativeCrashUpload`：`UPLOADED`（带 `ticketId`）、`MERGED`（匿名客户端拿不到 `ticketId`）、`FAILED_WILL_RETRY`（记录保留，下次重试）或 `DISCARDED`（记录损坏或超出保留上限）。每条都带 `pid`、`processStartAt`、`processEventId`、`crashAt` 和匹配到的 `exitTimestamp`；0.13.2 之前写下的记录没有进程 ID 和启动时间。
+
 ### ANR
 
 从 `0.13.0` 起，SDK 在 Android 11 及以上版本（API 30）还会上报 ANR（应用无响应导致的终止）。系统从外部杀死进程，进程内不会有代码运行；下次启动时，SDK 读取带 `REASON_ANR` 的 `ApplicationExitInfo` 条目，并将选中的记录提交为 `kind=crash`、`crash_type=anr` 工单。系统 ANR 线程转储会作为附件，并像 Java 崩溃日志一样通过 R8 映射还原。工单按 `ANR@<主线程的第一个应用堆栈帧>` 分组，因此相同卡死可跨构建聚合，也不会与同一帧上的 Java 异常混合。控制台的崩溃页面可按异常、原生崩溃和 ANR 筛选。

@@ -408,7 +408,7 @@ find and rotate the key in the app's Settings tab or via
 | Field | Required | Description |
 |---|---|---|
 | `message` | Yes | Feedback text (max 10,000 chars). |
-| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409` (see [`submission_id` conflicts](#submission-id-conflicts)). |
+| `submission_id` | No | Client-generated UUID for idempotent retries. Keep it fixed for one draft. An exact replay returns the original ticket; reusing it with different content returns `409` (see [`submission_id` conflicts](#submission-id-conflicts)), except for the crash merge below. |
 | `kind` | No | `feedback` (default), `bug`, or `crash`. |
 | `contact` | No | Reply-to handle (email, Raft name, …). |
 | `metadata` | No | JSON string: `version_name`, `version_code`, `channel`, `device_id`, `device_model`, `os_version`, `arch`, `locale`, plus custom keys. Crash tickets add `crash_exception_class` / `crash_top_frame` (grouping signature). QNC2 Android native reports add `crash_native_frames` (`{ index, offset, soname, build_id, source }`), `crash_registers`, crash thread fields, and `crash_native_images`; server symbolication requires an exact per-frame BuildId match against the build's `native-symbols` asset. API 30+ reports may also include `crash_exit_*` metadata and a retained system trace attachment. |
@@ -434,6 +434,31 @@ idempotent replays return the same attachment references, for example:
   "ticket_url": "https://app.hands.build/apps/<appId>/feedback/<ticket UUID>"
 }
 ```
+
+#### Crash reports merged under one `submission_id` {#crash-merge}
+
+Two different `crash`/`error` reports under one `submission_id` merge into the
+first ticket instead of returning `409` when exactly one of them is an Android
+SDK native crash record (`crash_reason: "native_signal"` with
+`crash_native_frames`) — the app's own exit report and the SDK's native record
+for the same process — or when both are the same native record
+(`crash_process_event_id` equal) resent. The native side decides the
+classification fields (`crash_type`, `crash_reason`, exception class, top
+frame) and the grouping signature; every other field from both sides is kept,
+and the losing side's differing values are recorded under the ticket's
+`crash_merge` metadata together with any attachment dropped at the limit. A
+ticket auto-closed as a background system kill reopens, and its crash alerts
+fire, when the merged report is no longer one. The response is `200`:
+
+```json
+{ "merged": true, "reopened": true, "attachments_added": 1, "attachments_dropped": 0, "idempotent_replay": false }
+```
+
+`id` is included only for a trusted reporter that owns the ticket. Resending
+the same merge returns `idempotent_replay: true` and changes nothing. A `503`
+with code `submission_merge_conflict` means another merge changed the ticket at
+the same moment; retry with the same body. After five recorded merges a ticket
+accepts no further changing merges (`409`, code `submission_merge_limit`).
 
 #### `submission_id` conflicts {#submission-id-conflicts}
 
