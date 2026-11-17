@@ -729,7 +729,7 @@ hands feedback update raft-android <ticket-id> --closure-reason duplicate --dupl
 
 `hands feedback list` 只显示应用内（SDK）工单。TestFlight 崩溃和截图反馈来自 Apple，请使用 `hands testflight crashes` 和 `hands testflight feedback`；列表为空时会打印这些命令。
 
-`--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce`、`duplicate` 或 `no_longer_needed`），重复工单还需提供 `--duplicate-of <ticket-id>`。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
+`--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce` 或 `duplicate`），重复工单还需提供 `--duplicate-of <ticket-id>`；`no_longer_needed` 只出现在提交者自己关闭的工单上。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
 
 ## 应用 Webhook
 

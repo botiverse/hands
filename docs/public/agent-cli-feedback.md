@@ -88,9 +88,9 @@ hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root c
 ```
 
 Status flow: `open → in_progress → resolved → closed`. Closing a ticket
-requires `--closure-reason` (`completed`, `not_planned`, `cannot_reproduce`,
-`duplicate`, or `no_longer_needed`), plus `--duplicate-of <ticketId>` when the
-reason is `duplicate`. Assignee is independent of status.
+requires `--closure-reason` (`completed`, `not_planned`, `cannot_reproduce`, or
+`duplicate`), plus `--duplicate-of <ticketId>` when the reason is `duplicate`.
+`no_longer_needed` appears only on tickets the reporter closed themselves. Assignee is independent of status.
 
 When an app enables external iOS report separation, the default list retains
 configured and unknown origins. `--build-scope external` shows mismatches;

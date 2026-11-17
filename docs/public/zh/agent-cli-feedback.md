@@ -72,7 +72,7 @@ hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "reprod
 hands feedback comment raft-android 389d855b-0000-0000-0000-000000000000 "root cause: null listItemId in badge render" --internal
 ```
 
-状态流程：`open → in_progress → resolved → closed`。关闭工单时必须传入 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce`、`duplicate` 或 `no_longer_needed`），原因为 `duplicate` 时还需传入 `--duplicate-of <ticketId>`。负责人与状态相互独立。
+状态流程：`open → in_progress → resolved → closed`。关闭工单时必须传入 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce` 或 `duplicate`），原因为 `duplicate` 时还需传入 `--duplicate-of <ticketId>`。`no_longer_needed` 只出现在提交者自己关闭的工单上。负责人与状态相互独立。
 
 应用启用外部 iOS 报告分流后，默认列表保留已配置和未知来源的报告。`--build-scope external` 显示不匹配的报告；`--build-scope all` 显示全部报告。上报的 bundle ID 来自客户端，仅供处理时参考，并非身份凭证。
 
