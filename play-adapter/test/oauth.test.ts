@@ -18,6 +18,20 @@ describe("Google OAuth refresh", () => {
     await expect(createAccessToken(credential, vi.fn(async () => Response.json({ error: JSON.stringify(credential) }, { status }))))
       .rejects.toMatchObject({ status: status < 500 ? 403 : 502, message: "Google OAuth authorization needs reconnection" });
   });
+  it("logs only Google's OAuth reason codes when a grant is refused", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(createAccessToken(credential, vi.fn(async () => Response.json({
+      error: "invalid_grant", error_subtype: "invalid_rapt", error_description: "reauth related error (invalid_rapt) for private-refresh",
+    }, { status: 400 })))).rejects.toMatchObject({ code: "play_token_rejected" });
+    await expect(createAccessToken(credential, vi.fn(async () => Response.json({ error: JSON.stringify(credential) }, { status: 400 }))))
+      .rejects.toMatchObject({ code: "play_token_rejected" });
+    const lines = warn.mock.calls.filter((c) => c[0] === "hands_play_token_rejection").map((c) => JSON.parse(String(c[1])));
+    expect(lines[0]).toEqual({ grant: "publishing", status: 400, error: "invalid_grant", error_subtype: "invalid_rapt", reauth_required: true, expired_or_revoked: false });
+    expect(lines[1]).toMatchObject({ error: null, error_subtype: null });
+    const logged = JSON.stringify(warn.mock.calls);
+    for (const secret of ["private-refresh", "private-client-secret", "human@example.com"]) expect(logged).not.toContain(secret);
+    warn.mockRestore();
+  });
   it("rejects malformed successful responses and missing credentials", async () => {
     await expect(createAccessToken(credential, vi.fn(async () => Response.json({ access_token: "access" })))).rejects.toMatchObject({ status: 502 });
     expect(() => parsePlayCredential({ ...credential, refresh_token: "" })).toThrow();
