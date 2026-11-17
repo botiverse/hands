@@ -1073,8 +1073,9 @@ screenshot feedback come from Apple and use `hands testflight crashes` and
 `hands testflight feedback`; an empty list prints these commands.
 
 `--assignee none` unassigns. Closing a ticket requires `--closure-reason`
-(`completed`, `not_planned`, `cannot_reproduce`, `duplicate`, or
-`no_longer_needed`), plus `--duplicate-of <ticket-id>` for duplicates. All
+(`completed`, `not_planned`, `cannot_reproduce`, or `duplicate`), plus
+`--duplicate-of <ticket-id>` for duplicates; `no_longer_needed` appears only on
+tickets the reporter closed themselves. All
 subcommands accept `--json` for scripting.
 For iOS apps that enable external report separation, `--build-scope` accepts
 `standard`, `external`, or `all`; the default includes configured and unknown

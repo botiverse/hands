@@ -24,9 +24,9 @@ const FeedbackUpdateInput = z
   .object({
     status: z.string().optional(),
     assignee: z.string().nullable().optional(),
+    // no_longer_needed is the reporter's own close (reporter feedback routes), not a team reason.
     closure_reason: z.enum([
       "completed",
-      "no_longer_needed",
       "not_planned",
       "cannot_reproduce",
       "duplicate",

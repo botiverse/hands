@@ -153,7 +153,7 @@ export function registerFeedbackCommands(program: Command): void {
     .option("--status <status>", "open | in_progress | resolved | closed.")
     .option(
       "--closure-reason <reason>",
-      "Reason when closing a ticket: completed | not_planned | cannot_reproduce | duplicate | no_longer_needed.",
+      "Reason when closing a ticket: completed | not_planned | cannot_reproduce | duplicate.",
     )
     .option(
       "--duplicate-of <ticketId>",
