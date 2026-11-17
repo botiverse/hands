@@ -18,6 +18,7 @@ export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
   native: "Native",
   anr: "ANR",
   system_kill: "System kill",
+  webview_renderer_gone: "WebView renderer gone",
 };
 
 export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]> = {
@@ -25,6 +26,7 @@ export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]>
   native: "accent",
   anr: "warning",
   system_kill: "muted",
+  webview_renderer_gone: "muted",
 };
 
 const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: string }> = [
@@ -33,6 +35,7 @@ const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: strin
   { value: "native", label: "Native", labelZh: "原生崩溃" },
   { value: "anr", label: "ANRs", labelZh: "无响应（ANR）" },
   { value: "system_kill", label: "System kills", labelZh: "系统强杀" },
+  { value: "webview_renderer_gone", label: "WebView renderer gone", labelZh: "WebView 渲染进程退出" },
 ];
 
 const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = {
@@ -40,12 +43,13 @@ const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = {
   native: "原生崩溃",
   anr: "无响应（ANR）",
   system_kill: "系统强杀",
+  webview_renderer_gone: "WebView 渲染进程退出",
 };
 
 export const BACKGROUND_SYSTEM_KILL_SIGNATURE = "SystemKill@background";
 
 function parseCrashType(raw: string | null): CrashType | "" {
-  return raw === "anr" || raw === "system_kill" || raw === "native" || raw === "exception" ? raw : "";
+  return raw === "anr" || raw === "system_kill" || raw === "native" || raw === "exception" || raw === "webview_renderer_gone" ? raw : "";
 }
 
 export function AppCrashes({ appId }: { appId: string }) {
@@ -162,6 +166,9 @@ export function AppCrashes({ appId }: { appId: string }) {
                         ? t("Background system kill", "后台被系统结束")
                         : t(CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type, CRASH_TYPE_LABELS_ZH[g.crash_type] ?? g.crash_type)}
                     </Badge>
+                    {g.fatal === 0 && (
+                      <Badge variant="muted" className="ml-1">{t("Non-fatal", "非致命")}</Badge>
+                    )}
                   </td>
                   <td className="py-2 pr-3 max-w-lg">
                     {g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE ? (

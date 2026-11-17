@@ -1998,7 +1998,7 @@ export interface FeedbackTicket {
   background_system_kill?: number;
 }
 
-export type CrashType = "anr" | "system_kill" | "native" | "exception";
+export type CrashType = "anr" | "system_kill" | "native" | "exception" | "webview_renderer_gone";
 
 export interface FeedbackDetail {
   ticket: FeedbackTicket & {
@@ -2264,6 +2264,8 @@ export const publicAppIconUrl = (slug: string) => `${API_BASE}/public/apps/${slu
 export interface CrashGroup {
   signature: string;
   crash_type: CrashType;
+  /** 0 when every ticket in the group is an explicitly non-fatal crash. */
+  fatal?: number;
   count: number;
   device_count: number;
   first_seen: number;

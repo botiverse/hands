@@ -12989,6 +12989,72 @@ describe("quiver public API v2 — scope resolution", () => {
     for (const r of ids) expect(r.external_event_id).toMatch(/^crash:new_group:/);
   });
 
+  it("feedback: explicitly non-fatal crashes group and announce once, but never spike or count as crashes", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, get: async () => null };
+    const { handlePublicFeedbackSubmit, handleListCrashGroups, isNonFatalCrash, crashTypeOf } = await import("../src/routes/feedback");
+    await env.DB.prepare(
+      `INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at)
+       VALUES ('wh-nf', 'default', NULL, 'https://example.test/hook', 's3cret', ?1, 1, ?2, ?2)`,
+    ).bind(JSON.stringify(["crash:new_group", "crash:spike"]), Date.now()).run();
+    const webview = (extra: Record<string, unknown> = {}) => ({
+      crash_type: "webview_renderer_gone", crash_fatal: false, crash_did_crash: true,
+      crash_exception_class: "WebViewRendererGone", crash_top_frame: "renderer", version_code: 12600003, version_name: "1.26.0",
+      ...extra,
+    });
+    expect(isNonFatalCrash(webview())).toBe(true);
+    expect(isNonFatalCrash(webview({ crash_fatal: undefined }))).toBe(false);
+    expect(isNonFatalCrash(webview({ crash_fatal: "false" }))).toBe(false);
+    expect(crashTypeOf(webview())).toBe("webview_renderer_gone");
+
+    let n = 0;
+    const submit = async (metadata: Record<string, unknown>) => {
+      const form = new FormData();
+      form.set("message", "WebView renderer gone");
+      form.set("kind", "crash");
+      form.set("metadata", JSON.stringify(metadata));
+      const waited: Promise<unknown>[] = [];
+      const res = await handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        req: {
+          param: (k: string) => (k === "slug" ? "scope-app" : ""),
+          header: (k: string) => (k === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: `10.9.0.${++n}` } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+      await Promise.all(waited);
+      return res;
+    };
+    // Ten non-fatal tickets with one signature: one new_group (marked non-fatal), no spike.
+    for (let i = 0; i < 10; i++) expect((await submit(webview())).status).toBe(201);
+    const deliveries = (await env.DB.prepare(
+      "SELECT event_type, payload_json FROM webhook_deliveries WHERE webhook_id = 'wh-nf'",
+    ).all()).results as Array<{ event_type: string; payload_json: string }>;
+    expect(deliveries.map((d) => d.event_type)).toEqual(["crash:new_group"]);
+    expect(JSON.parse(deliveries[0]!.payload_json).payload).toMatchObject({ fatal: false, crash_type: "webview_renderer_gone" });
+
+    // The same signature without the field is fatal and counts toward a spike.
+    for (let i = 0; i < 10; i++) await submit(webview({ crash_fatal: undefined }));
+    const spikes = (await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM webhook_deliveries WHERE webhook_id = 'wh-nf' AND event_type = 'crash:spike'",
+    ).first()) as { n: number };
+    expect(spikes.n).toBe(1);
+
+    const groups = await responseJson<any>(await handleListCrashGroups({
+      env,
+      req: { param: (k: string) => (k === "appId" ? "app-scope" : ""), query: (k: string) => ({ crash_type: "webview_renderer_gone" } as Record<string, string>)[k] },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any));
+    expect(groups.groups ?? groups.crash_groups).toBeDefined();
+    const list = (groups.groups ?? groups.crash_groups) as any[];
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ crash_type: "webview_renderer_gone", count: 20, fatal: 1 });
+  });
+
   it("devices: register upserts per device and analytics aggregates by version", async () => {
     const env = makeEnv();
     const { handleDeviceRegister, handleDeviceAnalytics } = await import("../src/routes/analytics");
@@ -13130,6 +13196,13 @@ describe("quiver public API v2 — scope resolution", () => {
         device_id, metadata_json, created_at, updated_at)
        VALUES (?, 'app-scope', ?, 'open', ?, ?, ?, 'production', ?, '{}', ?, ?)`,
     ).bind("tick-metrics-2", "crash", "crash", "1.2.0", 120, "devB", 12_001, 12_001).run();
+    // An explicitly non-fatal crash ticket is not a crash.
+    await env.DB.prepare(
+      `INSERT INTO feedback_tickets
+       (id, app_id, kind, status, message, version_name, version_code, channel,
+        device_id, metadata_json, created_at, updated_at)
+       VALUES (?, 'app-scope', 'crash', 'open', 'webview', '1.2.0', 120, 'production', 'devB', ?, 12_002, 12_002)`,
+    ).bind("tick-metrics-3", JSON.stringify({ crash_type: "webview_renderer_gone", crash_fatal: false })).run();
 
     const ping = (deviceId: string, versionName: string, versionCode: number, channel = "production") =>
       handleDeviceRegister({
@@ -13175,7 +13248,7 @@ describe("quiver public API v2 — scope resolution", () => {
       total_devices: 2,
       update_current_count: 2,
       update_offered_count: 5,
-      feedback_count: 2,
+      feedback_count: 3,
       crash_count: 1,
       download_count: 7,
       telemetry_only: false,

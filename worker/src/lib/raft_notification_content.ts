@@ -514,9 +514,10 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
   const isBgKill = signature === "SystemKill@background"
     || alertReason === "device_daily_repeat"
     || alertReason === "version_spike";
+  const nonFatal = payload.fatal === false && event === "crash:new_group";
   const title = isBgKill && event === "crash:spike"
     ? "Background system kill spike (后台被系统结束)"
-    : (presentation?.title ?? "Issue report");
+    : nonFatal ? "New non-fatal crash group (app kept running)" : (presentation?.title ?? "Issue report");
   const lines = [`${presentation?.icon ?? "⚠️"} **${app ? `${app} · ` : ""}${title}**${link ? ` · [View feedback](${link})` : ""}`];
   if (alertReason === "device_daily_repeat") {
     const deviceId = safePreview(safeValue(payload.device_id), 160);
@@ -544,6 +545,10 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
   if (version || code) lines.push(`Version: ${version ?? code}${version && code && version !== code ? ` (${code})` : ""}`);
   const platform = safePreview(safeValue(payload.platform), 160);
   if (platform) lines.push(`Platform: ${platform}`);
+  if (nonFatal) {
+    const type = safePreview(safeValue(payload.crash_type), 80);
+    lines.push(`Non-fatal${type ? `: ${type}` : ""} · not counted as a crash`);
+  }
   const footer: string[] = [];
   if (!link && ticketId && cliApp) footer.push(`📖 View more: \`hands feedback show ${cliApp} ${ticketId}\``);
   else if (!link) {
