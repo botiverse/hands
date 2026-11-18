@@ -145,6 +145,27 @@ export function requireRaftConfig(c: Context<{ Bindings: Env }>) {
   };
 }
 
+/**
+ * Start Login with Raft at Raft's standard authorization endpoint. Raft owns
+ * where it sends the browser next (its own login/consent pages) and validates
+ * redirect_uri against the client's registered callbacks; Raft Desktop's
+ * built-in browser only takes over this standard request, never Raft's own
+ * setup page.
+ */
+export function raftAuthorizeUrl(
+  config: { clientId: string; raftApiOrigin: string },
+  redirectUri: string,
+  state?: string,
+): string {
+  const url = new URL("/api/oauth/authorize", config.raftApiOrigin);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", config.clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("scope", "openid profile");
+  if (state) url.searchParams.set("state", state);
+  return url.toString();
+}
+
 function normalizeReturnPath(raw: string | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "/";
   if (raw.startsWith("/api/") || raw.startsWith("/login/")) return "/";
@@ -377,6 +398,7 @@ export async function exchangeRaftCode(
   clientId: string,
   clientSecret: string,
   code: string,
+  redirectUri?: string,
 ): Promise<RaftTokenResponse> {
   const response = await fetch(`${apiOrigin}/api/oauth/token`, {
     method: "POST",
@@ -387,6 +409,7 @@ export async function exchangeRaftCode(
     body: JSON.stringify({
       grant_type: "authorization_code",
       code,
+      ...(redirectUri ? { redirect_uri: redirectUri } : {}),
     }),
   });
 
@@ -601,6 +624,7 @@ async function finalizeRaftLogin(
     config.clientId,
     config.clientSecret,
     code,
+    callbackUrl(c),
   );
   const userinfo = await fetchRaftUserinfo(
     config.raftApiOrigin,
@@ -740,12 +764,7 @@ export async function handleAuthLogin(c: Context<{ Bindings: Env }>) {
     maxAge: BROWSER_LOGIN_STATE_TTL_MS / 1000,
   });
 
-  const setup = new URL("/login-with-raft/setup", config.raftOrigin);
-  setup.searchParams.set("client_id", config.clientId);
-  setup.searchParams.set("return_to", callbackUrl(c));
-  setup.searchParams.set("scope", "openid profile");
-  setup.searchParams.set("state", state);
-  const setupUrl = setup.toString();
+  const setupUrl = raftAuthorizeUrl(config, callbackUrl(c), state);
   const accept = c.req.header("accept") || "";
   if (accept.includes("text/html")) {
     c.header("cache-control", "no-store");

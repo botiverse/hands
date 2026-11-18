@@ -2611,7 +2611,7 @@ describe("auth origin handling", () => {
     expect(parts[2]).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
-  it("redirects Login with Raft through the current Raft setup route", async () => {
+  it("starts Login with Raft at Raft's standard authorization endpoint", async () => {
     const env = makeMockEnv();
     env.RAFT_CLIENT_ID = "test-client";
     const app = new Hono<{ Bindings: MockEnv }>();
@@ -2625,10 +2625,11 @@ describe("auth origin handling", () => {
 
     expect(res.status).toBe(302);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.origin).toBe("https://raft.example");
-    expect(location.pathname).toBe("/login-with-raft/setup");
+    expect(location.origin + location.pathname).toBe(`${env.RAFT_API_ORIGIN}/api/oauth/authorize`);
+    expect(location.searchParams.get("response_type")).toBe("code");
+    expect(location.searchParams.get("scope")).toBe("openid profile");
     expect(location.searchParams.get("client_id")).toBe("test-client");
-    expect(location.searchParams.get("return_to")).toBe(
+    expect(location.searchParams.get("redirect_uri")).toBe(
       "https://business.example/login/raft/callback",
     );
     expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
@@ -2648,7 +2649,7 @@ describe("auth origin handling", () => {
 
     expect(res.status).toBe(302);
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("return_to")).toBe(
+    expect(location.searchParams.get("redirect_uri")).toBe(
       "https://business.example/login/raft/callback",
     );
     expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
@@ -2675,7 +2676,7 @@ describe("auth origin handling", () => {
     );
 
     const location = new URL(res.headers.get("location") ?? "");
-    expect(location.searchParams.get("return_to")).toBe(
+    expect(location.searchParams.get("redirect_uri")).toBe(
       "http://localhost:8787/login/raft/callback",
     );
     expect(location.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
@@ -2768,6 +2769,12 @@ describe("auth origin handling", () => {
       expect(new URL(secondCallback.headers.get("location") ?? "").pathname).toBe("/apps/second");
       expect(new URL(firstCallback.headers.get("location") ?? "").pathname).toBe("/apps/first");
       expect(globalThis.fetch).toHaveBeenCalledTimes(4);
+      // The token exchange names the same registered callback as the authorize request.
+      const tokenCall = (globalThis.fetch as any).mock.calls.find(([url]: [string]) => String(url).endsWith("/api/oauth/token"));
+      expect(JSON.parse(tokenCall[1].body)).toMatchObject({
+        grant_type: "authorization_code",
+        redirect_uri: "https://business.example/login/raft/callback",
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
