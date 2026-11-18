@@ -13359,6 +13359,44 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(tickets?.count).toBe(1);
   });
 
+  it("feedback: a retraced exception is regrouped by its real stack; typed crashes are not", async () => {
+    const env = makeEnv();
+    env.APK_BUCKET = { put: async () => {}, delete: async () => {}, get: async () => null, head: async () => null };
+    const { handlePublicFeedbackSubmit, regroupFromRetrace } = await import("../src/routes/feedback");
+    const submit = async (metadata: Record<string, unknown>) => {
+      const form = new FormData();
+      form.set("message", "crash");
+      form.set("kind", "crash");
+      form.set("metadata", JSON.stringify(metadata));
+      const response = await handlePublicFeedbackSubmit({
+        env,
+        executionCtx: { waitUntil: () => {} },
+        req: {
+          param: (name: string) => (name === "slug" ? "scope-app" : ""),
+          header: (name: string) => (name === "X-Quiver-Client-Key" ? "qk_test" : undefined),
+          query: () => undefined,
+          formData: async () => form,
+          raw: { cf: { clientIp: "203.0.113.90" } },
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+      return (await responseJson<any>(response)).id as string;
+    };
+    const retraced = "Stack trace:\njava.lang.IllegalStateException: boom\n\tat build.raft.app.Foo.bar(Foo.kt:3)\n";
+    const signatureOf = async (id: string) =>
+      ((await env.DB.prepare("SELECT signature FROM feedback_tickets WHERE id = ?1").bind(id).first()) as any)?.signature;
+
+    const exception = await submit({ crash_exception_class: "java.lang.IllegalStateException", crash_top_frame: "e74.i(r8-map-id-ab:7)" });
+    expect(await signatureOf(exception)).toBe("java.lang.IllegalStateException@e74.i");
+    await regroupFromRetrace(env as any, "app-scope", exception, retraced);
+    expect(await signatureOf(exception)).toBe("java.lang.IllegalStateException@build.raft.app.Foo.bar");
+
+    const anr = await submit({ crash_type: "anr", crash_exception_class: "ANR", crash_top_frame: "e74.i" });
+    const before = await signatureOf(anr);
+    await regroupFromRetrace(env as any, "app-scope", anr, retraced);
+    expect(await signatureOf(anr)).toBe(before);
+  });
+
   describe("feedback: an app exit report and the SDK native record under one submission_id", () => {
     const appExit = {
       message: "Process exited: signaled",

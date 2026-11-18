@@ -134,7 +134,7 @@ class App : Application() {
 }
 ```
 
-要在控制台获得可读的反混淆堆栈，请在发布版本时上传 R8/ProGuard `mapping.txt`；对于 NDK 崩溃，还需上传未剥离的 `.so` 压缩包。Hands 会自动符号化对应 `versionCode` 的崩溃报告。QNC2 原生报告保留崩溃线程的 PC/LR/SP、寄存器、线程身份及已加载映像的 ELF BuildId。符号化严格遵循失败即拒绝原则：崩溃帧的 BuildId 必须与所上传压缩包中的 ELF 完全匹配；Hands 不会根据版本或文件名猜测。
+要在控制台获得可读的反混淆堆栈，请在发布版本时上传 R8/ProGuard `mapping.txt`；对于 NDK 崩溃，还需上传未剥离的 `.so` 压缩包。Hands 会自动符号化对应 `versionCode` 的崩溃报告。Java/Kotlin 崩溃反混淆后，Hands 会按反混淆后的异常类和第一条栈帧（跳过 `throwIllegalArgumentException` 这类抛出辅助函数）重新分组，同一个问题跨版本保持同一组；这些版本的崩溃通知会等反混淆完成后再判定分组。QNC2 原生报告保留崩溃线程的 PC/LR/SP、寄存器、线程身份及已加载映像的 ELF BuildId。符号化严格遵循失败即拒绝原则：崩溃帧的 BuildId 必须与所上传压缩包中的 ELF 完全匹配；Hands 不会根据版本或文件名猜测。
 
 在 Android 11 及以上版本，如果操作系统保留了匹配的 `ApplicationExitInfo` 跟踪和退出描述，SDK 也会附加它们，提供受支持的 tombstone 或中止消息等效信息，无需读取 `/data/tombstones`。匹配要求已记录的进程 ID、原生崩溃原因和较窄的时间窗口；保留的证据一对一分配并持久化，以便确定性重试，而不是猜测最近的应用退出。
 

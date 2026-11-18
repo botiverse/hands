@@ -174,7 +174,10 @@ class App : Application() {
 To get readable (deobfuscated) stacks in the console, publish the release
 with its R8/ProGuard `mapping.txt` (and, for NDK crashes, the unstripped
 `.so` archive) — Hands symbolicates crash reports for that `versionCode`
-automatically. QNC2 native reports preserve the crashing thread's PC/LR/SP,
+automatically. Once a Java/Kotlin crash is deobfuscated, Hands regroups it by the
+deobfuscated exception class and first frame (skipping throw helpers such as
+`throwIllegalArgumentException`), so one bug stays in one group across builds;
+crash alerts for those builds wait for this before announcing a group. QNC2 native reports preserve the crashing thread's PC/LR/SP,
 registers, thread identity, and loaded-image ELF BuildIds. Symbolication is
 strictly fail-closed: the crash frame's BuildId must exactly match an ELF in
 the uploaded archive; Hands never guesses by version or filename. On Android
