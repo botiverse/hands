@@ -17,9 +17,14 @@ import {
   exchangeRaftCode,
   fetchRaftUserinfo,
   isUserAllowed,
+  raftAuthorizeUrl,
   requireRaftConfig,
   upsertRaftAccount,
 } from "./auth";
+
+function installerCallbackUrl(c: Context<{ Bindings: Env }>): string {
+  return `${businessOrigin(c.env, () => requestOrigin(c))}/login/raft/installer/callback`;
+}
 
 const LOGIN_COOKIE = "hands_installer_login";
 const LOGIN_REQUEST_TTL_MS = 10 * 60 * 1000;
@@ -73,12 +78,8 @@ export async function handleInstallerLogin(c: Context<{ Bindings: Env }>) {
     maxAge: LOGIN_REQUEST_TTL_MS / 1000,
   });
 
-  const setup = new URL("/login-with-raft/setup", config.raftOrigin);
-  setup.searchParams.set("client_id", config.clientId);
-  setup.searchParams.set("return_to", `${businessOrigin(c.env, () => requestOrigin(c))}/login/raft/installer/callback`);
-  setup.searchParams.set("scope", "openid profile");
   noStore(c);
-  return c.redirect(setup.toString(), 302);
+  return c.redirect(raftAuthorizeUrl(config, installerCallbackUrl(c)), 302);
 }
 
 export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>) {
@@ -99,7 +100,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
 
   try {
     const token = await exchangeRaftCode(
-      config.raftApiOrigin, config.clientId, config.clientSecret, raftCode,
+      config.raftApiOrigin, config.clientId, config.clientSecret, raftCode, installerCallbackUrl(c),
     );
     const userinfo = await fetchRaftUserinfo(config.raftApiOrigin, token.access_token);
     if (userinfo.type !== "human" || !isUserAllowed(c.env, userinfo)) {
