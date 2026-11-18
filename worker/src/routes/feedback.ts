@@ -917,21 +917,26 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
   // symbolication_status fields. See dispatchSymbolication.
+  let regrouping: Promise<unknown> | undefined;
   if (kind === "crash" || kind === "error") {
     const logKey = attachmentRows.length > 0 ? attachmentRows[0]!.r2Key : null;
-    const run = () =>
-      dispatchSymbolication(
-        c.env,
-        { id: app.id, platform: app.platform },
-        ticketId,
-        versionCode,
-        metadata,
-        logKey,
-      );
+    const symbolication = dispatchSymbolication(
+      c.env,
+      { id: app.id, platform: app.platform },
+      ticketId,
+      versionCode,
+      metadata,
+      logKey,
+    ).catch(() => {});
+    // An Android exception with a log and a build may be regrouped by its
+    // retraced stack; its alerts wait for that so they announce the real group.
+    if (logKey && versionCode !== null && app.platform === "android" && crashTypeOf(metadata) === "exception") {
+      regrouping = symbolication;
+    }
     try {
-      c.executionCtx.waitUntil(run());
+      c.executionCtx.waitUntil(symbolication);
     } catch {
-      run().catch(() => {});
+      // no execution context (tests): the promise still runs
     }
   }
 
@@ -940,7 +945,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // a once-a-day summary instead.
   if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id && !backgroundSystemKill) {
     await scheduleCrashAlerts(c, app, app.org_id, {
-      kind, signature, metadata, ticketId, message, versionName, versionCode, now,
+      kind, signature, metadata, ticketId, message, versionName, versionCode, now, waitFor: regrouping,
     });
   }
 
@@ -1052,6 +1057,9 @@ function feedbackNewSubmitResponse(
  * Never fails the caller; runs in the background when an execution context
  * exists.
  */
+/** How long a crash alert waits for retrace before announcing the SDK's grouping. */
+const ALERT_REGROUP_WAIT_MS = 20_000;
+
 async function scheduleCrashAlerts(
   c: Context<{ Bindings: Env }>,
   app: FeedbackApp,
@@ -1065,11 +1073,21 @@ async function scheduleCrashAlerts(
     versionName: string | null;
     versionCode: number | null;
     now: number;
+    /** Settles once the ticket may have been regrouped; the alert then reads its current signature. */
+    waitFor?: Promise<unknown> | undefined;
   },
 ) {
-  const { kind, signature, metadata, ticketId, message, versionName, versionCode, now } = input;
+  const { kind, metadata, ticketId, message, versionName, versionCode, now } = input;
+  let signature = input.signature;
   const eventPrefix = kind === "crash" ? "crash" : "error";
   const alert = async () => {
+    if (input.waitFor) {
+      await Promise.race([input.waitFor, new Promise((resolve) => setTimeout(resolve, ALERT_REGROUP_WAIT_MS))]);
+      const current = await c.env.DB.prepare(
+        `SELECT signature FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
+      ).bind(app.id, ticketId).first<{ signature: string | null }>();
+      if (current?.signature) signature = current.signature;
+    }
     const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
     const base = {
       app_slug: app.slug,
@@ -1917,11 +1935,64 @@ export async function retraceCrashTicket(
       "symbolicated",
       retraced.trim().slice(0, 20_000),
     );
+    await regroupFromRetrace(env, appId, ticketId, retraced);
   } catch (err) {
     console.error(
       `[retrace] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** Leading frames that only raise the exception, not where it went wrong. */
+const THROW_HELPER_FRAME = /(^|\.)throw[A-Z_]\w*$|^kotlin\.jvm\.internal\.|Preconditions\.\w+$|^java\.util\.Objects\.requireNonNull$/;
+
+/**
+ * The grouping signature of a deobfuscated Java/Kotlin trace: the first
+ * exception's class and its first frame that is not a throw helper, in the
+ * same `Class@frame` form crashSignature builds from SDK metadata. Null when
+ * the text has no recognisable exception with frames.
+ */
+export function retracedSignature(retraced: string): string | null {
+  const lines = retraced.split(/\r?\n/);
+  const frameOf = (line: string) => /^\s+at\s+([\w$.<>-]+)\s*\(/.exec(line)?.[1] ?? null;
+  const firstFrame = lines.findIndex((line) => frameOf(line) !== null);
+  if (firstFrame < 1) return null;
+  const header = lines[firstFrame - 1]!.trim();
+  const exceptionClass = /^([\w$.]+)(?::|$)/.exec(header)?.[1];
+  if (!exceptionClass || !exceptionClass.includes(".")) return null;
+  const frames: string[] = [];
+  for (let i = firstFrame; i < lines.length; i++) {
+    const frame = frameOf(lines[i]!);
+    if (!frame) break;
+    frames.push(frame);
+  }
+  const chosen = frames.find((frame) => !THROW_HELPER_FRAME.test(frame)) ?? frames[0]!;
+  return crashSignature({ crash_exception_class: exceptionClass, crash_top_frame: chosen });
+}
+
+/**
+ * After a successful R8 retrace, regroup an exception ticket under the
+ * signature of its deobfuscated stack, so one bug keeps one group across
+ * builds instead of a new obfuscated name per release. ANRs, system kills and
+ * other typed crashes keep their own signatures.
+ */
+export async function regroupFromRetrace(env: Env, appId: string, ticketId: string, retraced: string) {
+  const ticket = await env.DB.prepare(
+    `SELECT signature, metadata_json FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
+  ).bind(appId, ticketId).first<{ signature: string | null; metadata_json: string | null }>();
+  if (!ticket || ticket.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE) return;
+  let metadata: Record<string, unknown> = {};
+  try {
+    metadata = JSON.parse(ticket.metadata_json ?? "{}");
+  } catch {
+    return;
+  }
+  if (crashTypeOf(metadata) !== "exception") return;
+  const next = retracedSignature(retraced);
+  if (!next || next === ticket.signature) return;
+  await env.DB.prepare(
+    `UPDATE feedback_tickets SET signature = ?1 WHERE app_id = ?2 AND id = ?3`,
+  ).bind(next, appId, ticketId).run();
 }
 
 export interface NativeFrame {
