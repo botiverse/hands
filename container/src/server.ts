@@ -33,6 +33,8 @@ import {
 } from "./parsers/index.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
 import { registerSigningRoutes } from "./signing.js";
+import { downloadMapping, filterMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
+import { Readable } from "node:stream";
 
 const app = new Hono();
 registerSigningRoutes(app);
@@ -150,45 +152,55 @@ app.post("/generate-patch", async (c) => {
 });
 
 /**
- * POST /retrace — body = { mapping, trace }. Deobfuscates an R8/ProGuard
- * stack trace against the given mapping using the Android SDK retrace tool.
- * Returns { retraced }.
+ * POST /retrace — body = { mapping_url, trace } (or legacy { mapping, trace }).
+ * Deobfuscates an R8/ProGuard stack trace with the Android SDK retrace tool.
+ * The mapping is streamed from its presigned URL to disk and reduced to the
+ * classes the trace names, so a mapping of any size fits. Returns
+ * { retraced, classes_kept }.
  */
 app.post("/retrace", async (c) => {
-  let body: { mapping?: string; trace?: string };
+  let body: { mapping?: string; mapping_url?: string; trace?: string };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: "invalid JSON body" }, 400);
   }
+  const mappingUrl = typeof body.mapping_url === "string" ? body.mapping_url : "";
   const mapping = typeof body.mapping === "string" ? body.mapping : "";
   const trace = typeof body.trace === "string" ? body.trace : "";
-  if (!mapping.trim() || !trace.trim()) {
-    return c.json({ error: "mapping and trace are required" }, 400);
-  }
-  if (mapping.length > 200 * 1024 * 1024) {
-    return c.json({ error: "mapping too large" }, 413);
+  if ((!mappingUrl && !mapping.trim()) || !trace.trim()) {
+    return c.json({ error: "mapping_url (or mapping) and trace are required" }, 400);
   }
   const dir = join(tmpdir(), `retrace-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const rawPath = join(dir, "mapping-full.txt");
   const mappingPath = join(dir, "mapping.txt");
   const tracePath = join(dir, "trace.txt");
   try {
     await mkdir(dir, { recursive: true });
-    await writeFile(mappingPath, mapping);
     await writeFile(tracePath, trace);
+    let input: NodeJS.ReadableStream;
+    if (mappingUrl) {
+      await downloadMapping(mappingUrl, rawPath);
+      input = openMapping(rawPath);
+    } else {
+      input = Readable.from([mapping]);
+    }
+    const classesKept = await filterMapping(input, mappingPath, traceNames(trace));
+    await rm(rawPath, { force: true });
     const { stdout } = await execFileAsync(
       RETRACE_BIN,
       [mappingPath, tracePath],
       { maxBuffer: 32 * 1024 * 1024 },
     );
-    return c.json({ retraced: stdout });
+    return c.json({ retraced: stdout, classes_kept: classesKept });
   } catch (err) {
+    if (err instanceof RetraceError) return c.json({ error: err.message, code: err.code }, err.status);
     return c.json(
       { error: `retrace failed: ${err instanceof Error ? err.message : String(err)}` },
       500,
     );
   } finally {
-    await Promise.allSettled([unlink(mappingPath), unlink(tracePath)]);
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 });
 

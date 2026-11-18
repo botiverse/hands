@@ -7,6 +7,7 @@
  * download them through an authenticated streaming endpoint (no presign
  * needed).
  */
+import { presignR2DownloadUrl } from "../lib/r2_presign";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
@@ -1874,26 +1875,38 @@ export async function retraceCrashTicket(
       return;
     }
 
-    const [mappingObj, logObj] = await Promise.all([
-      env.APK_BUCKET.get(mapping.r2_key),
-      env.APK_BUCKET.get(logR2Key),
-    ]);
-    if (!mappingObj || !logObj) return;
-    const [mappingText, logText] = await Promise.all([
-      mappingObj.text(),
-      logObj.text(),
-    ]);
+    // Release mappings run to hundreds of MB: more than a Worker can hold.
+    // The container streams the mapping from a presigned URL instead.
+    const logObj = await env.APK_BUCKET.get(logR2Key);
+    if (!logObj) return;
+    const logText = await logObj.text();
+    const mappingUrl = await presignR2DownloadUrl(
+      env,
+      { key: mapping.r2_key, filetype: "mapping.txt", contentDisposition: "attachment" },
+      3600,
+    );
+    if (!mappingUrl) {
+      await appendSymbolication(env, ticketId, "android-r8", "unsymbolicated",
+        "R8 retrace could not read the mapping: R2 presigning is not configured on this server.");
+      return;
+    }
 
     const { getRandom } = await import("@cloudflare/containers");
     const container = await getRandom(env.APK_PARSER, 1);
     const res = await container.fetch(
       new Request("http://container/retrace", {
         method: "POST",
-        body: JSON.stringify({ mapping: mappingText, trace: logText }),
+        body: JSON.stringify({ mapping_url: mappingUrl, trace: logText }),
         headers: { "content-type": "application/json" },
+        signal: AbortSignal.timeout(900_000),
       }),
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({})) as { error?: string; code?: string };
+      await appendSymbolication(env, ticketId, "android-r8", "unsymbolicated",
+        `R8 retrace failed (${detail.code ?? res.status}): ${String(detail.error ?? "").slice(0, 300)}`);
+      return;
+    }
     const { retraced } = (await res.json()) as { retraced?: string };
     if (!retraced || !retraced.trim()) return;
 
