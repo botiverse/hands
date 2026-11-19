@@ -936,7 +936,7 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
     .all();
   const { results: checks } = await c.env.DB.prepare(
     `SELECT id, source, run_id, run_url, verdict, cases_total, cases_passed,
-            summary, reviewer, reviewed_at, created_at, updated_at
+            summary, reviewer, reviewed_at, sequence, decision_id, created_at, updated_at
      FROM release_checks WHERE release_id = ?1 ORDER BY updated_at DESC`,
   )
     .bind(releaseId)
@@ -1012,11 +1012,19 @@ export async function handleGetRelease(c: Context<{ Bindings: Env }>) {
 // ============================================================================
 
 const CHECK_VERDICTS = ["passed", "failed", "warning", "skipped"] as const;
+const CHECK_COLUMNS = `id, release_id, source, run_id, run_url, verdict, cases_total,
+  cases_passed, summary, reviewer, reviewed_at, sequence, decision_id, created_at, updated_at`;
 
 /**
  * Upsert an advisory verification result from an external system (one row per
  * release+source; re-posting replaces that source's verdict). Advisory only —
  * publish never consults this table.
+ *
+ * Ordering: a caller may send `sequence` (a positive safe integer it assigns
+ * per release+source) and `decision_id`. The first sequenced write takes over
+ * the row; from then on only a larger sequence replaces it, a write without a
+ * sequence is refused, and reviewed_at no longer orders it. Rows that never
+ * received a sequence keep the reviewed_at rules.
  */
 export async function handleUpsertReleaseCheck(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
@@ -1034,6 +1042,8 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
     summary?: string;
     reviewer?: string;
     reviewed_at?: number;
+    sequence?: unknown;
+    decision_id?: unknown;
   };
   const source = (body.source ?? "").trim().slice(0, 100);
   if (!source) return c.json({ error: "source required" }, 400);
@@ -1054,6 +1064,19 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
       return c.json({ error: `${key} must be a string` }, 400);
     }
   }
+  // null and absent mean "no sequence"; any other value must be a positive
+  // safe integer, never coerced.
+  if (body.sequence !== undefined && body.sequence !== null
+    && !(typeof body.sequence === "number" && Number.isSafeInteger(body.sequence) && body.sequence > 0)) {
+    return c.json({ error: "sequence must be a positive safe integer" }, 400);
+  }
+  const sequence = typeof body.sequence === "number" ? body.sequence : null;
+  // Refused rather than clipped: a cut identifier could equal another one.
+  if (body.decision_id !== undefined && body.decision_id !== null
+    && !(typeof body.decision_id === "string" && body.decision_id.length > 0 && Array.from(body.decision_id).length <= 200)) {
+    return c.json({ error: "decision_id must be a non-empty string of at most 200 characters" }, 400);
+  }
+  const decisionId = typeof body.decision_id === "string" ? body.decision_id : null;
   // Cut on code points so a stored value reads back exactly as sent.
   const clip = (v: string | null | undefined, max: number) =>
     typeof v === "string" ? Array.from(v).slice(0, max).join("") : null;
@@ -1070,11 +1093,15 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
     summary: clip(body.summary, 4000),
     reviewer: clip(body.reviewer, 200),
     reviewed_at: reviewedAt,
+    sequence,
+    decision_id: decisionId,
   };
-  // Ordering per (release, source): a result carrying reviewed_at replaces the
-  // stored one only when it is newer (or the stored one has none). Once a row
-  // has reviewed_at, a write without it no longer replaces it. A write that
-  // changes nothing is not a write. The condition, the update and its audit
+  // Ordering per (release, source). A sequenced row is replaced only by a
+  // larger sequence that does not reuse the stored decision_id. An unsequenced
+  // row is taken over by any sequenced write; between unsequenced writes, a
+  // result carrying reviewed_at replaces the stored one only when it is newer
+  // (or the stored one has none), and once a row has reviewed_at a write
+  // without it no longer replaces it. A write that changes nothing is not a write. The condition, the update and its audit
   // row commit together: the audit insert runs only when the upsert changed a row.
   const results = await c.env.DB.batch([
     c.env.DB
@@ -1082,8 +1109,8 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
         `INSERT INTO release_checks
          (id, release_id, app_id, source, run_id, run_url, verdict,
           cases_total, cases_passed, summary, reviewer, reviewed_at,
-          created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+          created_at, updated_at, sequence, decision_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT (release_id, source) DO UPDATE SET
            run_id = excluded.run_id,
            run_url = excluded.run_url,
@@ -1093,11 +1120,20 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
            summary = excluded.summary,
            reviewer = excluded.reviewer,
            reviewed_at = excluded.reviewed_at,
-           updated_at = excluded.updated_at
+           updated_at = excluded.updated_at,
+           sequence = excluded.sequence,
+           decision_id = excluded.decision_id
          WHERE (
-             (excluded.reviewed_at IS NULL AND release_checks.reviewed_at IS NULL)
-             OR (excluded.reviewed_at IS NOT NULL
-                 AND (release_checks.reviewed_at IS NULL OR excluded.reviewed_at > release_checks.reviewed_at))
+             (release_checks.sequence IS NOT NULL
+               AND excluded.sequence IS NOT NULL
+               AND excluded.sequence > release_checks.sequence
+               AND (excluded.decision_id IS NULL OR excluded.decision_id IS NOT release_checks.decision_id))
+             OR (release_checks.sequence IS NULL AND excluded.sequence IS NOT NULL)
+             OR (release_checks.sequence IS NULL AND excluded.sequence IS NULL AND (
+               (excluded.reviewed_at IS NULL AND release_checks.reviewed_at IS NULL)
+               OR (excluded.reviewed_at IS NOT NULL
+                   AND (release_checks.reviewed_at IS NULL OR excluded.reviewed_at > release_checks.reviewed_at))
+             ))
            )
            AND (release_checks.run_id IS NOT excluded.run_id
              OR release_checks.run_url IS NOT excluded.run_url
@@ -1106,9 +1142,10 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
              OR release_checks.cases_passed IS NOT excluded.cases_passed
              OR release_checks.summary IS NOT excluded.summary
              OR release_checks.reviewer IS NOT excluded.reviewer
-             OR release_checks.reviewed_at IS NOT excluded.reviewed_at)
-         RETURNING id, release_id, source, run_id, run_url, verdict, cases_total,
-                   cases_passed, summary, reviewer, reviewed_at, created_at, updated_at`,
+             OR release_checks.reviewed_at IS NOT excluded.reviewed_at
+             OR release_checks.sequence IS NOT excluded.sequence
+             OR release_checks.decision_id IS NOT excluded.decision_id)
+         RETURNING ${CHECK_COLUMNS}`,
       )
       .bind(
         id,
@@ -1125,6 +1162,8 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
         values.reviewed_at,
         now,
         now,
+        values.sequence,
+        values.decision_id,
       ),
     c.env.DB
       .prepare(
@@ -1136,7 +1175,15 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
         appId,
         "release.check",
         currentActor(c),
-        JSON.stringify({ release_id: releaseId, source, verdict: body.verdict, run_id: body.run_id ?? null, reviewed_at: reviewedAt }),
+        JSON.stringify({
+          release_id: releaseId,
+          source,
+          verdict: body.verdict,
+          run_id: body.run_id ?? null,
+          reviewed_at: reviewedAt,
+          sequence,
+          decision_id: decisionId,
+        }),
         now,
       ),
   ]);
@@ -1146,8 +1193,7 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
   if (writtenRow) return c.json({ check: writtenRow }, 201);
 
   const saved = await c.env.DB.prepare(
-    `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
-            cases_passed, summary, reviewer, reviewed_at, created_at, updated_at
+    `SELECT ${CHECK_COLUMNS}
      FROM release_checks WHERE release_id = ?1 AND source = ?2`,
   )
     .bind(releaseId, source)
@@ -1157,7 +1203,36 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
   const same = (Object.keys(values) as Array<keyof typeof values>)
     .every((key) => (saved[key] ?? null) === values[key]);
   const storedReviewedAt = typeof saved.reviewed_at === "number" ? saved.reviewed_at : null;
+  const storedSequence = typeof saved.sequence === "number" ? saved.sequence : null;
   if (same) return c.json({ check: saved, duplicate: true }, 200);
+  if (storedSequence !== null) {
+    if (sequence === null) {
+      return c.json({
+        error: "this check is ordered by sequence; send sequence to replace it",
+        code: "sequence_required",
+        check: saved,
+      }, 409);
+    }
+    if (sequence === storedSequence) {
+      return c.json({
+        error: "a different result with the same sequence is already stored",
+        code: "sequence_conflict",
+        check: saved,
+      }, 409);
+    }
+    if (sequence < storedSequence) return c.json({ check: saved, stale: true }, 200);
+    if (decisionId !== null && decisionId === saved.decision_id) {
+      return c.json({
+        error: "the stored check already has this decision_id; a new sequence needs a new decision",
+        code: "decision_id_reused",
+        check: saved,
+      }, 409);
+    }
+  }
+  // A sequenced write that was not applied, yet would apply against the row
+  // read back now: another write changed the row in between. `check` is that
+  // current row, not this request's content.
+  if (sequence !== null) return c.json({ check: saved, superseded: true }, 200);
   // Untimed over untimed only skips a write identical to what was stored; if
   // the stored row differs now, another write replaced it after that check.
   // `check` is that current row, not this request's content.
@@ -1188,8 +1263,7 @@ export async function handleListReleaseChecks(c: AdminContext) {
   const release = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!release) return c.json({ error: "not found" }, 404);
   const { results: checks } = await c.env.DB.prepare(
-    `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
-            cases_passed, summary, reviewer, reviewed_at, created_at, updated_at
+    `SELECT ${CHECK_COLUMNS}
      FROM release_checks WHERE release_id = ?1 ORDER BY updated_at DESC`,
   )
     .bind(releaseId)

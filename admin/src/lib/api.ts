@@ -1489,6 +1489,8 @@ export interface ReleaseCheck {
   summary: string | null;
   reviewer: string | null;
   reviewed_at: number | null;
+  sequence: number | null;
+  decision_id: string | null;
   created_at: number;
   updated_at: number;
 }

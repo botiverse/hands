@@ -408,6 +408,8 @@ function makeMockDb() {
       reviewed_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
+      sequence INTEGER,
+      decision_id TEXT,
       UNIQUE (release_id, source)
     );
     CREATE TABLE release_shares (
@@ -8306,6 +8308,107 @@ describe("quiver public API v2 — scope resolution", () => {
       const replaced = await post({ source: "untimed", run_id: "u1", verdict: "passed" });
       expect(replaced).toMatchObject({ status: 200, body: { superseded: true, check: { run_id: "u2-other" } } });
       expect(replaced.body.duplicate).toBeUndefined();
+    } finally {
+      db.batch = realBatch;
+    }
+  });
+
+  it("release checks: sequence orders a source once sent, and legacy writes cannot replace it", async () => {
+    const env = makeEnv();
+    await seedRelease(env, "rel-seq", "build-seq", [["full", "all"]]);
+    const { handleUpsertReleaseCheck, handleListReleaseChecks } = await import("../src/routes/releases");
+    const call = (handler: any, body: Record<string, unknown> = {}) => handler({
+      env,
+      req: {
+        url: "https://quiver-worker.test/api/apps/app-scope/releases/rel-seq/checks",
+        param: (name: string) => ({ appId: "app-scope", releaseId: "rel-seq" } as Record<string, string>)[name] ?? "",
+        query: () => undefined,
+        json: async () => body,
+      },
+      get: (name: string) => (name === "admin_actor" ? "testbed" : undefined),
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    const post = async (body: Record<string, unknown>) => {
+      const res = await call(handleUpsertReleaseCheck, { source: "tb", ...body });
+      return { status: res.status, body: await responseJson<any>(res) };
+    };
+    const audits = async () => Number((await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-scope' AND action = 'release.check'",
+    ).first() as { n: number } | null)?.n ?? 0);
+    const stored = async () => env.DB.prepare(
+      "SELECT run_id, verdict, reviewed_at, sequence, decision_id FROM release_checks WHERE release_id = 'rel-seq' AND source = 'tb'",
+    ).first() as Promise<any>;
+
+    // Invalid sequence / decision_id values are refused, never coerced.
+    for (const bad of [0, -1, 1.5, "2", 2 ** 53, true]) {
+      expect((await post({ verdict: "passed", sequence: bad })).status).toBe(400);
+    }
+    for (const bad of ["", 7, "x".repeat(201)]) {
+      expect((await post({ verdict: "passed", sequence: 1, decision_id: bad })).status).toBe(400);
+    }
+    expect(await audits()).toBe(0);
+
+    // A legacy timed row exists; the first sequenced write takes it over even
+    // with an older reviewed_at, and reads back sequence and decision_id.
+    expect((await post({ run_id: "legacy", verdict: "failed", reviewed_at: 9000 })).status).toBe(201);
+    const first = await post({ run_id: "d1", verdict: "warning", reviewed_at: 100, sequence: 1, decision_id: "dec-1" });
+    expect(first).toMatchObject({ status: 201, body: { check: { run_id: "d1", sequence: 1, decision_id: "dec-1", reviewed_at: 100 } } });
+
+    // From now on: a write without a sequence is refused, whatever its reviewed_at.
+    const legacyLate = await post({ run_id: "late", verdict: "passed", reviewed_at: 99999 });
+    expect(legacyLate).toMatchObject({ status: 409, body: { code: "sequence_required", check: { run_id: "d1" } } });
+    expect((await post({ run_id: "late", verdict: "passed" })).body.code).toBe("sequence_required");
+    // Identical resend: duplicate, no audit.
+    expect(await post({ run_id: "d1", verdict: "warning", reviewed_at: 100, sequence: 1, decision_id: "dec-1" }))
+      .toMatchObject({ status: 200, body: { duplicate: true } });
+    // Same sequence, different content: conflict.
+    expect(await post({ run_id: "d1", verdict: "passed", reviewed_at: 100, sequence: 1, decision_id: "dec-1" }))
+      .toMatchObject({ status: 409, body: { code: "sequence_conflict", check: { verdict: "warning" } } });
+    // The current decision_id under a larger sequence: refused.
+    expect(await post({ run_id: "d1", verdict: "passed", sequence: 2, decision_id: "dec-1" }))
+      .toMatchObject({ status: 409, body: { code: "decision_id_reused", check: { sequence: 1 } } });
+    expect(await stored()).toEqual({ run_id: "d1", verdict: "warning", reviewed_at: 100, sequence: 1, decision_id: "dec-1" });
+    expect(await audits()).toBe(2);
+
+    // A larger sequence replaces even with an older reviewed_at; a smaller one is stale.
+    expect(await post({ run_id: "d3", verdict: "passed", reviewed_at: 50, sequence: 3, decision_id: "dec-3" }))
+      .toMatchObject({ status: 201, body: { check: { run_id: "d3", sequence: 3, decision_id: "dec-3" } } });
+    expect(await post({ run_id: "d2", verdict: "failed", reviewed_at: 5000, sequence: 2, decision_id: "dec-2" }))
+      .toMatchObject({ status: 200, body: { stale: true, check: { run_id: "d3", sequence: 3 } } });
+    expect(await stored()).toEqual({ run_id: "d3", verdict: "passed", reviewed_at: 50, sequence: 3, decision_id: "dec-3" });
+    expect(await audits()).toBe(3);
+    const audit = await env.DB.prepare(
+      "SELECT payload FROM audit_logs WHERE app_id = 'app-scope' AND action = 'release.check' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    ).first() as { payload: string };
+    expect(JSON.parse(audit.payload)).toMatchObject({ sequence: 3, decision_id: "dec-3" });
+
+    // List read-back carries the new fields; an unsequenced source keeps the old rules.
+    const listed = await responseJson<any>(await call(handleListReleaseChecks));
+    expect(listed.checks[0]).toMatchObject({ sequence: 3, decision_id: "dec-3" });
+    expect((await post({ source: "other", run_id: "o2", verdict: "passed", reviewed_at: 2 })).status).toBe(201);
+    expect((await post({ source: "other", run_id: "o1", verdict: "failed", reviewed_at: 1 })).body.stale).toBe(true);
+
+    // Race: a larger sequence lands right after this request's write; the 201
+    // still carries this request's row, and a later request that loses to it
+    // is reported against the current row.
+    const db = env.DB as any;
+    const realBatch = db.batch.bind(db);
+    try {
+      db.batch = async (statements: any) => {
+        const out = await realBatch(statements);
+        await db.prepare("UPDATE release_checks SET run_id = 'd9', sequence = 9, decision_id = 'dec-9' WHERE release_id = 'rel-seq' AND source = 'tb'").run();
+        return out;
+      };
+      expect(await post({ run_id: "d4", verdict: "passed", sequence: 4, decision_id: "dec-4" }))
+        .toMatchObject({ status: 201, body: { check: { run_id: "d4", sequence: 4, decision_id: "dec-4" } } });
+      db.batch = async (statements: any) => {
+        await db.prepare("UPDATE release_checks SET run_id = 'd20', sequence = 20, decision_id = 'dec-20' WHERE release_id = 'rel-seq' AND source = 'tb'").run();
+        const out = await realBatch(statements);
+        await db.prepare("UPDATE release_checks SET run_id = 'd5', sequence = 5, decision_id = 'dec-5' WHERE release_id = 'rel-seq' AND source = 'tb'").run();
+        return out;
+      };
+      expect(await post({ run_id: "d10", verdict: "passed", sequence: 10, decision_id: "dec-10" }))
+        .toMatchObject({ status: 200, body: { superseded: true, check: { run_id: "d5", sequence: 5 } } });
     } finally {
       db.batch = realBatch;
     }
