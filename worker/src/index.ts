@@ -304,6 +304,7 @@ import {
   handleRollbackRelease,
   handleUpdateRelease,
   handleUpsertReleaseCheck,
+  handleUpsertSequencedReleaseCheck,
   handleListReleaseChecks,
   handleListReleaseApprovals,
   handleApproveReleaseApproval,
@@ -1158,6 +1159,7 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/bump-rollout", requireAp
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 bindAdmin("get", "/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/checks", requireAppRole("publisher"), handleUpsertReleaseCheck);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/checks/sequenced", requireAppRole("publisher"), handleUpsertSequencedReleaseCheck);
 bindAdmin("get", "/api/apps/:appId/releases/:releaseId/distributions",
   requireAppRole("viewer"),
   handleListDistributions,

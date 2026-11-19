@@ -412,6 +412,15 @@ function makeMockDb() {
       decision_id TEXT,
       UNIQUE (release_id, source)
     );
+    CREATE TRIGGER trg_release_checks_sequence_guard
+    BEFORE UPDATE ON release_checks
+    WHEN OLD.sequence IS NOT NULL AND NOT (
+      NEW.sequence IS NOT NULL AND NEW.sequence > OLD.sequence
+      AND NEW.decision_id IS NOT NULL AND NEW.decision_id IS NOT OLD.decision_id
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'release_checks: sequence guard');
+    END;
     CREATE TABLE release_shares (
       id TEXT PRIMARY KEY,
       release_id TEXT NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
@@ -8316,7 +8325,7 @@ describe("quiver public API v2 — scope resolution", () => {
   it("release checks: sequence orders a source once sent, and legacy writes cannot replace it", async () => {
     const env = makeEnv();
     await seedRelease(env, "rel-seq", "build-seq", [["full", "all"]]);
-    const { handleUpsertReleaseCheck, handleListReleaseChecks } = await import("../src/routes/releases");
+    const { handleUpsertReleaseCheck, handleUpsertSequencedReleaseCheck, handleListReleaseChecks } = await import("../src/routes/releases");
     const call = (handler: any, body: Record<string, unknown> = {}) => handler({
       env,
       req: {
@@ -8328,7 +8337,13 @@ describe("quiver public API v2 — scope resolution", () => {
       get: (name: string) => (name === "admin_actor" ? "testbed" : undefined),
       json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
     } as any);
+    // Sequenced bodies go to the sequenced path; others to the plain one.
     const post = async (body: Record<string, unknown>) => {
+      const handler = "sequence" in body || "decision_id" in body ? handleUpsertSequencedReleaseCheck : handleUpsertReleaseCheck;
+      const res = await call(handler, { source: "tb", ...body });
+      return { status: res.status, body: await responseJson<any>(res) };
+    };
+    const plain = async (body: Record<string, unknown>) => {
       const res = await call(handleUpsertReleaseCheck, { source: "tb", ...body });
       return { status: res.status, body: await responseJson<any>(res) };
     };
@@ -8340,12 +8355,17 @@ describe("quiver public API v2 — scope resolution", () => {
     ).first() as Promise<any>;
 
     // Invalid sequence / decision_id values are refused, never coerced.
-    for (const bad of [0, -1, 1.5, "2", 2 ** 53, true]) {
-      expect((await post({ verdict: "passed", sequence: bad })).status).toBe(400);
+    for (const bad of [0, -1, 1.5, "2", 2 ** 53, true, null]) {
+      expect((await post({ verdict: "passed", sequence: bad, decision_id: "dec" })).status).toBe(400);
     }
-    for (const bad of ["", 7, "x".repeat(201)]) {
+    for (const bad of ["", 7, "x".repeat(201), null]) {
       expect((await post({ verdict: "passed", sequence: 1, decision_id: bad })).status).toBe(400);
     }
+    expect((await post({ verdict: "passed", sequence: 1 })).status).toBe(400);
+    // The plain path refuses sequenced fields instead of applying reviewed_at rules.
+    expect(await plain({ verdict: "passed", sequence: 1, decision_id: "dec" }))
+      .toMatchObject({ status: 400, body: { code: "sequenced_endpoint_required" } });
+    expect((await plain({ verdict: "passed", decision_id: "dec" })).body.code).toBe("sequenced_endpoint_required");
     expect(await audits()).toBe(0);
 
     // A legacy timed row exists; the first sequenced write takes it over even
@@ -8401,10 +8421,12 @@ describe("quiver public API v2 — scope resolution", () => {
       };
       expect(await post({ run_id: "d4", verdict: "passed", sequence: 4, decision_id: "dec-4" }))
         .toMatchObject({ status: 201, body: { check: { run_id: "d4", sequence: 4, decision_id: "dec-4" } } });
+      // The row only moves to a lower sequence by being deleted and recreated.
       db.batch = async (statements: any) => {
         await db.prepare("UPDATE release_checks SET run_id = 'd20', sequence = 20, decision_id = 'dec-20' WHERE release_id = 'rel-seq' AND source = 'tb'").run();
         const out = await realBatch(statements);
-        await db.prepare("UPDATE release_checks SET run_id = 'd5', sequence = 5, decision_id = 'dec-5' WHERE release_id = 'rel-seq' AND source = 'tb'").run();
+        await db.prepare("DELETE FROM release_checks WHERE release_id = 'rel-seq' AND source = 'tb'").run();
+        await db.prepare("INSERT INTO release_checks (id, release_id, app_id, source, run_id, verdict, created_at, updated_at, sequence, decision_id) VALUES ('x5', 'rel-seq', 'app-scope', 'tb', 'd5', 'passed', 1, 1, 5, 'dec-5')").run();
         return out;
       };
       expect(await post({ run_id: "d10", verdict: "passed", sequence: 10, decision_id: "dec-10" }))

@@ -1020,13 +1020,25 @@ const CHECK_COLUMNS = `id, release_id, source, run_id, run_url, verdict, cases_t
  * release+source; re-posting replaces that source's verdict). Advisory only —
  * publish never consults this table.
  *
- * Ordering: a caller may send `sequence` (a positive safe integer it assigns
- * per release+source) and `decision_id`. The first sequenced write takes over
- * the row; from then on only a larger sequence replaces it, a write without a
- * sequence is refused, and reviewed_at no longer orders it. Rows that never
- * received a sequence keep the reviewed_at rules.
+ * Ordering: `POST .../checks/sequenced` requires `sequence` (a positive safe
+ * integer the caller assigns per release+source) and `decision_id`. The first
+ * sequenced write takes over the row; from then on only a larger sequence with
+ * another decision_id replaces it, a write without a sequence is refused, and
+ * reviewed_at no longer orders it. Rows that never received a sequence keep the
+ * reviewed_at rules. The sequenced write has its own path so a request sent to
+ * a Worker that predates it gets 404 instead of being applied by the
+ * reviewed_at rules; `POST .../checks` refuses sequence and decision_id.
+ * Migration 0098 enforces the same rule on the row itself.
  */
-export async function handleUpsertReleaseCheck(c: AdminContext) {
+export function handleUpsertReleaseCheck(c: AdminContext) {
+  return upsertReleaseCheck(c, false);
+}
+
+export function handleUpsertSequencedReleaseCheck(c: AdminContext) {
+  return upsertReleaseCheck(c, true);
+}
+
+async function upsertReleaseCheck(c: AdminContext, sequenced: boolean) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
   const release = await getReleaseForApp(c.env.DB, appId, releaseId);
@@ -1064,19 +1076,27 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
       return c.json({ error: `${key} must be a string` }, 400);
     }
   }
-  // null and absent mean "no sequence"; any other value must be a positive
-  // safe integer, never coerced.
-  if (body.sequence !== undefined && body.sequence !== null
-    && !(typeof body.sequence === "number" && Number.isSafeInteger(body.sequence) && body.sequence > 0)) {
-    return c.json({ error: "sequence must be a positive safe integer" }, 400);
+  let sequence: number | null = null;
+  let decisionId: string | null = null;
+  if (!sequenced) {
+    if ((body.sequence ?? null) !== null || (body.decision_id ?? null) !== null) {
+      return c.json({
+        error: "send sequenced checks to POST /api/apps/:appId/releases/:releaseId/checks/sequenced",
+        code: "sequenced_endpoint_required",
+      }, 400);
+    }
+  } else {
+    // Never coerced.
+    if (!(typeof body.sequence === "number" && Number.isSafeInteger(body.sequence) && body.sequence > 0)) {
+      return c.json({ error: "sequence must be a positive safe integer" }, 400);
+    }
+    // Refused rather than clipped: a cut identifier could equal another one.
+    if (!(typeof body.decision_id === "string" && body.decision_id.length > 0 && Array.from(body.decision_id).length <= 200)) {
+      return c.json({ error: "decision_id must be a non-empty string of at most 200 characters" }, 400);
+    }
+    sequence = body.sequence;
+    decisionId = body.decision_id;
   }
-  const sequence = typeof body.sequence === "number" ? body.sequence : null;
-  // Refused rather than clipped: a cut identifier could equal another one.
-  if (body.decision_id !== undefined && body.decision_id !== null
-    && !(typeof body.decision_id === "string" && body.decision_id.length > 0 && Array.from(body.decision_id).length <= 200)) {
-    return c.json({ error: "decision_id must be a non-empty string of at most 200 characters" }, 400);
-  }
-  const decisionId = typeof body.decision_id === "string" ? body.decision_id : null;
   // Cut on code points so a stored value reads back exactly as sent.
   const clip = (v: string | null | undefined, max: number) =>
     typeof v === "string" ? Array.from(v).slice(0, max).join("") : null;
@@ -1127,7 +1147,8 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
              (release_checks.sequence IS NOT NULL
                AND excluded.sequence IS NOT NULL
                AND excluded.sequence > release_checks.sequence
-               AND (excluded.decision_id IS NULL OR excluded.decision_id IS NOT release_checks.decision_id))
+               AND excluded.decision_id IS NOT NULL
+               AND excluded.decision_id IS NOT release_checks.decision_id)
              OR (release_checks.sequence IS NULL AND excluded.sequence IS NOT NULL)
              OR (release_checks.sequence IS NULL AND excluded.sequence IS NULL AND (
                (excluded.reviewed_at IS NULL AND release_checks.reviewed_at IS NULL)
@@ -1221,7 +1242,7 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
       }, 409);
     }
     if (sequence < storedSequence) return c.json({ check: saved, stale: true }, 200);
-    if (decisionId !== null && decisionId === saved.decision_id) {
+    if (decisionId === saved.decision_id) {
       return c.json({
         error: "the stored check already has this decision_id; a new sequence needs a new decision",
         code: "decision_id_reused",
