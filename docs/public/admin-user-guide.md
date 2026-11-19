@@ -214,7 +214,10 @@ The Feedback tab is a lightweight ticket system for reports submitted from the a
 - Crash alerting: `crash:new_group` fires the first time a crash signature is
   seen for an app; `crash:spike` fires as a signature crosses 10, 50, and 100
   occurrences within an hour. Subscribe a webhook to either event (Org
-  settings → Webhooks) to get paged instead of polling the console.
+  settings → Webhooks) to get paged instead of polling the console. A
+  `crash:new_group` payload carries `exception` (the first exception line) and
+  up to three `top_frames`, deobfuscated when the build's R8 mapping was
+  uploaded, and the Raft notice shows them as the cause.
 
 Crash tickets (`kind=crash`, submitted automatically by the SDK's crash
 reporter) get a grouping **signature** (exception class + top app frame) and a

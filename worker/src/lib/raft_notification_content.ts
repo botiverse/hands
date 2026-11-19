@@ -540,6 +540,21 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
   } else if (typeof payload.count_last_hour === "number" && Number.isSafeInteger(payload.count_last_hour) && payload.count_last_hour >= 0) {
     lines.push(`${payload.count_last_hour} reports in the last hour`);
   }
+  // A new group says what crashed (artin, 2026-11-19), bounded and escaped like
+  // feedback previews; spike notices stay counts-only and link to the ticket.
+  if (!isBgKill && /:new_group$/.test(event)) {
+    // What crashed: exception and its first frames, or the group signature.
+    const exception = safePreview(safeValue(payload.exception), 300);
+    const frames = (Array.isArray(payload.top_frames) ? payload.top_frames : [])
+      .slice(0, 3)
+      .map((frame) => safePreview(safeValue(frame), 200))
+      .filter((frame): frame is string => Boolean(frame));
+    const signature = safePreview(safeValue(payload.signature), 300);
+    // safePreview already escapes Markdown, so these stay plain text.
+    if (exception) lines.push(`Cause: ${exception}`);
+    else if (signature) lines.push(`Group: ${signature}`);
+    for (const frame of frames) lines.push(`  at ${frame}`);
+  }
   const version = safePreview(safeValue(payload.version_name) ?? safeValue(payload.version), 160);
   const code = safePreview(safeValue(payload.version_code), 160);
   if (version || code) lines.push(`Version: ${version ?? code}${version && code && version !== code ? ` (${code})` : ""}`);

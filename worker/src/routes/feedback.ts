@@ -1088,6 +1088,14 @@ async function scheduleCrashAlerts(
       ).bind(app.id, ticketId).first<{ signature: string | null }>();
       if (current?.signature) signature = current.signature;
     }
+    // Show what crashed: the deobfuscated stack when retrace has finished,
+    // otherwise what the SDK reported.
+    const symbolicated = await c.env.DB.prepare(
+      `SELECT symbolicated_stack, symbolication_status FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
+    ).bind(app.id, ticketId).first<{ symbolicated_stack: string | null; symbolication_status: string | null }>();
+    const summary = (symbolicated?.symbolication_status === "symbolicated" && symbolicated.symbolicated_stack
+      ? stackSummary(symbolicated.symbolicated_stack)
+      : null) ?? stackSummary(message);
     const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
     const base = {
       app_slug: app.slug,
@@ -1098,6 +1106,7 @@ async function scheduleCrashAlerts(
       message: message.slice(0, 300),
       version_name: versionName,
       version_code: versionCode,
+      ...(summary ? { exception: summary.exception, top_frames: summary.frames } : {}),
     };
     // A fatal ticket announces its group the first time the signature is seen
     // fatally, even if non-fatal tickets came first; a non-fatal ticket only
@@ -1968,6 +1977,27 @@ export function retracedSignature(retraced: string): string | null {
   }
   const chosen = frames.find((frame) => !THROW_HELPER_FRAME.test(frame)) ?? frames[0]!;
   return crashSignature({ crash_exception_class: exceptionClass, crash_top_frame: chosen });
+}
+
+/**
+ * The first exception line and its leading frames from a crash log or a
+ * ticket message, for alerts: "java.lang.X: message" and up to three
+ * "Class.method(File.kt:12)" frames. Null when no exception with frames is found.
+ */
+export function stackSummary(text: string): { exception: string; frames: string[] } | null {
+  const lines = text.split(/\r?\n/);
+  const frameOf = (line: string) => /^\s*at\s+([\w$.<>-]+\s*\([^)]*\))/.exec(line)?.[1] ?? null;
+  const first = lines.findIndex((line) => frameOf(line) !== null);
+  if (first < 1) return null;
+  const exception = lines[first - 1]!.trim();
+  if (!/^[\w$.]+(?::|$)/.test(exception)) return null;
+  const frames: string[] = [];
+  for (let i = first; i < lines.length && frames.length < 3; i++) {
+    const frame = frameOf(lines[i]!);
+    if (!frame) break;
+    frames.push(frame.slice(0, 200));
+  }
+  return { exception: exception.slice(0, 300), frames };
 }
 
 /**

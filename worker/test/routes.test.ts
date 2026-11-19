@@ -13539,7 +13539,7 @@ describe("quiver public API v2 — scope resolution", () => {
           battery_level: 80,
         },
       });
-      expect(await events()).toEqual(["crash:new_group:SIGSEGV@libraft.so+0x1234", "feedback:new:"]);
+      expect((await events()).sort()).toEqual(["crash:new_group:SIGSEGV@libraft.so+0x1234", "feedback:new:"]);
 
       // Re-sending either side changes nothing more.
       expect(await responseJson(await submit(nativeRecord))).toMatchObject({ merged: true, idempotent_replay: true });
