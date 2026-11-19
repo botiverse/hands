@@ -168,3 +168,36 @@ describe("R8 mapping index", () => {
     expect(rangesForTrace("r8index v1\nheader\t5\nx\t5\t3\n", "at e74.i")).toEqual([{ offset: 0, length: 5 }]);
   });
 });
+
+describe("retraceInput", () => {
+  it("keeps only the SDK's stack trace section", async () => {
+    const { retraceInput } = await import("../src/lib/r8_mapping_index");
+    const log = [
+      "Crash log", "Package: build.raft.app", "Message: boom", "",
+      "Stack trace:",
+      "java.lang.IllegalStateException: boom",
+      "\tat x26.c(r8-map-id-abc:3)",
+      "\tSuppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException: [x28@1]",
+      "", "",
+      "Process uptime: 1 ms", "",
+      "All threads:", "  Thread main (RUNNABLE):", "\tat a.b(c:1)", "",
+    ].join("\n");
+    expect(retraceInput(log)).toBe([
+      "Stack trace:",
+      "java.lang.IllegalStateException: boom",
+      "\tat x26.c(r8-map-id-abc:3)",
+      "\tSuppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException: [x28@1]",
+      "",
+    ].join("\n"));
+  });
+
+  it("falls back to the head of a log without the section", async () => {
+    const { retraceInput } = await import("../src/lib/r8_mapping_index");
+    expect(retraceInput("java.lang.X: y\n\tat a.b(c:1)\n")).toBe("java.lang.X: y\n\tat a.b(c:1)\n");
+    const long = "line of text\n".repeat(5_000);
+    const head = retraceInput(long);
+    expect(head.length).toBeLessThanOrEqual(24_000);
+    expect(head.endsWith("\n")).toBe(true);
+    expect(retraceInput("Stack trace:\n\nrest")).toBe("Stack trace:\n\nrest");
+  });
+});

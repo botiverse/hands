@@ -14,7 +14,7 @@ import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
-import { MAPPING_INDEX_VERSION, mappingIndexKey, rangesForTrace } from "../lib/r8_mapping_index";
+import { MAPPING_INDEX_VERSION, mappingIndexKey, rangesForTrace, retraceInput } from "../lib/r8_mapping_index";
 import { loadDeployToken } from "../lib/deploy_tokens";
 import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
 import type { AppPermission } from "../lib/app_permissions";
@@ -1986,7 +1986,7 @@ export async function retraceCrashTicket(
 
     const logObj = await env.APK_BUCKET.get(logR2Key);
     if (!logObj) return;
-    const logText = await logObj.text();
+    const logText = retraceInput(await logObj.text());
 
     // Release mappings run to hundreds of MB: more than a Worker can hold,
     // and far more than one trace needs. With the mapping's class index the

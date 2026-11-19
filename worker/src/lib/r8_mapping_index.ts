@@ -56,3 +56,28 @@ export function rangesForTrace(index: string, trace: string): MappingRange[] | n
   }
   return ranges;
 }
+
+/** How much of a log without a stack section is retraced (the stored result is cut to 20,000 characters). */
+const RETRACE_HEAD_CHARS = 24_000;
+
+/**
+ * The part of a crash log worth retracing. The Hands Android SDK writes the
+ * crashing exception under a "Stack trace:" line, ended by a blank line, and
+ * then process info, file descriptors, log lines and every thread's stack.
+ * Only the exception is used (grouping, alerts, the ticket's symbolicated
+ * stack), so that section alone is retraced, which keeps retrace fast however
+ * long the rest of the log is. A log without the section is retraced from its
+ * start, up to about the length that is stored.
+ */
+export function retraceInput(log: string): string {
+  const lines = log.split("\n");
+  const start = lines.findIndex((line) => line.trimEnd() === "Stack trace:");
+  if (start >= 0) {
+    let end = start + 1;
+    while (end < lines.length && lines[end]!.trim() !== "") end++;
+    if (end > start + 1) return `${lines.slice(start, end).join("\n")}\n`;
+  }
+  if (log.length <= RETRACE_HEAD_CHARS) return log;
+  const cut = log.lastIndexOf("\n", RETRACE_HEAD_CHARS);
+  return log.slice(0, cut > 0 ? cut + 1 : RETRACE_HEAD_CHARS);
+}
