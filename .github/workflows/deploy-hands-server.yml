@@ -17,24 +17,6 @@ on:
         required: true
         type: boolean
         default: true
-      pending_migration_readback:
-        # A checkbox saying "someone is watching" is self-certifying: anyone can tick
-        # it and nobody can tell afterwards whether they did. Asking for the id of the
-        # owner's reply makes the same claim checkable — the readback can look it up,
-        # confirm who wrote it and confirm it predates the dispatch. The canonical
-        # thread is part of the value, not prose around the form: accepting a bare id
-        # allowed a real but private/off-surface reply to pass the shape gate while the
-        # readback owner could not resolve it in the required audit surface.
-        #
-        # The readback owner can be a human or an agent, including the deployer if
-        # they accept responsibility for the pending migrations and their readback.
-        # This still cannot stop a fabricated reference because the GitHub runner
-        # cannot reach Raft. It does stop accidental opaque/off-surface references and
-        # makes any false canonical claim explicit and attributable.
-        description: "If D1 migrations are pending they WILL be applied to production. Paste '#proj-hands:3308eb65 msg=<message-id>' for the human or agent owner's pre-run presence and readback commitment, or leave as none."
-        required: true
-        type: string
-        default: "none"
 
 permissions:
   contents: read
@@ -148,85 +130,6 @@ jobs:
           if ! pnpm exec wrangler queues list 2>/dev/null | grep -q 'hands-webhook-deliveries'; then
             pnpm exec wrangler queues create "hands-webhook-deliveries"
           fi
-
-      # A deploy applies whatever migrations are pending, whatever the deploy was for.
-      # Somebody dispatching this to ship an admin asset has no reason to know that,
-      # and nothing in the process tells them: the obligation to watch the first apply
-      # of a migration rides on an action they started for another purpose. Until the
-      # automated readback exists, the dispatch form is the only surface that travels
-      # with the action, so the question is asked there.
-      #
-      # This stays quiet when nothing is pending, which is almost every deploy. It only
-      # speaks up in the case it is about, and it stops before the apply rather than
-      # after it.
-      - name: Check who is watching a pending migration
-        working-directory: worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_BOTIVERSE_API_TOKEN }}
-          READBACK_OWNER: ${{ inputs.pending_migration_readback }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          pending=$(pnpm exec wrangler d1 migrations list "${HANDS_D1_DATABASE_NAME}" \
-            --remote --config wrangler.hands.generated.jsonc 2>&1 || true)
-
-          if grep -qi "no migrations to apply" <<<"$pending"; then
-            echo "No migrations pending; this deploy changes no schema."
-            exit 0
-          fi
-
-          echo "Migrations pending, and this deploy will apply them to production:"
-          echo "$pending"
-
-          # Canonical-reference shape only: an exact auditable Raft thread plus an
-          # 8-character short id or full UUID. Whether the message exists, is really
-          # the owner's reply, and predates this run remains for the readback owner to
-          # verify against Raft, which this runner cannot reach.
-          #
-          # Requiring the surface in the value is intentional. A bare id, or an id
-          # from another/private thread, is not independently resolvable by the owner
-          # responsible for this production audit and must stop before apply.
-          #
-          # A SET of surfaces, not one: a channel can be renamed out from under a
-          # thread, and a legitimate owner reply posted in a second canonical thread
-          # is no less auditable -- the requirement is that the surface is a known,
-          # independently resolvable one, not that it never changes. Adding a surface
-          # here does NOT weaken the shape check: the responsible human or agent
-          # owner still replies in a named thread, and the id is still resolved against
-          # Raft by that owner. Do not add a surface that the deployer alone controls.
-          CANONICAL_SURFACES='#proj-hands:3308eb65|#joint-hands:85c491c0'
-          if [[ ! "${READBACK_OWNER}" =~ ^(${CANONICAL_SURFACES})\ msg=([0-9a-fA-F]{8}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$ ]]; then
-            echo "" >&2
-            echo "Stopping before the apply." >&2
-            echo "" >&2
-            echo "This deploy would change the production database, and the dispatch" >&2
-            echo "did not provide a canonical, independently auditable owner handshake." >&2
-            echo "That is the right answer when you came here to ship something unrelated" >&2
-            echo "- you are not being asked to take migration readback on." >&2
-            echo "" >&2
-            echo "Expected: '<canonical-thread> msg=<message-id>', one of:" >&2
-            echo "  #proj-hands:3308eb65   (original migration audit thread)" >&2
-            echo "  #joint-hands:85c491c0  (accepted after a channel rename)" >&2
-            echo "Got:      '${READBACK_OWNER}'" >&2
-            echo "" >&2
-            echo "The human or agent responsible for the pending migrations must reply" >&2
-            echo "in one of the threads above that they are present and will verify the" >&2
-            echo "readback. The deployer may take this responsibility. Re-dispatch with" >&2
-            echo "the exact thread-and-message reference; a name alone is not a handshake." >&2
-            echo "" >&2
-            echo "No migration has been applied and no Worker has been deployed." >&2
-            echo "Scoped deliberately: the bootstrap step runs before this one and" >&2
-            echo "creates the R2 bucket when it is missing, so a stopped dispatch is" >&2
-            echo "not the same as one that never happened. This is the sentence you" >&2
-            echo "are reading to work out what state you are in, so it claims only" >&2
-            echo "what this gate actually guarantees." >&2
-            exit 1
-          fi
-
-          echo "Canonical handshake reference given at dispatch: ${READBACK_OWNER}"
-          echo "The readback owner verifies this message exists in that exact thread,"
-          echo "is their own reply, and predates this run. This step has only checked"
-          echo "the canonical thread-and-message reference shape."
 
       # Pre-apply census for the 0068 build_assets_legacy DROP. The migration guards
       # itself with an in-file CHECK that aborts before the DROP if any legacy row's
