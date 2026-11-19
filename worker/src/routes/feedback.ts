@@ -680,6 +680,12 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const now = Date.now();
   const ticketId = crypto.randomUUID();
   const submissionEventId = reporterIntegrationId ? crypto.randomUUID() : null;
+  // Crash alerting: a new-group or spike alert is owed for this ticket. It is
+  // recorded with the ticket and decided once symbolication has settled the
+  // ticket's group (see decideCrashAlert). Background system kills skip
+  // real-time alerts and are reported via a once-a-day summary instead.
+  const crashAlertEligible = !externalBuild && (kind === "crash" || kind === "error")
+    && Boolean(signature) && Boolean(app.org_id) && !backgroundSystemKill;
   // Same pseudonymous actor that reporter comments carry
   // (`reporter:<HMAC(app, integration, reporter)>`), so a webhook consumer can
   // correlate a ticket with its later comments without seeing the raw id.
@@ -733,9 +739,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
        (id, app_id, kind, status, closure_reason, message, contact, version_name, version_code,
         channel, device_id, device_model, os_version, arch, locale,
         metadata_json, client_ip_hash, signature, submission_id,
-        submission_fingerprint, reporter_id, reporter_integration_id, created_at, updated_at)
+        submission_fingerprint, reporter_id, reporter_integration_id, created_at, updated_at,
+        crash_alert_pending_since)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-              ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+              ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
        WHERE ?22 IS NULL OR EXISTS (
          SELECT 1 FROM app_reporter_routes r
          JOIN apps active_app ON active_app.id = r.app_id AND active_app.archived = 0
@@ -771,6 +778,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       reporterIntegrationId,
       now,
       now,
+      crashAlertEligible ? now : null,
     ),
     ...attachmentRows.map((a) =>
       c.env.DB.prepare(
@@ -917,36 +925,29 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // Crash tickets: symbolicate in the background (retrace / native / OHOS / dSYM
   // lanes) and record the result on the ticket's symbolicated_stack /
   // symbolication_status fields. See dispatchSymbolication.
-  let regrouping: Promise<unknown> | undefined;
   if (kind === "crash" || kind === "error") {
     const logKey = attachmentRows.length > 0 ? attachmentRows[0]!.r2Key : null;
-    const symbolication = dispatchSymbolication(
+    // The alert is decided after symbolication, never before: a retraced
+    // Android exception may move to another group, and announcing the
+    // obfuscated one would call an existing group new. If this background
+    // work is cut short, the ticket keeps its pending alert and the cron sweep
+    // finishes both (sweepPendingCrashAlerts).
+    const work = dispatchSymbolication(
       c.env,
       { id: app.id, platform: app.platform },
       ticketId,
       versionCode,
       metadata,
       logKey,
-    ).catch(() => {});
-    // An Android exception with a log and a build may be regrouped by its
-    // retraced stack; its alerts wait for that so they announce the real group.
-    if (logKey && versionCode !== null && app.platform === "android" && crashTypeOf(metadata) === "exception") {
-      regrouping = symbolication;
-    }
+    )
+      .catch(() => {})
+      .then(() => (crashAlertEligible ? decideCrashAlert(c.env, ticketId) : undefined))
+      .catch(() => {});
     try {
-      c.executionCtx.waitUntil(symbolication);
+      c.executionCtx.waitUntil(work);
     } catch {
       // no execution context (tests): the promise still runs
     }
-  }
-
-  // Crash alerting: fire webhooks when a signature is first seen or when it
-  // spikes. Background system kills skip real-time alerts and are reported via
-  // a once-a-day summary instead.
-  if (!externalBuild && (kind === "crash" || kind === "error") && signature && app.org_id && !backgroundSystemKill) {
-    await scheduleCrashAlerts(c, app, app.org_id, {
-      kind, signature, metadata, ticketId, message, versionName, versionCode, now, waitFor: regrouping,
-    });
   }
 
   if (app.org_id && !reporterIntegrationId && !externalBuild && !backgroundSystemKill) {
@@ -1053,25 +1054,68 @@ function feedbackNewSubmitResponse(
 }
 
 /**
- * Crash alerting: webhooks when a signature is first seen or when it spikes.
- * Never fails the caller; runs in the background when an execution context
- * exists.
+ * Crash alerting: a webhook when a signature is first seen or when it spikes.
+ *
+ * Runs once a ticket's group is settled, i.e. after symbolication (which may
+ * regroup a retraced exception), for a ticket whose crash_alert_pending_since
+ * is set. Emits are idempotent per occurrence (event ids), so the in-request
+ * path and the cron sweep may both reach the same ticket without a second
+ * alert. The pending mark is cleared only after the emits, so a failure leaves
+ * it for the sweep. Never throws.
  */
-/**
- * How long a crash alert waits for retrace before announcing the SDK's
- * grouping. Retrace of a large release mapping takes over 20 s (one 1.26.0
- * Raft Android crash took 21.6 s), and an alert sent before it finishes names
- * the obfuscated signature, so an existing group is announced as new. The
- * wait runs in waitUntil, which a Worker keeps for 30 s after the response;
- * 27 s leaves room for the alert's own queries.
- */
-export const ALERT_REGROUP_WAIT_MS = 27_000;
+export async function decideCrashAlert(env: Env, ticketId: string): Promise<void> {
+  try {
+    const t = await env.DB.prepare(
+      `SELECT t.app_id, t.kind, t.signature, t.metadata_json, t.message, t.version_name,
+              t.version_code, t.created_at, t.symbolicated_stack, t.symbolication_status,
+              a.slug AS app_slug, a.org_id
+       FROM feedback_tickets t JOIN apps a ON a.id = t.app_id
+       WHERE t.id = ?1 AND t.crash_alert_pending_since IS NOT NULL`,
+    ).bind(ticketId).first<{
+      app_id: string; kind: string; signature: string | null; metadata_json: string | null;
+      message: string; version_name: string | null; version_code: number | null; created_at: number;
+      symbolicated_stack: string | null; symbolication_status: string | null;
+      app_slug: string; org_id: string | null;
+    }>();
+    if (!t) return;
+    const signature = t.signature;
+    if (signature && t.org_id && signature !== BACKGROUND_SYSTEM_KILL_SIGNATURE) {
+      let metadata: Record<string, unknown> = {};
+      try {
+        metadata = JSON.parse(t.metadata_json || "{}") as Record<string, unknown>;
+      } catch {
+        metadata = {};
+      }
+      await emitCrashAlert(env, t.org_id, {
+        appId: t.app_id,
+        appSlug: t.app_slug,
+        kind: t.kind,
+        signature,
+        metadata,
+        ticketId,
+        message: t.message,
+        versionName: t.version_name,
+        versionCode: t.version_code,
+        createdAt: t.created_at,
+        stack: t.symbolication_status === "symbolicated" ? t.symbolicated_stack : null,
+      });
+    }
+    await env.DB.prepare(
+      "UPDATE feedback_tickets SET crash_alert_pending_since = NULL WHERE id = ?1",
+    ).bind(ticketId).run();
+  } catch (err) {
+    console.error(
+      `[crash-alert] left pending for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
-async function scheduleCrashAlerts(
-  c: Context<{ Bindings: Env }>,
-  app: FeedbackApp,
+async function emitCrashAlert(
+  env: Env,
   orgId: string,
   input: {
+    appId: string;
+    appSlug: string;
     kind: string;
     signature: string;
     metadata: Record<string, unknown>;
@@ -1079,99 +1123,124 @@ async function scheduleCrashAlerts(
     message: string;
     versionName: string | null;
     versionCode: number | null;
-    now: number;
-    /** Settles once the ticket may have been regrouped; the alert then reads its current signature. */
-    waitFor?: Promise<unknown> | undefined;
+    createdAt: number;
+    /** The deobfuscated stack, when symbolication produced one. */
+    stack: string | null;
   },
 ) {
-  const { kind, metadata, ticketId, message, versionName, versionCode, now } = input;
-  let signature = input.signature;
+  const { appId, kind, signature, metadata, ticketId, message, versionName, versionCode, createdAt } = input;
   const eventPrefix = kind === "crash" ? "crash" : "error";
-  const alert = async () => {
-    if (input.waitFor) {
-      await Promise.race([input.waitFor, new Promise((resolve) => setTimeout(resolve, ALERT_REGROUP_WAIT_MS))]);
-      const current = await c.env.DB.prepare(
-        `SELECT signature FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
-      ).bind(app.id, ticketId).first<{ signature: string | null }>();
-      if (current?.signature) signature = current.signature;
-    }
-    // Show what crashed: the deobfuscated stack when retrace has finished,
-    // otherwise what the SDK reported.
-    const symbolicated = await c.env.DB.prepare(
-      `SELECT symbolicated_stack, symbolication_status FROM feedback_tickets WHERE app_id = ?1 AND id = ?2`,
-    ).bind(app.id, ticketId).first<{ symbolicated_stack: string | null; symbolication_status: string | null }>();
-    const summary = (symbolicated?.symbolication_status === "symbolicated" && symbolicated.symbolicated_stack
-      ? stackSummary(symbolicated.symbolicated_stack)
-      : null) ?? stackSummary(message);
-    const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
-    const base = {
-      app_slug: app.slug,
-      signature,
-      crash_type: crashTypeOf(metadata),
-      ...(nonFatal ? { fatal: false } : {}),
-      ticket_id: ticketId,
-      message: message.slice(0, 300),
-      version_name: versionName,
-      version_code: versionCode,
-      ...(summary ? { exception: summary.exception, top_frames: summary.frames } : {}),
-    };
-    // A fatal ticket announces its group the first time the signature is seen
-    // fatally, even if non-fatal tickets came first; a non-fatal ticket only
-    // when the signature has never been seen at all.
-    const prior = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM feedback_tickets t
-       WHERE app_id = ?1 AND signature = ?2 AND id != ?3
-         ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
-         AND ${feedbackBuildScopeClause("standard")}`,
-    )
-      .bind(app.id, signature, ticketId)
-      .first<{ n: number }>();
-    if ((prior?.n ?? 0) === 0) {
-      await emitWebhookEvent(c.env, {
-        orgId,
-        appId: app.id,
-        event: `${eventPrefix}:new_group`,
-        // A signature is first seen once, so (app, signature) is the
-        // occurrence. This also makes concurrent submissions that both read
-        // prior.n === 0 collapse instead of double-notifying.
-        eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${app.id}:${signature}`,
-        body: base,
-      });
-      return;
-    }
-    // Non-fatal crashes are grouped and announced once, but never counted as a spike.
-    if (nonFatal) return;
-    const recent = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM feedback_tickets t
-       WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3
-         AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
-         AND ${feedbackBuildScopeClause("standard")}`,
-    )
-      .bind(app.id, signature, now - 60 * 60 * 1000)
-      .first<{ n: number }>();
-    const hourCount = recent?.n ?? 0;
-    if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
-      await emitWebhookEvent(c.env, {
-        orgId,
-        appId: app.id,
-        event: `${eventPrefix}:spike`,
-        // The threshold alone is not enough: this fires only when the hourly
-        // count is exactly 10/50/100, so a later hour returning to 10 is a
-        // genuine second outbreak. Without the hour bucket that one collides
-        // with the earlier key and is silently dropped.
-        eventId: `${eventPrefix}:spike:${app.id}:${signature}:${Math.floor(now / 3_600_000)}:${hourCount}`,
-        body: { ...base, count_last_hour: hourCount },
-      });
-    }
+  // Show what crashed: the deobfuscated stack when there is one, otherwise
+  // what the SDK reported.
+  const summary = (input.stack ? stackSummary(input.stack) : null) ?? stackSummary(message);
+  const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
+  const base = {
+    app_slug: input.appSlug,
+    signature,
+    crash_type: crashTypeOf(metadata),
+    ...(nonFatal ? { fatal: false } : {}),
+    ticket_id: ticketId,
+    message: message.slice(0, 300),
+    version_name: versionName,
+    version_code: versionCode,
+    ...(summary ? { exception: summary.exception, top_frames: summary.frames } : {}),
   };
-  const guarded = alert().catch(() => {
-    // alerting must never fail the submission
-  });
-  try {
-    c.executionCtx.waitUntil(guarded);
-  } catch {
-    await guarded;
+  // A fatal ticket announces its group the first time the signature is seen
+  // fatally, even if non-fatal tickets came first; a non-fatal ticket only
+  // when the signature has never been seen at all.
+  const prior = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM feedback_tickets t
+     WHERE app_id = ?1 AND signature = ?2 AND id != ?3
+       ${nonFatal ? "" : `AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})`}
+       AND ${feedbackBuildScopeClause("standard")}`,
+  )
+    .bind(appId, signature, ticketId)
+    .first<{ n: number }>();
+  if ((prior?.n ?? 0) === 0) {
+    await emitWebhookEvent(env, {
+      orgId,
+      appId,
+      event: `${eventPrefix}:new_group`,
+      // A signature is first seen once, so (app, signature) is the
+      // occurrence. This also makes concurrent decisions that both read
+      // prior.n === 0 collapse instead of double-notifying.
+      eventId: `${eventPrefix}:new_group:${nonFatal ? "non_fatal:" : ""}${appId}:${signature}`,
+      body: base,
+    });
+    return;
   }
+  // Non-fatal crashes are grouped and announced once, but never counted as a spike.
+  if (nonFatal) return;
+  // The hour up to this ticket, so a decision made late (by the sweep) counts
+  // what had arrived by then, not what arrived since.
+  const recent = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM feedback_tickets t
+     WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3 AND created_at <= ?4
+       AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
+       AND ${feedbackBuildScopeClause("standard")}`,
+  )
+    .bind(appId, signature, createdAt - 60 * 60 * 1000, createdAt)
+    .first<{ n: number }>();
+  const hourCount = recent?.n ?? 0;
+  if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
+    await emitWebhookEvent(env, {
+      orgId,
+      appId,
+      event: `${eventPrefix}:spike`,
+      // The threshold alone is not enough: this fires only when the hourly
+      // count is exactly 10/50/100, so a later hour returning to 10 is a
+      // genuine second outbreak. Without the hour bucket that one collides
+      // with the earlier key and is silently dropped.
+      eventId: `${eventPrefix}:spike:${appId}:${signature}:${Math.floor(createdAt / 3_600_000)}:${hourCount}`,
+      body: { ...base, count_last_hour: hourCount },
+    });
+  }
+}
+
+/** A pending alert older than this lost its in-request run (which ends within 30 s). */
+const CRASH_ALERT_SWEEP_AGE_MS = 3 * 60_000;
+const CRASH_ALERT_SWEEP_BATCH = 20;
+
+/**
+ * Cron safety net for crash alerts whose background run was cut short (the
+ * Worker keeps waitUntil work for 30 s after the response; a slow retrace can
+ * outlast it). Finishes symbolication when it never settled, then decides the
+ * alert, so the decision is still made on the final group.
+ */
+export async function sweepPendingCrashAlerts(env: Env, now = Date.now()): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `SELECT t.id, t.app_id, t.version_code, t.metadata_json, t.symbolication_status, a.platform
+     FROM feedback_tickets t JOIN apps a ON a.id = t.app_id
+     WHERE t.crash_alert_pending_since IS NOT NULL AND t.crash_alert_pending_since <= ?1
+     ORDER BY t.crash_alert_pending_since
+     LIMIT ?2`,
+  ).bind(now - CRASH_ALERT_SWEEP_AGE_MS, CRASH_ALERT_SWEEP_BATCH).all<{
+    id: string; app_id: string; version_code: number | null; metadata_json: string | null;
+    symbolication_status: string | null; platform: string | null;
+  }>();
+  for (const t of results ?? []) {
+    if (t.symbolication_status === null || t.symbolication_status === "pending") {
+      let metadata: Record<string, unknown> = {};
+      try {
+        metadata = JSON.parse(t.metadata_json || "{}") as Record<string, unknown>;
+      } catch {
+        metadata = {};
+      }
+      const log = await env.DB.prepare(
+        "SELECT r2_key FROM feedback_attachments WHERE ticket_id = ?1 ORDER BY created_at, id LIMIT 1",
+      ).bind(t.id).first<{ r2_key: string }>();
+      await dispatchSymbolication(
+        env,
+        { id: t.app_id, platform: t.platform },
+        t.id,
+        t.version_code,
+        metadata,
+        log?.r2_key ?? null,
+      ).catch(() => {});
+    }
+    await decideCrashAlert(env, t.id);
+  }
+  return results?.length ?? 0;
 }
 
 type CrashMergeInput = {
@@ -1409,6 +1478,7 @@ async function mergeCrashSubmission(
     }
   }
 
+  let symbolicating: Promise<void> | undefined;
   if (fieldsChanged && finalMetadata["crash_native_frames"] !== undefined && !existingNative) {
     const run = async () => {
       const first = await c.env.DB.prepare(
@@ -1423,10 +1493,11 @@ async function mergeCrashSubmission(
         first?.r2_key ?? null,
       );
     };
+    symbolicating = run().catch(() => {});
     try {
-      c.executionCtx.waitUntil(run());
+      c.executionCtx.waitUntil(symbolicating);
     } catch {
-      run().catch(() => {});
+      // no execution context (tests): the promise still runs
     }
   }
 
@@ -1439,16 +1510,19 @@ async function mergeCrashSubmission(
     alertsAllowed && changed && app.org_id && nextSignature && !backgroundKill
     && nextSignature !== current.signature
   ) {
-    await scheduleCrashAlerts(c, app, app.org_id, {
-      kind,
-      signature: nextSignature,
-      metadata: finalMetadata,
-      ticketId: existing.id,
-      message: current.message,
-      versionName: current.version_name,
-      versionCode: current.version_code,
-      now,
-    });
+    // Owed once the merged ticket's group is final: after the native
+    // symbolication started above, if any.
+    await c.env.DB.prepare(
+      "UPDATE feedback_tickets SET crash_alert_pending_since = ?1 WHERE id = ?2",
+    ).bind(now, existing.id).run();
+    const decide = (symbolicating ?? Promise.resolve())
+      .then(() => decideCrashAlert(c.env, existing.id))
+      .catch(() => {});
+    try {
+      c.executionCtx.waitUntil(decide);
+    } catch {
+      await decide;
+    }
   }
   if (alertsAllowed && changed && wasBackgroundKill && !backgroundKill && app.org_id && !existing.reporter_id) {
     await emitWebhookEvent(c.env, {

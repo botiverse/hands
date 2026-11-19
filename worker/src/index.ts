@@ -115,6 +115,7 @@ import {
   handleUpdateFeedback,
   handleAddFeedbackComment,
   handleResymbolicateFeedback,
+  sweepPendingCrashAlerts,
   handleDownloadFeedbackAttachment,
   handleListCrashGroups,
   handleFeedbackStats,
@@ -1581,6 +1582,7 @@ export async function scheduled(
     storeReportsIngest(env, scheduledTime),
     cleanupReporterFeedbackData(env),
     cleanupExpiredBuildAssetUploads(env),
+    sweepPendingCrashAlerts(env, scheduledTime).catch(() => undefined),
   ]).then(() => undefined));
 }
 
