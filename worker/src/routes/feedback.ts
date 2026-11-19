@@ -1993,13 +1993,21 @@ export async function retraceCrashTicket(
     // Worker reads just the header and the blocks the trace names and sends
     // those inline. Without it, the container streams the whole mapping from a
     // presigned URL once and returns the index for every later retrace.
+    const startedAt = Date.now();
     const indexKey = mappingIndexKey(mapping.r2_key);
     const indexObj = await env.APK_BUCKET.get(indexKey).catch(() => null);
+    const indexText = indexObj ? await indexObj.text() : null;
+    const indexReadAt = Date.now();
     let request: Record<string, unknown> | null = null;
-    if (indexObj) {
-      const inline = await readIndexedMapping(env, mapping.r2_key, await indexObj.text(), logText);
-      if (inline !== null) request = { mapping: inline, trace: logText };
+    let inlineBytes = 0;
+    if (indexText !== null) {
+      const inline = await readIndexedMapping(env, mapping.r2_key, indexText, logText);
+      if (inline !== null) {
+        request = { mapping: inline, trace: logText };
+        inlineBytes = inline.length;
+      }
     }
+    const blocksReadAt = Date.now();
     if (!request) {
       const mappingUrl = await presignR2DownloadUrl(
         env,
@@ -2011,8 +2019,9 @@ export async function retraceCrashTicket(
           "R8 retrace could not read the mapping: R2 presigning is not configured on this server.");
         return;
       }
-      request = { mapping_url: mappingUrl, trace: logText, build_index: !indexObj };
+      request = { mapping_url: mappingUrl, trace: logText, build_index: indexText === null };
     }
+    const path = "mapping" in request ? "indexed" : request.build_index ? "stream_build_index" : "stream";
 
     const { getRandom } = await import("@cloudflare/containers");
     const container = await getRandom(env.APK_PARSER, 1);
@@ -2030,7 +2039,22 @@ export async function retraceCrashTicket(
         `R8 retrace failed (${detail.code ?? res.status}): ${String(detail.error ?? "").slice(0, 300)}`);
       return;
     }
-    const { retraced, index } = (await res.json()) as { retraced?: string; index?: unknown };
+    const { retraced, index, classes_kept: classesKept, timing } = (await res.json()) as {
+      retraced?: string; index?: unknown; classes_kept?: unknown; timing?: unknown;
+    };
+    const containerDoneAt = Date.now();
+    // Metadata only: no trace, mapping key or ticket content.
+    console.info("hands_retrace_timing", JSON.stringify({
+      path,
+      trace_bytes: logText.length,
+      index_bytes: indexText?.length ?? 0,
+      inline_bytes: inlineBytes,
+      index_read_ms: indexReadAt - startedAt,
+      blocks_read_ms: blocksReadAt - indexReadAt,
+      container_ms: containerDoneAt - blocksReadAt,
+      classes_kept: typeof classesKept === "number" ? classesKept : null,
+      container: timing && typeof timing === "object" ? timing : null,
+    }));
     if (typeof index === "string" && index.startsWith(`${MAPPING_INDEX_VERSION}\n`)) {
       await env.APK_BUCKET.put(indexKey, index, { httpMetadata: { contentType: "text/plain" } })
         .catch((err: unknown) => console.error(

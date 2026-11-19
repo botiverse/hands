@@ -183,21 +183,31 @@ app.post("/retrace", async (c) => {
     await writeFile(tracePath, trace);
     let input: NodeJS.ReadableStream;
     let index: string | undefined;
+    const t0 = Date.now();
     if (mappingUrl) {
       await downloadMapping(mappingUrl, rawPath);
-      if (body.build_index === true) index = await indexMapping(openMapping(rawPath));
       input = openMapping(rawPath);
     } else {
       input = Readable.from([mapping]);
     }
+    const t1 = Date.now();
+    if (mappingUrl && body.build_index === true) index = await indexMapping(openMapping(rawPath));
+    const t2 = Date.now();
     const classesKept = await filterMapping(input, mappingPath, traceNames(trace));
     await rm(rawPath, { force: true });
+    const t3 = Date.now();
     const { stdout } = await execFileAsync(
       RETRACE_BIN,
       [mappingPath, tracePath],
       { maxBuffer: 32 * 1024 * 1024 },
     );
-    return c.json({ retraced: stdout, classes_kept: classesKept, ...(index !== undefined ? { index } : {}) });
+    const t4 = Date.now();
+    return c.json({
+      retraced: stdout,
+      classes_kept: classesKept,
+      timing: { download_ms: t1 - t0, index_ms: t2 - t1, filter_ms: t3 - t2, retrace_ms: t4 - t3 },
+      ...(index !== undefined ? { index } : {}),
+    });
   } catch (err) {
     if (err instanceof RetraceError) return c.json({ error: err.message, code: err.code }, err.status);
     return c.json(
