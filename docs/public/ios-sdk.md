@@ -14,7 +14,7 @@ feedback endpoint. Objective-C, no dependencies, iOS 14.1+.
 ## Install (CocoaPods, via git)
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.2'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.3'
 ```
 
 ## Configure & start
@@ -68,6 +68,23 @@ crashed, recorded when it crashed, even though the report is uploaded by a
 later launch (possibly an updated build). Reports stored by SDK versions
 before 0.2.2 have no recorded build; they upload without version fields
 instead of borrowing the uploading build's.
+
+## Deferring uploads
+
+Since 0.2.3, an app that must not send anything until it knows reporting is
+allowed (for example a privacy mode set by the user's server) installs with
+`uploadOnLaunch: false`. Crashes are still written to disk; nothing is sent
+until the app asks:
+
+```swift
+Hands.install(with: config, uploadOnLaunch: false)
+
+// Later, once reporting is allowed:
+Hands.uploadPending(afterDelay: 0)
+Hands.reportDevice()
+```
+
+Unsent reports stay on the device, up to the five most recent crashes.
 
 ## Notes
 

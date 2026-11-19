@@ -29,7 +29,7 @@ import java.io.File
  * watermark, only the last [FIRST_RUN_LOOKBACK_MS] is considered. Below API
  * 30 this is a no-op.
  */
-internal object HandsAnr {
+object HandsAnr {
     private const val TAG = "HandsAnr"
     private const val PREFS_NAME = "quiver_update"
     private const val KEY_WATERMARK = "hands_anr_reported_until"
@@ -113,7 +113,7 @@ internal object HandsAnr {
     }
 
     /** Record this process's installed build before a future ANR, on API 30+. */
-    fun stampProcess(context: Context) {
+    internal fun stampProcess(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         runCatching {
             val stamp = HandsAnrBuildStamp.encode(HandsCrash.installedBuild(context)) ?: return
@@ -121,7 +121,15 @@ internal object HandsAnr {
         }.onFailure { Log.w(TAG, "Could not stamp process build", it) }
     }
 
-    /** Report pending ANR exits; call off the main thread. */
+    /**
+     * Report pending ANR exits; call off the main thread.
+     *
+     * [HandsCrash.install] calls this on launch when `uploadOnLaunch` and
+     * `captureAnrs` are on. An app that installs with `uploadOnLaunch = false`
+     * (for example while a privacy setting forbids reporting) calls it
+     * itself once uploads are allowed, next to [HandsCrash.uploadPending] and
+     * [HandsNativeCrash.uploadPending]. Below Android 11 this is a no-op.
+     */
     suspend fun uploadPending(
         context: Context,
         baseUrl: String,

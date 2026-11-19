@@ -54,10 +54,20 @@ static HandsConfig *gHandsConfig = nil;
 @implementation Hands
 
 + (void)installWithConfig:(HandsConfig *)config {
+    [self installWithConfig:config uploadOnLaunch:YES];
+}
+
++ (void)installWithConfig:(HandsConfig *)config uploadOnLaunch:(BOOL)uploadOnLaunch {
     gHandsConfig = config;
     [HandsCrashReporter install];
-    [HandsCrashReporter uploadPendingAfterDelay:HandsPendingUploadDelay];
+    if (!uploadOnLaunch) return;
+    [self uploadPendingAfterDelay:HandsPendingUploadDelay];
     [self reportDevice];
+}
+
++ (void)uploadPendingAfterDelay:(NSTimeInterval)delay {
+    if (!gHandsConfig) return;
+    [HandsCrashReporter uploadPendingAfterDelay:delay];
 }
 
 + (void)reportDevice {

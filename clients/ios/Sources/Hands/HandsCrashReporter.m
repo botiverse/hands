@@ -676,8 +676,15 @@ NSDictionary<NSString *, id> *HandsCrashBuildExtras(NSDictionary *meta) {
 }
 
 + (void)uploadPendingAfterDelay:(NSTimeInterval)delay {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    // One serial queue, so a second call (e.g. the app's own after a
+    // deferred install) never uploads the same report concurrently.
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create("build.hands.crash-upload",
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), queue, ^{
         [self uploadPendingNow];
     });
 }

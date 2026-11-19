@@ -38,11 +38,26 @@ NS_ASSUME_NONNULL_BEGIN
 ///                                   clientKey:@"qk_…"]];
 ///
 /// installWithConfig: installs the crash handlers (uncaught NSExceptions and
-/// fatal signals, written to disk at crash time) and schedules the upload of
-/// pending crash reports a few seconds after launch.
+/// fatal signals, written to disk at crash time), schedules the upload of
+/// pending crash reports a few seconds after launch, and sends the device
+/// ping (see reportDevice).
 @interface Hands : NSObject
 
+/// Same as installWithConfig:uploadOnLaunch:YES.
 + (void)installWithConfig:(HandsConfig *)config;
+
+/// Install the crash handlers and store the config. With uploadOnLaunch NO,
+/// nothing is sent at launch: crashes are still written to disk, but pending
+/// reports stay on disk and no device ping is sent until the app calls
+/// uploadPendingAfterDelay: and reportDevice itself (for example once a
+/// privacy setting allows reporting). Call once, as early as possible.
++ (void)installWithConfig:(HandsConfig *)config uploadOnLaunch:(BOOL)uploadOnLaunch;
+
+/// Upload pending crash reports after a delay (off the launch critical
+/// path). Safe to call repeatedly; no-op when nothing is pending or before
+/// installWithConfig:. installWithConfig: calls this unless uploadOnLaunch
+/// is NO.
++ (void)uploadPendingAfterDelay:(NSTimeInterval)delay;
 
 /// The active config, or nil before installWithConfig:.
 + (nullable HandsConfig *)config;
@@ -83,8 +98,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Lightweight launch ping for active-device / version-distribution
 /// analytics. Throttled to once per 24h per install; safe to call every
-/// launch. installWithConfig: already calls this — call it directly only to
-/// force an extra ping. No PII: device id + build/OS metadata only.
+/// launch. installWithConfig: already calls this unless uploadOnLaunch is
+/// NO; then the app calls it once reporting is allowed. No PII: device id +
+/// build/OS metadata only. No-op before installWithConfig:.
 + (void)reportDevice;
 
 @end
