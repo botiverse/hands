@@ -14,7 +14,7 @@ import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
-import { MAPPING_INDEX_VERSION, mappingIndexKey, rangesForTrace, retraceInput } from "../lib/r8_mapping_index";
+import { filterClassBlock, MAPPING_INDEX_VERSION, mappingIndexKey, rangesForTrace, retraceInput, traceFrameMethods } from "../lib/r8_mapping_index";
 import { loadDeployToken } from "../lib/deploy_tokens";
 import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
 import type { AppPermission } from "../lib/app_permissions";
@@ -2101,13 +2101,18 @@ export async function readIndexedMapping(
     return obj ? new Uint8Array(await obj.arrayBuffer()) : null;
   }));
   if (parts.some((part, i) => part === null || part.byteLength !== ranges[i]!.length)) return null;
-  const bytes = new Uint8Array(ranges.reduce((n, r) => n + r.length, 0));
-  let at = 0;
-  for (const part of parts as Uint8Array[]) {
-    bytes.set(part, at);
-    at += part.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
+  // Large classes (Compose, heavily inlined code) run to megabytes; retrace
+  // only needs the members the frames enter, so each block is cut to those.
+  const decoder = new TextDecoder();
+  const frames = traceFrameMethods(trace);
+  const texts = (parts as Uint8Array[]).map((part) => {
+    const text = decoder.decode(part);
+    const end = text.indexOf("\n");
+    // The comment header has no class header line and is kept as is.
+    const target = /^\S+ -> (\S+):\s*$/.exec(end >= 0 ? text.slice(0, end) : text)?.[1];
+    return target ? filterClassBlock(text, frames.get(target)) : text;
+  });
+  return texts.join("");
 }
 
 /** Leading frames that only raise the exception, not where it went wrong. */

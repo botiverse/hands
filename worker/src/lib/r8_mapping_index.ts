@@ -81,3 +81,53 @@ export function retraceInput(log: string): string {
   const cut = log.lastIndexOf("\n", RETRACE_HEAD_CHARS);
   return log.slice(0, cut > 0 ? cut + 1 : RETRACE_HEAD_CHARS);
 }
+
+/**
+ * The obfuscated methods each class is entered through in the trace's frames
+ * ("at x26.c(...)" gives x26 -> {c}).
+ */
+export function traceFrameMethods(trace: string): Map<string, Set<string>> {
+  const methods = new Map<string, Set<string>>();
+  for (const match of trace.matchAll(/^\s*at\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.([\w$<>-]+)\s*\(/gm)) {
+    const set = methods.get(match[1]!) ?? new Set<string>();
+    set.add(match[2]!);
+    methods.set(match[1]!, set);
+  }
+  return methods;
+}
+
+/**
+ * One class block cut to what retrace can use for this trace: the class
+ * header, its class-level `#` metadata, and the member lines (with their
+ * indented metadata) whose obfuscated name is one of `methods`. Inlined
+ * frames share the residual method's obfuscated name, so whole inline chains
+ * are kept. A class named in the trace but not entered by a frame (an
+ * exception type, say) keeps only its header and class-level metadata.
+ */
+export function filterClassBlock(block: string, methods: Set<string> | undefined): string {
+  const lines = block.split("\n");
+  const out: string[] = [];
+  let memberSeen = false;
+  let keepMember = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (i === 0) {
+      out.push(line);
+      continue;
+    }
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("#")) {
+      if (!memberSeen || keepMember) out.push(line);
+      continue;
+    }
+    if (trimmed === "" || trimmed === "\r") {
+      continue;
+    }
+    memberSeen = true;
+    const arrow = line.lastIndexOf(" -> ");
+    const name = arrow >= 0 ? line.slice(arrow + 4).trim() : "";
+    keepMember = methods !== undefined && methods.has(name);
+    if (keepMember) out.push(line);
+  }
+  return `${out.join("\n")}\n`;
+}

@@ -201,3 +201,45 @@ describe("retraceInput", () => {
     expect(retraceInput("Stack trace:\n\nrest")).toBe("Stack trace:\n\nrest");
   });
 });
+
+describe("filterClassBlock", () => {
+  const block = [
+    "androidx.compose.ui.node.LayoutNodeKt -> x26:",
+    "# {\"id\":\"sourceFile\",\"fileName\":\"LayoutNode.kt\"}",
+    "    1:3:void requireOwner(androidx.compose.ui.node.LayoutNode):10:12 -> c",
+    "    4:4:void throwIllegal():40:40 -> c",
+    "      # {\"id\":\"com.android.tools.r8.rewriteFrame\",\"conditions\":[\"throws(Ljava/lang/IllegalStateException;)\"],\"actions\":[\"removeInnerFrames(1)\"]}",
+    "    5:9:void unrelated():50:54 -> d",
+    "      # {\"id\":\"com.android.tools.r8.residualsignature\",\"signature\":\"()V\"}",
+    "    int field -> e",
+    "",
+  ].join("\n");
+
+  it("keeps the header, class metadata and the entered method's lines with their metadata", async () => {
+    const { filterClassBlock } = await import("../src/lib/r8_mapping_index");
+    expect(filterClassBlock(block, new Set(["c"]))).toBe([
+      "androidx.compose.ui.node.LayoutNodeKt -> x26:",
+      "# {\"id\":\"sourceFile\",\"fileName\":\"LayoutNode.kt\"}",
+      "    1:3:void requireOwner(androidx.compose.ui.node.LayoutNode):10:12 -> c",
+      "    4:4:void throwIllegal():40:40 -> c",
+      "      # {\"id\":\"com.android.tools.r8.rewriteFrame\",\"conditions\":[\"throws(Ljava/lang/IllegalStateException;)\"],\"actions\":[\"removeInnerFrames(1)\"]}",
+      "",
+    ].join("\n"));
+  });
+
+  it("keeps only the header and class metadata for a class no frame enters", async () => {
+    const { filterClassBlock } = await import("../src/lib/r8_mapping_index");
+    expect(filterClassBlock(block, undefined)).toBe([
+      "androidx.compose.ui.node.LayoutNodeKt -> x26:",
+      "# {\"id\":\"sourceFile\",\"fileName\":\"LayoutNode.kt\"}",
+      "",
+    ].join("\n"));
+  });
+
+  it("reads frame methods per class", async () => {
+    const { traceFrameMethods } = await import("../src/lib/r8_mapping_index");
+    const methods = traceFrameMethods("java.lang.X: y\n\tat x26.c(r8-map-id-a:3)\n\tat x26.d(Unknown Source:1)\n\tat a.b.C$D.<init>(C.kt:1)\n");
+    expect([...methods.get("x26")!]).toEqual(["c", "d"]);
+    expect([...methods.get("a.b.C$D")!]).toEqual(["<init>"]);
+  });
+});
