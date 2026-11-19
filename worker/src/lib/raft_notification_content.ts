@@ -486,7 +486,7 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
         const prevLabel = [prevName, prevCode && prevCode !== prevName ? `(${prevCode})` : null].filter(Boolean).join(" ");
         const spike = entry.spike === true ? " ⚠️ 较上一版本显著上升" : "";
         const prevPart = prevCount !== null
-          ? ` (对比上一版本 ${prevLabel || "prev"}: ${prevCount} 次 / ${prevDevices ?? 0} 台${spike})`
+          ? ` (上一版本 ${prevLabel || "prev"} 累计: ${prevCount} 次 / ${prevDevices ?? 0} 台${spike})`
           : "";
         lines.push(`- ${vLabel}: ${count} 次 (${devices} 台设备)${prevPart}`);
       }
