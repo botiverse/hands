@@ -12,7 +12,7 @@ order: 11
 ## 安装（通过 Git 使用 CocoaPods）
 
 ```ruby
-pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.2'
+pod 'Hands', :git => 'https://github.com/botiverse/hands.git', :tag => 'ios-v0.2.3'
 ```
 
 ## 配置和启动
@@ -52,6 +52,20 @@ Hands.submitFeedback(
 `Hands.install(with:)` 会捕获未处理的 `NSException` 和致命信号，上传为 `kind=crash` 工单，并在控制台按特征分组，无需额外接线。
 
 崩溃工单中的版本、构建号和提交记录来自发生崩溃时的构建，即使报告由后续启动（可能是更新后的构建）上传也是如此。0.2.2 之前的 SDK 存储的报告没有记录构建信息，上传时不会填写版本字段，也不会借用上传它的构建信息。
+
+## 延后上传
+
+从 0.2.3 起，App 在确认允许上报之前什么都不能发时（例如用户的服务器开了隐私模式），用 `uploadOnLaunch: false` 安装。崩溃照常写到磁盘，App 主动调用之前不发任何请求：
+
+```swift
+Hands.install(with: config, uploadOnLaunch: false)
+
+// 之后确认允许上报时：
+Hands.uploadPending(afterDelay: 0)
+Hands.reportDevice()
+```
+
+没发出去的报告留在设备上，最多保留最近 5 条崩溃。
 
 ## 说明
 

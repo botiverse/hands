@@ -26,7 +26,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.13.0")
+    implementation("com.github.botiverse:hands:android-sdk-v0.13.3")
 }
 ```
 
@@ -44,7 +44,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.13.0")
+    implementation("build.hands:hands-android-sdk:0.13.3")
 }
 ```
 
@@ -299,6 +299,37 @@ The app overview uses these events to show crash-free sessions and crash-free
 devices by version and channel. Pass `trackSessions = false` to
 `Hands.install` only when the host app intentionally opts out of release-health
 telemetry.
+
+## Deferring uploads
+
+An app that must not send anything until it knows reporting is allowed (for
+example a privacy mode set by the user's server) still installs at launch, so
+crashes are captured, and turns the launch-time network off:
+
+```kotlin
+Hands.install(
+    context = this,
+    baseUrl = "https://hands.build",
+    appSlug = "my-app",
+    uploadOnLaunch = false,         // keep crash and ANR reports on the device
+    reportDeviceAnalytics = false,  // no launch ping
+    trackSessions = false,          // release-health sessions send as they happen
+)
+```
+
+Once reporting is allowed, upload from a background thread with the same
+arguments:
+
+```kotlin
+HandsCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
+HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.3+, suspend
+HandsNativeCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey) // suspend
+HandsAnalytics.reportDevice(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)    // suspend
+```
+
+Reports wait on the device under the usual retention limits (the five most
+recent JVM crashes; ANRs from the system exit history, seven days back on
+first use).
 
 ## Device analytics
 

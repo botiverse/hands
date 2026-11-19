@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.13.0")
+    implementation("com.github.botiverse:hands:android-sdk-v0.13.3")
 }
 ```
 
@@ -40,7 +40,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.13.0")
+    implementation("build.hands:hands-android-sdk:0.13.3")
 }
 ```
 
@@ -186,6 +186,32 @@ Hands.install(/* ... */)
 `Hands.install(...)` 自动跟踪前台会话。应用在后台持续 30 秒后会话结束；快速 Activity 或配置切换仍属于同一会话。开始、结束和崩溃事件在投递前提交到设备本地，并在网络或进程失败后重试。
 
 应用概览根据这些事件按版本和渠道展示无崩溃会话及无崩溃设备。只有宿主应用有意退出发布健康遥测时，才应向 `Hands.install` 传入 `trackSessions = false`。
+
+## 延后上传
+
+App 在确认允许上报之前什么都不能发时（例如用户的服务器开了隐私模式），仍然在启动时安装，这样崩溃照常记录，只关掉启动时的网络请求：
+
+```kotlin
+Hands.install(
+    context = this,
+    baseUrl = "https://hands.build",
+    appSlug = "my-app",
+    uploadOnLaunch = false,         // 崩溃和 ANR 报告先留在设备上
+    reportDeviceAnalytics = false,  // 不发启动 ping
+    trackSessions = false,          // 发布健康会话是实时发送的
+)
+```
+
+确认允许上报后，在后台线程用同样的参数上传：
+
+```kotlin
+HandsCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
+HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.3+，suspend
+HandsNativeCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey) // suspend
+HandsAnalytics.reportDevice(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)    // suspend
+```
+
+报告在设备上等待，受原有保留上限约束（JVM 崩溃保留最近 5 条；ANR 来自系统的退出记录，首次使用时回看 7 天）。
 
 ## 设备分析
 
