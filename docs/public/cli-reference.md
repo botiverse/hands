@@ -250,6 +250,11 @@ Use `builds publish-android` to upload an APK and create a release. Per the
 release policy, CI should pass `--draft` so a human or agent reviews the
 changelog before the release goes live.
 
+Only a signed-in person can create an active release. When an agent session
+or a deploy token runs any `builds publish-*` command without `--draft`, the
+CLI stops before uploading anything and asks for `--draft`; publish the draft
+afterwards with `hands releases publish`.
+
 ```bash
 hands builds publish-android raft-android \
   --apk ./androidApp-release.apk \

@@ -213,6 +213,8 @@ hands builds publish-cli-binary raft-computer \
 
 使用 `builds publish-android` 上传 APK 并创建版本。根据发布规则，CI 应传入 `--draft`，使用户或智能体在版本上线前审核更新说明。
 
+只有已登录的真人能直接创建上线状态的版本。智能体会话或部署令牌运行任意 `builds publish-*` 命令而没有带 `--draft` 时，CLI 会在上传任何文件之前停下并提示加上 `--draft`；之后用 `hands releases publish` 发布这个草稿。
+
 ```bash
 hands builds publish-android raft-android \
   --apk ./androidApp-release.apk \
