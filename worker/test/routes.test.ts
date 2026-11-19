@@ -495,7 +495,8 @@ function makeMockDb() {
       symbolicated_stack TEXT,
       symbolicated_at INTEGER,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      crash_alert_pending_since INTEGER
     );
     CREATE UNIQUE INDEX idx_feedback_tickets_submission_direct
       ON feedback_tickets(app_id, submission_id)

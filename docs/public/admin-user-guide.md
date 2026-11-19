@@ -217,7 +217,11 @@ The Feedback tab is a lightweight ticket system for reports submitted from the a
   settings → Webhooks) to get paged instead of polling the console. A
   `crash:new_group` payload carries `exception` (the first exception line) and
   up to three `top_frames`, deobfuscated when the build's R8 mapping was
-  uploaded, and the Raft notice shows them as the cause.
+  uploaded, and the Raft notice shows them as the cause. Alerts are decided
+  after symbolication has finished, so a deobfuscated crash is announced
+  under its final group; when symbolication cannot run or fails, the alert
+  uses the SDK's signature. An alert whose background run was interrupted is
+  sent by the next scheduled sweep (within about ten minutes).
 
 Crash tickets (`kind=crash`, submitted automatically by the SDK's crash
 reporter) get a grouping **signature** (exception class + top app frame) and a
