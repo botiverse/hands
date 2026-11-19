@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classHeaderTarget, filterMapping, traceNames } from "./retrace.js";
+import { classHeaderTarget, filterMapping, indexMapping, traceNames } from "./retrace.js";
 
 test("traceNames keeps dotted names and their prefixes", () => {
   const names = traceNames("java.lang.IllegalArgumentException: bad\n\tat e74.i(r8-map-id-ab:7)\n\tat a.b.C$D.m(Unknown Source)");
@@ -48,4 +48,55 @@ test("filterMapping keeps the header and only the blocks the trace names", async
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("indexMapping gives exact byte ranges that rebuild what filterMapping keeps", async () => {
+  for (const eol of ["\n", "\r\n"]) {
+    const mapping = [
+      "# compiler: R8",
+      "# pg_map_id: abc",
+      "com.example.Föo -> e74:",
+      "# {\"id\":\"sourceFile\",\"fileName\":\"Föo.kt\"}",
+      "    1:3:void run():10:12 -> i",
+      "com.example.Other -> x99:",
+      "    void other() -> a",
+      "com.example.Bar -> x26:",
+      "    1:1:void go():5:5 -> a",
+    ].join(eol);
+    const bytes = Buffer.from(mapping);
+    // Split mid-line and mid-character to exercise chunk boundaries.
+    const chunks = [bytes.subarray(0, 7), bytes.subarray(7, 40), bytes.subarray(40, 41), bytes.subarray(41)];
+    const index = await indexMapping(Readable.from(chunks));
+    const lines = index.trimEnd().split("\n");
+    assert.equal(lines[0], "r8index v1");
+    const headerLength = Number(lines[1]!.split("\t")[1]);
+    const blocks = new Map(lines.slice(2).map((l) => {
+      const [name, off, len] = l.split("\t");
+      return [name!, [Number(off), Number(len)] as const];
+    }));
+    assert.deepEqual([...blocks.keys()], ["e74", "x99", "x26"]);
+    const total = [...blocks.values()].reduce((n, [, len]) => n + len, headerLength);
+    assert.equal(total, bytes.length);
+
+    const names = traceNames("at e74.i(x:1)\nat x26.a(x:1)");
+    const rebuilt = Buffer.concat([
+      bytes.subarray(0, headerLength),
+      ...["e74", "x26"].map((n) => { const [off, len] = blocks.get(n)!; return bytes.subarray(off, off + len); }),
+    ]).toString("utf8");
+    const dir = await mkdtemp(join(tmpdir(), "retrace-index-"));
+    try {
+      const out = join(dir, "filtered.txt");
+      await filterMapping(Readable.from([bytes]), out, names);
+      const filtered = await readFile(out, "utf8");
+      const normalise = (t: string) => t.replace(/\r\n/g, "\n").replace(/\n+$/, "");
+      assert.equal(normalise(rebuilt), normalise(filtered));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("indexMapping of a mapping without classes is header only", async () => {
+  const index = await indexMapping(Readable.from([Buffer.from("# compiler: R8\n")]));
+  assert.equal(index, "r8index v1\nheader\t15\n");
 });

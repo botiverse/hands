@@ -14,6 +14,7 @@ import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { dashboardOrigin, requestOrigin } from "../lib/origin";
+import { MAPPING_INDEX_VERSION, mappingIndexKey, rangesForTrace } from "../lib/r8_mapping_index";
 import { loadDeployToken } from "../lib/deploy_tokens";
 import { isFeedbackOnlyToken, REPORTER_ID_PATTERN } from "../lib/reporter_auth";
 import type { AppPermission } from "../lib/app_permissions";
@@ -1983,20 +1984,34 @@ export async function retraceCrashTicket(
       return;
     }
 
-    // Release mappings run to hundreds of MB: more than a Worker can hold.
-    // The container streams the mapping from a presigned URL instead.
     const logObj = await env.APK_BUCKET.get(logR2Key);
     if (!logObj) return;
     const logText = await logObj.text();
-    const mappingUrl = await presignR2DownloadUrl(
-      env,
-      { key: mapping.r2_key, filetype: "mapping.txt", contentDisposition: "attachment" },
-      3600,
-    );
-    if (!mappingUrl) {
-      await appendSymbolication(env, ticketId, "android-r8", "unsymbolicated",
-        "R8 retrace could not read the mapping: R2 presigning is not configured on this server.");
-      return;
+
+    // Release mappings run to hundreds of MB: more than a Worker can hold,
+    // and far more than one trace needs. With the mapping's class index the
+    // Worker reads just the header and the blocks the trace names and sends
+    // those inline. Without it, the container streams the whole mapping from a
+    // presigned URL once and returns the index for every later retrace.
+    const indexKey = mappingIndexKey(mapping.r2_key);
+    const indexObj = await env.APK_BUCKET.get(indexKey).catch(() => null);
+    let request: Record<string, unknown> | null = null;
+    if (indexObj) {
+      const inline = await readIndexedMapping(env, mapping.r2_key, await indexObj.text(), logText);
+      if (inline !== null) request = { mapping: inline, trace: logText };
+    }
+    if (!request) {
+      const mappingUrl = await presignR2DownloadUrl(
+        env,
+        { key: mapping.r2_key, filetype: "mapping.txt", contentDisposition: "attachment" },
+        3600,
+      );
+      if (!mappingUrl) {
+        await appendSymbolication(env, ticketId, "android-r8", "unsymbolicated",
+          "R8 retrace could not read the mapping: R2 presigning is not configured on this server.");
+        return;
+      }
+      request = { mapping_url: mappingUrl, trace: logText, build_index: !indexObj };
     }
 
     const { getRandom } = await import("@cloudflare/containers");
@@ -2004,7 +2019,7 @@ export async function retraceCrashTicket(
     const res = await container.fetch(
       new Request("http://container/retrace", {
         method: "POST",
-        body: JSON.stringify({ mapping_url: mappingUrl, trace: logText }),
+        body: JSON.stringify(request),
         headers: { "content-type": "application/json" },
         signal: AbortSignal.timeout(900_000),
       }),
@@ -2015,7 +2030,13 @@ export async function retraceCrashTicket(
         `R8 retrace failed (${detail.code ?? res.status}): ${String(detail.error ?? "").slice(0, 300)}`);
       return;
     }
-    const { retraced } = (await res.json()) as { retraced?: string };
+    const { retraced, index } = (await res.json()) as { retraced?: string; index?: unknown };
+    if (typeof index === "string" && index.startsWith(`${MAPPING_INDEX_VERSION}\n`)) {
+      await env.APK_BUCKET.put(indexKey, index, { httpMetadata: { contentType: "text/plain" } })
+        .catch((err: unknown) => console.error(
+          `[retrace] could not store mapping index: ${err instanceof Error ? err.message : String(err)}`,
+        ));
+    }
     if (!retraced || !retraced.trim()) return;
 
     await appendSymbolication(
@@ -2031,6 +2052,38 @@ export async function retraceCrashTicket(
       `[retrace] failed for ticket ${ticketId}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** Above these, an indexed read falls back to the container streaming the mapping. */
+const INDEXED_MAPPING_MAX_BLOCKS = 2_000;
+const INDEXED_MAPPING_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * The mapping text a trace needs (header plus the class blocks it names),
+ * read by byte range through the mapping's index. Null when the index is
+ * unusable, the read is unexpectedly large, or a range cannot be read.
+ */
+export async function readIndexedMapping(
+  env: Env,
+  mappingKey: string,
+  index: string,
+  trace: string,
+): Promise<string | null> {
+  const ranges = rangesForTrace(index, trace);
+  if (!ranges || ranges.length > INDEXED_MAPPING_MAX_BLOCKS) return null;
+  if (ranges.reduce((n, r) => n + r.length, 0) > INDEXED_MAPPING_MAX_BYTES) return null;
+  const parts = await Promise.all(ranges.map(async (range) => {
+    const obj = await env.APK_BUCKET.get(mappingKey, { range }).catch(() => null);
+    return obj ? new Uint8Array(await obj.arrayBuffer()) : null;
+  }));
+  if (parts.some((part, i) => part === null || part.byteLength !== ranges[i]!.length)) return null;
+  const bytes = new Uint8Array(ranges.reduce((n, r) => n + r.length, 0));
+  let at = 0;
+  for (const part of parts as Uint8Array[]) {
+    bytes.set(part, at);
+    at += part.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /** Leading frames that only raise the exception, not where it went wrong. */

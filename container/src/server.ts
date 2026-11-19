@@ -33,7 +33,7 @@ import {
 } from "./parsers/index.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
 import { registerSigningRoutes } from "./signing.js";
-import { downloadMapping, filterMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
+import { downloadMapping, filterMapping, indexMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
 import { Readable } from "node:stream";
 
 const app = new Hono();
@@ -156,10 +156,13 @@ app.post("/generate-patch", async (c) => {
  * Deobfuscates an R8/ProGuard stack trace with the Android SDK retrace tool.
  * The mapping is streamed from its presigned URL to disk and reduced to the
  * classes the trace names, so a mapping of any size fits. Returns
- * { retraced, classes_kept }.
+ * { retraced, classes_kept }. With `build_index: true` (and a mapping_url) it
+ * also returns `index`, the mapping's per-class byte index (indexMapping), so
+ * the Worker can store it and later send only the blocks a trace needs as an
+ * inline `mapping`.
  */
 app.post("/retrace", async (c) => {
-  let body: { mapping?: string; mapping_url?: string; trace?: string };
+  let body: { mapping?: string; mapping_url?: string; trace?: string; build_index?: boolean };
   try {
     body = await c.req.json();
   } catch {
@@ -179,8 +182,10 @@ app.post("/retrace", async (c) => {
     await mkdir(dir, { recursive: true });
     await writeFile(tracePath, trace);
     let input: NodeJS.ReadableStream;
+    let index: string | undefined;
     if (mappingUrl) {
       await downloadMapping(mappingUrl, rawPath);
+      if (body.build_index === true) index = await indexMapping(openMapping(rawPath));
       input = openMapping(rawPath);
     } else {
       input = Readable.from([mapping]);
@@ -192,7 +197,7 @@ app.post("/retrace", async (c) => {
       [mappingPath, tracePath],
       { maxBuffer: 32 * 1024 * 1024 },
     );
-    return c.json({ retraced: stdout, classes_kept: classesKept });
+    return c.json({ retraced: stdout, classes_kept: classesKept, ...(index !== undefined ? { index } : {}) });
   } catch (err) {
     if (err instanceof RetraceError) return c.json({ error: err.message, code: err.code }, err.status);
     return c.json(
