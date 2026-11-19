@@ -16,6 +16,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { createGunzip } from "node:zlib";
 import { apiRequest, apiUploadFile, QuiverApiError } from "../lib/api.js";
+import { assertActiveReleaseAllowed } from "../lib/release_preflight.js";
 import { createHash } from "node:crypto";
 import { jsonRequested } from "../lib/json_output.js";
 import { recoveryGuidance, type RecoveryPart } from "../lib/recovery_guidance.js";
@@ -1043,6 +1044,8 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
+        // Before any upload: a non-human caller cannot create an active release.
+        await assertActiveReleaseAllowed(opts.draft);
         // One call = one build for one (app, version). `--target` is repeatable and
         // each target carries its own binary (and optional runner / SHA256SUMS),
         // paired positionally. A second build row for the same (app, version) is
@@ -1324,6 +1327,8 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
+        // Before any upload: a non-human caller cannot create an active release.
+        await assertActiveReleaseAllowed(opts.draft);
         const versionCode = Number(opts.versionCode);
         if (!Number.isFinite(versionCode) || versionCode < 0) {
           throw new Error("--version-code must be a non-negative number");
@@ -1588,6 +1593,8 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
+        // Before any upload: a non-human caller cannot create an active release.
+        await assertActiveReleaseAllowed(opts.draft);
         const appId = await resolveAppId(appIdOrSlug);
         const channelId = await resolveChannelId(appId, opts.channel);
         const versionCode = Number(opts.versionCode);
@@ -2137,6 +2144,8 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
+        // Before any upload: a non-human caller cannot create an active release.
+        await assertActiveReleaseAllowed(opts.draft);
         const appId = await resolveAppId(appIdOrSlug);
         const channelId = await resolveChannelId(appId, opts.channel);
         const versionCode = Number(opts.versionCode);
@@ -2353,6 +2362,8 @@ export function registerBuildCommands(program: Command): void {
           json?: boolean;
         },
       ) => {
+        // Before any upload: a non-human caller cannot create an active release.
+        await assertActiveReleaseAllowed(opts.draft);
         const files = [...opts.metadata, ...opts.installer, ...opts.blockmap, ...opts.symbols];
         if (files.length === 0) {
           throw new Error("provide at least one --metadata, --installer, --blockmap, or --symbols file");
