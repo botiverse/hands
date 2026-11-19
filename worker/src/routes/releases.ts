@@ -1106,7 +1106,9 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
              OR release_checks.cases_passed IS NOT excluded.cases_passed
              OR release_checks.summary IS NOT excluded.summary
              OR release_checks.reviewer IS NOT excluded.reviewer
-             OR release_checks.reviewed_at IS NOT excluded.reviewed_at)`,
+             OR release_checks.reviewed_at IS NOT excluded.reviewed_at)
+         RETURNING id, release_id, source, run_id, run_url, verdict, cases_total,
+                   cases_passed, summary, reviewer, reviewed_at, created_at, updated_at`,
       )
       .bind(
         id,
@@ -1138,7 +1140,10 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
         now,
       ),
   ]);
-  const written = Number(results[0]?.meta?.changes ?? 0) === 1;
+  // The row this request wrote, from the write itself: a concurrent writer
+  // that lands between the write and a read-back cannot appear in a 201.
+  const writtenRow = (results[0]?.results?.[0] ?? null) as Record<string, unknown> | null;
+  if (writtenRow) return c.json({ check: writtenRow }, 201);
 
   const saved = await c.env.DB.prepare(
     `SELECT id, release_id, source, run_id, run_url, verdict, cases_total,
@@ -1148,15 +1153,16 @@ export async function handleUpsertReleaseCheck(c: AdminContext) {
     .bind(releaseId, source)
     .first<Record<string, unknown>>();
   if (!saved) return c.json({ error: "not found" }, 404);
-  if (written) return c.json({ check: saved }, 201);
 
   const same = (Object.keys(values) as Array<keyof typeof values>)
     .every((key) => (saved[key] ?? null) === values[key]);
   const storedReviewedAt = typeof saved.reviewed_at === "number" ? saved.reviewed_at : null;
-  // Untimed over untimed only skips an identical write; a concurrent change
-  // read back here is still reported as a duplicate of this request.
-  if (same || (reviewedAt === null && storedReviewedAt === null)) {
-    return c.json({ check: saved, duplicate: true }, 200);
+  if (same) return c.json({ check: saved, duplicate: true }, 200);
+  // Untimed over untimed only skips a write identical to what was stored; if
+  // the stored row differs now, another write replaced it after that check.
+  // `check` is that current row, not this request's content.
+  if (reviewedAt === null && storedReviewedAt === null) {
+    return c.json({ check: saved, superseded: true }, 200);
   }
   if (reviewedAt === null && storedReviewedAt !== null) {
     return c.json({
