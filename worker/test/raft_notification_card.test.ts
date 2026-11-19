@@ -480,6 +480,8 @@ describe("Raft release notification cards", () => {
     expect(dailySummary).toContain("后台被系统结束每日汇总 (2026-11-11)");
     expect(dailySummary).toContain("总次数: 15 · 涉及设备: 7");
     expect(dailySummary).toContain("1.23.0 (1023000): 10 次 (5 台设备)");
+    // The previous version's figures are all-time totals, not that day's.
+    expect(dailySummary).toContain("(上一版本 1.22.0 (1022000) 累计: 5 次 / 2 台");
     expect(dailySummary).toContain("较上一版本显著上升");
     expect(dailySummary).toContain("PME110 (dev-oppo): 6 次");
     // The footer must be a command the published CLI accepts and must select
