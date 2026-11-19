@@ -49,3 +49,11 @@ describe("crash alert cause", () => {
     expect(noStack).toContain("Group: ANR@\u200bbuild.raft.app.Main.run");
   });
 });
+
+describe("crash alert retrace wait", () => {
+  it("outlasts a large mapping's retrace but stays inside the Worker's 30 s background limit", async () => {
+    const { ALERT_REGROUP_WAIT_MS } = await import("../src/routes/feedback");
+    expect(ALERT_REGROUP_WAIT_MS).toBeGreaterThan(21_649);
+    expect(ALERT_REGROUP_WAIT_MS).toBeLessThan(30_000);
+  });
+});

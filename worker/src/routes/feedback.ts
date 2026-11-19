@@ -1057,8 +1057,15 @@ function feedbackNewSubmitResponse(
  * Never fails the caller; runs in the background when an execution context
  * exists.
  */
-/** How long a crash alert waits for retrace before announcing the SDK's grouping. */
-const ALERT_REGROUP_WAIT_MS = 20_000;
+/**
+ * How long a crash alert waits for retrace before announcing the SDK's
+ * grouping. Retrace of a large release mapping takes over 20 s (one 1.26.0
+ * Raft Android crash took 21.6 s), and an alert sent before it finishes names
+ * the obfuscated signature, so an existing group is announced as new. The
+ * wait runs in waitUntil, which a Worker keeps for 30 s after the response;
+ * 27 s leaves room for the alert's own queries.
+ */
+export const ALERT_REGROUP_WAIT_MS = 27_000;
 
 async function scheduleCrashAlerts(
   c: Context<{ Bindings: Env }>,
