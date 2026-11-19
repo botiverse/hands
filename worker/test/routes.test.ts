@@ -8281,6 +8281,33 @@ describe("quiver public API v2 — scope resolution", () => {
     expect((await post({ source: "emoji", verdict: "passed", summary: long, reviewed_at: 1 })).status).toBe(201);
     expect(await post({ source: "emoji", verdict: "passed", summary: long, reviewed_at: 1 })).toMatchObject({ status: 200, body: { duplicate: true } });
     expect((await post({ source: "bad", verdict: "passed", run_id: 7 })).status).toBe(400);
+
+    // Races: another writer lands right after this request's write.
+    const realBatch = env.DB.batch.bind(env.DB);
+    const afterWrite = async (sql: string, ...args: unknown[]) => {
+      env.DB.batch = (async (statements: any) => {
+        const out = await realBatch(statements);
+        await env.DB.prepare(sql).bind(...args).run();
+        return out;
+      }) as any;
+    };
+    try {
+      // A 201 carries the row this request wrote, not the later one.
+      await afterWrite("UPDATE release_checks SET run_id = 'r5-other', reviewed_at = 5000 WHERE release_id = 'rel-order' AND source = 'tb'");
+      const mine = await post({ source: "tb", run_id: "r4", verdict: "passed", reviewed_at: 4000 });
+      expect(mine).toMatchObject({ status: 201, body: { check: { run_id: "r4", reviewed_at: 4000 } } });
+      // An untimed identical repost whose row is replaced before the response
+      // is reported as superseded with the current row, never as a duplicate.
+      await afterWrite("UPDATE release_checks SET run_id = 'l9-other' WHERE release_id = 'rel-order' AND source = 'untimed'");
+      env.DB.batch = realBatch as any;
+      expect((await post({ source: "untimed", run_id: "u1", verdict: "passed" })).status).toBe(201);
+      await afterWrite("UPDATE release_checks SET run_id = 'u2-other' WHERE release_id = 'rel-order' AND source = 'untimed'");
+      const replaced = await post({ source: "untimed", run_id: "u1", verdict: "passed" });
+      expect(replaced).toMatchObject({ status: 200, body: { superseded: true, check: { run_id: "u2-other" } } });
+      expect(replaced.body.duplicate).toBeUndefined();
+    } finally {
+      env.DB.batch = realBatch as any;
+    }
   });
 
   it("share fallback: the newest active release wins over an older release's apk", async () => {
