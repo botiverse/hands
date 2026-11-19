@@ -106,3 +106,54 @@ export async function downloadMapping(url: string, dest: string): Promise<void> 
 export function openMapping(path: string): NodeJS.ReadableStream {
   return createReadStream(path);
 }
+
+export const MAPPING_INDEX_VERSION = "r8index v1";
+
+/**
+ * Index a mapping file by class so later retraces read only the bytes they
+ * need. Byte offsets are exact (computed on the raw file, CRLF included):
+ *
+ *   r8index v1
+ *   header\t<length of the leading comment header>
+ *   <obfuscated class>\t<offset>\t<length>      (one line per class block)
+ *
+ * A block runs from its class header line to the next class header (or end of
+ * file), matching what filterMapping keeps for that class.
+ */
+export async function indexMapping(input: NodeJS.ReadableStream): Promise<string> {
+  const entries: string[] = [];
+  // Mutated inside onLine; held in an object so the end-of-file code sees it.
+  const state: { headerLength: number | null; current: { name: string; start: number } | null } = {
+    headerLength: null,
+    current: null,
+  };
+  let offset = 0;
+  let carry: Buffer = Buffer.alloc(0);
+  const onLine = (line: Buffer, start: number) => {
+    // Class headers never start with whitespace or '#'.
+    const first = line[0];
+    if (first === undefined || first === 0x20 || first === 0x09 || first === 0x23) return;
+    const target = classHeaderTarget(line.toString("utf8").replace(/\r$/, ""));
+    if (target === null) return;
+    if (state.headerLength === null) state.headerLength = start;
+    const current = state.current;
+    if (current) entries.push(`${current.name}\t${current.start}\t${start - current.start}`);
+    state.current = { name: target, start };
+  };
+  for await (const raw of input) {
+    const chunk = typeof raw === "string" ? Buffer.from(raw) : (raw as Buffer);
+    const data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+    const base = offset - carry.length;
+    let lineStart = 0;
+    for (let i = data.indexOf(0x0a); i !== -1; i = data.indexOf(0x0a, i + 1)) {
+      onLine(data.subarray(lineStart, i), base + lineStart);
+      lineStart = i + 1;
+    }
+    carry = Buffer.from(data.subarray(lineStart));
+    offset += chunk.length;
+  }
+  if (carry.length > 0) onLine(carry, offset - carry.length);
+  const last = state.current;
+  if (last) entries.push(`${last.name}\t${last.start}\t${offset - last.start}`);
+  return [MAPPING_INDEX_VERSION, `header\t${state.headerLength ?? offset}`, ...entries].join("\n") + "\n";
+}

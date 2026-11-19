@@ -228,7 +228,10 @@ reporter) get a grouping **signature** (exception class + top app frame) and a
 **Crash groups** view that aggregates by signature with occurrence and device
 counts. When a build's ProGuard/R8 `mapping.txt` was uploaded as a
 `proguard-mapping` asset for that version, Hands auto-deobfuscates the stack
-in the container and posts the retraced trace as a ticket comment.
+in the container and posts the retraced trace as a ticket comment. The first
+crash of a build reads the whole mapping once and stores a per-class index next
+to it; later crashes of that build read only the classes their stack names, so
+retrace time no longer grows with the mapping's size.
 
 ## Version history
 
