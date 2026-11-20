@@ -56,6 +56,8 @@ test("round-trips XML property lists, keeping whitespace in strings", () => {
   assert.equal(parsed.e, "");
   assert.equal((parsePlist(Buffer.from("<plist><dict><key>k</key><string/></dict></plist>")) as PlistDict).k, "");
   assert.throws(() => parseXmlPlist("<plist><dict><string>no key</string></dict></plist>"));
+  // Comments and declarations anywhere are skipped, not parsed as content.
+  assert.deepEqual(parseXmlPlist("<?xml version=\"1.0\"?><!-- a <b> --><plist><dict><!--x--><key>k</key><string>v</string></dict></plist>"), { k: "v" });
 });
 
 test("reads a profile and checks which bundles it covers", () => {

@@ -33,14 +33,16 @@ function unescapeXml(text: string): string {
 type Token = { kind: "open" | "close" | "empty"; name: string } | { kind: "text"; text: string };
 
 function tokenize(xml: string): Token[] {
-  const body = xml.replace(/<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>/g, "");
   const tokens: Token[] = [];
-  const re = /<(\/?)([A-Za-z]+)[^>]*?(\/?)>|([^<]+)/g;
-  for (let m = re.exec(body); m; m = re.exec(body)) {
-    if (m[4] !== undefined) {
-      tokens.push({ kind: "text", text: m[4] });
+  // Declarations, comments and the DOCTYPE are matched as whole tokens and skipped.
+  const re = /(<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<![^>]*>)|<(\/?)([A-Za-z]+)[^>]*?(\/?)>|([^<]+)|(<)/g;
+  for (let m = re.exec(xml); m; m = re.exec(xml)) {
+    if (m[1] !== undefined) continue;
+    if (m[6] !== undefined) throw new PlistError("stray < in property list");
+    if (m[5] !== undefined) {
+      tokens.push({ kind: "text", text: m[5] });
     } else {
-      tokens.push({ kind: m[1] ? "close" : m[3] ? "empty" : "open", name: m[2]! });
+      tokens.push({ kind: m[2] ? "close" : m[4] ? "empty" : "open", name: m[3]! });
     }
   }
   return tokens;
