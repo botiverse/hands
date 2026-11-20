@@ -330,6 +330,8 @@ test("IPA entries are categorized relative to the app bundle", () => {
   const root = "Payload/Demo.app/";
   assert.equal(classifyIpaEntry(`${root}Demo`, root, "Demo").key, "executable");
   assert.equal(classifyIpaEntry(`${root}Frameworks/Sentry.framework/Sentry`, root, "Demo").key, "frameworks");
+  assert.equal(classifyIpaEntry("Symbols/9D43A923-C40C-3E7D-AA6D-9FE5E56B06A8.symbols", root, "Demo").key, "symbols");
+  assert.equal(classifyIpaEntry(`${root}compose-resources/composeResources/app/values/strings.commonMain.cvr`, root, "Demo").key, "compose_resources");
   assert.equal(classifyIpaEntry(`${root}PlugIns/Widget.appex/Widget`, root, "Demo").key, "plugins");
   assert.equal(classifyIpaEntry(`${root}Assets.car`, root, "Demo").key, "assets_car");
   assert.equal(classifyIpaEntry(`${root}Settings.bundle/Root.plist`, root, "Demo").key, "bundles");
