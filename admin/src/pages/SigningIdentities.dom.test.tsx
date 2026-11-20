@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), apps: vi.fn(), grant: vi.fn(), ungrant: vi.fn(), generate: vi.fn(), toast: vi.fn(), keys: vi.fn(), upload: vi.fn(),
-  genIos: vi.fn(), requests: vi.fn(), createRequest: vi.fn(), complete: vi.fn(), cancel: vi.fn(),
+  genIos: vi.fn(), requests: vi.fn(), createRequest: vi.fn(), complete: vi.fn(), cancel: vi.fn(), appId: vi.fn(),
 }));
 vi.mock("../components/Toast", () => ({ useToast: () => ({ show: mocks.toast }) }));
 vi.mock("../lib/api", async (importOriginal) => ({
@@ -23,6 +23,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   createSigningCertificateRequest: mocks.createRequest,
   completeSigningCertificateRequest: mocks.complete,
   cancelSigningCertificateRequest: mocks.cancel,
+  registerAppleAppId: mocks.appId,
 }));
 
 import { SigningTab } from "./SigningIdentities";
@@ -113,6 +114,50 @@ describe("SigningTab", () => {
     await waitFor(() => expect(mocks.complete).toHaveBeenCalledWith("org", "req-1", btoa("CER")));
     // The pending row stays in the list until Apple's certificate is in.
     expect(screen.getByText("Waiting for Apple")).toBeTruthy();
+  });
+
+  it("checks, then registers, an app's App ID with the certificate's API key", async () => {
+    const granted = identity({ apps: [{ app_id: "app-ios", slug: "raft-deck-ios" }] });
+    mocks.list.mockResolvedValue({ signing_identities: [granted] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
+    const plan = {
+      bundle_id: "build.raft.deck", app_id_resource_id: null, create_app_id: true,
+      enable: [{ capability: "PUSH_NOTIFICATIONS", entitlements: ["aps-environment"] }], already_enabled: [],
+      manual: [{ capability: "APP_GROUPS", entitlement: "com.apple.security.application-groups", values: ["group.build.raft"], step: "Create the App Group and assign it." }],
+      unknown_entitlements: [],
+    };
+    mocks.appId
+      .mockResolvedValueOnce({ plan, applied: null })
+      .mockResolvedValueOnce({ plan, applied: {
+        bundle_id: "build.raft.deck", app_id_resource_id: "R1", created_app_id: true, enabled: ["PUSH_NOTIFICATIONS"],
+        profiles_removed: [], manual: plan.manual, unknown_entitlements: [],
+      } });
+    renderTab();
+    fireEvent.click(await screen.findByText("Team Distribution"));
+    fireEvent.click(await screen.findByRole("button", { name: "Register App ID for raft-deck-ios" }));
+    const check = await screen.findByRole("button", { name: "Check" });
+    expect((check as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText("com.example.app"), { target: { value: "build.raft.deck" } });
+    fireEvent.click(check);
+    await waitFor(() => expect(mocks.appId).toHaveBeenCalledWith("app-ios", { bundle_id: "build.raft.deck", identity_id: "si-1", entitlements_b64: undefined, apply: false }));
+    expect(await screen.findByText(/Turn on: PUSH_NOTIFICATIONS/)).toBeTruthy();
+    expect(screen.getByText(/Create the App Group/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Register with Apple" }));
+    await waitFor(() => expect(mocks.appId).toHaveBeenLastCalledWith("app-ios", expect.objectContaining({ apply: true })));
+    expect(await screen.findByText(/Created the App ID build.raft.deck/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Done" })).toBeTruthy();
+  });
+
+  it("offers App IDs only on an iOS certificate with an API key", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [identity({
+      apps: [{ app_id: "app-ios", slug: "raft-deck-ios" }],
+      metadata: { team_id: "XDAPXFY8FZ", not_after: "Jul  9 11:16:01 2099 GMT", provisioning_profile_count: 2 },
+    })] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
+    renderTab();
+    fireEvent.click(await screen.findByText("Team Distribution"));
+    await screen.findByText("2 uploaded");
+    expect(screen.queryByRole("button", { name: "Register App ID for raft-deck-ios" })).toBeNull();
   });
 
   it("flags a certificate that expires within 30 days", async () => {

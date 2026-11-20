@@ -524,5 +524,8 @@
   "the build's package file is not in storage": "存储中没有该构建的安装包文件",
   "the two builds are for different platforms": "两个构建属于不同平台",
   "this build has no APK or IPA to read": "该构建没有可读取的 APK 或 IPA",
-  "this build has no content inventory yet; POST to this URL to compute it from the build's APK or IPA": "该构建还没有内容清单；向此 URL 发送 POST 可根据构建的 APK 或 IPA 计算"
+  "this build has no content inventory yet; POST to this URL to compute it from the build's APK or IPA": "该构建还没有内容清单；向此 URL 发送 POST 可根据构建的 APK 或 IPA 计算",
+  "bundle_id must be an explicit bundle ID such as com.example.app (no wildcard)": "bundle_id 必须是完整的 bundle ID，例如 com.example.app（不能用通配符）",
+  "this identity has no App Store Connect API key; add one to let Hands manage App IDs": "这个签名身份没有 App Store Connect API key；添加后 Hands 才能管理 App ID",
+  "entitlements_b64 is too large": "entitlements 文件太大"
 }

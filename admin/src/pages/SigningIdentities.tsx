@@ -84,10 +84,13 @@ import {
   listSigningApiKeySources,
   listSigningCertificateRequests,
   listSigningIdentities,
+  registerAppleAppId,
   revokeSigningIdentity,
   ungrantSigningIdentity,
   uploadSigningIdentity,
   type App,
+  type AppleAppIdPlan,
+  type AppleAppIdResult,
   type SigningCertificateRequest,
   type SigningIdentity,
 } from "../lib/api";
@@ -356,11 +359,13 @@ function IdentityPanel({ orgId, identity, orgApps, onClose, onRevoked, onChanged
   const { locale } = useLocale();
   const toast = useToast();
   const [revoking, setRevoking] = useState(false);
+  const [appIdFor, setAppIdFor] = useState<App | null>(null);
   const platform = PLATFORM_OF_KIND[identity.kind];
   const thing = identity.kind === "android_keystore" ? t("key", "密钥") : t("certificate", "证书");
   const granted = new Set(identity.apps.map((a) => a.app_id));
   // Apps of this platform, and any app granted before that can't use it, so it can be turned off.
   const candidates = orgApps.filter((a) => platform.appPlatforms.includes(a.platform) || granted.has(a.id));
+  const appIdApps = candidates.filter((a) => granted.has(a.id) && platform.appPlatforms.includes(a.platform));
   const m = identity.metadata;
   const at = certDate(m.not_after);
   const exp = at === null ? null : expiry(at, locale, t);
@@ -443,6 +448,35 @@ function IdentityPanel({ orgId, identity, orgApps, onClose, onRevoked, onChanged
             </ListRowGroup>
           )}
         </PanelSection>
+
+        {identity.kind === "apple_ios_distribution" && m.asc_key_id && (
+          <PanelSection className="flex flex-col gap-3">
+            <div>
+              <Text.Sans render={<h3 />} size="group">{t("App IDs", "App ID")}</Text.Sans>
+              <Text.Sans className="mt-1" size="small" variant="muted">
+                {t(
+                  "Register an app's bundle ID with Apple and turn on the capabilities its entitlements ask for, using this certificate's API key.",
+                  "用这个证书的 API key 在 Apple 注册应用的 bundle ID，并打开 entitlements 需要的能力。",
+                )}
+              </Text.Sans>
+            </div>
+            {appIdApps.length === 0 ? (
+              <Text.Sans size="small" variant="muted">{t("Turn on an app above first.", "先在上面打开一个应用。")}</Text.Sans>
+            ) : (
+              <ListRowGroup>
+                {appIdApps.map((app) => (
+                  <ListRow key={app.id} variant="plain" onClick={() => setAppIdFor(app)} aria-label={t(`Register App ID for ${app.slug}`, `为 ${app.slug} 注册 App ID`)}>
+                    <ListRowBody>
+                      <ListRowTitle>{app.slug}</ListRowTitle>
+                      <ListRowSubtitle>{t("Register App ID", "注册 App ID")}</ListRowSubtitle>
+                    </ListRowBody>
+                    <ListRowChevron />
+                  </ListRow>
+                ))}
+              </ListRowGroup>
+            )}
+          </PanelSection>
+        )}
 
         <PanelSection className="flex flex-col gap-3">
           <Text.Sans render={<h3 />} size="group">{t("Details", "详情")}</Text.Sans>
@@ -547,6 +581,10 @@ function IdentityPanel({ orgId, identity, orgApps, onClose, onRevoked, onChanged
         </PanelSection>
       </PanelBody>
 
+      {appIdFor && (
+        <AppIdDialog app={appIdFor} identityId={identity.id} onClose={() => setAppIdFor(null)} />
+      )}
+
       <Dialog open={revoking} onOpenChange={setRevoking}>
         <DialogContent size="sm">
           <DialogHeader>
@@ -577,6 +615,148 @@ function IdentityPanel({ orgId, identity, orgApps, onClose, onRevoked, onChanged
         </DialogContent>
       </Dialog>
     </Panel>
+  );
+}
+
+// ---------- App IDs ----------
+
+/**
+ * Check, then register, an app's App ID with Apple. Checking only reads App
+ * Store Connect; registering creates the App ID if needed, turns on the
+ * capabilities the entitlements ask for, and removes the App Store profiles
+ * Hands made for it so the next signing gets one with the new capabilities.
+ */
+function AppIdDialog({ app, identityId, onClose }: { app: App; identityId: string; onClose: () => void }) {
+  const t = useText();
+  const toast = useToast();
+  const [bundleId, setBundleId] = useState("");
+  const [entitlements, setEntitlements] = useState<File | null>(null);
+  const [plan, setPlan] = useState<AppleAppIdPlan | null>(null);
+  const [applied, setApplied] = useState<AppleAppIdResult | null>(null);
+  const valid = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(bundleId.trim());
+  const call = useMutation({
+    mutationFn: async (apply: boolean) => registerAppleAppId(app.id, {
+      bundle_id: bundleId.trim(),
+      identity_id: identityId,
+      entitlements_b64: entitlements ? await fileBase64(entitlements) : undefined,
+      apply,
+    }),
+    onSuccess: (res) => {
+      setPlan(res.plan);
+      if (res.applied) {
+        setApplied(res.applied);
+        toast.show({ kind: "success", title: t(`App ID ${res.applied.bundle_id} is ready`, `App ID ${res.applied.bundle_id} 已就绪`) });
+      }
+    },
+    onError: (e: unknown) => toast.show({ kind: "error", title: t("Apple App ID failed", "Apple App ID 操作失败"), description: errorMessage(e) }),
+  });
+  // A new bundle ID or entitlements file needs a new check.
+  const reset = () => { setPlan(null); setApplied(null); };
+  const nothingToDo = plan !== null && !plan.create_app_id && plan.enable.length === 0;
+  const manual = applied?.manual ?? plan?.manual ?? [];
+  const unknown = applied?.unknown_entitlements ?? plan?.unknown_entitlements ?? [];
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{t(`App ID for ${app.slug}`, `${app.slug} 的 App ID`)}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody className="grid gap-4">
+          <DialogDescription>
+            {t(
+              "Check what Apple needs first; nothing changes at Apple until you register.",
+              "先检查 Apple 那边需要什么；点注册之前不会改动 Apple 上的任何东西。",
+            )}
+          </DialogDescription>
+          <Field>
+            <FieldLabel>{t("Bundle ID", "Bundle ID")}</FieldLabel>
+            <Input
+              value={bundleId}
+              placeholder="com.example.app"
+              className="font-mono"
+              disabled={applied !== null}
+              onChange={(e) => { setBundleId(e.target.value); reset(); }}
+            />
+            <FieldDescription>{t("The app's explicit bundle ID, no wildcard.", "应用的完整 bundle ID，不能用通配符。")}</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel nativeLabel={false} render={<div />}>{t("Entitlements (optional)", "Entitlements（可选）")}</FieldLabel>
+            <FilePick
+              label={t("Choose .entitlements file", "选择 .entitlements 文件")}
+              accept=".entitlements,.plist"
+              onFile={(f) => { setEntitlements(f); reset(); }}
+            />
+            <FieldDescription>{t("Without one, Hands registers the App ID with no capabilities.", "不选的话，只注册 App ID，不打开任何能力。")}</FieldDescription>
+          </Field>
+
+          {plan && !applied && (
+            <Banner status={nothingToDo ? "success" : "info"} size="sm">
+              <BannerDescription>
+                {nothingToDo
+                  ? t("The App ID is registered and every capability is already on. Nothing to change.", "App ID 已注册，所需能力都已打开，无需改动。")
+                  : <>
+                      {plan.create_app_id && <span className="block">{t(`Create the App ID ${plan.bundle_id}.`, `创建 App ID ${plan.bundle_id}。`)}</span>}
+                      {plan.enable.length > 0 && (
+                        <span className="block">{t(`Turn on: ${plan.enable.map((c) => c.capability).join(", ")}.`, `打开：${plan.enable.map((c) => c.capability).join("、")}。`)}</span>
+                      )}
+                    </>}
+                {plan.already_enabled.length > 0 && (
+                  <span className="block text-foreground-muted">{t(`Already on: ${plan.already_enabled.join(", ")}.`, `已打开：${plan.already_enabled.join("、")}。`)}</span>
+                )}
+              </BannerDescription>
+            </Banner>
+          )}
+          {applied && (
+            <Banner status="success" size="sm">
+              <BannerDescription>
+                {applied.created_app_id
+                  ? t(`Created the App ID ${applied.bundle_id}.`, `已创建 App ID ${applied.bundle_id}。`)
+                  : t(`The App ID ${applied.bundle_id} is registered.`, `App ID ${applied.bundle_id} 已注册。`)}
+                {applied.enabled.length > 0 && <span className="block">{t(`Turned on: ${applied.enabled.join(", ")}.`, `已打开：${applied.enabled.join("、")}。`)}</span>}
+                {applied.profiles_removed.length > 0 && (
+                  <span className="block">{t("Old App Store profiles were removed; the next signing makes a new one.", "旧的 App Store 描述文件已删除，下次签名会生成新的。")}</span>
+                )}
+                <span className="block">{t("Sign the build again.", "现在可以重新签名了。")}</span>
+              </BannerDescription>
+            </Banner>
+          )}
+          {manual.length > 0 && (
+            <Banner status="warning" size="sm">
+              <BannerDescription>
+                <span className="block font-medium">{t("Finish these on the Apple Developer site:", "下面这些需要到 Apple Developer 网站完成：")}</span>
+                {manual.map((s) => (
+                  <span key={`${s.capability}:${s.entitlement}`} className="block">
+                    {s.step}{s.values.length > 0 && <> (<span className="font-mono">{s.values.join(", ")}</span>)</>}
+                  </span>
+                ))}
+              </BannerDescription>
+            </Banner>
+          )}
+          {unknown.length > 0 && (
+            <Text.Sans size="small" variant="muted">
+              {t("Hands doesn't know a capability for: ", "Hands 不认识这些 entitlement 对应的能力：")}
+              <span className="font-mono">{unknown.join(", ")}</span>
+            </Text.Sans>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          {applied || nothingToDo ? (
+            <DialogClose render={<Button size="lg" />}>{t("Done", "完成")}</DialogClose>
+          ) : (
+            <>
+              <DialogClose render={<Button variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
+              {plan ? (
+                <Button size="lg" disabled={call.isPending} onClick={() => call.mutate(true)}>{t("Register with Apple", "在 Apple 注册")}</Button>
+              ) : (
+                <Button size="lg" disabled={!valid || call.isPending} onClick={() => call.mutate(false)}>{t("Check", "检查")}</Button>
+              )}
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
