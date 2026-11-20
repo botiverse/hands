@@ -84,3 +84,26 @@ describe("hands signing identities upload-apple-ios", () => {
     await expect(run("--asc-from-app", APP_ID, "--asc-key-id", "K")).rejects.toThrow(/not both/);
   });
 });
+
+describe("describeAppId", () => {
+  it("states the plan, then what was done, with manual steps and unmapped keys", async () => {
+    const { describeAppId } = await import("./signing.js");
+    const plan = {
+      bundle_id: "build.raft.deck",
+      create_app_id: true,
+      enable: [{ capability: "ASSOCIATED_DOMAINS", entitlements: ["com.apple.developer.associated-domains"] }],
+      already_enabled: [],
+      manual: [{ capability: "APP_GROUPS", entitlement: "com.apple.security.application-groups", values: ["group.build.raft.deck"], step: "assign them on the Apple Developer site" }],
+      unknown_entitlements: ["com.example.private"],
+    };
+    expect(describeAppId({ plan, applied: null })).toEqual([
+      "Would register App ID build.raft.deck; turn on ASSOCIATED_DOMAINS (com.apple.developer.associated-domains). Run again with --apply.",
+      "Manual step for APP_GROUPS: assign them on the Apple Developer site: group.build.raft.deck.",
+      "Not mapped to a capability (turn on by hand if signing refuses them): com.example.private.",
+    ]);
+    expect(describeAppId({ plan, applied: { created_app_id: true, enabled: ["ASSOCIATED_DOMAINS"], profiles_removed: [] } }).slice(0, 2)).toEqual([
+      "Registered App ID build.raft.deck.",
+      "Turned on: ASSOCIATED_DOMAINS.",
+    ]);
+  });
+});

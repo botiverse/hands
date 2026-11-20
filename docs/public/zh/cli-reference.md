@@ -135,8 +135,17 @@ hands sign build/Deck.ipa --app raft-deck-ios --entitlements ios/Deck/Deck.entit
 
 APK 用 apksigner 签名（按需使用 v1–v4 方案，native 库按 16 KB 页对齐），AAB 用 jarsigner。macOS 的 `.app`（目录或 `.app.zip`）以 hardened runtime 和安全时间戳签名，可选公证；签名后再打包成 dmg 或 zip。
 
-iOS 的 `.ipa` 先不签名构建（`CODE_SIGNING_ALLOWED=NO`），再用 Apple Distribution 身份和 App Store 描述文件重新签名，可直接上传 TestFlight 和 App Store。身份带 App Store Connect API key 时，Hands 从应用里读出 bundle ID，复用该 App ID 和证书下剩余一周以上的有效 App Store 描述文件，没有就新建一个。App ID 需要事先在 Apple Developer 网站注册并打开应用用到的能力，Hands 不会创建它。没有 API key 时，Hands 使用已上传、覆盖该 bundle ID 的描述文件。`--entitlements` 传入 Xcode 工程里的 entitlements 文件（会展开 `$(AppIdentifierPrefix)`）；每一项都必须被描述文件允许，缺少的能力会让任务失败并写明名称。`application-identifier`、团队标识和 `get-task-allow = false` 取自描述文件。暂不支持带扩展的应用（`PlugIns`、手表应用、App Clip）。在 Hands 内生成的密钥可以下载一次备份，之后 Hands 是唯一持有者。每次身份变更和签名任务都会连同文件哈希和密钥指纹记入审计日志。
+iOS 的 `.ipa` 先不签名构建（`CODE_SIGNING_ALLOWED=NO`），再用 Apple Distribution 身份和 App Store 描述文件重新签名，可直接上传 TestFlight 和 App Store。身份带 App Store Connect API key 时，Hands 从应用里读出 bundle ID，复用该 App ID 和证书下剩余一周以上的有效 App Store 描述文件，没有就新建一个。App ID 需要已注册并打开应用用到的能力；用 `hands signing app-id` 注册（见下文），签名过程本身不会注册。没有 API key 时，Hands 使用已上传、覆盖该 bundle ID 的描述文件。`--entitlements` 传入 Xcode 工程里的 entitlements 文件（会展开 `$(AppIdentifierPrefix)`）；每一项都必须被描述文件允许，缺少的能力会让任务失败并写明名称。`application-identifier`、团队标识和 `get-task-allow = false` 取自描述文件。暂不支持带扩展的应用（`PlugIns`、手表应用、App Clip）。在 Hands 内生成的密钥可以下载一次备份，之后 Hands 是唯一持有者。每次身份变更和签名任务都会连同文件哈希和密钥指纹记入审计日志。
 
+
+### Apple App ID
+
+```bash
+hands signing app-id raft-deck-ios build.raft.deck --entitlements ios/App/App/App.entitlements          # 只显示会改什么
+hands signing app-id raft-deck-ios build.raft.deck --entitlements ios/App/App/App.entitlements --apply  # 执行
+```
+
+用授权给该应用的 Apple Distribution 身份里的 App Store Connect key，在 Apple 注册 iOS App ID，并打开 entitlements 文件要求的能力（例如 `com.apple.developer.associated-domains` 对应 Associated Domains，`aps-environment` 对应推送）。需要应用管理员权限，人和 agent 都可以执行，CI 的部署 token 不行。不加 `--apply` 不会做任何改动。能力只从 entitlements 读取，不能在命令行指定。需要另一个 API 无法分配的 Apple 对象的能力（App Group、iCloud 容器、Merchant ID、Pass Type ID）会打开，并列为需要手动完成的步骤。改动后，Hands 为该 App ID 创建的 App Store 描述文件会被删除，下次签名时生成带新能力的描述文件。agent 也可以通过 `register-apple-app-id` action 调用。每次改动都记入审计日志。
 ## 组织访问令牌
 
 面向单个组织的只读细粒度令牌：选择应用（或使用 `--all-apps`，同时覆盖之后创建的应用）和权限范围（`app:read`、`feedback:read`）。令牌可以选择该组织拥有的应用，或以所有者服务器（owner server）身份共同拥有的应用（即所有者服务器授权指向该组织 Raft 服务器的应用）；`--all-apps` 两者都覆盖。共同所有权一旦被移除，对该应用的访问立即终止。共同拥有的应用只对这样的令牌生效：创建者是该组织成员，且本人的 Raft 账号属于共同拥有的服务器（与成员访问这些应用的规则相同）；创建者离开组织后，这些应用随即从令牌中移除。令牌只能用于其覆盖应用的 `/api/apps/<appId>/...`。管理令牌需要通过已登录会话且具备**组织管理员**权限；`--org` 默认为当前组织。

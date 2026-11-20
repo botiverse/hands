@@ -10,6 +10,7 @@
  *                                                                       -> { output_size, output_sha256, notary_submission_id? }
  *   POST /signing/staple            { input_url, output_url }           -> { output_size, output_sha256 }
  *   POST /signing/ipa-info          { input_url, expected_input_sha256 } -> { bundle_id, version, build, extensions }
+ *   POST /signing/entitlements      { entitlements_b64 }               -> { entitlements } (the plist as JSON)
  *   POST /signing/apple-csr         { common_name }                    -> { key_pem, csr_pem }
  *   POST /signing/apple-p12         { kind, key_pem, certificate_b64, notary? } -> { secret, metadata }
  *
@@ -46,6 +47,7 @@ import {
   profileInfo,
   toXmlPlist,
   type PlistDict,
+  type PlistValue,
   type ProfileInfo,
 } from "./ios.js";
 
@@ -547,6 +549,15 @@ async function appleP12(dir: string, kind: AppleSecret["kind"], keyPem: string, 
   return { kind, p12_b64: (await readFile(p12)).toString("base64"), p12_password: password };
 }
 
+/** Entitlement values as JSON: dates as ISO strings, data as base64. */
+function plistToJson(value: PlistValue): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
+  if (Array.isArray(value)) return value.map(plistToJson);
+  if (typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plistToJson(v)]));
+  return value;
+}
+
 function respondError(c: { json: (body: unknown, status: number) => Response }, error: unknown) {
   if (error instanceof SignError) return c.json({ error: error.message, code: error.code }, error.status);
   // Name and message only: never the request body, which carries key material.
@@ -656,6 +667,24 @@ export function registerSigningRoutes(app: Hono) {
         return facts;
       });
       return c.json(result);
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/entitlements", async (c) => {
+    try {
+      const body = await c.req.json() as { entitlements_b64?: unknown };
+      if (typeof body.entitlements_b64 !== "string" || body.entitlements_b64.length > 64 * 1024) {
+        throw new SignError(400, "signing_entitlements_invalid", "entitlements_b64 must be a property list of at most 48 KB");
+      }
+      let dict: PlistDict;
+      try {
+        dict = asDict(parsePlist(Buffer.from(body.entitlements_b64, "base64")), "entitlements");
+      } catch (error) {
+        throw new SignError(400, "signing_entitlements_invalid", `entitlements are not a property list: ${error instanceof PlistError ? error.message : "error"}`);
+      }
+      return c.json({ entitlements: plistToJson(dict) });
     } catch (error) {
       return respondError(c, error);
     }

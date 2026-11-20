@@ -5,7 +5,8 @@
  * The profile is looked up for the build's bundle ID and certificate; an
  * active App Store profile that has more than a week left is reused, and
  * otherwise a new one is created. The App ID itself is not created here: its
- * capabilities decide what the app may do, so a person registers it.
+ * capabilities decide what the app may do, so an app admin registers it
+ * explicitly (apple_app_ids.ts), never a signing run.
  */
 
 import { AscApiError, ascRequest, type AscApiCredentials } from "./asc_api";
@@ -78,7 +79,7 @@ export async function appStoreProfile(
   const bundle = bundles.find((b) => b.attributes.identifier === bundleId && (b.attributes.platform === "IOS" || b.attributes.platform === "UNIVERSAL"));
   if (!bundle) {
     throw new SigningError(400, "signing_app_id_missing",
-      `register the App ID ${bundleId} (iOS) with its capabilities in the Apple Developer site, then sign again`);
+      `the App ID ${bundleId} is not registered with Apple; register it with \`hands signing app-id\` (or the register-apple-app-id action), which turns on the capabilities its entitlements ask for, then sign again`);
   }
 
   const certs = await all<CertificateAttributes>(creds, "/v1/certificates?filter[certificateType]=DISTRIBUTION,IOS_DISTRIBUTION&limit=200");

@@ -153,6 +153,7 @@ import {
   handleRevokeTrustedPublisher,
 } from "./routes/trusted_publishers";
 import {
+  handleAppleAppId,
   handleCreateSigningJob,
   handleExportSigningIdentityBackup,
   handleGenerateAndroidSigningIdentity,
@@ -1457,6 +1458,7 @@ bindAdmin("delete", "/api/orgs/:orgId/signing-identities/:identityId/apps/:appId
 bindAdmin("post", "/api/apps/:appId/signing/jobs", requireAppRole("publisher"), handleCreateSigningJob);
 bindAdmin("post", "/api/apps/:appId/signing/jobs/:jobId/sign", requireAppRole("publisher"), handleRunSigningJob);
 bindAdmin("get", "/api/apps/:appId/signing/jobs/:jobId", requireAppRole("publisher"), handleGetSigningJob);
+bindAdmin("post", "/api/apps/:appId/signing/apple-app-id", requireAppRole("admin"), handleAppleAppId);
 bindAdmin("get", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
 bindAdmin("post", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
 bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",
