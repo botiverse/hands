@@ -940,6 +940,24 @@ describe("Hands-managed Raft notifications", () => {
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key LIKE 'app_store:%'").get(SUBSCRIPTION_ID)).toMatchObject({ parent_message_id: "parent-message-1" });
   });
 
+  it("does not announce a release only device groups can get", async () => {
+    const { request, sqlite } = await harness();
+    const sent: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      sent.push(String((JSON.parse(String(init?.body)) as { content?: string }).content ?? ""));
+      return Response.json({ state: "sent", messageId: `${String(sent.length).padStart(8, "0")}-0000-4000-8000-000000000000` });
+    });
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["release:published"]), SUBSCRIPTION_ID);
+    const published = (audience: string) => ({
+      event: "release:published", delivered_at: 100,
+      payload: { release_id: "rel-1", app_slug: "raft-android", platform: "android", channel: "debug", version: "201.0.0", version_code: 2010000004, rollout: 100, audience },
+    });
+    expect(await (await request(published("device_group"), "delivery-1")).json()).toMatchObject({ skipped: true });
+    expect(sent).toHaveLength(0);
+    expect((await request(published("general"), "delivery-2")).status).toBe(200);
+    expect(sent).toHaveLength(1);
+  });
+
   it("posts in-progress App Store upload states only to destinations that chose upload processing", async () => {
     const { request, sqlite } = await harness();
     const sent: string[] = [];

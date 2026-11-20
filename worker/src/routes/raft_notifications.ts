@@ -1031,6 +1031,11 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     catch { return c.json({ error: "card_delivery_invalid_pending" }, 503); }
     if (pendingHash !== eventHash) return c.json({ ok: true, skipped: true });
   }
+  // A release only device groups can get is a test build, not a release people
+  // should read about; it is announced when it is widened to everyone.
+  if (eventBody.event === "release:published" && parseJsonRecord(eventBody.payload).audience === "device_group") {
+    return c.json({ ok: true, skipped: true });
+  }
   const bot = await botForServer(c.env.DB, row.server_id);
   if (!bot || bot.state !== "active") return c.json({ error: "bot unavailable" }, 503);
 

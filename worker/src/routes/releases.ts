@@ -1413,8 +1413,13 @@ export async function emitReleasePublished(
         version_name: string | null; version_code: number | null; app_slug: string;
         platform: string | null; channel: string | null;
       }>();
+    // Who can get this release: a release scoped only to device groups is a
+    // test build that ordinary devices never see, so channel notices skip it.
+    const scopes = await releaseScopesForMutation(env.DB, base.release_id);
+    const audience = scopes.length > 0 && scopes.every((s) => s.scope_type === "device_group") ? "device_group" : "general";
     if (row) {
       extra = {
+        audience,
         app_slug: row.app_slug,
         platform: row.platform,
         version: row.version_name,
@@ -1769,6 +1774,45 @@ export async function handleCreateRelease(c: AdminContext) {
   }
 }
 
+/**
+ * A release that was live only for device groups (a test build) becomes a real
+ * release when it is widened to everyone: that is when it is announced. Its
+ * device-group activation emitted `release:published` with audience
+ * "device_group", which channel notices skip.
+ */
+async function emitPublishedOnWidening(
+  c: AdminContext,
+  appId: string,
+  before: ReleaseRow,
+  scopesBefore: ReleaseScopeInput[],
+  after: ReleaseRow,
+) {
+  if (before.status !== "active" || after.status !== "active") return;
+  const wasGroupOnly = scopesBefore.length > 0 && scopesBefore.every((s) => s.scope_type === "device_group");
+  if (!wasGroupOnly) return;
+  const scopesAfter = await releaseScopesForMutation(c.env.DB, after.id);
+  if (scopesAfter.every((s) => s.scope_type === "device_group")) return;
+  const orgId = await appOwningOrgId(c.env.DB, appId);
+  if (!orgId) return;
+  const displaced = isFullCoverage(scopesAfter, after.rollout_cohort_count)
+    ? await c.env.DB.prepare(
+      `SELECT b.version_code, b.version_name FROM releases r JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND r.superseded_by_release_id = ?2 ORDER BY r.activated_at DESC LIMIT 1`,
+    ).bind(appId, after.id).first<{ version_code: number | null; version_name: string | null }>()
+    : null;
+  c.executionCtx?.waitUntil(emitReleasePublished(c.env, orgId, appId, {
+    release_id: after.id,
+    app_id: appId,
+    build_id: after.build_id,
+    channel_id: after.channel_id,
+    product_type: after.product_type,
+    release_type: after.release_type,
+    rollout_cohort_count: after.rollout_cohort_count ?? null,
+    revision: after.revision,
+    displacedVersion: displaced ? { code: displaced.version_code, name: displaced.version_name } : null,
+  }));
+}
+
 export async function handleUpdateRelease(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const releaseId = c.req.param("releaseId") ?? "";
@@ -1776,7 +1820,9 @@ export async function handleUpdateRelease(c: AdminContext) {
   const existing = await getReleaseForApp(c.env.DB, appId, releaseId);
   if (!existing) return c.json({ error: "not found" }, 404);
   try {
+    const scopesBefore = await releaseScopesForMutation(c.env.DB, releaseId);
     const release = await updateReleaseFields(c.env.DB, appId, existing, body, currentActor(c));
+    await emitPublishedOnWidening(c, appId, existing, scopesBefore, release);
     return c.json(withReleaseNotes(release));
   } catch (e) {
     if (e instanceof ReleaseRevisionConflictError) {
