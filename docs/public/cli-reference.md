@@ -100,11 +100,11 @@ steps:
 
 `hands github-oidc-login` masks the token and exports it as `HANDS_BEARER_TOKEN` for later steps; the step that runs it does not see the variable, so publish in a separate step (`--print` writes the token to stdout instead). The output names the app, role and expiry, and prints no part of the token. The run must come from the named repository and workflow file, on a ref matching one of the patterns (`*` matches within one path segment), and in the GitHub environment when one is set. Only `push`, `workflow_dispatch`, `release` and `schedule` runs match: events such as `pull_request_target`, `workflow_run` and `issue_comment` report the default branch while acting on outside input, so they are refused. The workflow path is case-sensitive. `add` looks up the repository's numeric id on GitHub (set `GH_TOKEN` for a private repository); the repository and owner ids are otherwise pinned on the first accepted run, so a deleted and re-created repository or owner of the same name is refused. Prefer a protected GitHub environment (`--environment`). Third-party actions and reusable workflows that the trusted job calls run with the same identity, so treat them as trusted code. Each GitHub token can be exchanged once, and every exchange is in the app's audit log with the run id, commit and ref. The same settings are under App settings › Access › Trusted publishers.
 
-## Signing (Android, macOS)
+## Signing (Android, macOS, iOS)
 
 Hands holds signing keys and certificates for an organization, encrypted, and signs files for the apps they are granted to. Keys never reach CI: the CLI uploads the unsigned file, Hands signs it (macOS: also notarizes with Apple and staples the ticket) and the CLI downloads the signed file, checking its SHA-256.
 
-Org admins manage identities under Organization › Signing, or with the CLI. The upload forms for Apple certificates list where each file comes from: the certificate signing request from Keychain Access, the certificate in the Apple Developer site, the `.p12` export from Keychain Access, and the App Store Connect API key. Instead of entering an API key again, an identity can use a copy of the key that an app in the same organization already holds for TestFlight; the form lists those apps by key ID. iOS signing itself is not available yet; a Distribution certificate can be stored and granted ahead of it.
+Org admins manage identities under Organization › Signing, or with the CLI. The upload forms for Apple certificates list where each file comes from: the certificate signing request from Keychain Access, the certificate in the Apple Developer site, the `.p12` export from Keychain Access, and the App Store Connect API key. Instead of entering an API key again, an identity can use a copy of the key that an app in the same organization already holds for TestFlight; the form lists those apps by key ID.
 
 ```bash
 # A new Android key created inside Hands (RSA 4096, valid 30 years)
@@ -131,9 +131,12 @@ In CI (after `hands github-oidc-login`, or with any publisher token for the app)
 hands sign app-release-unsigned.apk --app raft-deck-android            # signed in place; --out to write elsewhere
 hands sign app-release.aab --app raft-deck-android
 hands sign "dist/mac-arm64/Raft Deck.app" --app raft-deck --notarize --entitlements entitlements.mac.plist
+hands sign build/Deck.ipa --app raft-deck-ios --entitlements ios/Deck/Deck.entitlements
 ```
 
-APKs are signed with apksigner (v1–v4 schemes as applicable; native libraries aligned to 16 KB pages), AABs with jarsigner. A macOS `.app` (directory or `.app.zip`) is signed with hardened runtime and a secure timestamp, then optionally notarized; package it into a dmg or zip after signing. A key generated in Hands can be downloaded once as a backup; after that Hands is its only holder. Every identity change and signing job is in the audit log with the file hashes and the key fingerprint.
+APKs are signed with apksigner (v1–v4 schemes as applicable; native libraries aligned to 16 KB pages), AABs with jarsigner. A macOS `.app` (directory or `.app.zip`) is signed with hardened runtime and a secure timestamp, then optionally notarized; package it into a dmg or zip after signing.
+
+An iOS `.ipa` is built unsigned (`CODE_SIGNING_ALLOWED=NO`) and re-signed with an Apple Distribution identity and an App Store provisioning profile, ready for TestFlight and the App Store. When the identity has an App Store Connect API key, Hands reads the bundle ID from the app, then reuses an active App Store profile for that App ID and certificate that has more than a week left, or creates a new one. The App ID must already exist in the Apple Developer site with the capabilities the app uses; Hands does not create it. Without an API key, Hands uses the uploaded profile that covers the bundle ID. `--entitlements` takes the app's entitlements file from the Xcode project (`$(AppIdentifierPrefix)` is expanded); every entry must be allowed by the profile, and a missing capability fails the job with its name. `application-identifier`, the team identifier and `get-task-allow = false` come from the profile. Apps with extensions (`PlugIns`, watch apps, App Clips) are not supported yet. A key generated in Hands can be downloaded once as a backup; after that Hands is its only holder. Every identity change and signing job is in the audit log with the file hashes and the key fingerprint.
 
 ## Org Access Tokens
 

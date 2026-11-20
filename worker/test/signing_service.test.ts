@@ -259,7 +259,7 @@ describe("signing jobs", () => {
     const { env, sqlite, objects, identityId } = await grantedAndroid();
     expect((await call(handleCreateSigningJob, env, { appId: "app-mac" }, jobBody())).body.code).toBe("signing_identity_not_granted");
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ artifact_type: "macos", filename: "x.app.zip" }))).body.code).toBe("signing_identity_not_granted");
-    expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ artifact_type: "ipa" }))).body.code).toBe("signing_unsupported");
+    expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ artifact_type: "ipa" }))).body.code).toBe("signing_identity_not_granted");
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ notarize: true }))).status).toBe(400);
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ sha256: "x" }))).status).toBe(400);
     expect((await call(handleCreateSigningJob, env, { appId: APP }, jobBody({ size: 0 }))).status).toBe(400);
@@ -303,6 +303,94 @@ describe("signing jobs", () => {
     expect((await call(handleGetSigningJob, env, { appId: APP, jobId })).body.job.status).toBe("signing");
     sqlite.prepare("UPDATE signing_jobs SET updated_at = ? WHERE id = ?").run(Date.now() - 31 * 60 * 1000, jobId);
     expect((await call(handleGetSigningJob, env, { appId: APP, jobId })).body.job).toMatchObject({ status: "failed", error_code: "signing_interrupted" });
+  });
+
+  it("re-signs an IPA with an App Store profile found or created through App Store Connect", async () => {
+    const { env, objects, sqlite } = environment();
+    const { privateKey } = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const p8 = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(await crypto.subtle.exportKey("pkcs8", privateKey) as ArrayBuffer).toString("base64")}\n-----END PRIVATE KEY-----`;
+    const certDer = Buffer.from("distribution-cert-der");
+    const fingerprint = (await import("node:crypto")).createHash("sha256").update(certDer).digest("hex");
+    recorder(() => ({ body: { metadata: { subject: "CN=Apple Distribution: Botiverse (XDAPXFY8FZ)", team_id: "XDAPXFY8FZ", sha256_fingerprint: fingerprint } } }));
+    const id = (await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
+      kind: "apple_ios_distribution", name: "Deck iOS", p12_b64: "QUJD", p12_password: "pw", asc: { key_id: "KEY1", issuer_id: "ISS", p8 },
+    })).body.signing_identity.id;
+    sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES ('app-ios', ?, 'raft-deck-ios', 'Deck iOS', 'ios', 'ck4', 3)`).run(ORG);
+    await call(handleGrantSigningIdentity, env, { orgId: ORG, identityId: id, appId: "app-ios" });
+
+    // App Store Connect: the App ID and certificate exist; one stale profile, then a fresh one is created.
+    const apple: Array<{ method: string; path: string; body?: any }> = [];
+    let appIdRegistered = true;
+    let existingProfile: "none" | "fresh" = "none";
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace("https://api.appstoreconnect.apple.com", "");
+      apple.push({ method: init.method ?? "GET", path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      const json = (data: unknown) => new Response(JSON.stringify(data));
+      if (path.startsWith("/v1/bundleIds?")) {
+        return json({ data: appIdRegistered ? [
+          { id: "B-WIDGET", type: "bundleIds", attributes: { identifier: "build.raft.deck.widget", platform: "IOS" } },
+          { id: "B1", type: "bundleIds", attributes: { identifier: "build.raft.deck", platform: "IOS" } },
+        ] : [] });
+      }
+      if (path.startsWith("/v1/certificates?")) {
+        return json({ data: [
+          { id: "C-OTHER", type: "certificates", attributes: { certificateType: "DISTRIBUTION", certificateContent: Buffer.from("other").toString("base64") } },
+          { id: "C1", type: "certificates", attributes: { certificateType: "DISTRIBUTION", certificateContent: certDer.toString("base64") } },
+        ] });
+      }
+      if (path.startsWith("/v1/bundleIds/B1/profiles")) {
+        const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+        const later = new Date(Date.now() + 300 * 24 * 3600 * 1000).toISOString();
+        return json({ data: [
+          { id: "P-SOON", type: "profiles", attributes: { name: "expiring", profileType: "IOS_APP_STORE", profileState: "ACTIVE", profileContent: "U09PTg==", expirationDate: soon } },
+          { id: "P-DEV", type: "profiles", attributes: { name: "dev", profileType: "IOS_APP_DEVELOPMENT", profileState: "ACTIVE", profileContent: "REVW", expirationDate: later } },
+          ...(existingProfile === "fresh" ? [{ id: "P-NEW", type: "profiles", attributes: { name: "Hands", profileType: "IOS_APP_STORE", profileState: "ACTIVE", profileContent: "TkVX", expirationDate: later } }] : []),
+        ] });
+      }
+      if (path.startsWith("/v1/profiles/P-NEW/relationships/certificates")) return json({ data: [{ type: "certificates", id: "C1" }] });
+      if (path === "/v1/profiles" && init.method === "POST") {
+        return new Response(JSON.stringify({ data: { id: "P-NEW", type: "profiles", attributes: {
+          name: "Hands build.raft.deck App Store", profileType: "IOS_APP_STORE", profileState: "ACTIVE", profileContent: "TkVX", expirationDate: "2027-11-20T00:00:00Z",
+        } } }), { status: 201 });
+      }
+      return new Response(JSON.stringify({ errors: [{ title: "unexpected" }] }), { status: 404 });
+    }));
+
+    const runJob = async () => {
+      const created = await call(handleCreateSigningJob, env, { appId: "app-ios" }, { artifact_type: "ipa", filename: "Deck.ipa", size: 10, sha256: SHA });
+      expect(created.status).toBe(201);
+      const jobId = created.body.job.id;
+      objects.set(`signing/app-ios/${jobId}/input`, 10);
+      const calls = recorder((path) => path === "/signing/ipa-info"
+        ? { body: { bundle_id: "build.raft.deck", version: "1.0", build: "7", extensions: [] } }
+        : { body: { output_size: 11, output_sha256: "e".repeat(64), notary_submission_id: null, ios: { bundle_id: "build.raft.deck", profile: { name: "Hands" } } } });
+      const signed = await call(handleRunSigningJob, env, { appId: "app-ios", jobId }, { entitlements_b64: "PHBsaXN0Lz4=" });
+      return { signed, calls };
+    };
+
+    const first = await runJob();
+    expect(first.signed.body.job).toMatchObject({ status: "succeeded", artifact_type: "ipa" });
+    expect(first.calls.map((c) => c.path)).toEqual(["/signing/ipa-info", "/signing/sign"]);
+    expect(first.calls[1]!.body).toMatchObject({ artifact_type: "ipa", provisioning_profile_b64: "TkVX", entitlements_b64: "PHBsaXN0Lz4=" });
+    const created = apple.find((a) => a.method === "POST")!;
+    expect(created.body.data.attributes.profileType).toBe("IOS_APP_STORE");
+    expect(created.body.data.relationships).toEqual({ bundleId: { data: { type: "bundleIds", id: "B1" } }, certificates: { data: [{ type: "certificates", id: "C1" }] } });
+
+    // The next build reuses the profile instead of creating another.
+    existingProfile = "fresh";
+    apple.length = 0;
+    const second = await runJob();
+    expect(second.calls[1]!.body.provisioning_profile_b64).toBe("TkVX");
+    expect(apple.some((a) => a.method === "POST")).toBe(false);
+    const actions = (sqlite.prepare("SELECT action FROM audit_logs WHERE action LIKE 'signing_profile.%' ORDER BY created_at").all() as Array<{ action: string }>).map((r) => r.action);
+    expect(actions).toEqual(["signing_profile.create", "signing_profile.reuse"]);
+
+    // Without a registered App ID the job fails with what to do, and nothing is signed.
+    appIdRegistered = false;
+    const third = await runJob();
+    expect(third.signed.body.job).toMatchObject({ status: "failed", error_code: "signing_app_id_missing" });
+    expect(third.signed.body.job.error_message).toContain("build.raft.deck");
+    expect(third.calls.map((c) => c.path)).toEqual(["/signing/ipa-info"]);
   });
 
   it("notarizes a macOS app: polls Apple, staples when accepted, fails when rejected", async () => {

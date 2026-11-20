@@ -9,6 +9,13 @@
  *   POST /signing/sign              { artifact_type, secret, input_url, output_url, notarize, entitlements_b64? }
  *                                                                       -> { output_size, output_sha256, notary_submission_id? }
  *   POST /signing/staple            { input_url, output_url }           -> { output_size, output_sha256 }
+ *   POST /signing/ipa-info          { input_url, expected_input_sha256 } -> { bundle_id, version, build, extensions }
+ *
+ * An `ipa` is re-signed with an Apple Distribution identity and an App Store
+ * provisioning profile: `provisioning_profile_b64` (one the Worker got from
+ * App Store Connect) or, without it, the identity's uploaded profile that
+ * covers the bundle. `entitlements_b64` is what the app asks for; every entry
+ * must be allowed by the profile.
  */
 
 import type { Hono } from "hono";
@@ -21,6 +28,19 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import {
+  EntitlementError,
+  PlistError,
+  appStoreEntitlements,
+  asDict,
+  parsePlist,
+  parseXmlPlist,
+  profileCoversBundle,
+  profileInfo,
+  toXmlPlist,
+  type PlistDict,
+  type ProfileInfo,
+} from "./ios.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
@@ -35,6 +55,7 @@ type AppleSecret = {
   p12_b64: string;
   p12_password: string;
   notary?: { key_id: string; issuer_id: string; p8: string } | null;
+  provisioning_profiles_b64?: string[];
 };
 type Secret = AndroidSecret | AppleSecret;
 
@@ -342,6 +363,137 @@ async function staple(dir: string, input: string, output: string) {
   await zipApp(root, app, output);
 }
 
+// ---------- iOS ----------
+
+/** Unpack an .ipa: exactly one Payload/<name>.app, every symlink inside the archive. */
+async function unpackIpa(dir: string, archive: string) {
+  const { stdout } = await run("unzip", ["-Zt", archive], { failCode: "signing_input_invalid", failMessage: "input is not a zip archive" });
+  const totals = stdout.match(/(\d+) files?, (\d+) bytes uncompressed/);
+  if (!totals || Number(totals[1]) > MAX_UNPACKED_ENTRIES || Number(totals[2]) > MAX_UNPACKED_BYTES) {
+    throw new SignError(400, "signing_input_too_large", "the archive expands past the allowed size");
+  }
+  const root = join(dir, "ipa");
+  await mkdir(root);
+  await run("unzip", ["-q", archive, "-d", root], { failCode: "signing_input_invalid", failMessage: "input is not a zip archive" });
+  const payload = join(root, "Payload");
+  if (!(await lstat(payload).catch(() => null))?.isDirectory()) throw new SignError(400, "signing_input_invalid", "the .ipa has no Payload folder");
+  const apps = (await readdir(payload)).filter((name) => name.endsWith(".app"));
+  if (apps.length !== 1) throw new SignError(400, "signing_input_invalid", "Payload must contain exactly one .app");
+  const app = join(payload, apps[0]!);
+  if ((await lstat(app)).isSymbolicLink() || !(await lstat(app)).isDirectory()) throw new SignError(400, "signing_input_invalid", "the .app must be a directory");
+  await assertContained(root, root);
+  return { root, app };
+}
+
+async function bundleFacts(app: string) {
+  let info: PlistDict;
+  try {
+    info = asDict(parsePlist(await readFile(join(app, "Info.plist"))), "Info.plist");
+  } catch (error) {
+    throw new SignError(400, "signing_input_invalid", `cannot read the app's Info.plist: ${error instanceof Error ? error.message : "error"}`);
+  }
+  const bundleId = info.CFBundleIdentifier;
+  if (typeof bundleId !== "string" || !/^[A-Za-z0-9.-]{1,155}$/.test(bundleId)) {
+    throw new SignError(400, "signing_input_invalid", "Info.plist has no valid CFBundleIdentifier");
+  }
+  const executable = typeof info.CFBundleExecutable === "string" ? info.CFBundleExecutable : null;
+  // App extensions and watch apps each need their own App ID and profile.
+  const extensions: string[] = [];
+  for (const sub of ["PlugIns", "Extensions", "Watch", "AppClips"]) {
+    const entries = await readdir(join(app, sub)).catch(() => [] as string[]);
+    extensions.push(...entries.filter((name) => /\.(appex|app)$/.test(name)).map((name) => `${sub}/${name}`));
+  }
+  return {
+    bundle_id: bundleId,
+    version: typeof info.CFBundleShortVersionString === "string" ? info.CFBundleShortVersionString : null,
+    build: typeof info.CFBundleVersion === "string" ? info.CFBundleVersion : null,
+    executable,
+    extensions,
+  };
+}
+
+/** The XML inside a .mobileprovision (a CMS envelope signed by Apple). */
+async function decodeProfile(dir: string, profileB64: string, index: number): Promise<{ info: ProfileInfo; der: Buffer }> {
+  const der = Buffer.from(profileB64, "base64");
+  const path = join(dir, `profile-${index}.mobileprovision`);
+  await writeFile(path, der);
+  const { stdout } = await run("openssl", ["cms", "-verify", "-noverify", "-inform", "DER", "-in", path], {
+    failCode: "signing_profile_invalid", failMessage: "a provisioning profile could not be read",
+  });
+  try {
+    return { info: profileInfo(parseXmlPlist(stdout), (cert) => createHash("sha256").update(cert).digest("hex")), der };
+  } catch (error) {
+    throw new SignError(400, "signing_profile_invalid", `a provisioning profile is malformed: ${error instanceof Error ? error.message : "error"}`);
+  }
+}
+
+async function signIos(
+  dir: string,
+  secret: AppleSecret,
+  input: string,
+  output: string,
+  entitlementsB64: string | undefined,
+  profileB64: string | undefined,
+) {
+  const facts = await certFacts(dir, await p12CertPem(dir, secret));
+  const pem = await p12ToPem(dir, secret);
+  const { root, app } = await unpackIpa(dir, input);
+  await rm(input, { force: true });
+  const bundle = await bundleFacts(app);
+  if (bundle.extensions.length > 0) {
+    throw new SignError(400, "signing_unsupported", `app extensions are not supported yet: ${bundle.extensions.join(", ")}`);
+  }
+  const candidates = profileB64 ? [profileB64] : (secret.provisioning_profiles_b64 ?? []);
+  const now = Date.now();
+  const reasons: string[] = [];
+  let chosen: { info: ProfileInfo; der: Buffer } | null = null;
+  for (const [index, b64] of candidates.entries()) {
+    const profile = await decodeProfile(dir, b64, index);
+    if (!profileCoversBundle(profile.info, bundle.bundle_id)) reasons.push(`${profile.info.name}: for ${profile.info.application_identifier}`);
+    else if (Date.parse(profile.info.expiration) <= now) reasons.push(`${profile.info.name}: expired ${profile.info.expiration}`);
+    else if (!profile.info.certificate_sha256.includes(facts.sha256_fingerprint ?? "")) reasons.push(`${profile.info.name}: does not include this certificate`);
+    else { chosen = profile; break; }
+  }
+  if (!chosen) {
+    throw new SignError(400, "signing_profile_missing", `no provisioning profile fits ${bundle.bundle_id}${reasons.length ? ` (${reasons.join("; ")})` : ""}`);
+  }
+  let requested: PlistDict = {};
+  if (entitlementsB64) {
+    try {
+      requested = asDict(parsePlist(Buffer.from(entitlementsB64, "base64")), "entitlements");
+    } catch (error) {
+      throw new SignError(400, "signing_entitlements_invalid", `entitlements are not a property list: ${error instanceof PlistError ? error.message : "error"}`);
+    }
+  }
+  let entitlements: PlistDict;
+  try {
+    entitlements = appStoreEntitlements(chosen.info, bundle.bundle_id, requested);
+  } catch (error) {
+    if (error instanceof EntitlementError) throw new SignError(400, "signing_entitlements_refused", error.message);
+    throw error;
+  }
+  await writeFile(join(app, "embedded.mobileprovision"), chosen.der);
+  await rm(join(app, "_CodeSignature"), { recursive: true, force: true });
+  const entitlementsFile = join(dir, "entitlements.plist");
+  await writeFile(entitlementsFile, toXmlPlist(entitlements));
+  // The team ID in the code directory must match the profile; set it rather than rely on reading the certificate.
+  await run("rcodesign", ["sign", "--pem-file", pem, "--team-name", chosen.info.team_id, "--entitlements-xml-file", entitlementsFile, app], {
+    failCode: "signing_failed", failMessage: "rcodesign could not sign the app", timeout: 1_200_000,
+  });
+  // Re-pack every top-level entry (Payload, SwiftSupport, Symbols) with symlinks kept.
+  const archive = `${output}.zip`;
+  const entries = (await readdir(root)).sort((a, b) => (a === "Payload" ? -1 : b === "Payload" ? 1 : a.localeCompare(b)));
+  await run("zip", ["-q", "-r", "-y", archive, ...entries], { cwd: root, failCode: "signing_failed", failMessage: "could not archive the signed app" });
+  await rename(archive, output);
+  return {
+    bundle_id: bundle.bundle_id,
+    version: bundle.version,
+    build: bundle.build,
+    profile: { name: chosen.info.name, uuid: chosen.info.uuid, expiration: chosen.info.expiration, team_id: chosen.info.team_id },
+    entitlement_keys: Object.keys(entitlements).sort(),
+  };
+}
+
 // ---------- Routes ----------
 
 function respondError(c: { json: (body: unknown, status: number) => Response }, error: unknown) {
@@ -408,6 +560,7 @@ export function registerSigningRoutes(app: Hono) {
         notarize?: boolean;
         entitlements_b64?: string;
         expected_input_sha256?: string;
+        provisioning_profile_b64?: string;
       };
       const result = await withWorkdir(async (dir) => {
         const input = join(dir, "input");
@@ -419,15 +572,37 @@ export function registerSigningRoutes(app: Hono) {
           }
         }
         let notarySubmissionId: string | null = null;
+        let ios: Awaited<ReturnType<typeof signIos>> | null = null;
         if ((body.artifact_type === "apk" || body.artifact_type === "aab") && body.secret.kind === "android_keystore") {
           await signAndroid(dir, body.secret, body.artifact_type, input, output);
         } else if (body.artifact_type === "macos" && body.secret.kind === "apple_developer_id") {
           notarySubmissionId = await signMac(dir, body.secret, input, output, body.entitlements_b64, body.notarize === true);
+        } else if (body.artifact_type === "ipa" && body.secret.kind === "apple_ios_distribution") {
+          ios = await signIos(dir, body.secret, input, output, body.entitlements_b64, body.provisioning_profile_b64);
         } else {
           throw new SignError(400, "signing_unsupported", `cannot sign ${body.artifact_type} with this identity`);
         }
         await stat(output);
-        return { ...(await upload(body.output_url, output)), notary_submission_id: notarySubmissionId };
+        return { ...(await upload(body.output_url, output)), notary_submission_id: notarySubmissionId, ...(ios ? { ios } : {}) };
+      });
+      return c.json(result);
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/ipa-info", async (c) => {
+    try {
+      const body = await c.req.json() as { input_url: string; expected_input_sha256?: string };
+      const result = await withWorkdir(async (dir) => {
+        const input = join(dir, "input");
+        const actual = await download(body.input_url, input);
+        if (body.expected_input_sha256 && actual !== body.expected_input_sha256) {
+          throw new SignError(400, "signing_input_mismatch", "uploaded file does not match the declared SHA-256");
+        }
+        const { app } = await unpackIpa(dir, input);
+        const { executable: _executable, ...facts } = await bundleFacts(app);
+        return facts;
       });
       return c.json(result);
     } catch (error) {

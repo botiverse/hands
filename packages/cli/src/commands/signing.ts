@@ -47,8 +47,9 @@ interface SigningIdentity {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function inferType(path: string): "apk" | "aab" | "macos" | null {
+function inferType(path: string): "apk" | "aab" | "macos" | "ipa" | null {
   if (path.endsWith(".apk")) return "apk";
+  if (path.endsWith(".ipa")) return "ipa";
   if (path.endsWith(".aab")) return "aab";
   if (path.endsWith(".app") || path.endsWith(".app.zip")) return "macos";
   return null;
@@ -96,8 +97,8 @@ export async function signFile(opts: {
 }): Promise<SigningJob> {
   const appId = await resolveAppId(opts.app);
   const type = opts.type ?? inferType(opts.file);
-  if (type !== "apk" && type !== "aab" && type !== "macos") {
-    throw new Error("Pass --type apk|aab|macos (could not infer it from the file name).");
+  if (type !== "apk" && type !== "aab" && type !== "macos" && type !== "ipa") {
+    throw new Error("Pass --type apk|aab|macos|ipa (could not infer it from the file name).");
   }
   const work = await mkdtemp(join(tmpdir(), "hands-sign-"));
   try {
@@ -191,14 +192,14 @@ export function registerSigningCommands(program: Command): void {
   program
     .command("sign <file>")
     .description(
-      "Sign an APK, AAB or macOS .app (directory or .app.zip) with a signing identity held by Hands. " +
+      "Sign an APK, AAB, macOS .app (directory or .app.zip) or iOS .ipa with a signing identity held by Hands. " +
       "macOS apps can be notarized and stapled. The signed file replaces the input unless --out is given.",
     )
     .requiredOption("--app <appIdOrSlug>", "App whose granted signing identity to use.")
-    .option("--type <type>", "apk | aab | macos (inferred from the file name when omitted)")
+    .option("--type <type>", "apk | aab | macos | ipa (inferred from the file name when omitted)")
     .option("--identity <id>", "Signing identity id, when several are granted to the app.")
     .option("--notarize", "macOS: notarize with Apple and staple the ticket.", false)
-    .option("--entitlements <plist>", "macOS: entitlements plist for the main executable.")
+    .option("--entitlements <plist>", "macOS and iOS: entitlements plist for the main executable (iOS: each entry must be allowed by the App Store profile).")
     .option("--out <path>", "Write the signed file here instead of replacing the input.")
     .option("--timeout <duration>", "Give up after this long (e.g. 30m).", "45m")
     .option("--json", "Output JSON.", false)
