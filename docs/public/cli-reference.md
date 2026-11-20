@@ -106,6 +106,8 @@ Hands holds signing keys and certificates for an organization, encrypted, and si
 
 Org admins manage identities under Organization › Signing, or with the CLI. The upload forms for Apple certificates list where each file comes from: the certificate signing request from Keychain Access, the certificate in the Apple Developer site, the `.p12` export from Keychain Access, and the App Store Connect API key. Instead of entering an API key again, an identity can use a copy of the key that an app in the same organization already holds for TestFlight; the form lists those apps by key ID.
 
+Hands can also make the Apple key itself, so nothing goes through Keychain Access. For iOS, "New Apple Distribution certificate" has App Store Connect issue the certificate directly (the API key needs the Admin role). Developer ID certificates can only be created by the Account Holder on the Apple Developer site, so "New Developer ID certificate" gives a certificate request to download, take there, and answer with the issued `.cer`. The private key never leaves Hands. Certificates that expire within 30 days are flagged on the page.
+
 ```bash
 # A new Android key created inside Hands (RSA 4096, valid 30 years)
 hands signing identities generate-android "Deck release" --common-name "Raft Deck" --organization Botiverse
@@ -119,6 +121,12 @@ HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devi
 # An Apple Distribution certificate for iOS: with an API key (App Manager or Admin role)
 # Hands manages the App Store provisioning profile; or upload profiles with --profile
 HANDS_P12_PASSWORD=... hands signing identities upload-apple-ios "Apple Distribution" dist.p12 --asc-from-app raft-ios
+# Or let Hands make the Apple key, so no Keychain Access or .p12 export is needed.
+# iOS in one step (API key with the Admin role; App Store Connect issues the certificate):
+hands signing identities generate-apple-ios "Apple Distribution" --asc-from-app raft-ios
+# Developer ID (only the Account Holder can create it, on the Apple Developer site):
+hands signing identities request-apple "Developer ID" devid.certSigningRequest --kind developer-id --notary-from-app raft-ios
+hands signing identities complete-request <requestId> developerID_application.cer
 
 hands signing identities grant <identityId> raft-deck-android
 hands signing identities list

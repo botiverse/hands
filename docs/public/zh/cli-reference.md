@@ -97,6 +97,8 @@ Hands 以组织为单位加密保存签名密钥和证书，为被授权的应�
 
 组织管理员在 组织 › 签名 中管理，或用命令行。Apple 证书的上传表单会列出每个文件从哪里来：用钥匙串访问创建证书签名请求、在 Apple Developer 网站创建证书、从钥匙串访问导出 `.p12`，以及 App Store Connect API key。API key 不必重新填写：可以复用同一组织内某个应用已为 TestFlight 保存的 key，表单按 Key ID 列出这些应用。
 
+Hands 也可以自己生成 Apple 密钥，不用经过钥匙串。iOS 用“新建 Apple 分发证书”，由 App Store Connect 直接签发证书（API key 需要 Admin 角色）。Developer ID 证书只有 Account Holder 能在 Apple Developer 网站创建，所以“新建 Developer ID 证书”会给出一个证书请求文件，下载后到网站上创建证书，再把签发的 `.cer` 传回来。私钥始终不离开 Hands。30 天内到期的证书会在页面上标出。
+
 ```bash
 # 在 Hands 内新建安卓密钥（RSA 4096，有效期 30 年）
 hands signing identities generate-android "Deck release" --common-name "Raft Deck" --organization Botiverse
@@ -110,6 +112,12 @@ HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devi
 # iOS 的 Apple Distribution 证书：带 API key（App Manager 或 Admin 权限）时由 Hands 管理
 # App Store 描述文件；也可以用 --profile 上传描述文件
 HANDS_P12_PASSWORD=... hands signing identities upload-apple-ios "Apple Distribution" dist.p12 --asc-from-app raft-ios
+# 也可以让 Hands 生成 Apple 密钥，不用钥匙串、不用导出 .p12。
+# iOS 一步完成（API key 需要 Admin 角色，由 App Store Connect 签发证书）：
+hands signing identities generate-apple-ios "Apple Distribution" --asc-from-app raft-ios
+# Developer ID（只有 Account Holder 能在 Apple Developer 网站创建）：
+hands signing identities request-apple "Developer ID" devid.certSigningRequest --kind developer-id --notary-from-app raft-ios
+hands signing identities complete-request <requestId> developerID_application.cer
 
 hands signing identities grant <identityId> raft-deck-android
 hands signing identities list

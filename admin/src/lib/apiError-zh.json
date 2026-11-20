@@ -505,5 +505,6 @@
   "token too large": "令牌过大",
   "trusted publisher not found": "未找到可信发布者",
   "workflow_path must be .github/workflows/<file>.yml": "workflow_path 必须是 .github/workflows/<文件>.yml",
-  "operation logs are records and cannot be deleted": "操作记录不能删除"
+  "operation logs are records and cannot be deleted": "操作记录不能删除",
+  "certificate request not found": "未找到证书请求"
 }

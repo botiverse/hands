@@ -21,6 +21,11 @@ import {
   handleRunSigningJob,
   handleUngrantSigningIdentity,
   handleUploadSigningIdentity,
+  handleGenerateAppleIosSigningIdentity,
+  handleCreateSigningCertificateRequest,
+  handleListSigningCertificateRequests,
+  handleCompleteSigningCertificateRequest,
+  handleCancelSigningCertificateRequest,
 } from "../src/routes/signing";
 import { setSigningContainerForTests } from "../src/lib/signing";
 import { storeAscCredentials } from "../src/lib/asc_credentials";
@@ -446,5 +451,109 @@ describe("signing jobs", () => {
     expect((await call(handleGetSigningJob, env, { appId: "app-mac", jobId })).body.job.status).toBe("succeeded");
     // The unstapled output was removed after stapling.
     expect(objects.has(`signing/app-mac/${jobId}/input`)).toBe(false);
+  });
+});
+
+describe("Apple keys made in Hands", () => {
+  async function ecP8() {
+    const { privateKey } = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    return `-----BEGIN PRIVATE KEY-----\n${Buffer.from(await crypto.subtle.exportKey("pkcs8", privateKey) as ArrayBuffer).toString("base64")}\n-----END PRIVATE KEY-----`;
+  }
+  const KEY_PEM = "-----BEGIN PRIVATE KEY-----\nGENERATEDKEYMATERIAL\n-----END PRIVATE KEY-----\n";
+  const CSR_PEM = "-----BEGIN CERTIFICATE REQUEST-----\nCSR\n-----END CERTIFICATE REQUEST-----\n";
+  function container(kindSubject = "CN=Apple Distribution: Botiverse (XDAPXFY8FZ)") {
+    return recorder((path, body) => {
+      if (path === "/signing/apple-csr") return { body: { key_pem: KEY_PEM, csr_pem: CSR_PEM } };
+      if (path === "/signing/apple-p12") {
+        if (body.certificate_b64 === "WRONG") return { status: 400, body: { error: "issued for a different request", code: "signing_certificate_mismatch" } };
+        return { body: { secret: { kind: body.kind, p12_b64: "UDEy", p12_password: "joined-pw" }, metadata: { subject: kindSubject, team_id: "XDAPXFY8FZ" } } };
+      }
+      return { status: 500, body: {} };
+    });
+  }
+
+  it("creates an iOS Distribution certificate through App Store Connect, key kept in Hands", async () => {
+    const { env, sqlite } = environment();
+    const p8 = await ecP8();
+    await storeAscCredentials(env.DB, "test-master-key", { app_id: "app-mac", key_id: "TEAMKEY1", issuer_id: "ISS-1", p8, actor: "t" });
+    const calls = container();
+    const apple: Array<{ method: string; path: string; body?: any }> = [];
+    let reply: () => Response = () => new Response(JSON.stringify({ data: { id: "CERT-1", type: "certificates", attributes: { certificateType: "DISTRIBUTION", certificateContent: "Q0VSVA==" } } }), { status: 201 });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      apple.push({ method: init.method ?? "GET", path: String(url).replace("https://api.appstoreconnect.apple.com", ""), body: init.body ? JSON.parse(String(init.body)) : undefined });
+      return reply();
+    }));
+
+    const made = await call(handleGenerateAppleIosSigningIdentity, env, { orgId: ORG }, { name: "Botiverse, Inc. iOS", asc: { from_app: "raft-deck" } });
+    expect(made.status).toBe(201);
+    expect(apple[0]).toEqual({ method: "POST", path: "/v1/certificates", body: { data: { type: "certificates", attributes: { certificateType: "DISTRIBUTION", csrContent: CSR_PEM } } } });
+    expect(calls.map((x) => x.path)).toEqual(["/signing/apple-csr", "/signing/apple-p12"]);
+    expect(calls[1]!.body).toMatchObject({ kind: "apple_ios_distribution", key_pem: KEY_PEM, certificate_b64: "Q0VSVA==" });
+    expect(made.body.signing_identity).toMatchObject({
+      kind: "apple_ios_distribution", origin: "generated",
+      metadata: { team_id: "XDAPXFY8FZ", asc_key_id: "TEAMKEY1", api_key_from_app: "raft-deck", apple_certificate_id: "CERT-1" },
+    });
+    expect(JSON.stringify(made.body)).not.toContain("GENERATEDKEYMATERIAL");
+    const row = sqlite.prepare("SELECT secret_ciphertext_b64 FROM signing_identities").get() as { secret_ciphertext_b64: string };
+    expect(Buffer.from(row.secret_ciphertext_b64, "base64").toString("latin1")).not.toContain("GENERATEDKEYMATERIAL");
+
+    // The team is at Apple's limit, or the key's role cannot create certificates.
+    reply = () => new Response(JSON.stringify({ errors: [{ status: "409", code: "ENTITY_ERROR", title: "There is a problem with the request entity", detail: "You already have a current Distribution certificate or a pending certificate request." }] }), { status: 409 });
+    const limit = await call(handleGenerateAppleIosSigningIdentity, env, { orgId: ORG }, { name: "Team iOS 2", asc: { from_app: "raft-deck" } });
+    expect(limit.body.code).toBe("apple_certificate_limit");
+    expect(limit.body.error).toMatch(/revoke an unused one/);
+    reply = () => new Response(JSON.stringify({ errors: [{ status: "403", title: "Forbidden" }] }), { status: 403 });
+    expect((await call(handleGenerateAppleIosSigningIdentity, env, { orgId: ORG }, { name: "Team iOS 3", asc: { from_app: "raft-deck" } })).body.error).toMatch(/Admin role/);
+    expect((await call(handleGenerateAppleIosSigningIdentity, env, { orgId: ORG }, { name: "No key" })).status).toBe(400);
+
+    // Issued but not storable (the container refuses): the certificate is revoked again.
+    reply = () => new Response(JSON.stringify({ data: { id: "CERT-2", type: "certificates", attributes: { certificateContent: "WRONG" } } }), { status: 201 });
+    apple.length = 0;
+    const lost = await call(handleGenerateAppleIosSigningIdentity, env, { orgId: ORG }, { name: "Team iOS 4", asc: { from_app: "raft-deck" } });
+    expect(lost.body.code).toBe("signing_certificate_mismatch");
+    expect(apple.map((x) => `${x.method} ${x.path}`)).toEqual(["POST /v1/certificates", "DELETE /v1/certificates/CERT-2"]);
+    expect((sqlite.prepare("SELECT COUNT(*) AS n FROM signing_identities").get() as { n: number }).n).toBe(1);
+  });
+
+  it("makes a certificate request for the Apple Developer site and completes it with the issued certificate", async () => {
+    const { env, sqlite } = environment();
+    const p8 = await ecP8();
+    await storeAscCredentials(env.DB, "test-master-key", { app_id: "app-mac", key_id: "TEAMKEY1", issuer_id: "ISS-1", p8, actor: "t" });
+    const calls = container("CN=Developer ID Application: Botiverse (XDAPXFY8FZ)");
+
+    const created = await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "apple_developer_id", name: "Deck Mac", notary: { from_app: "raft-deck" } });
+    expect(created.status).toBe(201);
+    expect(created.body.certificate_request).toMatchObject({ kind: "apple_developer_id", name: "Deck Mac", csr_pem: CSR_PEM, metadata: { api_key_from_app: "raft-deck" } });
+    expect(JSON.stringify(created.body)).not.toContain("GENERATEDKEYMATERIAL");
+    const requestId = created.body.certificate_request.id;
+    const stored = sqlite.prepare("SELECT secret_ciphertext_b64 FROM signing_certificate_requests WHERE id = ?").get(requestId) as { secret_ciphertext_b64: string };
+    expect(Buffer.from(stored.secret_ciphertext_b64, "base64").toString("latin1")).not.toContain("GENERATEDKEYMATERIAL");
+    expect((await call(handleListSigningCertificateRequests, env, { orgId: ORG })).body.certificate_requests).toHaveLength(1);
+    expect((await call(handleListSigningCertificateRequests, env, { orgId: "org2" })).body.certificate_requests).toHaveLength(0);
+
+    // A certificate for another request is refused and the request stays open.
+    const wrong = await call(handleCompleteSigningCertificateRequest, env, { orgId: ORG, requestId }, { certificate_b64: "WRONG" });
+    expect(wrong.body.code).toBe("signing_certificate_mismatch");
+    expect((await call(handleListSigningCertificateRequests, env, { orgId: ORG })).body.certificate_requests).toHaveLength(1);
+    // Another org cannot complete it.
+    expect((await call(handleCompleteSigningCertificateRequest, env, { orgId: "org2", requestId }, { certificate_b64: "Q0VS" })).status).toBe(404);
+
+    const done = await call(handleCompleteSigningCertificateRequest, env, { orgId: ORG, requestId }, { certificate_b64: "Q0VS" });
+    expect(done.status).toBe(201);
+    expect(calls.at(-1)!.body).toMatchObject({ kind: "apple_developer_id", key_pem: KEY_PEM, certificate_b64: "Q0VS", notary: { key_id: "TEAMKEY1", p8 } });
+    expect(done.body.signing_identity).toMatchObject({ kind: "apple_developer_id", origin: "generated", metadata: { api_key_from_app: "raft-deck" } });
+    // The key moved into the identity; the request no longer holds it and cannot be used again.
+    const after = sqlite.prepare("SELECT secret_ciphertext_b64, identity_id, completed_at FROM signing_certificate_requests WHERE id = ?").get(requestId) as any;
+    expect(after).toMatchObject({ secret_ciphertext_b64: null, identity_id: done.body.signing_identity.id });
+    expect((await call(handleCompleteSigningCertificateRequest, env, { orgId: ORG, requestId }, { certificate_b64: "Q0VS" })).status).toBe(404);
+    expect((await call(handleListSigningCertificateRequests, env, { orgId: ORG })).body.certificate_requests).toHaveLength(0);
+
+    // Cancelling an open request drops its key.
+    const other = (await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "apple_ios_distribution", name: "Spare", asc: { from_app: "raft-deck" } })).body.certificate_request.id;
+    expect((await call(handleCancelSigningCertificateRequest, env, { orgId: "org2", requestId: other })).status).toBe(404);
+    expect((await call(handleCancelSigningCertificateRequest, env, { orgId: ORG, requestId: other })).body.cancelled).toBe(true);
+    expect((sqlite.prepare("SELECT secret_ciphertext_b64 FROM signing_certificate_requests WHERE id = ?").get(other) as any).secret_ciphertext_b64).toBeNull();
+    expect((await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "android_keystore", name: "x" })).status).toBe(400);
+    expect((await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "apple_ios_distribution", name: "No key" })).body.error).toMatch(/API key/);
   });
 });

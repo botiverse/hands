@@ -2,17 +2,26 @@
  * Organization › Signing — signing keys and certificates held by Hands.
  *
  * Android keys can be generated here (the private key is created inside Hands)
- * or uploaded. Apple Developer ID (macOS) and Apple Distribution (iOS)
- * certificates are uploaded with step-by-step guidance and an App Store Connect
- * API key, which can be copied from an app here that already has one. Each identity is granted to the
- * apps that may sign with it; CI then runs `hands sign`.
+ * or uploaded. Apple keys can be made here too: for iOS, App Store Connect
+ * issues the Distribution certificate directly (Admin API key); for macOS
+ * Developer ID, which only the Account Holder can create on the Apple
+ * Developer site, Hands gives a certificate request to take there and takes
+ * the issued .cer back. Existing .p12 files can still be uploaded with
+ * step-by-step guidance. An App Store Connect API key can be copied from an
+ * app here that already has one. Each identity is granted to the apps that
+ * may sign with it; CI then runs `hands sign`.
  */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  cancelSigningCertificateRequest,
+  completeSigningCertificateRequest,
+  createSigningCertificateRequest,
   exportSigningIdentityBackup,
   generateAndroidSigningIdentity,
+  generateAppleIosSigningIdentity,
+  listSigningCertificateRequests,
   grantSigningIdentity,
   listApps,
   listSigningApiKeySources,
@@ -20,6 +29,7 @@ import {
   revokeSigningIdentity,
   ungrantSigningIdentity,
   uploadSigningIdentity,
+  type SigningCertificateRequest,
   type SigningIdentity,
 } from "../lib/api";
 import { errorMessage } from "../lib/errorMessage";
@@ -55,7 +65,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
   const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
-  const [mode, setMode] = useState<"none" | "generate" | "android" | "apple" | "ios">("none");
+  const [mode, setMode] = useState<"none" | "generate" | "android" | "apple" | "ios" | "new-ios" | "new-mac">("none");
   const key = ["signing-identities", orgId];
   const identities = useQuery({ queryKey: key, queryFn: () => listSigningIdentities(orgId), enabled: canManage });
   const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
@@ -63,6 +73,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
     toast.show({ kind: "success", title });
     setMode("none");
     qc.invalidateQueries({ queryKey: key });
+    qc.invalidateQueries({ queryKey: ["signing-certificate-requests", orgId] });
   };
   const onError = (title: string) => (e: unknown) => toast.show({ kind: "error", title, description: errorMessage(e) });
 
@@ -108,9 +119,14 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" onClick={() => setMode("generate")}>{t("New Android key", "新建安卓签名密钥")}</Button>
         <Button variant="outline" onClick={() => setMode("android")}>{t("Upload Android keystore", "上传安卓 keystore")}</Button>
+        <Button variant="outline" onClick={() => setMode("new-ios")}>{t("New Apple Distribution certificate (iOS)", "新建 Apple 分发证书（iOS）")}</Button>
+        <Button variant="outline" onClick={() => setMode("new-mac")}>{t("New Developer ID certificate (macOS)", "新建 Developer ID 证书（macOS）")}</Button>
         <Button variant="outline" onClick={() => setMode("apple")}>{t("Upload Apple Developer ID (macOS)", "上传 Apple Developer ID（macOS）")}</Button>
         <Button variant="outline" onClick={() => setMode("ios")}>{t("Upload Apple Distribution (iOS)", "上传 Apple 分发证书（iOS）")}</Button>
       </div>
+      {mode === "new-ios" && <NewAppleForm key="new-ios" orgId={orgId} kind="apple_ios_distribution" onIdentity={() => done(t("Certificate created", "证书已创建"))} onRequest={() => done(t("Request created: download it below", "请求已创建：在下方下载"))} onCancel={() => setMode("none")} />}
+      {mode === "new-mac" && <NewAppleForm key="new-mac" orgId={orgId} kind="apple_developer_id" onIdentity={() => done(t("Certificate created", "证书已创建"))} onRequest={() => done(t("Request created: download it below", "请求已创建：在下方下载"))} onCancel={() => setMode("none")} />}
+      <PendingRequests orgId={orgId} onCompleted={() => done(t("Certificate added", "证书已添加"))} />
       {mode === "generate" && <GenerateForm orgId={orgId} onDone={() => done(t("Android key created", "安卓签名密钥已创建"))} onCancel={() => setMode("none")} />}
       {mode === "android" && <AndroidUploadForm orgId={orgId} onDone={() => done(t("Keystore uploaded", "keystore 已上传"))} onCancel={() => setMode("none")} />}
       {mode === "apple" && <AppleUploadForm key="apple" orgId={orgId} kind="apple_developer_id" onDone={() => done(t("Certificate uploaded", "证书已上传"))} onCancel={() => setMode("none")} />}
@@ -129,7 +145,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
               <div className="text-xs text-foreground-muted">
                 {t(KIND_LABEL[identity.kind][0], KIND_LABEL[identity.kind][1])}
                 {" · "}{identity.origin === "generated" ? t("generated in Hands", "在 Hands 中生成") : t("uploaded", "已上传")}
-                {identity.metadata.not_after ? ` · ${t("expires", "到期")} ${identity.metadata.not_after}` : ""}
+                {identity.metadata.not_after ? <ExpiryNote notAfter={identity.metadata.not_after} /> : null}
                 {identity.metadata.team_id ? ` · team ${identity.metadata.team_id}` : ""}
                 {identity.kind === "apple_developer_id" ? ` · ${identity.metadata.notary_key_id ? t("notarization on", "已配置公证") : t("no notarization key", "未配置公证")}` : ""}
                 {identity.kind === "apple_ios_distribution" ? ` · ${identity.metadata.asc_key_id ? t("profiles managed by Hands", "描述文件由 Hands 管理") : t(`${identity.metadata.provisioning_profile_count ?? 0} uploaded profile(s)`, `已上传 ${identity.metadata.provisioning_profile_count ?? 0} 个描述文件`)}` : ""}
@@ -321,8 +337,8 @@ function AppleSteps({ kind }: { kind: AppleKind }) {
 
 type KeyChoice = { mode: "app"; appId: string } | { mode: "new" } | { mode: "none" };
 
-function ApiKeyPicker({ orgId, kind, choice, onChange, keyId, setKeyId, issuerId, setIssuerId, setP8 }: {
-  orgId: string; kind: AppleKind; choice: KeyChoice; onChange: (c: KeyChoice) => void;
+function ApiKeyPicker({ orgId, kind, choice, onChange, keyId, setKeyId, issuerId, setIssuerId, setP8, allowNone = true }: {
+  orgId: string; kind: AppleKind; choice: KeyChoice; onChange: (c: KeyChoice) => void; allowNone?: boolean;
   keyId: string; setKeyId: (v: string) => void; issuerId: string; setIssuerId: (v: string) => void; setP8: (f: File | null) => void;
 }) {
   const t = useText();
@@ -344,10 +360,12 @@ function ApiKeyPicker({ orgId, kind, choice, onChange, keyId, setKeyId, issuerId
         <input type="radio" name="api-key" checked={choice.mode === "new"} onChange={() => onChange({ mode: "new" })} />
         {t("Enter a new key", "填写新的 key")}
       </label>
-      <label className="flex items-center gap-2">
-        <input type="radio" name="api-key" checked={choice.mode === "none"} onChange={() => onChange({ mode: "none" })} />
-        {kind === "apple_developer_id" ? t("No notarization", "不公证") : t("No key: I upload a provisioning profile", "不用 key：我自己上传描述文件")}
-      </label>
+      {allowNone && (
+        <label className="flex items-center gap-2">
+          <input type="radio" name="api-key" checked={choice.mode === "none"} onChange={() => onChange({ mode: "none" })} />
+          {kind === "apple_developer_id" ? t("No notarization", "不公证") : t("No key: I upload a provisioning profile", "不用 key：我自己上传描述文件")}
+        </label>
+      )}
       {choice.mode === "new" && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field id="ap-key" label="Key ID"><Input id="ap-key" value={keyId} onChange={(e) => setKeyId(e.target.value)} required /></Field>
@@ -390,6 +408,11 @@ function AppleUploadForm({ orgId, kind, onDone, onCancel }: { orgId: string; kin
   const missing = !file || (choice.mode === "new" && !p8) || (ios && choice.mode === "none" && profiles.length === 0);
   return (
     <FormShell onSubmit={() => m.mutate()} onCancel={onCancel} pending={m.isPending || missing}>
+      <p className="sm:col-span-2 text-xs text-foreground-muted">
+        {ios
+          ? t("No .p12 yet? \"New Apple Distribution certificate\" makes one in Hands without Keychain Access.", "还没有 .p12？用“新建 Apple 分发证书”可以直接在 Hands 里生成，不用钥匙串。")
+          : t("No .p12 yet? \"New Developer ID certificate\" makes the key in Hands; you only upload a request file to Apple and the .cer back.", "还没有 .p12？用“新建 Developer ID 证书”在 Hands 里生成密钥；你只需要把请求文件传给 Apple，再把 .cer 传回来。")}
+      </p>
       <AppleSteps kind={kind} />
       <Field id="ap-name" label={t("Name", "名称")}><Input id="ap-name" value={name} onChange={(e) => setName(e.target.value)} required /></Field>
       <Field id="ap-file" label={certLabel}><input id="ap-file" type="file" accept=".p12,.pfx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} required /></Field>
@@ -401,5 +424,151 @@ function AppleUploadForm({ orgId, kind, onDone, onCancel }: { orgId: string; kin
         </Field>
       )}
     </FormShell>
+  );
+}
+
+/** Expiry date, flagged when the certificate runs out within 30 days. */
+function ExpiryNote({ notAfter }: { notAfter: string }) {
+  const t = useText();
+  const at = Date.parse(notAfter);
+  const soon = Number.isFinite(at) && at - Date.now() < 30 * 24 * 60 * 60 * 1000;
+  if (!soon) return <>{` · ${t("expires", "到期")} ${notAfter}`}</>;
+  return (
+    <span className="text-danger">
+      {` · ${at < Date.now() ? t("expired", "已过期") : t("expires soon", "即将到期")} ${notAfter} — ${t("make a new certificate and grant it to the apps", "请新建证书并授权给应用")}`}
+    </span>
+  );
+}
+
+/**
+ * Make an Apple key in Hands. iOS can go straight through App Store Connect
+ * (Admin key); otherwise, and always for Developer ID, Hands gives a
+ * certificate request to take to the Apple Developer site.
+ */
+function NewAppleForm({ orgId, kind, onIdentity, onRequest, onCancel }: {
+  orgId: string; kind: AppleKind; onIdentity: () => void; onRequest: () => void; onCancel: () => void;
+}) {
+  const t = useText();
+  const toast = useToast();
+  const ios = kind === "apple_ios_distribution";
+  const [name, setName] = useState("");
+  const [direct, setDirect] = useState(ios);
+  const [choice, setChoice] = useState<KeyChoice>(ios ? { mode: "new" } : { mode: "none" });
+  const [keyId, setKeyId] = useState("");
+  const [issuerId, setIssuerId] = useState("");
+  const [p8, setP8] = useState<File | null>(null);
+  const m = useMutation({
+    mutationFn: async () => {
+      const key = choice.mode === "app"
+        ? { from_app: choice.appId }
+        : choice.mode === "new" && p8 ? { key_id: keyId.trim(), issuer_id: issuerId.trim(), p8: await p8.text() } : null;
+      if (ios && direct) return { identity: await generateAppleIosSigningIdentity(orgId, { name: name.trim(), asc: key ?? {} }) };
+      return { request: await createSigningCertificateRequest(orgId, { kind, name: name.trim(), ...(ios ? { asc: key } : { notary: key }) }) };
+    },
+    onSuccess: (res) => ("identity" in res ? onIdentity() : onRequest()),
+    onError: (e) => toast.show({ kind: "error", title: t("Create failed", "创建失败"), description: errorMessage(e) }),
+  });
+  const missing = (choice.mode === "new" && !p8) || (ios && choice.mode === "none");
+  return (
+    <FormShell onSubmit={() => m.mutate()} onCancel={onCancel} pending={m.isPending || missing}>
+      <div className="sm:col-span-2 rounded bg-layer-inset p-3 text-xs space-y-2">
+        <div className="font-medium">{t("The private key is created inside Hands and never leaves it.", "私钥在 Hands 内生成，不会离开 Hands。")}</div>
+        {ios ? (
+          <>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="ios-route" checked={direct} onChange={() => setDirect(true)} />
+              {t("Hands asks Apple for the certificate (API key with the Admin role)", "Hands 直接向 Apple 申请证书（需要 Admin 角色的 API key）")}
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="ios-route" checked={!direct} onChange={() => setDirect(false)} />
+              {t("I take a request file to the Apple Developer site (any key role)", "我把请求文件拿到 Apple Developer 网站申请（key 任何角色都行）")}
+            </label>
+            <p>
+              {t("Apple allows a team only a few Distribution certificates; if it refuses, revoke an unused one first. ", "Apple 每个团队只能有少量 Distribution 证书；如果被拒，先撤销一张不用的。")}
+              <ExternalLink href={APPLE_LINKS.certificates.replace("/add", "/list")}>{t("Certificates", "证书")}</ExternalLink>
+            </p>
+          </>
+        ) : (
+          <p>
+            {t("Apple lets only the Account Holder create Developer ID certificates, on the Apple Developer site. After saving, download the request below, create a \"Developer ID Application\" certificate from it there, and upload the .cer here.", "Apple 只允许 Account Holder 在 Apple Developer 网站创建 Developer ID 证书。保存后在下方下载请求文件，到网站上用它创建“Developer ID Application”证书，再把 .cer 传回这里。")}
+          </p>
+        )}
+      </div>
+      <Field id="na-name" label={t("Name", "名称")}><Input id="na-name" value={name} onChange={(e) => setName(e.target.value)} required /></Field>
+      <ApiKeyPicker
+        orgId={orgId} kind={kind} choice={choice} onChange={setChoice} allowNone={!ios}
+        keyId={keyId} setKeyId={setKeyId} issuerId={issuerId} setIssuerId={setIssuerId} setP8={setP8}
+      />
+    </FormShell>
+  );
+}
+
+/** Requests waiting for the certificate Apple issues: download, take to Apple, upload the .cer. */
+function PendingRequests({ orgId, onCompleted }: { orgId: string; onCompleted: () => void }) {
+  const t = useText();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const key = ["signing-certificate-requests", orgId];
+  const requests = useQuery({ queryKey: key, queryFn: () => listSigningCertificateRequests(orgId) });
+  const cancel = useMutation({
+    mutationFn: (id: string) => cancelSigningCertificateRequest(orgId, id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+    onError: (e) => toast.show({ kind: "error", title: t("Cancel failed", "取消失败"), description: errorMessage(e) }),
+  });
+  const rows = requests.data?.certificate_requests ?? [];
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => (
+        <PendingRequest key={r.id} orgId={orgId} request={r} onCompleted={onCompleted} onCancel={() => {
+          if (confirm(t(`Cancel the request ${r.name}? Its key is deleted.`, `取消请求 ${r.name}？它的密钥会被删除。`))) cancel.mutate(r.id);
+        }} />
+      ))}
+    </div>
+  );
+}
+
+function PendingRequest({ orgId, request, onCompleted, onCancel }: {
+  orgId: string; request: SigningCertificateRequest; onCompleted: () => void; onCancel: () => void;
+}) {
+  const t = useText();
+  const toast = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const certName = request.kind === "apple_developer_id" ? "Developer ID Application" : "Apple Distribution";
+  const m = useMutation({
+    mutationFn: async () => completeSigningCertificateRequest(orgId, request.id, await fileBase64(file!)),
+    onSuccess: onCompleted,
+    onError: (e) => toast.show({ kind: "error", title: t("Upload failed", "上传失败"), description: errorMessage(e) }),
+  });
+  const base = request.name.replace(/[^A-Za-z0-9._-]+/g, "-");
+  return (
+    <form
+      className="rounded border border-line-hairline p-3 text-sm space-y-2"
+      aria-label={request.name}
+      onSubmit={(e) => { e.preventDefault(); if (file) m.mutate(); }}
+    >
+      <div className="font-medium">{request.name} · {t("waiting for Apple's certificate", "等待 Apple 证书")}</div>
+      <ol className="list-decimal space-y-1 pl-4 text-xs">
+        <li>
+          <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => download(`${base}.certSigningRequest`, request.csr_pem)}>
+            {t("Download the request (.certSigningRequest)", "下载请求文件（.certSigningRequest）")}
+          </Button>
+        </li>
+        <li>
+          {t(`On the Apple Developer site, create a "${certName}" certificate, upload this request, and download the .cer. `, `在 Apple Developer 网站创建“${certName}”证书，上传这个请求文件，下载 .cer。`)}
+          <ExternalLink href={APPLE_LINKS.certificates}>{t("Certificates", "证书")}</ExternalLink>
+        </li>
+        <li>
+          <label className="inline-flex flex-wrap items-center gap-2">
+            {t("Upload the .cer here:", "把 .cer 传到这里：")}
+            <input type="file" accept=".cer,.crt,.pem" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </label>
+        </li>
+      </ol>
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={!file || m.isPending}>{t("Add certificate", "添加证书")}</Button>
+        <Button type="button" size="sm" variant="outline" onClick={onCancel}>{t("Cancel request", "取消请求")}</Button>
+      </div>
+    </form>
   );
 }

@@ -4,7 +4,7 @@ import { currentAccount, insertAuditLog } from "../lib/permissions";
 import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { createAscJwt } from "../lib/asc_api";
 import { getAscCredentials } from "../lib/asc_credentials";
-import { appStoreProfile, type ResolvedProfile } from "../lib/ios_profiles";
+import { appStoreProfile, createDistributionCertificate, revokeDistributionCertificate, type ResolvedProfile } from "../lib/ios_profiles";
 import { sha256Hex } from "../lib/deploy_tokens";
 import {
   ARTIFACT_TYPES,
@@ -16,6 +16,7 @@ import {
   encryptSigningSecret,
   type ArtifactType,
   type NotaryKey,
+  type PendingKeySecret,
   type SigningKind,
   type SigningMetadata,
   type SigningSecret,
@@ -25,7 +26,7 @@ type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SECRET_FILE_BYTES = 64 * 1024;
-const NAME_PATTERN = /^[\p{L}\p{N} ._()-]{1,80}$/u;
+const NAME_PATTERN = /^[\p{L}\p{N} ,._()&-]{1,80}$/u;
 const SIGN_TIMEOUT_MS = 25 * 60 * 1000;
 /** After the first backup download, a retry is allowed for this long. */
 const BACKUP_RETRY_WINDOW_MS = 10 * 60 * 1000;
@@ -274,7 +275,7 @@ export async function handleUploadSigningIdentity(c: AdminContext) {
       throw new SigningError(400, "invalid_request", `kind must be one of ${SIGNING_KINDS.join(", ")}`);
     }
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    if (!NAME_PATTERN.test(name)) throw new SigningError(400, "invalid_request", "name is required (letters, digits, spaces, . _ - ( ))");
+    if (!NAME_PATTERN.test(name)) throw new SigningError(400, "invalid_request", "name is required (letters, digits, spaces, , . _ - & ( ))");
     const { secret, extra } = await secretFromBody(c, orgId, kind, body);
     const { metadata } = await callSigningContainer<{ metadata: SigningMetadata }>(c.env, "/signing/inspect", { secret }, 60_000);
     const row = await storeIdentity(c, orgId, { kind, name, origin: "uploaded", secret, metadata: { ...metadata, ...extra } });
@@ -302,6 +303,214 @@ export async function handleGenerateAndroidSigningIdentity(c: AdminContext) {
   } catch (error) {
     return fail(c, error);
   }
+}
+
+// ---------- Apple keys made in Hands ----------
+
+type AppleKind = "apple_developer_id" | "apple_ios_distribution";
+
+type CertificateRequestRow = {
+  id: string;
+  org_id: string;
+  kind: AppleKind;
+  name: string;
+  csr_pem: string;
+  metadata_json: string;
+  secret_ciphertext_b64: string | null;
+  secret_iv_b64: string | null;
+  identity_id: string | null;
+  created_by_actor: string;
+  created_at: number;
+  completed_at: number | null;
+  cancelled_at: number | null;
+};
+
+function appleKind(value: unknown): AppleKind {
+  if (value === "apple_developer_id" || value === "apple_ios_distribution") return value;
+  throw new SigningError(400, "invalid_request", "kind must be apple_developer_id or apple_ios_distribution");
+}
+
+function bodyName(body: Record<string, unknown>) {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!NAME_PATTERN.test(name)) throw new SigningError(400, "invalid_request", "name is required (letters, digits, spaces, , . _ - & ( ))");
+  return name;
+}
+
+/** The API key an Apple identity keeps: notarization for macOS, profiles for iOS. */
+async function appleApiKey(c: AdminContext, orgId: string, kind: AppleKind, body: Record<string, unknown>) {
+  const field = kind === "apple_developer_id" ? "notary" : "asc";
+  const resolved = await resolveApiKey(c, orgId, body[field], field);
+  const extra: SigningMetadata = resolved.fromApp ? { api_key_from_app: resolved.fromApp.slug } : {};
+  if (kind === "apple_ios_distribution") extra.asc_key_id = resolved.key?.key_id ?? null;
+  return { key: resolved.key, extra };
+}
+
+async function newAppleKey(c: AdminContext, name: string) {
+  const made = await callSigningContainer<{ key_pem?: string; csr_pem?: string }>(c.env, "/signing/apple-csr", { common_name: name }, 60_000);
+  if (!made.key_pem || !made.csr_pem) throw new SigningError(502, "signing_generate_failed", "container returned no key");
+  return { key_pem: made.key_pem, csr_pem: made.csr_pem };
+}
+
+/** Join a key made in Hands with the certificate Apple issued, and store it as an identity. */
+async function storeAppleIdentity(
+  c: AdminContext,
+  orgId: string,
+  input: { kind: AppleKind; name: string; keyPem: string; certificate: string; apiKey: NotaryKey | null; extra: SigningMetadata },
+) {
+  const joined = await callSigningContainer<{ secret?: { p12_b64: string; p12_password: string }; metadata: SigningMetadata }>(
+    c.env, "/signing/apple-p12", { kind: input.kind, key_pem: input.keyPem, certificate_b64: input.certificate, notary: input.kind === "apple_developer_id" ? input.apiKey : null }, 60_000,
+  );
+  if (!joined.secret?.p12_b64) throw new SigningError(502, "signing_generate_failed", "container returned no certificate");
+  const secret: SigningSecret = input.kind === "apple_developer_id"
+    ? { kind: input.kind, p12_b64: joined.secret.p12_b64, p12_password: joined.secret.p12_password, notary: input.apiKey }
+    : { kind: input.kind, p12_b64: joined.secret.p12_b64, p12_password: joined.secret.p12_password, provisioning_profiles_b64: [], asc: input.apiKey };
+  return storeIdentity(c, orgId, { kind: input.kind, name: input.name, origin: "generated", secret, metadata: { ...joined.metadata, ...input.extra } });
+}
+
+/**
+ * iOS in one step: Hands makes the key, App Store Connect issues an Apple
+ * Distribution certificate for it (API key with the Admin role), and the key
+ * never leaves Hands.
+ */
+export async function handleGenerateAppleIosSigningIdentity(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const name = bodyName(body);
+    const api = await appleApiKey(c, orgId, "apple_ios_distribution", body);
+    if (!api.key) throw new SigningError(400, "invalid_request", "an App Store Connect API key (asc) with the Admin role is required");
+    const made = await newAppleKey(c, name);
+    const issued = await createDistributionCertificate(api.key, made.csr_pem);
+    let row: IdentityRow;
+    try {
+      row = await storeAppleIdentity(c, orgId, {
+        kind: "apple_ios_distribution", name, keyPem: made.key_pem, certificate: issued.certificate_b64, apiKey: api.key,
+        extra: { ...api.extra, apple_certificate_id: issued.id },
+      });
+    } catch (error) {
+      // Without its key the certificate is useless and takes one of the
+      // team's few Distribution slots: give it back.
+      await revokeDistributionCertificate(api.key, issued.id).catch(() => {});
+      throw error;
+    }
+    return c.json({ signing_identity: await identityResponse(c.env.DB, row) }, 201);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+function certificateRequestResponse(row: CertificateRequestRow) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    csr_pem: row.csr_pem,
+    metadata: parseMetadata(row.metadata_json),
+    identity_id: row.identity_id,
+    created_by_actor: row.created_by_actor,
+    created_at: row.created_at,
+    completed_at: row.completed_at,
+    cancelled_at: row.cancelled_at,
+  };
+}
+
+const REQUEST_COLUMNS = `id, org_id, kind, name, csr_pem, metadata_json, secret_ciphertext_b64, secret_iv_b64, identity_id,
+  created_by_actor, created_at, completed_at, cancelled_at`;
+
+/**
+ * A key made in Hands and its certificate request, for a person to take to
+ * the Apple Developer site (Developer ID certificates can only be created
+ * there, by the Account Holder). The issued certificate comes back through
+ * `complete`.
+ */
+export async function handleCreateSigningCertificateRequest(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const kind = appleKind(body.kind);
+    const name = bodyName(body);
+    const api = await appleApiKey(c, orgId, kind, body);
+    if (kind === "apple_ios_distribution" && !api.key) {
+      throw new SigningError(400, "invalid_request", "an App Store Connect API key (asc) is required so Hands can create the provisioning profiles");
+    }
+    const made = await newAppleKey(c, name);
+    const pending: PendingKeySecret = { kind: "pending_apple_key", key_pem: made.key_pem, api_key: api.key };
+    const encrypted = await encryptSigningSecret(pending, c.env.ASC_CRED_ENC_KEY);
+    const id = crypto.randomUUID();
+    await c.env.DB.prepare(
+      `INSERT INTO signing_certificate_requests (id, org_id, kind, name, csr_pem, metadata_json, secret_ciphertext_b64, secret_iv_b64,
+         created_by_actor, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+    ).bind(id, orgId, kind, name, made.csr_pem, JSON.stringify(api.extra), encrypted.secret_ciphertext_b64, encrypted.secret_iv_b64,
+      currentActor(c), Date.now()).run();
+    const auditApp = await orgAuditApp(c.env.DB, orgId);
+    if (auditApp) await insertAuditLog(c.env.DB, c, { app_id: auditApp, action: "signing_certificate_request.create", payload: { org_id: orgId, request_id: id } });
+    const row = await c.env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM signing_certificate_requests WHERE id = ?1`).bind(id).first<CertificateRequestRow>();
+    return c.json({ certificate_request: certificateRequestResponse(row!) }, 201);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+export async function handleListSigningCertificateRequests(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const { results } = await c.env.DB.prepare(
+    `SELECT ${REQUEST_COLUMNS} FROM signing_certificate_requests
+     WHERE org_id = ?1 AND completed_at IS NULL AND cancelled_at IS NULL ORDER BY created_at DESC`,
+  ).bind(orgId).all<CertificateRequestRow>();
+  return c.json({ certificate_requests: results.map(certificateRequestResponse) });
+}
+
+export async function handleCompleteSigningCertificateRequest(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const id = c.req.param("requestId") ?? "";
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const certificate = str(body.certificate_b64, 64 * 1024);
+    if (!certificate) throw new SigningError(400, "invalid_request", "certificate_b64 (the .cer file Apple issued) is required");
+    const row = await c.env.DB.prepare(`SELECT ${REQUEST_COLUMNS} FROM signing_certificate_requests WHERE id = ?1 AND org_id = ?2`)
+      .bind(id, orgId).first<CertificateRequestRow>();
+    if (!row || row.cancelled_at !== null || !row.secret_ciphertext_b64 || !row.secret_iv_b64) {
+      throw new SigningError(404, "not_found", "certificate request not found");
+    }
+    // Claim the request so two uploads cannot make two identities; a failed
+    // attempt releases it for another try.
+    const claim = await c.env.DB.prepare(
+      "UPDATE signing_certificate_requests SET completed_at = ?1 WHERE id = ?2 AND completed_at IS NULL AND cancelled_at IS NULL",
+    ).bind(Date.now(), id).run();
+    if (Number(claim.meta?.changes ?? 0) !== 1) throw new SigningError(409, "certificate_request_completed", "this request already has its certificate");
+    let identity: IdentityRow;
+    try {
+      const pending = await decryptSigningSecret<PendingKeySecret>(
+        { secret_ciphertext_b64: row.secret_ciphertext_b64, secret_iv_b64: row.secret_iv_b64 }, c.env.ASC_CRED_ENC_KEY,
+      );
+      identity = await storeAppleIdentity(c, orgId, {
+        kind: row.kind, name: row.name, keyPem: pending.key_pem, certificate, apiKey: pending.api_key, extra: parseMetadata(row.metadata_json),
+      });
+    } catch (error) {
+      await c.env.DB.prepare("UPDATE signing_certificate_requests SET completed_at = NULL WHERE id = ?1 AND identity_id IS NULL").bind(id).run();
+      throw error;
+    }
+    // The key now lives in the identity; clear it here.
+    await c.env.DB.prepare(
+      `UPDATE signing_certificate_requests SET completed_at = ?1, identity_id = ?2, secret_ciphertext_b64 = NULL, secret_iv_b64 = NULL
+       WHERE id = ?3`,
+    ).bind(Date.now(), identity.id, id).run();
+    return c.json({ signing_identity: await identityResponse(c.env.DB, identity) }, 201);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+export async function handleCancelSigningCertificateRequest(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const id = c.req.param("requestId") ?? "";
+  const result = await c.env.DB.prepare(
+    `UPDATE signing_certificate_requests SET cancelled_at = ?1, secret_ciphertext_b64 = NULL, secret_iv_b64 = NULL
+     WHERE id = ?2 AND org_id = ?3 AND completed_at IS NULL AND cancelled_at IS NULL`,
+  ).bind(Date.now(), id, orgId).run();
+  if (Number(result.meta?.changes ?? 0) !== 1) return c.json({ error: "certificate request not found" }, 404);
+  return c.json({ cancelled: true });
 }
 
 /**

@@ -155,6 +155,11 @@ import {
   handleCreateSigningJob,
   handleExportSigningIdentityBackup,
   handleGenerateAndroidSigningIdentity,
+  handleGenerateAppleIosSigningIdentity,
+  handleListSigningCertificateRequests,
+  handleCreateSigningCertificateRequest,
+  handleCompleteSigningCertificateRequest,
+  handleCancelSigningCertificateRequest,
   handleGetSigningJob,
   handleGrantSigningIdentity,
   handleListSigningIdentities,
@@ -1436,6 +1441,11 @@ bindAdmin("get", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", 
 bindAdmin("post", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", "admin"), handleUploadSigningIdentity);
 bindAdmin("get", "/api/orgs/:orgId/signing-identities/api-keys", requireOrgRole("orgId", "admin"), handleListSigningApiKeySources);
 bindAdmin("post", "/api/orgs/:orgId/signing-identities/generate-android", requireOrgRole("orgId", "admin"), handleGenerateAndroidSigningIdentity);
+bindAdmin("post", "/api/orgs/:orgId/signing-identities/generate-apple-ios", requireOrgRole("orgId", "admin"), handleGenerateAppleIosSigningIdentity);
+bindAdmin("get", "/api/orgs/:orgId/signing-certificate-requests", requireOrgRole("orgId", "admin"), handleListSigningCertificateRequests);
+bindAdmin("post", "/api/orgs/:orgId/signing-certificate-requests", requireOrgRole("orgId", "admin"), handleCreateSigningCertificateRequest);
+bindAdmin("post", "/api/orgs/:orgId/signing-certificate-requests/:requestId/complete", requireOrgRole("orgId", "admin"), handleCompleteSigningCertificateRequest);
+bindAdmin("delete", "/api/orgs/:orgId/signing-certificate-requests/:requestId", requireOrgRole("orgId", "admin"), handleCancelSigningCertificateRequest);
 bindAdmin("post", "/api/orgs/:orgId/signing-identities/:identityId/backup", requireOrgRole("orgId", "admin"), handleExportSigningIdentityBackup);
 bindAdmin("delete", "/api/orgs/:orgId/signing-identities/:identityId", requireOrgRole("orgId", "admin"), handleRevokeSigningIdentity);
 bindAdmin("put", "/api/orgs/:orgId/signing-identities/:identityId/apps/:appId", requireOrgRole("orgId", "admin"), handleGrantSigningIdentity);
