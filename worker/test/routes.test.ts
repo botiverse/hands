@@ -4844,6 +4844,7 @@ describe("quiver releases — draft lifecycle", () => {
           version_transition: "1.0.0 → 1.0.0",
           version_code_transition: "1 → 2",
           rollout: 100,
+          audience: "general",
         },
       });
     });
@@ -4883,6 +4884,46 @@ describe("quiver releases — draft lifecycle", () => {
       // Same null discipline: absent when nothing was displaced, so a template
       // collapses the line instead of printing a bare arrow.
       expect(payloads[0].payload.version_code_transition).toBeNull();
+    });
+
+    it("marks a device-group-only publish and announces it again when widened to everyone", async () => {
+      const { createRelease, handlePublishRelease, handleUpdateRelease } = await import("../src/routes/releases");
+      const now = Date.now();
+      await env.DB.prepare(
+        "INSERT INTO webhooks (id, org_id, app_id, url, secret, events_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).bind("wh-pub", "default", null, "https://bobo.example/hooks/hands", "s",
+        JSON.stringify(["release:published"]), 1, now, now).run();
+      await env.DB.prepare(
+        `INSERT INTO device_groups (id, app_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind("group-e2e", "app-release", "E2E", null, now, now).run();
+      await createRelease(env.DB as any, "app-release", { build_id: "build-active", status: "active" }, "tester", "rel-active");
+      await createRelease(env.DB as any, "app-release", {
+        build_id: "build-draft", status: "draft",
+        scopes: [{ scope_type: "device_group", scope_value: "group-e2e" }],
+      }, "tester", "rel-e2e");
+
+      const waited: Promise<unknown>[] = [];
+      expect((await handlePublishRelease(publishContext("rel-e2e", {
+        expected_scope: { scope_type: "device_group", scope_value: "group-e2e" },
+      }, waited))).status).toBe(200);
+      await Promise.all(waited);
+      let payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].payload.audience).toBe("device_group");
+
+      // Widening to everyone is the real release: announced now, naming what it replaced.
+      const widened = await handleUpdateRelease(publishContext("rel-e2e", { scopes: [{ scope_type: "full", scope_value: "all" }] }, waited));
+      expect(widened.status).toBe(200);
+      await Promise.all(waited);
+      payloads = await publishedPayloads();
+      expect(payloads).toHaveLength(2);
+      expect(payloads[1].payload).toMatchObject({ audience: "general", release_id: "rel-e2e", previous_version: "1.0.0", previous_version_code: 1 });
+      expect(payloads[1].event_id).not.toBe(payloads[0].event_id);
+
+      // A plain edit of an already general release announces nothing.
+      await handleUpdateRelease(publishContext("rel-e2e", { changelog: "notes" }, waited));
+      await Promise.all(waited);
+      expect(await publishedPayloads()).toHaveLength(2);
     });
 
     it("gives a re-publish after a cancel a new event_id", async () => {
