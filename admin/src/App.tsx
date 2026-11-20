@@ -83,7 +83,9 @@ import { legalMessage } from "./lib/legalMessages";
 import { LanguagePicker, useLocale, useText } from "./lib/locale";
 import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
-import { AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
+import { AppDetail } from "./pages/AppDetail";
+import { AppSettings } from "./pages/AppSettings";
+import { AppStoreReview } from "./pages/AppStoreReview";
 import { AppChannels } from "./pages/Channels";
 import { AuditLog } from "./pages/AuditLog";
 import { Integrations } from "./pages/Integrations";
@@ -103,7 +105,6 @@ import {
   useIsDesktop,
 } from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
-import { AppAccess } from "./pages/AppAccess";
 import { HandsAdmin } from "./pages/HandsAdmin";
 import { OrgSwitcher, useClearOrgCache } from "./components/OrgSwitcher";
 import { consoleRootAuthState, dashboardHref, defaultAppResolverState } from "./lib/authNavigation";
@@ -750,12 +751,7 @@ function AppChannelsRoute() {
 function AppSettingsRoute() {
   const { appId } = useParams();
   if (!appId) return null;
-  return (
-    <div key={appId} className="space-y-6">
-      <AppSettings appId={appId} />
-      <AppAccess appId={appId} />
-    </div>
-  );
+  return <AppSettings key={appId} appId={appId} />;
 }
 
 function AppFeedbackRoute() {
@@ -811,25 +807,9 @@ function TestflightRoute() {
 }
 
 function AppStoreReviewRoute() {
-  const t = useText();
   const { appId } = useParams();
-  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
-  const app = apps.data?.apps.find((a) => a.id === appId);
   if (!appId) return null;
-  return (
-    <div key={appId} className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold">{t("App Store review status", "App Store 审核状态")}</h1>
-      </div>
-      {app && app.platform === "ios" ? (
-        <AppStoreReviewPanel appId={appId} app={app} />
-      ) : app ? (
-        <p className="text-sm text-foreground-muted">
-          {t("This is only available for iOS apps.", "此功能仅适用于 iOS 应用。")}
-        </p>
-      ) : null}
-    </div>
-  );
+  return <AppStoreReview key={appId} appId={appId} />;
 }
 
 function BuildsRoute() {
@@ -1565,7 +1545,10 @@ const APP_NAV_SECTIONS: Array<{
 
 const LAST_APP_KEY = "quiver:last-app-id";
 
-const FULL_BLEED_APP_PAGES = new Set(["channels", "releases", "builds"]);
+const FULL_BLEED_APP_PAGES = new Set([
+  "channels", "releases", "builds", "testflight", "appstore", "shares",
+  "feedback", "crashes", "errors", "integrations", "audit", "settings",
+]);
 
 function AppShell() {
   const { appId } = useParams();
@@ -1574,7 +1557,8 @@ function AppShell() {
   // pages sit in the padded column.
   const isOverview = useMatch({ path: "/apps/:appId", end: true }) !== null;
   const page = useMatch({ path: "/apps/:appId/:page", end: true })?.params.page;
-  const fullBleed = isOverview || (page !== undefined && FULL_BLEED_APP_PAGES.has(page));
+  const isTicket = useMatch({ path: "/apps/:appId/feedback/:ticketId", end: true }) !== null;
+  const fullBleed = isOverview || isTicket || (page !== undefined && FULL_BLEED_APP_PAGES.has(page));
   if (!appId) return null;
   return (
     <AppRouteBoundary appId={appId}>

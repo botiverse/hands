@@ -57,8 +57,10 @@ export interface ConfirmActionDialogProps {
   confirmLabel?: string | undefined;
   /** Cancel button label. Default: "Cancel". */
   cancelLabel?: string | undefined;
-  /** Style of the confirm button. Default: 'primary'. */
-  confirmKind?: "primary" | "danger" | undefined;
+  /** Style of the confirm button. Default: 'primary'. `warning` (orange) is
+   *  for an action that interrupts but can be undone; `danger` (red) only for
+   *  one that cannot. */
+  confirmKind?: "primary" | "warning" | "danger" | undefined;
   /** If set, user must type this string before Confirm becomes enabled. */
     /**
      * If set, the operator must type this exact string before Confirm is enabled.
@@ -99,7 +101,7 @@ export function ConfirmActionDialog({
   const t = useText();
   const confirmText = confirmLabel ?? t("Confirm", "确认");
   const cancelText = cancelLabel ?? t("Cancel", "取消");
-  const confirmVariant = confirmKind === "danger" ? "danger" : "primary";
+  const confirmVariant = confirmKind;
   return (
     <AlertDialog
       open={open}

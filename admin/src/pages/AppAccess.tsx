@@ -13,6 +13,9 @@ import { errorMessage } from "../lib/errorMessage";
  */
 
 import { useState } from "react";
+import { KeyRound, MailPlus, Server, UserRound, Users } from "lucide-react";
+import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
+import { SectionNote, SettingsSection } from "../components/SettingsPage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addAppMember,
@@ -50,8 +53,20 @@ import {
   buildTokenGrantDisplay,
   resolveGrantPreview,
 } from "../lib/appPermissionDisplay";
-import { TextLink,
+import {
+  TextLink,
   Badge,
+  Field,
+  FieldDescription,
+  FieldLabel,
+  ListRow,
+  ListRowBody,
+  ListRowBottom,
+  ListRowDescription,
+  ListRowGroup,
+  ListRowSubtitle,
+  ListRowTitle,
+  ListRowValue,
   Button,
   Input,
   Label,
@@ -62,9 +77,6 @@ import { TextLink,
   SelectList,
   SelectContent,
   SelectItem,
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
   Dialog,
   DialogContent,
   DialogHeader,
@@ -72,8 +84,6 @@ import { TextLink,
   DialogBody,
   DialogFooter,
   DialogClose,
-  EmptyState,
-  EmptyStateTitle,
   Checkbox,
   Skeleton,
   Textarea,
@@ -118,22 +128,32 @@ export function AppAccess({ appId }: { appId: string }) {
     isOrgAdmin || currentAppRole === "admin" || currentServerGrantRole === "admin";
   const inheritedRole = isOwningOrg ? orgRole : null;
   const currentAccess = currentAppRole ?? currentServerGrantRole ?? inheritedRole ?? null;
+  const accessSource = isOwningOrg
+    ? t("inherited from the organization that owns the app", "继承自应用所属组织")
+    : currentServerGrantRole
+      ? t("through server visibility", "来自服务器可见权限")
+      : currentAppRole
+        ? t("as a direct app member", "作为应用直接成员")
+        : null;
 
   return (
-    <section aria-labelledby="app-access-heading" className="space-y-4">
-      <header className="space-y-2">
-        <h2 id="app-access-heading" className="text-lg font-semibold">{appAccessMessage("title", locale)}</h2>
-        <p className="text-sm text-foreground">{appAccessMessage("description", locale)}</p>
-        <div className="text-xs text-foreground-muted">
-          {t("Your current access:", "您的当前权限：")} <span className="font-mono">{currentAccess ? roleText(currentAccess, t) : "—"}</span>{" "}
-          {isOwningOrg && <span>{t("(inherited from owning org)", "（继承自所属组织）")}</span>}
-          {!isOwningOrg && currentServerGrantRole && (
-            <span>{t("(server visibility)", "（服务器可见权限）")}</span>
-          )}
-          {!isOwningOrg && currentAppRole && <span>{t("(direct app member)", "（应用直接成员）")}</span>}{" "}
-          {canManage ? t("(can manage access)", "（可管理权限）") : t("(read-only)", "（只读）")}
-        </div>
-      </header>
+    <>
+      <SettingsSection id="app-access-heading" icon={<Users />} title={appAccessMessage("title", locale)}>
+        <ListRowGroup>
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody>
+              <ListRowTitle>{t("Your access", "您的权限")}</ListRowTitle>
+              <ListRowDescription wrap>
+                {accessSource ?? t("No role on this app.", "在此应用中没有角色。")}
+                {" · "}
+                {canManage ? t("You can manage access.", "您可以管理权限。") : t("Read only.", "只读。")}
+              </ListRowDescription>
+            </ListRowBody>
+            <ListRowValue>{currentAccess ? roleText(currentAccess, t) : "—"}</ListRowValue>
+          </ListRow>
+        </ListRowGroup>
+        <SectionNote>{appAccessMessage("description", locale)}</SectionNote>
+      </SettingsSection>
       <AppServerGrantList
         appId={appId}
         app={app}
@@ -181,7 +201,7 @@ export function AppAccess({ appId }: { appId: string }) {
           onAdded={() => setShowAddDeployToken(false)}
         />
       )}
-    </section>
+    </>
   );
 }
 
@@ -228,122 +248,85 @@ function AppServerGrantList({
   });
 
   const visibleRowCount = rows.length + (isOwningOrg ? 1 : 0);
+  const [removing, setRemoving] = useState<(typeof rows)[number] | null>(null);
+  const isCurrent = (grant: (typeof rows)[number]) =>
+    grant.server_id === currentServerId || (!!grant.server_slug && grant.server_slug === currentServerSlug);
 
   return (
-    <section className="border-t border-line-hairline pt-5">
-      {grants.isLoading && (
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-full" />
-          <Skeleton className="h-8 w-full" />
-        </div>
-      )}
-      {grants.error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(grants.error)}</p>
-      )}
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">{t("Server access", "服务器访问权限")}</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {t(`${visibleRowCount} server${visibleRowCount === 1 ? "" : "s"}`, `${visibleRowCount} 个服务器`)}
-          </span>
-          {canManage && (
-            <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-              {t("+ Add", "+ 添加")}
-            </Button>
-          )}
-        </div>
-      </div>
-      {grants.data && visibleRowCount === 0 && (
-        <EmptyState>
-          <EmptyStateTitle>{t("No server-level access rows visible.", "没有可见的服务器级授权记录。")}</EmptyStateTitle>
-        </EmptyState>
-      )}
-      {grants.data && visibleRowCount > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">{t("Server", "服务器")}</th>
-              <th className="font-normal py-1 pr-2">{t("Access", "权限")}</th>
-              <th className="font-normal py-1 pr-2">{t("Source", "来源")}</th>
-              {canManage && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {isOwningOrg && (
-              <tr className="border-b border-line-hairline bg-layer-canvas-muted/60">
-                <td className="py-2 pr-2">
-                  <div className="font-medium">
-                    {currentServerSlug || app?.org_id || t("Current server", "当前服务器")}
-                    <span className="ml-1 text-xs text-foreground-muted">{t("(current)", "（当前）")}</span>
-                  </div>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">{t("Owner server", "所属服务器")}</span>
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {t("Owning org", "所属组织")}
-                </td>
-                {canManage && (
-                  <td className="py-2 text-xs text-foreground-hint">{t("Inherited", "继承")}</td>
-                )}
-              </tr>
-            )}
-            {rows.map((grant) => (
-              <tr
-                key={grant.id}
-                className="border-b border-line-hairline hover:bg-fill-muted"
-              >
-                <td className="py-2 pr-2">
-                  <div className="font-medium">
-                    {grant.server_slug || grant.server_id}
-                    {(grant.server_id === currentServerId ||
-                      (!!grant.server_slug && grant.server_slug === currentServerSlug)) && (
-                      <span className="ml-1 text-xs text-foreground-muted">{t("(current)", "（当前）")}</span>
-                    )}
-                  </div>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="text-xs font-medium">
-                    {grant.access_model === "owner_server"
-                      ? t("Owner server", "所属服务器")
-                      : t(`Legacy ${grant.app_role}`, `旧版权限：${roleText(grant.app_role, t)}`)}
-                  </span>
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {grant.access_model === "owner_server"
-                    ? t("Additional owner", "附加所属服务器")
-                    : t("Existing role preserved; remove and re-add to adopt owner-server access", "保留现有角色；移除并重新添加后可使用所属服务器权限")}
-                </td>
-                {canManage && (
-                  <td className="py-2 text-xs">
-                    <TextLink
-                      className="text-danger"
-                      onClick={() => {
-                        if (
-                          confirm(
-                            t(`Remove server grant for ${grant.server_slug || grant.server_id}?`, `移除服务器 ${grant.server_slug || grant.server_id} 的授权？`),
-                          )
-                        ) {
-                          remove.mutate(grant.id);
-                        }
-                      }}
-                      disabled={remove.isPending}
-                    >
-                      {t("Remove", "移除")}
-                    </TextLink>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <SettingsSection
+      id="app-access-servers"
+      icon={<Server />}
+      title={t("Servers", "服务器")}
+      hint={grants.data ? t(`${visibleRowCount} server${visibleRowCount === 1 ? "" : "s"}`, `${visibleRowCount} 个服务器`) : undefined}
+      action={canManage ? <TextLink className="text-footnote" onClick={onAdd}>{t("Add server", "添加服务器")}</TextLink> : undefined}
+    >
+      <ListRowGroup className="@container">
+        {grants.isLoading && <ListRow variant="plain" interactive={false}><Skeleton className="h-6 w-full" /></ListRow>}
+        {grants.error && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap className="text-danger-strong">{t("Failed:", "加载失败：")} {errorMessage(grants.error)}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {grants.data && visibleRowCount === 0 && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap>{t("No server-level access rows visible.", "没有可见的服务器级授权记录。")}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {grants.data && isOwningOrg && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody>
+              <ListRowTitle>
+                {currentServerSlug || app?.org_id || t("Current server", "当前服务器")}
+                <span className="ml-1 font-normal text-foreground-muted">{t("(current)", "（当前）")}</span>
+              </ListRowTitle>
+              <ListRowSubtitle>{t("Owning org · inherited", "所属组织 · 继承")}</ListRowSubtitle>
+            </ListRowBody>
+            <Badge appearance="outline">{t("Owner server", "所属服务器")}</Badge>
+          </ListRow>
+        )}
+        {rows.map((grant) => (
+          <ListRow key={grant.id} variant="plain" interactive={false} className="@max-lg:flex-wrap">
+            <ListRowBody>
+              <ListRowTitle>
+                {grant.server_slug || grant.server_id}
+                {isCurrent(grant) && <span className="ml-1 font-normal text-foreground-muted">{t("(current)", "（当前）")}</span>}
+              </ListRowTitle>
+              <ListRowDescription wrap>
+                {grant.access_model === "owner_server"
+                  ? t("Additional owner", "附加所属服务器")
+                  : t("Existing role preserved; remove and re-add to adopt owner-server access", "保留现有角色；移除并重新添加后可使用所属服务器权限")}
+              </ListRowDescription>
+            </ListRowBody>
+            <div className="flex shrink-0 items-center gap-2 @max-lg:basis-full">
+              <Badge appearance="outline">
+                {grant.access_model === "owner_server"
+                  ? t("Owner server", "所属服务器")
+                  : t(`Legacy ${grant.app_role}`, `旧版权限：${roleText(grant.app_role, t)}`)}
+              </Badge>
+              {canManage && (
+                <Button variant="outline" className="@max-lg:ml-auto" onClick={() => setRemoving(grant)} disabled={remove.isPending}>
+                  {t("Remove", "移除")}
+                </Button>
+              )}
+            </div>
+          </ListRow>
+        ))}
+      </ListRowGroup>
       {grants.data && isOwningOrg && rows.length === 0 && (
-        <p className="text-xs text-foreground-muted mt-2">
-          {t("No additional owner servers yet. The current server owns this app.", "暂无附加所属服务器。当前服务器拥有此应用。")}
-        </p>
+        <SectionNote>{t("No additional owner servers yet. The current server owns this app.", "暂无附加所属服务器。当前服务器拥有此应用。")}</SectionNote>
       )}
-    </section>
+      <ConfirmActionDialog
+        open={removing !== null}
+        title={t("Remove this server?", "移除此服务器？")}
+        objectLabel={removing ? removing.server_slug || removing.server_id || "" : ""}
+        body={t("Its members lose the access this grant gave them. You can add the server again.", "其成员将失去此授权带来的权限。之后可以重新添加此服务器。")}
+        confirmLabel={t("Remove", "移除")}
+        confirmKind="warning"
+        pending={remove.isPending}
+        onConfirm={() => { if (removing) remove.mutate(removing.id, { onSettled: () => setRemoving(null) }); }}
+        onCancel={() => setRemoving(null)}
+      />
+    </SettingsSection>
   );
 }
 
@@ -519,181 +502,131 @@ function AppMemberList({
       }),
   });
 
+  const [removing, setRemoving] = useState<AppMember | null>(null);
+  const day = (at: number) => new Date(at).toISOString().slice(0, 10);
+  const n = filteredMembers.length;
+
   return (
-    <section className="border-t border-line-hairline pt-5">
-      {members.isLoading && (
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-full" />
-          <Skeleton className="h-8 w-full" />
-        </div>
-      )}
-      {members.error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(members.error)}</p>
-      )}
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">{t("Direct app members", "应用直接成员")}</h3>
-        <div className="flex items-center gap-2">
+    <SettingsSection
+      id="app-access-members"
+      icon={<UserRound />}
+      title={t("Members", "成员")}
+      hint={members.data ? t(`${n} member${n === 1 ? "" : "s"}`, `${n} 位成员`) : undefined}
+      action={
+        <div className="flex items-center gap-3">
           <Select
             items={{ all: t("All types", "全部类型"), human: t("Humans only", "仅用户"), agent: t("Agents only", "仅智能体") }}
             value={principalFilter}
-            onValueChange={(v) =>
-              setPrincipalFilter(v as "all" | "human" | "agent")
-            }
+            onValueChange={(v) => setPrincipalFilter(v as "all" | "human" | "agent")}
           >
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <SelectTrigger className="w-auto! text-xs py-0.5 pr-7">
-                    <SelectValue />
-                    <SelectIcon />
-                  </SelectTrigger>
-                }
-              />
-              <TooltipContent>{t("Filter by principal type", "按身份类型筛选")}</TooltipContent>
-            </Tooltip>
+            <SelectTrigger className="w-36" aria-label={t("Filter by principal type", "按身份类型筛选")}>
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
             <SelectContent>
               <SelectList>
-              <SelectItem value="all">{t("All types", "全部类型")}</SelectItem>
-              <SelectItem value="human">{t("Humans only", "仅用户")}</SelectItem>
-              <SelectItem value="agent">{t("Agents only", "仅智能体")}</SelectItem>
-            </SelectList>
+                <SelectItem value="all">{t("All types", "全部类型")}</SelectItem>
+                <SelectItem value="human">{t("Humans only", "仅用户")}</SelectItem>
+                <SelectItem value="agent">{t("Agents only", "仅智能体")}</SelectItem>
+              </SelectList>
             </SelectContent>
           </Select>
-          <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {t(`${filteredMembers.length} member${filteredMembers.length === 1 ? "" : "s"}`, `${filteredMembers.length} 位成员`)}
-            {principalFilter !== "all" && (
-              <span className="ml-1">({t(principalFilter, principalFilter === "human" ? "用户" : "智能体")})</span>
-            )}
-          </span>
-          {canManage && (
-            <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-              {t("+ Add", "+ 添加")}
-            </Button>
-          )}
+          {canManage && <TextLink className="text-footnote" onClick={onAdd}>{t("Add member", "添加成员")}</TextLink>}
         </div>
-      </div>
-      {members.data && filteredMembers.length === 0 && (
-        <EmptyState>
-          <EmptyStateTitle>
-            {principalFilter === "all"
-              ? t("No direct app members yet. Org members may still have inherited access.", "暂无应用直接成员。组织成员仍可能拥有继承的权限。")
-              : t(`No ${principalFilter} app members.`, `暂无${principalFilter === "human" ? "用户" : "智能体"}应用成员。`)}
-          </EmptyStateTitle>
-        </EmptyState>
-      )}
-      {members.data && filteredMembers.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">{t("Principal", "身份")}</th>
-              <th className="font-normal py-1 pr-2">{t("Type", "类型")}</th>
-              <th className="font-normal py-1 pr-2">{t("App role", "应用角色")}</th>
-              <th className="font-normal py-1 pr-2">{t("Joined", "加入日期")}</th>
-              <th className="font-normal py-1 pr-2">{t("Last login", "上次登录")}</th>
-              {canManage && <th className="font-normal py-1">{t("Actions", "操作")}</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {filteredMembers.map((m) => (
-              <tr
-                key={m.account_id}
-                className="border-b border-line-hairline hover:bg-fill-muted"
-              >
-                <td className="py-2 pr-2">
-                  <div className="font-medium">
-                    {m.display_name}
-                    {needsServerBadge(m, collidingLabels) && principalServer(m) && (
-                      <Badge variant="muted" className="ml-1.5 align-middle">
-                        {principalServer(m)}
-                      </Badge>
-                    )}
-                    {m.account_id === currentAccountId && (
-                      <span className="ml-1 text-xs text-foreground-muted">{t("(you)", "（您）")}</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-foreground-muted">
-                    {m.username ? (
-                      <span className="font-mono">@{m.username}</span>
-                    ) : (
-                      <span className="font-mono">
-                        {m.provider_subject.slice(0, 16)}…
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="py-2 pr-2">
-                  {m.principal_type === "agent" ? (
-                    <Badge variant="accent">{t("agent", "智能体")}</Badge>
-                  ) : (
-                    <span className="text-xs">{t("human", "用户")}</span>
-                  )}
-                </td>
-                <td className="py-2 pr-2">
-                  {canManage && m.account_id !== currentAccountId ? (
-                    <Select
-                      items={{ admin: roleText("admin", t), publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
-                      value={m.app_role}
-                      onValueChange={(v) =>
-                        update.mutate({
-                          accountId: m.account_id,
-                          role: v as AppMember["app_role"],
-                        })
-                      }
-                      disabled={update.isPending}
-                    >
-                      <SelectTrigger className="text-xs py-0.5">
-                        <SelectValue />
-                        <SelectIcon />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectList>
+      }
+    >
+      <ListRowGroup className="@container">
+        {members.isLoading && <ListRow variant="plain" interactive={false}><Skeleton className="h-6 w-full" /></ListRow>}
+        {members.error && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap className="text-danger-strong">{t("Failed:", "加载失败：")} {errorMessage(members.error)}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {members.data && n === 0 && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody>
+              <ListRowDescription wrap>
+                {principalFilter === "all"
+                  ? t("No direct app members yet. Org members may still have inherited access.", "暂无应用直接成员。组织成员仍可能拥有继承的权限。")
+                  : t(`No ${principalFilter} app members.`, `暂无${principalFilter === "human" ? "用户" : "智能体"}应用成员。`)}
+              </ListRowDescription>
+            </ListRowBody>
+          </ListRow>
+        )}
+        {filteredMembers.map((m) => (
+          <ListRow key={m.account_id} variant="plain" interactive={false} className="@max-lg:flex-wrap">
+            <ListRowBody>
+              <ListRowTitle>
+                {m.display_name}
+                {m.account_id === currentAccountId && (
+                  <span className="ml-1 font-normal text-foreground-muted">{t("(you)", "（您）")}</span>
+                )}
+              </ListRowTitle>
+              <ListRowSubtitle>
+                <span className="font-mono">{m.username ? `@${m.username}` : `${m.provider_subject.slice(0, 16)}…`}</span>
+                {" · "}
+                {t(`joined ${day(m.joined_at)}`, `${day(m.joined_at)} 加入`)}
+                {" · "}
+                {m.last_login_at ? t(`last login ${day(m.last_login_at)}`, `上次登录 ${day(m.last_login_at)}`) : t("never logged in", "从未登录")}
+              </ListRowSubtitle>
+              <ListRowBottom className="justify-start gap-1.5">
+                <Badge appearance="outline">{m.principal_type === "agent" ? t("agent", "智能体") : t("human", "用户")}</Badge>
+                {needsServerBadge(m, collidingLabels) && principalServer(m) && (
+                  <Badge appearance="outline" className="font-mono">{principalServer(m)}</Badge>
+                )}
+              </ListRowBottom>
+            </ListRowBody>
+            <div className="flex shrink-0 items-center gap-2 @max-lg:basis-full">
+              {canManage && m.account_id !== currentAccountId ? (
+                <>
+                  <Select
+                    items={{ admin: roleText("admin", t), publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
+                    value={m.app_role}
+                    onValueChange={(v) =>
+                      update.mutate({
+                        accountId: m.account_id,
+                        role: v as AppMember["app_role"],
+                      })
+                    }
+                    disabled={update.isPending}
+                  >
+                    <SelectTrigger className="w-36" aria-label={t(`Role of ${m.display_name}`, `${m.display_name} 的角色`)}>
+                      <SelectValue />
+                      <SelectIcon />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectList>
                         {(["admin", "publisher", "viewer"] as const).map((r) => (
                           <SelectItem key={r} value={r}>
                             {roleText(r, t)}
                           </SelectItem>
                         ))}
                       </SelectList>
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <span className="text-xs font-medium">{roleText(m.app_role, t)}</span>
-                  )}
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {new Date(m.joined_at).toISOString().slice(0, 10)}
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {m.last_login_at
-                    ? new Date(m.last_login_at).toISOString().slice(0, 10)
-                    : "—"}
-                </td>
-                {canManage && (
-                  <td className="py-2 text-xs">
-                    {m.account_id !== currentAccountId && (
-                      <TextLink
-                        className="text-danger"
-                        onClick={() => {
-                          if (
-                            confirm(
-                              t(`Remove ${m.display_name} from this app?`, `将 ${m.display_name} 从此应用移除？`),
-                            )
-                          ) {
-                            remove.mutate(m.account_id);
-                          }
-                        }}
-                        disabled={remove.isPending}
-                      >
-                        {t("Remove", "移除")}
-                      </TextLink>
-                    )}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
+                    </SelectContent>
+                  </Select>
+                  <Button variant="outline" onClick={() => setRemoving(m)} disabled={remove.isPending}>
+                    {t("Remove", "移除")}
+                  </Button>
+                </>
+              ) : (
+                <ListRowValue>{roleText(m.app_role, t)}</ListRowValue>
+              )}
+            </div>
+          </ListRow>
+        ))}
+      </ListRowGroup>
+      <ConfirmActionDialog
+        open={removing !== null}
+        title={t("Remove this member?", "移除此成员？")}
+        objectLabel={removing?.display_name ?? ""}
+        body={t("They lose their direct access to this app. Access they inherit from the organization stays.", "对方将失去此应用的直接权限，从组织继承的权限不变。")}
+        confirmLabel={t("Remove", "移除")}
+        confirmKind="warning"
+        pending={remove.isPending}
+        onConfirm={() => { if (removing) remove.mutate(removing.account_id, { onSettled: () => setRemoving(null) }); }}
+        onCancel={() => setRemoving(null)}
+      />
+    </SettingsSection>
   );
 }
 
@@ -730,130 +663,92 @@ function AppDeployTokenList({
   });
   const rows = tokens.data?.deploy_tokens ?? [];
 
+  const [revoking, setRevoking] = useState<AppDeployToken | null>(null);
+  const day = (at: number) => new Date(at).toISOString().slice(0, 10);
+
   return (
-    <section className="border-t border-line-hairline pt-5">
-      {tokens.isLoading && (
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-full" />
-          <Skeleton className="h-8 w-full" />
-        </div>
-      )}
-      {tokens.error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(tokens.error)}</p>
-      )}
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">{t("Deploy tokens", "部署令牌")}</h3>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-foreground-muted whitespace-nowrap">
-            {t(`${rows.length} token${rows.length === 1 ? "" : "s"}`, `${rows.length} 个令牌`)}
-          </span>
-          <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={onAdd}>
-            {t("+ Add", "+ 添加")}
-          </Button>
-        </div>
-      </div>
-      {tokens.data && rows.length === 0 && (
-        <EmptyState>
-          <EmptyStateTitle>{t("No deploy tokens yet.", "暂无部署令牌。")}</EmptyStateTitle>
-        </EmptyState>
-      )}
-      {tokens.data && rows.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">{t("Name", "名称")}</th>
-              <th className="font-normal py-1 pr-2">{t("Prefix", "前缀")}</th>
-              <th className="font-normal py-1 pr-2">{t("Grant", "授权")}</th>
-              <th className="font-normal py-1 pr-2">{t("Expires", "过期时间")}</th>
-              <th className="font-normal py-1 pr-2">{t("Last used", "上次使用")}</th>
-              <th className="font-normal py-1">{t("Actions", "操作")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((token) => {
-              const display = buildTokenGrantDisplay(token, permissionModel.data);
-              const shownPermissions = display.permissions.slice(0, 4);
-              return (
-                <tr
-                  key={token.id}
-                  className="border-b border-line-hairline hover:bg-fill-muted"
-                >
-                <td className="py-2 pr-2">
-                  <div className="font-medium">{token.name}</div>
-                  <div className="text-xs text-foreground-muted">
-                    {t(`by ${token.created_by_actor}`, `由 ${token.created_by_actor} 创建`)}
-                  </div>
-                </td>
-                <td className="py-2 pr-2">
-                  <span className="font-mono text-xs text-foreground">
-                    {token.token_prefix}
-                  </span>
-                </td>
-                <td className="py-2 pr-2">
-                  <div className="max-w-sm space-y-1">
-                    <div className="flex flex-wrap gap-1 text-xs">
-                      <span className="rounded bg-foreground-strong px-1.5 py-0.5 font-medium text-foreground-inverse">
-                        {t(display.roleLabel, token.app_role ? `角色 · ${roleText(token.app_role, t)}` : "仅自定义权限")}
-                      </span>
-                      {!display.valid && (
-                        <span className="rounded bg-danger-soft px-1.5 py-0.5 font-medium text-danger">
-                          {t("Invalid grant", "授权无效")}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-1 text-xs">
-                      {shownPermissions.map(({ permission, label, extra }) => (
-                        <span
-                          key={permission}
-                          title={permission}
-                          className={extra
-                            ? "rounded border border-warning bg-warning-soft px-1.5 py-0.5 text-warning-strong"
-                            : "rounded border border-line-muted bg-layer-canvas-muted px-1.5 py-0.5 text-foreground"}
-                        >
-                          {t(label, PERMISSION_ZH[permission]?.label ?? label)}{extra ? t(" · Extra", " · 额外权限") : ""}
-                        </span>
-                      ))}
-                      {display.permissions.length > shownPermissions.length && (
-                        <span className="rounded border border-line-muted px-1.5 py-0.5 text-foreground-muted">
-                          +{display.permissions.length - shownPermissions.length}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {token.expires_at
-                    ? new Date(token.expires_at).toISOString().slice(0, 10)
-                    : t("Never", "永不过期")}
-                </td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {token.last_used_at
-                    ? new Date(token.last_used_at).toISOString().slice(0, 10)
-                    : "—"}
-                </td>
-                <td className="py-2 text-xs">
-                  <TextLink
-                    className="text-danger"
-                    onClick={() => {
-                      if (confirm(t(`Revoke deploy token ${token.name}?`, `撤销部署令牌 ${token.name}？`))) {
-                        revoke.mutate(token.id);
-                      }
-                    }}
-                    disabled={revoke.isPending}
-                  >
-                    {t("Revoke", "撤销")}
-                  </TextLink>
-                </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-      <p className="text-xs text-foreground-muted mt-2">
+    <SettingsSection
+      id="app-access-tokens"
+      icon={<KeyRound />}
+      title={t("Deploy tokens", "部署令牌")}
+      hint={tokens.data ? t(`${rows.length} token${rows.length === 1 ? "" : "s"}`, `${rows.length} 个令牌`) : undefined}
+      action={<TextLink className="text-footnote" onClick={onAdd}>{t("Add token", "添加令牌")}</TextLink>}
+    >
+      <ListRowGroup className="@container">
+        {tokens.isLoading && <ListRow variant="plain" interactive={false}><Skeleton className="h-6 w-full" /></ListRow>}
+        {tokens.error && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap className="text-danger-strong">{t("Failed:", "加载失败：")} {errorMessage(tokens.error)}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {tokens.data && rows.length === 0 && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap>{t("No deploy tokens yet.", "暂无部署令牌。")}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {rows.map((token) => {
+          const display = buildTokenGrantDisplay(token, permissionModel.data);
+          const shownPermissions = display.permissions.slice(0, 4);
+          return (
+            <ListRow key={token.id} variant="plain" interactive={false} className="@max-lg:flex-wrap">
+              <ListRowBody>
+                <ListRowTitle>{token.name}</ListRowTitle>
+                <ListRowSubtitle>
+                  <span className="font-mono">{token.token_prefix}</span>
+                  {" · "}
+                  {t(`by ${token.created_by_actor}`, `由 ${token.created_by_actor} 创建`)}
+                  {" · "}
+                  {token.expires_at ? t(`expires ${day(token.expires_at)}`, `${day(token.expires_at)} 过期`) : t("never expires", "永不过期")}
+                  {" · "}
+                  {token.last_used_at ? t(`last used ${day(token.last_used_at)}`, `上次使用 ${day(token.last_used_at)}`) : t("never used", "从未使用")}
+                </ListRowSubtitle>
+                <span className="mt-1.5 flex flex-wrap gap-1.5">
+                  <Badge appearance="outline">
+                    {t(display.roleLabel, token.app_role ? `角色 · ${roleText(token.app_role, t)}` : "仅自定义权限")}
+                  </Badge>
+                  {!display.valid && (
+                    <Badge appearance="soft" variant="danger">{t("Invalid grant", "授权无效")}</Badge>
+                  )}
+                  {shownPermissions.map(({ permission, label, extra }) => (
+                    <Badge
+                      key={permission}
+                      title={permission}
+                      appearance={extra ? "soft" : "outline"}
+                      variant={extra ? "warning" : "muted"}
+                    >
+                      {t(label, PERMISSION_ZH[permission]?.label ?? label)}{extra ? t(" · Extra", " · 额外权限") : ""}
+                    </Badge>
+                  ))}
+                  {display.permissions.length > shownPermissions.length && (
+                    <Badge appearance="outline" variant="muted">
+                      +{display.permissions.length - shownPermissions.length}
+                    </Badge>
+                  )}
+                </span>
+              </ListRowBody>
+              <Button variant="outline" className="@max-lg:ml-auto" onClick={() => setRevoking(token)} disabled={revoke.isPending}>
+                {t("Revoke", "撤销")}
+              </Button>
+            </ListRow>
+          );
+        })}
+      </ListRowGroup>
+      <SectionNote>
         {t("Tokens are app-scoped bearer credentials for CI. The raw token is only shown once after creation.", "令牌是供 CI 使用、作用范围限于此应用的持有者凭据。原始令牌创建后只显示一次。")}
-      </p>
-    </section>
+      </SectionNote>
+      <ConfirmActionDialog
+        open={revoking !== null}
+        title={t("Revoke this deploy token?", "撤销此部署令牌？")}
+        objectLabel={revoking?.name ?? ""}
+        objectHint={revoking?.token_prefix}
+        body={t("CI jobs that use it fail from now on. This can't be undone; make a new token instead.", "使用它的 CI 任务将立即失败。此操作无法撤回，需要时请创建新令牌。")}
+        confirmLabel={t("Revoke token", "撤销令牌")}
+        confirmKind="danger"
+        pending={revoke.isPending}
+        onConfirm={() => { if (revoking) revoke.mutate(revoking.id, { onSettled: () => setRevoking(null) }); }}
+        onCancel={() => setRevoking(null)}
+      />
+    </SettingsSection>
   );
 }
 
@@ -1375,89 +1270,82 @@ function InviteToAppForm({ appId }: { appId: string }) {
   if (!orgId) return null;
 
   return (
-    <section className="border-t border-line-hairline pt-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">{t("Create app invite link", "创建应用邀请链接")}</h3>
-        {!showForm && (
-          <Button
-            variant="outline"
-            className="text-xs"
-            onClick={() => setShowForm(true)}
-          >
-            {t("+ Link", "+ 创建链接")}
+    <SettingsSection id="app-access-invite" icon={<MailPlus />} title={t("Invite links", "邀请链接")}>
+      <ListRowGroup>
+        <ListRow variant="plain" interactive={false}>
+          <ListRowBody>
+            <ListRowTitle>{t("Invite someone to this app", "邀请他人使用此应用")}</ListRowTitle>
+            <ListRowDescription wrap>
+              {t("Hands copies the link for you to send. When they accept, they join the organization as a viewer and get the app role you pick.", "Hands 会复制链接，由您发送给对方。对方接受后会以查看者身份加入组织，并获得您选择的应用角色。")}
+            </ListRowDescription>
+          </ListRowBody>
+          <Button variant="outline" onClick={() => setShowForm(true)}>
+            {t("Create link", "创建链接")}
           </Button>
-        )}
-      </div>
-      {showForm ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            invite.mutate();
-          }}
-          className="space-y-2"
-        >
-          <div className="grid grid-cols-2 gap-2">
-            <Input
-              type="email"
-              className="text-sm"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="email@example.com"
-              required
-              autoFocus
-            />
-            <Select
-              items={{ publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
-              value={role}
-              onValueChange={(v) =>
-                setRole(v as "publisher" | "viewer")
-              }
-            >
-              <SelectTrigger className="text-sm">
-                <SelectValue />
-                <SelectIcon />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectList>
-                <SelectItem value="publisher">{roleText("publisher", t)}</SelectItem>
-                <SelectItem value="viewer">{roleText("viewer", t)}</SelectItem>
-              </SelectList>
-              </SelectContent>
-            </Select>
-          </div>
-          <Textarea
-            className="text-xs min-h-[40px]"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder={t("Optional message", "附言（可选）")}
-          />
-          <p className="text-xs text-foreground-muted">
-            {t("The invitee needs an account with this email; accepting the invite makes them an org viewer (auto) and grants app access with the role you pick. The URL is copied to clipboard after creation.", "受邀者需要使用此邮箱的账号；接受邀请后会自动成为组织查看者，并获得您选择的应用角色。链接创建后会复制到剪贴板。")}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              type="submit"
-              variant="primary"
-              className="text-xs"
-              disabled={invite.isPending || !email.trim()}
-            >
-              {invite.isPending ? t("Creating…", "创建中…") : t("Create invite link", "创建邀请链接")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="text-xs"
-              onClick={() => setShowForm(false)}
-            >
-              {t("Cancel", "取消")}
-            </Button>
-          </div>
-        </form>
-      ) : (
-        <p className="text-xs text-foreground-muted">
-          {t("Create an invite link to grant app access, then share the copied URL manually. The invitee is added to the org as a viewer automatically when they accept; the picked role controls what they can do on this app.", "创建邀请链接以授予应用访问权限，然后手动分享复制的链接。受邀者接受后会自动成为组织查看者；所选角色决定其在此应用中的操作权限。")}
-        </p>
+        </ListRow>
+      </ListRowGroup>
+      {showForm && (
+        <Dialog open onOpenChange={(open) => { if (!open) setShowForm(false); }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{t("Create invite link", "创建邀请链接")}</DialogTitle></DialogHeader>
+            <DialogBody>
+              <form
+                id="app-invite-form"
+                className="stack-y-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  invite.mutate();
+                }}
+              >
+                <Field>
+                  <FieldLabel htmlFor="app-invite-email">{t("Email", "邮箱")}</FieldLabel>
+                  <Input
+                    id="app-invite-email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="email@example.com"
+                    required
+                    autoFocus
+                  />
+                  <FieldDescription>{t("They need an account with this email.", "对方需要使用此邮箱的账号。")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel id="app-invite-role">{t("App role", "应用角色")}</FieldLabel>
+                  <Select
+                    items={{ publisher: roleText("publisher", t), viewer: roleText("viewer", t) }}
+                    value={role}
+                    onValueChange={(v) => setRole(v as "publisher" | "viewer")}
+                  >
+                    <SelectTrigger className="w-full" aria-labelledby="app-invite-role">
+                      <SelectValue />
+                      <SelectIcon />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectList>
+                        <SelectItem value="publisher">{roleText("publisher", t)}</SelectItem>
+                        <SelectItem value="viewer">{roleText("viewer", t)}</SelectItem>
+                      </SelectList>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="app-invite-message" optional>{t("Message", "附言")}</FieldLabel>
+                  <Textarea id="app-invite-message" className="min-h-16" value={message} onChange={(e) => setMessage(e.target.value)} />
+                </Field>
+              </form>
+            </DialogBody>
+            <DialogFooter>
+              <Button type="button" variant="ghost" size="lg" onClick={() => setShowForm(false)}>
+                {t("Cancel", "取消")}
+              </Button>
+              <Button type="submit" form="app-invite-form" variant="primary" size="lg" loading={invite.isPending} disabled={invite.isPending || !email.trim()}>
+                {t("Create link", "创建链接")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
-    </section>
+    </SettingsSection>
   );
 }

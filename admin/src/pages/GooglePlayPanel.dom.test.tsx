@@ -49,9 +49,10 @@ function renderPanel() {
   );
 }
 
-/** A connected connector starts collapsed; expand it to reach the actions. */
+/** The connector is the column the Integrations page opens: a connected
+ *  binding shows its actions at once. Wait for them. */
 async function expandConnectedDetail() {
-  fireEvent.click(await screen.findByRole("button", { name: "Expand" }));
+  await screen.findByRole("button", { name: "Unbind" });
 }
 
 beforeEach(() => {
@@ -227,7 +228,8 @@ describe("GooglePlayConnector", () => {
     mocks.get.mockResolvedValue({ google_play: { credential_kind: "authorized_user", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "human@example.com", internal_track: "internal", closed_track: "closed", production_track: "production" } });
     renderPanel();
     await expandConnectedDetail();
-    expect(await screen.findByText("Google account: human@example.com")).toBeTruthy();
+    const account = await screen.findByText("human@example.com");
+    expect(account.closest("[data-slot]")?.parentElement?.textContent).toContain("Google account");
     expect(screen.getByText(/Unbind deletes the credential stored by Hands/)).toBeTruthy();
   });
 
@@ -265,8 +267,24 @@ describe("GooglePlayConnector", () => {
     expect(screen.getByText("Disabled")).toBeTruthy();
     expect(screen.getByTestId("google-play-binding-panel").textContent).toContain("Needs verification");
     await expandConnectedDetail();
-    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+    const publish = screen.getByRole("switch", { name: "Publish to Google Play" });
+    expect(publish.getAttribute("aria-checked")).toBe("false");
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    fireEvent.click(publish);
     await waitFor(() => expect(mocks.toggle).toHaveBeenCalledWith("app-a", true));
+  });
+
+  it("asks before turning publishing off and does nothing when declined", async () => {
+    mocks.get.mockResolvedValue({ google_play: { credential_kind: "service_account", enabled: true, verification_state: "verified", package_name: "build.raft.app", service_account_email: "app@tenant.example", internal_track: "internal", closed_track: "closed", production_track: "production" } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderPanel();
+    await expandConnectedDetail();
+    fireEvent.click(screen.getByRole("switch", { name: "Publish to Google Play" }));
+    expect(confirm).toHaveBeenCalledWith("Disable Google Play promotion for this app?");
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("switch", { name: "Publish to Google Play" }));
+    await waitFor(() => expect(mocks.toggle).toHaveBeenCalledWith("app-a", false));
   });
 
   it("requires a complete service-account file and package before save", async () => {
@@ -423,7 +441,7 @@ describe("GooglePlayConnector", () => {
     expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
   });
 
-  it("keeps a connected connector collapsed until expanded", async () => {
+  it("shows a connected binding's actions without reading its tracks", async () => {
     mocks.get.mockResolvedValue({
       google_play: {
         credential_kind: "authorized_user",
@@ -438,10 +456,11 @@ describe("GooglePlayConnector", () => {
     });
     renderPanel();
     expect(await screen.findByText("Enabled")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Unbind" })).toBeNull();
-    expect(mocks.tracks).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
     expect(await screen.findByRole("button", { name: "Unbind" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeTruthy();
+    // Tracks are read from Play only while the package and tracks are being chosen.
+    expect(mocks.tracks).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Closed testing track")).toBeNull();
   });
   it("keeps save disabled when Play refuses discovery and offers retry", async () => {
     mocks.get.mockResolvedValue(unconfigured);

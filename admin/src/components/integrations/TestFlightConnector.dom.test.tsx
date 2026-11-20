@@ -50,22 +50,18 @@ beforeEach(() => {
 });
 
 describe("TestFlightConnector", () => {
-  it("keeps the unconnected state on one row and opens the form on Configure", async () => {
+  it("shows how to make a key and the form when no key is saved", async () => {
     mocks.getAsc.mockResolvedValue({ asc_credentials: null });
     renderConnector();
-    const configure = await screen.findByRole("button", { name: "Configure" });
-    await waitFor(() => expect(configure.hasAttribute("disabled")).toBe(false));
-    expect(screen.queryByPlaceholderText("ABC123DEFG")).toBeNull();
-    fireEvent.click(configure);
     expect(await screen.findByPlaceholderText("ABC123DEFG")).toBeTruthy();
+    expect(screen.getByText("Users and Access → Integrations → App Store Connect API").closest("a")?.getAttribute("href")).toBe("https://appstoreconnect.apple.com/access/integrations/api");
+    expect(screen.getByRole("button", { name: "Save & enable" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Remove key" })).toBeNull();
   });
 
   it("saves trimmed credentials from the opened form", async () => {
     mocks.getAsc.mockResolvedValue({ asc_credentials: null });
     renderConnector();
-    const configure = await screen.findByRole("button", { name: "Configure" });
-    await waitFor(() => expect(configure.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(configure);
     fireEvent.change(await screen.findByPlaceholderText("ABC123DEFG"), { target: { value: " KEY123 " } });
     fireEvent.change(screen.getByPlaceholderText("12345678-90ab-cdef-1234-567890abcdef"), { target: { value: " ISS-1 " } });
     fireEvent.change(screen.getByLabelText("Private key (.p8 contents)"), { target: { value: P8_SAMPLE } });
@@ -81,27 +77,37 @@ describe("TestFlightConnector", () => {
     );
   });
 
-  it("shows the configured row collapsed with an expand affordance", async () => {
+  it("shows the saved key with its actions and opens the form on Replace key", async () => {
     mocks.getAsc.mockResolvedValue({
       asc_credentials: { key_id: "ABC123DEFG", issuer_id: "ISS-1", updated_at: 1759200000000 },
     });
     renderConnector();
     expect(await screen.findByText("Configured")).toBeTruthy();
-    const expand = screen.getByRole("button", { name: "Expand" });
-    fireEvent.click(expand);
-    expect(await screen.findByRole("button", { name: "Test connection" })).toBeTruthy();
+    expect(screen.getByText("ABC123DEFG")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("ABC123DEFG")).toBeNull();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Replace key" }));
     expect(await screen.findByPlaceholderText("ABC123DEFG")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Replace credentials" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByPlaceholderText("ABC123DEFG")).toBeNull();
   });
 
-  it("removes the key after confirmation", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("removes the key only after confirmation", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     mocks.getAsc.mockResolvedValue({
       asc_credentials: { key_id: "ABC123DEFG", issuer_id: "ISS-1", updated_at: 1759200000000 },
     });
     renderConnector();
-    fireEvent.click(await screen.findByRole("button", { name: "Expand" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove key" }));
+    expect(mocks.deleteAsc).not.toHaveBeenCalled();
+    cleanup();
+    confirm.mockReturnValue(true);
+    mocks.getAsc.mockResolvedValue({
+      asc_credentials: { key_id: "ABC123DEFG", issuer_id: "ISS-1", updated_at: 1759200000000 },
+    });
+    renderConnector();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove key" }));
     await waitFor(() => expect(mocks.deleteAsc).toHaveBeenCalledWith("app-a"));
   });
 });

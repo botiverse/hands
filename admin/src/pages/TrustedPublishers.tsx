@@ -14,7 +14,30 @@ import {
 import { errorMessage } from "../lib/errorMessage";
 import { useText } from "../lib/locale";
 import { useToast } from "../components/Toast";
-import { TextLink, Button, EmptyState, EmptyStateTitle, Input, Label, Skeleton } from "@botiverse/raft-ui";
+import {
+  Button,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Field,
+  FieldDescription,
+  FieldLabel,
+  Input,
+  ListRow,
+  ListRowBody,
+  ListRowDescription,
+  ListRowGroup,
+  ListRowSubtitle,
+  ListRowTitle,
+  Skeleton,
+  TextLink,
+} from "@botiverse/raft-ui";
+import { Workflow } from "lucide-react";
+import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
+import { SectionNote, SettingsSection } from "../components/SettingsPage";
 
 export function TrustedPublisherList({ appId, appSlug }: { appId: string; appSlug?: string | undefined }) {
   const t = useText();
@@ -56,105 +79,100 @@ export function TrustedPublisherList({ appId, appSlug }: { appId: string; appSlu
   });
   const rows = publishers.data?.trusted_publishers ?? [];
   const appRef = appSlug ?? appId;
+  const [removing, setRemoving] = useState<(typeof rows)[number] | null>(null);
 
   return (
-    <section className="border-t border-line-hairline pt-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-foreground-strong">
-          {t("Trusted publishers (GitHub Actions)", "可信发布者（GitHub Actions）")}
-        </h3>
-        {!adding && (
-          <Button variant="outline" className="py-1! px-2! text-xs! whitespace-nowrap" onClick={() => setAdding(true)}>
-            {t("+ Add", "+ 添加")}
-          </Button>
+    <SettingsSection
+      id="app-access-publishers"
+      icon={<Workflow />}
+      title={t("Trusted publishers", "可信发布者")}
+      hint="GitHub Actions"
+      action={<TextLink className="text-footnote" onClick={() => setAdding(true)}>{t("Add publisher", "添加发布者")}</TextLink>}
+    >
+      <ListRowGroup className="@container">
+        {publishers.isLoading && <ListRow variant="plain" interactive={false}><Skeleton className="h-6 w-full" /></ListRow>}
+        {publishers.error && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap className="text-danger-strong">{t("Failed:", "加载失败：")} {errorMessage(publishers.error)}</ListRowDescription></ListRowBody>
+          </ListRow>
         )}
-      </div>
-      {publishers.isLoading && <Skeleton className="h-8 w-full" />}
-      {publishers.error && (
-        <p className="text-danger">{t("Failed:", "加载失败：")} {errorMessage(publishers.error)}</p>
-      )}
-      {adding && (
-        <form
-          className="mb-4 grid gap-3 rounded border border-line-hairline p-3 sm:grid-cols-2"
-          onSubmit={(e) => { e.preventDefault(); create.mutate(); }}
-        >
-          <div className="space-y-1">
-            <Label htmlFor="tp-repository">{t("Repository", "仓库")}</Label>
-            <Input id="tp-repository" placeholder="owner/repo" value={repository} onChange={(e) => setRepository(e.target.value)} required />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="tp-workflow">{t("Workflow file", "Workflow 文件")}</Label>
-            <Input id="tp-workflow" placeholder=".github/workflows/release.yml" value={workflow} onChange={(e) => setWorkflow(e.target.value)} required />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="tp-refs">{t("Allowed refs", "允许的分支/tag")}</Label>
-            <Input id="tp-refs" placeholder="refs/heads/main refs/tags/v*" value={refs} onChange={(e) => setRefs(e.target.value)} required />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="tp-environment">{t("GitHub environment (optional)", "GitHub environment（可选）")}</Label>
-            <Input id="tp-environment" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
-          </div>
-          <div className="flex gap-2 sm:col-span-2">
-            <Button type="submit" disabled={create.isPending}>{t("Add", "添加")}</Button>
-            <Button type="button" variant="outline" onClick={() => setAdding(false)}>{t("Cancel", "取消")}</Button>
-          </div>
-        </form>
-      )}
-      {publishers.data && rows.length === 0 && !adding && (
-        <EmptyState>
-          <EmptyStateTitle>{t("No trusted publishers yet.", "暂无可信发布者。")}</EmptyStateTitle>
-        </EmptyState>
-      )}
-      {rows.length > 0 && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-foreground-muted text-left border-b border-line-hairline">
-              <th className="font-normal py-1 pr-2">{t("Repository", "仓库")}</th>
-              <th className="font-normal py-1 pr-2">{t("Workflow", "Workflow")}</th>
-              <th className="font-normal py-1 pr-2">{t("Refs", "分支/tag")}</th>
-              <th className="font-normal py-1 pr-2">{t("Last used", "上次使用")}</th>
-              <th className="font-normal py-1">{t("Actions", "操作")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => (
-              <tr key={p.id} className="border-b border-line-hairline hover:bg-fill-muted">
-                <td className="py-2 pr-2">
-                  <div className="font-medium">{p.repository}</div>
-                  <div className="text-xs text-foreground-muted">
-                    {p.environment ? t(`environment ${p.environment}`, `environment ${p.environment}`) : t("any environment", "任意 environment")}
-                    {p.repository_id ? ` · id ${p.repository_id}` : ""}
-                  </div>
-                </td>
-                <td className="py-2 pr-2 font-mono text-xs">{p.workflow_path}</td>
-                <td className="py-2 pr-2 font-mono text-xs">{p.ref_patterns.join(" ")}</td>
-                <td className="py-2 pr-2 text-xs text-foreground-muted">
-                  {p.last_used_at ? new Date(p.last_used_at).toISOString().slice(0, 16).replace("T", " ") : "—"}
-                </td>
-                <td className="py-2 text-xs">
-                  <TextLink
-                    className="text-danger"
-                    disabled={revoke.isPending}
-                    onClick={() => {
-                      if (confirm(t(`Stop trusting ${p.repository} ${p.workflow_path}? Tokens it minted stop working.`, `不再信任 ${p.repository} ${p.workflow_path}？它签发的令牌会立即失效。`))) {
-                        revoke.mutate(p.id);
-                      }
-                    }}
-                  >
-                    {t("Remove", "移除")}
-                  </TextLink>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <p className="text-xs text-foreground-muted mt-2">
+        {publishers.data && rows.length === 0 && (
+          <ListRow variant="plain" interactive={false}>
+            <ListRowBody><ListRowDescription wrap>{t("No trusted publishers yet.", "暂无可信发布者。")}</ListRowDescription></ListRowBody>
+          </ListRow>
+        )}
+        {rows.map((p) => (
+          <ListRow key={p.id} variant="plain" interactive={false} className="@max-lg:flex-wrap">
+            <ListRowBody>
+              <ListRowTitle>{p.repository}</ListRowTitle>
+              <ListRowSubtitle className="font-mono">{p.workflow_path}</ListRowSubtitle>
+              <ListRowDescription wrap>
+                <span className="font-mono">{p.ref_patterns.join(" ")}</span>
+                {" · "}
+                {p.environment ? t(`environment ${p.environment}`, `environment ${p.environment}`) : t("any environment", "任意 environment")}
+                {p.repository_id ? ` · id ${p.repository_id}` : ""}
+                {" · "}
+                {p.last_used_at
+                  ? t(`last used ${new Date(p.last_used_at).toISOString().slice(0, 16).replace("T", " ")}`, `上次使用 ${new Date(p.last_used_at).toISOString().slice(0, 16).replace("T", " ")}`)
+                  : t("never used", "从未使用")}
+              </ListRowDescription>
+            </ListRowBody>
+            <Button variant="outline" className="@max-lg:ml-auto" disabled={revoke.isPending} onClick={() => setRemoving(p)}>
+              {t("Remove", "移除")}
+            </Button>
+          </ListRow>
+        ))}
+      </ListRowGroup>
+      <SectionNote>
         {t(
           `A matching workflow run gets a one-hour publisher token without any stored secret. In the job set "permissions: id-token: write", then run "hands github-oidc-login --app ${appRef}".`,
           `匹配的 workflow 运行无需存任何密钥即可获得一小时有效的发布令牌。在 job 中设置 "permissions: id-token: write"，然后运行 "hands github-oidc-login --app ${appRef}"。`,
         )}
-      </p>
-    </section>
+      </SectionNote>
+      {adding && (
+        <Dialog open onOpenChange={(open) => { if (!open) setAdding(false); }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{t("Add trusted publisher", "添加可信发布者")}</DialogTitle></DialogHeader>
+            <DialogBody>
+              <form id="add-trusted-publisher" className="stack-y-4" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+                <Field>
+                  <FieldLabel htmlFor="tp-repository">{t("Repository", "仓库")}</FieldLabel>
+                  <Input id="tp-repository" placeholder="owner/repo" value={repository} onChange={(e) => setRepository(e.target.value)} required autoFocus />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="tp-workflow">{t("Workflow file", "Workflow 文件")}</FieldLabel>
+                  <Input id="tp-workflow" placeholder=".github/workflows/release.yml" value={workflow} onChange={(e) => setWorkflow(e.target.value)} required />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="tp-refs">{t("Allowed refs", "允许的分支/tag")}</FieldLabel>
+                  <Input id="tp-refs" placeholder="refs/heads/main refs/tags/v*" value={refs} onChange={(e) => setRefs(e.target.value)} required />
+                  <FieldDescription>{t("Separate with spaces or commas.", "用空格或逗号分隔。")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="tp-environment" optional>{t("GitHub environment", "GitHub environment")}</FieldLabel>
+                  <Input id="tp-environment" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
+                </Field>
+              </form>
+            </DialogBody>
+            <DialogFooter>
+              <Button type="button" variant="ghost" size="lg" onClick={() => setAdding(false)}>{t("Cancel", "取消")}</Button>
+              <Button type="submit" form="add-trusted-publisher" variant="primary" size="lg" loading={create.isPending} disabled={create.isPending}>{t("Add", "添加")}</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      <ConfirmActionDialog
+        open={removing !== null}
+        title={t("Stop trusting this workflow?", "不再信任此 workflow？")}
+        objectLabel={removing?.repository ?? ""}
+        objectHint={removing?.workflow_path}
+        body={t("Tokens it minted stop working at once. Add it again to trust it again.", "它签发的令牌会立即失效。需要时可以重新添加。")}
+        confirmLabel={t("Remove", "移除")}
+        confirmKind="danger"
+        pending={revoke.isPending}
+        onConfirm={() => { if (removing) revoke.mutate(removing.id, { onSettled: () => setRemoving(null) }); }}
+        onCancel={() => setRemoving(null)}
+      />
+    </SettingsSection>
   );
 }

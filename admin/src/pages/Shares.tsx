@@ -1,24 +1,72 @@
 import { errorMessage } from "../lib/errorMessage";
 /**
- * App-level share management (task #65 P1).
+ * An app's share links (/apps/:appId/shares): a page of a list.
  *
- * Lists every share link for the app across releases with stats, lets
- * admins create (with optional password/expiry), copy the URL, and revoke
- * them. Shares have no default expiry — they live until revoked; an expiry
- * is opt-in and only shown when set. Legacy shares created before tokens
- * were stored have no recoverable URL.
+ * One row per share link across the app's releases: the release, its
+ * channel and author, views and downloads, and its state. Opening a row puts
+ * the share in a column beside the list: its link to copy, its details, and
+ * its actions (expiry, password, rebinding to another release, revoking).
+ * New share opens a dialog. Shares have no default expiry: they live until
+ * revoked; an expiry is opt-in and only shown when set. Legacy shares made
+ * before tokens were stored have no recoverable URL.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { TextLink,
-  Badge,
-  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, EmptyStateDescription, Skeleton } from "@botiverse/raft-ui";
-import { Share2 } from "lucide-react";
-import type { BadgeProps } from "@botiverse/raft-ui";
-
-type BadgeVariant = NonNullable<BadgeProps["variant"]>;
+import { AlertTriangle, CalendarClock, KeyRound, Link2Off, Plus, Repeat, Share2, Trash2 } from "lucide-react";
 import {
-  AppShare,
+  Badge,
+  Banner,
+  BannerAction,
+  BannerDescription,
+  BannerTitle,
+  Button,
+  CopyableCode,
+  CopyableCodeAction,
+  CopyableCodeRoot,
+  DescriptionDetails,
+  DescriptionItem,
+  DescriptionList,
+  DescriptionTerm,
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  EmptyStateContent,
+  EmptyStateDescription,
+  EmptyStateIcon,
+  EmptyStateTitle,
+  Field,
+  FieldDescription,
+  FieldLabel,
+  Input,
+  ListRow,
+  ListRowBody,
+  ListRowBottom,
+  ListRowDescription,
+  ListRowGroup,
+  ListRowIcon,
+  ListRowMeta,
+  ListRowSubtitle,
+  ListRowTitle,
+  ListRowTop,
+  Select,
+  SelectContent,
+  SelectIcon,
+  SelectItem,
+  SelectList,
+  SelectTrigger,
+  SelectValue,
+  Skeleton,
+  Text,
+} from "@botiverse/raft-ui";
+import { ListRowSkeleton } from "@botiverse/raft-ui/wip";
+import {
+  type AppShare,
   createReleaseShare,
   listAppShares,
   listReleases,
@@ -28,7 +76,36 @@ import {
   revokeReleaseShare,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
+import { ConfirmActionDialog } from "../components/ConfirmActionDialog";
+import { DetailColumn, DetailSection, ListPage } from "../components/ListPage";
 import { useLocale, useText } from "../lib/locale";
+import { timeAgo } from "./Operations";
+
+type T = ReturnType<typeof useText>;
+type ShareState = "active" | "expired" | "revoked";
+const DAY = 86_400_000;
+
+export function shareState(share: AppShare, now = Date.now()): ShareState {
+  if (share.revoked_at) return "revoked";
+  // Legacy shares may still carry an expiry; new ones live until revoked.
+  if (share.expires_at != null && share.expires_at <= now) return "expired";
+  return "active";
+}
+
+function stateLabel(state: ShareState, t: T) {
+  return state === "revoked" ? t("Revoked", "已撤销") : state === "expired" ? t("Expired", "已过期") : t("Active", "有效");
+}
+
+function StateBadge({ state }: { state: ShareState }) {
+  const t = useText();
+  if (state === "active") return <Badge appearance="soft" variant="success" className="shrink-0">{stateLabel(state, t)}</Badge>;
+  if (state === "expired") return <Badge appearance="soft" variant="warning" className="shrink-0">{stateLabel(state, t)}</Badge>;
+  return <Badge appearance="outline" className="shrink-0">{stateLabel(state, t)}</Badge>;
+}
+
+function releaseLabel(share: AppShare) {
+  return `${share.version_name} (${share.version_code})`;
+}
 
 export function AppShares({ appId }: { appId: string }) {
   const t = useText();
@@ -37,6 +114,8 @@ export function AppShares({ appId }: { appId: string }) {
   const [showCreate, setShowCreate] = useState(false);
   const [rebindShare, setRebindShare] = useState<AppShare | null>(null);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] = useState<"" | ShareState>("");
 
   const shares = useQuery({
     queryKey: ["app-shares", appId],
@@ -46,187 +125,117 @@ export function AppShares({ appId }: { appId: string }) {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["app-shares", appId] });
 
-  const setExpiry = useMutation({
-    mutationFn: ({ share, ttlDays }: { share: AppShare; ttlDays: number | null }) =>
-      renewReleaseShare(appId, share.release_id, share.id, {
-        // Explicit null clears the expiry (never expires).
-        ...(ttlDays === null ? { expires_at: null } : { ttl_seconds: ttlDays * 24 * 60 * 60 }),
-      }),
-    onSuccess: (_data, vars) => {
-      toast.show({
-        kind: "success",
-        title: vars.ttlDays === null ? t("Expiry removed — link lives until revoked", "已移除有效期，链接在撤销前一直有效") : t(`Expires in ${vars.ttlDays} days`, `${vars.ttlDays} 天后过期`),
-      });
-      invalidate();
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: t("Expiry update failed", "更新有效期失败"),
-        description: errorMessage(e),
-      }),
-  });
+  const all = shares.data?.shares ?? [];
+  const rows = stateFilter ? all.filter((s) => shareState(s) === stateFilter) : all;
+  const open = all.find((s) => s.id === openId) ?? null;
 
-  const setPassword = useMutation({
-    mutationFn: ({ share, password }: { share: AppShare; password: string | null }) =>
-      renewReleaseShare(appId, share.release_id, share.id, {
-        // Omitting expiry keeps the share's current expiry unchanged.
-        password,
-      }),
-    onSuccess: (_data, vars) => {
-      toast.show({
-        kind: "success",
-        title: vars.password ? t("Password set", "已设置密码") : t("Password removed", "已移除密码"),
-      });
-      invalidate();
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: t("Password update failed", "更新密码失败"),
-        description: errorMessage(e),
-      }),
-  });
-
-  const revoke = useMutation({
-    mutationFn: (share: AppShare) =>
-      revokeReleaseShare(appId, share.release_id, share.id),
-    onSuccess: () => {
-      toast.show({ kind: "success", title: t("Share revoked", "分享已撤销") });
-      invalidate();
-    },
-    onError: (e) =>
-      toast.show({
-        kind: "error",
-        title: t("Revoke failed", "撤销失败"),
-        description: errorMessage(e),
-      }),
-  });
-
-  const rows = shares.data?.shares ?? [];
+  const stateItems: Record<string, string> = {
+    "": t("All states", "全部状态"),
+    active: t("Active", "有效"),
+    expired: t("Expired", "已过期"),
+    revoked: t("Revoked", "已撤销"),
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold">{t("Shares", "分享")}</h2>
-          <p className="text-sm text-foreground-muted">
-            {t("Public download pages for this app's releases. Links remain valid until revoked or until their optional expiry, and their URLs can be re-copied here.", "此应用版本的公开下载页面。链接在撤销或设置的有效期届满前有效，可以在此重新复制。")}
-          </p>
-        </div>
-        <Button variant="primary" className="text-sm" onClick={() => setShowCreate(true)}>
-          {t("New share", "新建分享")}
-        </Button>
-      </div>
-
+    <ListPage
+      icon={<Share2 aria-hidden="true" />}
+      title={t("Shares", "分享")}
+      count={shares.data ? rows.length : undefined}
+      busy={shares.isLoading}
+      toolbar={
+        <>
+          <Select items={stateItems} value={stateFilter} onValueChange={(v) => setStateFilter(((v as string) || "") as "" | ShareState)}>
+            <SelectTrigger aria-label={t("State", "状态")} className="min-w-0 flex-1 sm:w-auto sm:min-w-36 sm:flex-none">
+              <SelectValue />
+              <SelectIcon />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectList>
+                {Object.entries(stateItems).map(([value, label]) => (
+                  <SelectItem key={value || "all"} value={value}>{label}</SelectItem>
+                ))}
+              </SelectList>
+            </SelectContent>
+          </Select>
+          <Button variant="primary" className="ml-auto" onClick={() => setShowCreate(true)}>
+            <Plus aria-hidden="true" />
+            {t("New share", "新建分享")}
+          </Button>
+        </>
+      }
+      detail={
+        open && (
+          <ShareDetail
+            key={open.id}
+            appId={appId}
+            share={open}
+            onClose={() => setOpenId(null)}
+            onRebind={() => setRebindShare(open)}
+            onChanged={invalidate}
+          />
+        )
+      }
+    >
       {createdUrl && (
-        <div className="flex flex-row items-center gap-3 rounded-md bg-fill-muted p-3 text-sm">
-          <span className="font-mono break-all flex-1">{createdUrl}</span>
-          <Button
-            variant="outline"
-            className="text-xs"
-            onClick={() => {
-              navigator.clipboard?.writeText(createdUrl);
-              toast.show({ kind: "success", title: t("Copied share URL", "已复制分享链接") });
-            }}
-          >
-            {t("Copy", "复制")}
-          </Button>
-          <Button variant="outline" className="text-xs" onClick={() => setCreatedUrl(null)}>
-            {t("Dismiss", "关闭")}
-          </Button>
+        <div className="px-(--column-margin)">
+          <Banner status="success">
+            <Share2 aria-hidden="true" />
+            <BannerTitle>{t("Share link created", "分享链接已创建")}</BannerTitle>
+            <BannerDescription>
+              <CopyableCodeRoot size="sm" className="mt-1" onCopy={() => { toast.show({ kind: "success", title: t("Copied share URL", "已复制分享链接") }); }}>
+                <CopyableCode className="[overflow-wrap:anywhere]">{createdUrl}</CopyableCode>
+                <CopyableCodeAction aria-label={t("Copy share URL", "复制分享链接")} />
+              </CopyableCodeRoot>
+            </BannerDescription>
+            <BannerAction>
+              <Button variant="outline" onClick={() => setCreatedUrl(null)}>{t("Dismiss", "关闭")}</Button>
+            </BannerAction>
+          </Banner>
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        {shares.isLoading && (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
+      <div className="flex flex-col gap-0.5">
+        {shares.isLoading && [0, 1, 2].map((n) => <ListRowSkeleton key={n} cell />)}
+
+        {shares.error && (
+          <div className="px-(--column-margin)">
+            <Banner status="warning">
+              <AlertTriangle aria-hidden="true" />
+              <BannerTitle>{t("Could not load shares", "无法加载分享")}</BannerTitle>
+              <BannerDescription>{errorMessage(shares.error)}</BannerDescription>
+              <BannerAction>
+                <Button variant="outline" onClick={() => void shares.refetch()}>{t("Retry", "重试")}</Button>
+              </BannerAction>
+            </Banner>
           </div>
         )}
-        {shares.error && (
-          <p className="text-sm text-danger">
-            {t("Failed to load shares:", "加载分享失败：")} {errorMessage(shares.error)}
-          </p>
-        )}
-        {!shares.isLoading && rows.length === 0 && (
-          <EmptyState>
+
+        {shares.data && rows.length === 0 && (
+          <EmptyState className="py-16">
             <EmptyStateContent>
-              <EmptyStateIcon>
-                <Share2 aria-hidden="true" />
-              </EmptyStateIcon>
-              <EmptyStateTitle>{t("No shares yet", "暂无分享")}</EmptyStateTitle>
-              <EmptyStateDescription>
-                {t("Create one here, from the CLI (", "可在此处、通过命令行（")}<code>hands releases share</code>{t("), or from the release workflow.", "）或在发布流程中创建。")}
-              </EmptyStateDescription>
+              <EmptyStateIcon><Share2 aria-hidden="true" /></EmptyStateIcon>
+              {all.length > 0 ? (
+                <>
+                  <EmptyStateTitle>{t("No shares in this state", "没有这个状态的分享")}</EmptyStateTitle>
+                  <EmptyStateDescription>{t("Pick another state to see the other links.", "选择其他状态查看其余链接。")}</EmptyStateDescription>
+                </>
+              ) : (
+                <>
+                  <EmptyStateTitle>{t("No shares yet", "还没有分享")}</EmptyStateTitle>
+                  <EmptyStateDescription>
+                    {t("A share is a public download page for one release. Create one here, with ", "分享是某个版本的公开下载页面。可以在这里创建，也可以用 ")}
+                    <code className="font-mono">hands releases share</code>
+                    {t(" or from the release workflow.", " 命令或在发布流程中创建。")}
+                  </EmptyStateDescription>
+                </>
+              )}
             </EmptyStateContent>
           </EmptyState>
         )}
-        {rows.length > 0 && (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
-                <th className="py-2 pr-3">{t("Release", "版本")}</th>
-                <th className="py-2 pr-3">{t("Status", "状态")}</th>
-                <th className="py-2 pr-3">{t("Created", "创建时间")}</th>
-                <th className="py-2 pr-3">URL</th>
-                <th className="py-2 pr-3">{t("Views", "访问次数")}</th>
-                <th className="py-2 pr-3">{t("Downloads", "下载次数")}</th>
-                <th className="py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((share) => (
-                <ShareRow
-                  key={share.id}
-                  share={share}
-                  onCopyUrl={() => {
-                    if (!share.share_url) return;
-                    navigator.clipboard?.writeText(share.share_url);
-                    toast.show({ kind: "success", title: t("Copied share URL", "已复制分享链接") });
-                  }}
-                  onSetExpiry={() => {
-                    const next = window.prompt(
-                      t("Days until this link expires (leave empty for never):", "链接多少天后过期（留空表示永不过期）："),
-                      share.expires_at
-                        ? String(Math.max(1, Math.ceil((share.expires_at - Date.now()) / 86_400_000)))
-                        : "",
-                    );
-                    if (next === null) return;
-                    const trimmed = next.trim();
-                    if (!trimmed) {
-                      setExpiry.mutate({ share, ttlDays: null });
-                      return;
-                    }
-                    const days = Number(trimmed);
-                    if (!Number.isFinite(days) || days <= 0) {
-                      toast.show({ kind: "error", title: t("Enter a positive number of days", "请输入大于零的天数") });
-                      return;
-                    }
-                    setExpiry.mutate({ share, ttlDays: days });
-                  }}
-                  onRevoke={() => revoke.mutate(share)}
-                  onRebind={() => setRebindShare(share)}
-                  onSetPassword={() => {
-                    const next = window.prompt(
-                      share.has_password
-                        ? t("New password (leave empty to remove the password):", "新密码（留空可移除密码）：")
-                        : t("Password for this share:", "此分享的密码："),
-                    );
-                    if (next === null) return;
-                    setPassword.mutate({
-                      share,
-                      password: next.trim() ? next.trim() : null,
-                    });
-                  }}
-                  busy={revoke.isPending || setPassword.isPending || setExpiry.isPending}
-                />
-              ))}
-            </tbody>
-          </table>
-        )}
+
+        {rows.map((share) => (
+          <ShareRow key={share.id} share={share} selected={openId === share.id} onOpen={() => setOpenId(share.id)} />
+        ))}
       </div>
 
       {showCreate && (
@@ -251,106 +260,360 @@ export function AppShares({ appId }: { appId: string }) {
           }}
         />
       )}
-    </div>
+    </ListPage>
   );
 }
 
-function shareState(share: AppShare): { label: string; variant: BadgeVariant } {
-  if (share.revoked_at) return { label: "revoked", variant: "muted" };
-  // Legacy shares may still carry an expiry; new ones live until revoked.
-  if (share.expires_at != null && share.expires_at <= Date.now()) {
-    return { label: "expired", variant: "warning" };
-  }
-  return { label: "active", variant: "success" };
-}
-
-function ShareRow({
-  share,
-  onCopyUrl,
-  onSetExpiry,
-  onRevoke,
-  onRebind,
-  onSetPassword,
-  busy,
-}: {
-  share: AppShare;
-  onCopyUrl: () => void;
-  onSetExpiry: () => void;
-  onRevoke: () => void;
-  onRebind: () => void;
-  onSetPassword: () => void;
-  busy: boolean;
-}) {
+function ShareRow({ share, selected, onOpen }: { share: AppShare; selected: boolean; onOpen: () => void }) {
   const t = useText();
   const { locale } = useLocale();
   const state = shareState(share);
-  const stateZh: Record<string, string> = { revoked: "已撤销", expired: "已过期", active: "有效" };
-  const actionable = !share.revoked_at;
   return (
-    <tr className="border-b border-line-hairline last:border-0">
-      <td className="py-2 pr-3">
-        <span className="font-medium">
-          {share.version_name} ({share.version_code})
-        </span>
-        <span className="ml-2 text-xs text-foreground-muted">{share.channel_slug}</span>
-        <div className="text-xs text-foreground-hint">{t(`by ${share.created_by}`, `由 ${share.created_by} 创建`)}</div>
-      </td>
-      <td className="py-2 pr-3">
-        <Badge variant={state.variant}>
-          {t(state.label, stateZh[state.label] ?? state.label)}
-        </Badge>
-        {Boolean(share.has_password) && (
-          <Badge variant="information" className="ml-1">
-            {t("password", "有密码")}
-          </Badge>
-        )}
-        {share.expires_at != null && !share.revoked_at && share.expires_at > Date.now() && (
-          <div className="mt-0.5 text-xs text-foreground-hint">
-            {t(`expires ${new Date(share.expires_at).toLocaleString(locale)}`, `${new Date(share.expires_at).toLocaleString(locale)} 过期`)}
-          </div>
-        )}
-      </td>
-      <td className="py-2 pr-3 text-xs text-foreground">
-        {new Date(share.created_at).toLocaleString(locale)}
-      </td>
-      <td className="py-2 pr-3 text-xs">
+    <ListRow
+      cell
+      selected={selected}
+      aria-current={selected || undefined}
+      tone={state === "revoked" ? "muted" : "default"}
+      onClick={onOpen}
+    >
+      <ListRowBody>
+        <ListRowTop>
+          <ListRowTitle>{releaseLabel(share)}</ListRowTitle>
+          <ListRowMeta>{timeAgo(share.created_at, locale)}</ListRowMeta>
+        </ListRowTop>
+        <ListRowSubtitle>
+          {share.channel_slug} · {t(`by ${share.created_by}`, `由 ${share.created_by} 创建`)}
+        </ListRowSubtitle>
+        <ListRowBottom>
+          <ListRowDescription>
+            {t(
+              `${share.view_count} views · ${share.download_count} downloads`,
+              `${share.view_count} 次访问 · ${share.download_count} 次下载`,
+            )}
+          </ListRowDescription>
+          {Boolean(share.has_password) && <Badge appearance="outline" className="shrink-0">{t("Password", "有密码")}</Badge>}
+          {share.expires_at != null && state === "active" && (
+            <Badge appearance="outline" className="shrink-0">
+              {t(`Expires ${new Date(share.expires_at).toLocaleDateString(locale)}`, `${new Date(share.expires_at).toLocaleDateString(locale)} 过期`)}
+            </Badge>
+          )}
+          {!share.share_url && <Badge appearance="outline" className="shrink-0">{t("Legacy", "旧链接")}</Badge>}
+          <StateBadge state={state} />
+        </ListRowBottom>
+      </ListRowBody>
+    </ListRow>
+  );
+}
+
+function ShareDetail({
+  appId,
+  share,
+  onClose,
+  onRebind,
+  onChanged,
+}: {
+  appId: string;
+  share: AppShare;
+  onClose: () => void;
+  onRebind: () => void;
+  onChanged: () => void;
+}) {
+  const t = useText();
+  const { locale } = useLocale();
+  const toast = useToast();
+  const [editing, setEditing] = useState<"expiry" | "password" | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const state = shareState(share);
+  const actionable = !share.revoked_at;
+  const date = (at: number) => new Date(at).toLocaleString(locale);
+
+  const setExpiry = useMutation({
+    mutationFn: (ttlDays: number | null) =>
+      renewReleaseShare(appId, share.release_id, share.id, {
+        // Explicit null clears the expiry (never expires).
+        ...(ttlDays === null ? { expires_at: null } : { ttl_seconds: ttlDays * 24 * 60 * 60 }),
+      }),
+    onSuccess: (_data, ttlDays) => {
+      toast.show({
+        kind: "success",
+        title: ttlDays === null ? t("Expiry removed. The link works until it is revoked.", "已移除有效期，链接在撤销前一直有效") : t(`Expires in ${ttlDays} days`, `${ttlDays} 天后过期`),
+      });
+      setEditing(null);
+      onChanged();
+    },
+    onError: (e) => toast.show({ kind: "error", title: t("Expiry update failed", "更新有效期失败"), description: errorMessage(e) }),
+  });
+
+  const setPassword = useMutation({
+    mutationFn: (password: string | null) =>
+      // Omitting expiry keeps the share's current expiry unchanged.
+      renewReleaseShare(appId, share.release_id, share.id, { password }),
+    onSuccess: (_data, password) => {
+      toast.show({ kind: "success", title: password ? t("Password set", "已设置密码") : t("Password removed", "已移除密码") });
+      setEditing(null);
+      onChanged();
+    },
+    onError: (e) => toast.show({ kind: "error", title: t("Password update failed", "更新密码失败"), description: errorMessage(e) }),
+  });
+
+  const revoke = useMutation({
+    mutationFn: () => revokeReleaseShare(appId, share.release_id, share.id),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: t("Share revoked", "分享已撤销") });
+      setConfirmRevoke(false);
+      onChanged();
+    },
+    onError: (e) => toast.show({ kind: "error", title: t("Revoke failed", "撤销失败"), description: errorMessage(e) }),
+  });
+
+  const busy = revoke.isPending || setPassword.isPending || setExpiry.isPending;
+
+  return (
+    <DetailColumn
+      label={releaseLabel(share)}
+      title={releaseLabel(share)}
+      meta={<span className="font-mono">{share.channel_slug}</span>}
+      onClose={onClose}
+    >
+      <DetailSection title={t("Link", "链接")}>
         {share.share_url ? (
-          <TextLink onClick={onCopyUrl}>
-            {t("Copy URL", "复制链接")}
-          </TextLink>
+          <CopyableCodeRoot size="sm" onCopy={() => { toast.show({ kind: "success", title: t("Copied share URL", "已复制分享链接") }); }}>
+            <CopyableCode className="[overflow-wrap:anywhere]">{share.share_url}</CopyableCode>
+            <CopyableCodeAction aria-label={t("Copy share URL", "复制分享链接")} />
+          </CopyableCodeRoot>
         ) : (
-          <span className="text-foreground-hint" title={t("Created before URLs were stored; the link itself still works.", "此链接创建时尚未保存链接地址；链接本身仍然有效。") }>
-            {t("unavailable (legacy)", "无法查看（旧链接）")}
-          </span>
+          <Text.Sans size="small" variant="muted">
+            {t("This link was made before Hands kept share URLs, so it can't be shown again. The link itself still works.", "此链接创建时 Hands 尚未保存分享地址，因此无法再次显示。链接本身仍然有效。")}
+          </Text.Sans>
         )}
-      </td>
-      <td className="py-2 pr-3">
-        {share.view_count}
-        <span className="text-xs text-foreground-hint"> {t(`(${share.unique_view_count} uniq)`, `（去重后 ${share.unique_view_count}）`)}</span>
-      </td>
-      <td className="py-2 pr-3">
-        {share.download_count}
-        <span className="text-xs text-foreground-hint"> {t(`(${share.unique_download_count} uniq)`, `（去重后 ${share.unique_download_count}）`)}</span>
-      </td>
-      <td className="py-2 text-right text-xs whitespace-nowrap">
-        {actionable && (
-          <>
-            <TextLink className="mr-2" onClick={onSetExpiry} disabled={busy}>
-              {t("Expiry…", "有效期…")}
-            </TextLink>
-            <TextLink className="mr-2" onClick={onSetPassword} disabled={busy}>
-              {share.has_password ? t("Password…", "密码…") : t("Set password", "设置密码")}
-            </TextLink>
-            <TextLink className="mr-2" onClick={onRebind} disabled={busy}>
-              {t("Rebind release…", "更换关联版本…")}
-            </TextLink>
-            <TextLink className="text-danger" onClick={onRevoke} disabled={busy}>
-              {t("Revoke", "撤销")}
-            </TextLink>
-          </>
+      </DetailSection>
+
+      <DetailSection title={t("Details", "详情")}>
+        <DescriptionList direction="horizontal">
+          <DescriptionItem>
+            <DescriptionTerm>{t("State", "状态")}</DescriptionTerm>
+            <DescriptionDetails><StateBadge state={state} /></DescriptionDetails>
+          </DescriptionItem>
+          <DescriptionItem>
+            <DescriptionTerm>{t("Created", "创建")}</DescriptionTerm>
+            <DescriptionDetails>{date(share.created_at)} · {share.created_by}</DescriptionDetails>
+          </DescriptionItem>
+          <DescriptionItem>
+            <DescriptionTerm>{t("Expires", "有效期")}</DescriptionTerm>
+            <DescriptionDetails>
+              {share.expires_at != null ? date(share.expires_at) : share.revoked_at != null ? "—" : t("Never: until revoked", "不过期，直到撤销")}
+            </DescriptionDetails>
+          </DescriptionItem>
+          {share.revoked_at != null && (
+            <DescriptionItem>
+              <DescriptionTerm>{t("Revoked", "撤销")}</DescriptionTerm>
+              <DescriptionDetails>{date(share.revoked_at)}</DescriptionDetails>
+            </DescriptionItem>
+          )}
+          <DescriptionItem>
+            <DescriptionTerm>{t("Password", "密码")}</DescriptionTerm>
+            <DescriptionDetails>{share.has_password ? t("Required", "需要") : t("None: anyone with the link", "无，拿到链接即可访问")}</DescriptionDetails>
+          </DescriptionItem>
+          <DescriptionItem>
+            <DescriptionTerm>{t("Views", "访问")}</DescriptionTerm>
+            <DescriptionDetails>
+              <span className="font-mono">{share.view_count}</span>{" "}
+              <span className="text-foreground-muted">{t(`(${share.unique_view_count} unique)`, `（去重后 ${share.unique_view_count}）`)}</span>
+            </DescriptionDetails>
+          </DescriptionItem>
+          <DescriptionItem>
+            <DescriptionTerm>{t("Downloads", "下载")}</DescriptionTerm>
+            <DescriptionDetails>
+              <span className="font-mono">{share.download_count}</span>{" "}
+              <span className="text-foreground-muted">{t(`(${share.unique_download_count} unique)`, `（去重后 ${share.unique_download_count}）`)}</span>
+            </DescriptionDetails>
+          </DescriptionItem>
+          <DescriptionItem>
+            <DescriptionTerm>{t("Release", "版本")}</DescriptionTerm>
+            <DescriptionDetails>
+              {t(
+                share.release_status === "active" ? "Active" : share.release_status === "superseded" ? "Superseded by a newer release" : share.release_status === "cancelled" ? "Cancelled" : share.release_status,
+                share.release_status === "active" ? "有效" : share.release_status === "superseded" ? "已被新版本替代" : share.release_status === "cancelled" ? "已取消" : share.release_status,
+              )}
+            </DescriptionDetails>
+          </DescriptionItem>
+        </DescriptionList>
+      </DetailSection>
+
+      {actionable && (
+        <DetailSection title={t("Actions", "操作")}>
+          <ListRowGroup>
+            <ListRow variant="plain" onClick={() => setEditing("expiry")} disabled={busy}>
+              <ListRowIcon><CalendarClock /></ListRowIcon>
+              <ListRowBody>
+                <ListRowTitle>{share.expires_at != null ? t("Change expiry", "修改有效期") : t("Set an expiry", "设置有效期")}</ListRowTitle>
+                <ListRowDescription wrap>{t("The link stops working on that day.", "到期后链接失效。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+            <ListRow variant="plain" onClick={() => setEditing("password")} disabled={busy}>
+              <ListRowIcon><KeyRound /></ListRowIcon>
+              <ListRowBody>
+                <ListRowTitle>{share.has_password ? t("Change password", "修改密码") : t("Set a password", "设置密码")}</ListRowTitle>
+                <ListRowDescription wrap>{t("People enter it before they can download.", "下载前需要输入密码。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+            <ListRow variant="plain" onClick={onRebind} disabled={busy}>
+              <ListRowIcon><Repeat /></ListRowIcon>
+              <ListRowBody>
+                <ListRowTitle>{t("Point to another release", "更换关联版本")}</ListRowTitle>
+                <ListRowDescription wrap>{t("Same link, another active release of this channel.", "链接不变，改为此渠道的另一个有效版本。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {actionable && (
+        <DetailSection title={t("Danger zone", "危险操作")}>
+          <ListRowGroup>
+            <ListRow variant="plain" tone="danger" onClick={() => setConfirmRevoke(true)} disabled={busy}>
+              <ListRowIcon><Trash2 /></ListRowIcon>
+              <ListRowBody>
+                <ListRowTitle>{t("Revoke share", "撤销分享")}</ListRowTitle>
+                <ListRowDescription wrap>{t("The link stops working for everyone. This can't be undone.", "所有人都无法再使用此链接。此操作无法撤回。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {!actionable && (
+        <Text.Sans size="small" variant="muted" className="flex items-center gap-2">
+          <Link2Off className="size-4" aria-hidden="true" />
+          {t("A revoked link can't be changed.", "已撤销的链接不能再修改。")}
+        </Text.Sans>
+      )}
+
+      {editing === "expiry" && (
+        <ExpiryDialog share={share} pending={setExpiry.isPending} onClose={() => setEditing(null)} onSave={(days) => setExpiry.mutate(days)} />
+      )}
+      {editing === "password" && (
+        <PasswordDialog share={share} pending={setPassword.isPending} onClose={() => setEditing(null)} onSave={(password) => setPassword.mutate(password)} />
+      )}
+      <ConfirmActionDialog
+        open={confirmRevoke}
+        title={t("Revoke this share?", "撤销此分享？")}
+        objectLabel={releaseLabel(share)}
+        objectHint={share.channel_slug}
+        body={t(
+          "Anyone opening the link gets a page saying it was revoked. The release and its files are kept. This can't be undone; create a new share to give people a link again.",
+          "打开链接的人会看到链接已撤销。版本和文件会保留。此操作无法撤回；如需再次提供链接，请新建分享。",
         )}
-      </td>
-    </tr>
+        confirmLabel={t("Revoke share", "撤销分享")}
+        confirmKind="danger"
+        pending={revoke.isPending}
+        onConfirm={() => revoke.mutate()}
+        onCancel={() => setConfirmRevoke(false)}
+      />
+    </DetailColumn>
+  );
+}
+
+function ExpiryDialog({
+  share,
+  pending,
+  onClose,
+  onSave,
+}: {
+  share: AppShare;
+  pending: boolean;
+  onClose: () => void;
+  onSave: (days: number | null) => void;
+}) {
+  const t = useText();
+  const [days, setDays] = useState(
+    share.expires_at ? String(Math.max(1, Math.ceil((share.expires_at - Date.now()) / DAY))) : "",
+  );
+  const trimmed = days.trim();
+  const value = Number(trimmed);
+  const invalid = trimmed !== "" && (!Number.isFinite(value) || value <= 0);
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (invalid) return;
+    onSave(trimmed ? value : null);
+  };
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{t("Expiry", "有效期")}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <form className="contents" onSubmit={submit}>
+          <DialogBody className="grid gap-5">
+            <Field invalid={invalid}>
+              <FieldLabel htmlFor="share-expiry-days" optional>{t("Days until the link expires", "链接多少天后过期")}</FieldLabel>
+              <Input id="share-expiry-days" type="number" min={1} aria-invalid={invalid || undefined} value={days} onChange={(e) => setDays(e.target.value)} autoFocus />
+              <FieldDescription>
+                {invalid ? t("Enter a positive number of days.", "请输入大于零的天数。") : t("Leave empty and the link works until it is revoked.", "留空表示链接在撤销前一直有效。")}
+              </FieldDescription>
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
+            <Button type="submit" variant="primary" size="lg" disabled={invalid} loading={pending} loadingLabel={t("Saving", "正在保存")}>
+              {t("Save", "保存")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PasswordDialog({
+  share,
+  pending,
+  onClose,
+  onSave,
+}: {
+  share: AppShare;
+  pending: boolean;
+  onClose: () => void;
+  onSave: (password: string | null) => void;
+}) {
+  const t = useText();
+  const [password, setPasswordValue] = useState("");
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{share.has_password ? t("Change password", "修改密码") : t("Set a password", "设置密码")}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <form className="contents" onSubmit={(e) => { e.preventDefault(); onSave(password.trim() ? password.trim() : null); }}>
+          <DialogBody className="grid gap-5">
+            <Field>
+              <FieldLabel htmlFor="share-password" optional={Boolean(share.has_password)}>{t("Password", "密码")}</FieldLabel>
+              <Input id="share-password" type="text" value={password} onChange={(e) => setPasswordValue(e.target.value)} autoFocus />
+              <FieldDescription>
+                {share.has_password
+                  ? t("Leave empty to remove the password and make the link public.", "留空则移除密码，链接改为公开。")
+                  : t("People enter it on the share page before they can download.", "在分享页面下载前需要输入。")}
+              </FieldDescription>
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              disabled={!share.has_password && !password.trim()}
+              loading={pending}
+              loadingLabel={t("Saving", "正在保存")}
+            >
+              {share.has_password && !password.trim() ? t("Remove password", "移除密码") : t("Save", "保存")}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -403,63 +666,72 @@ function RebindShareModal({
       description: errorMessage(error),
     }),
   });
+  const items: Record<string, string> = {
+    "": t("Select an active release…", "选择一个有效版本…"),
+    ...Object.fromEntries(options.map((release) => [
+      release.id,
+      `${release.version_name ?? release.id.slice(0, 8)} (${release.version_code ?? "—"})`,
+    ])),
+  };
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-md">
-        <DialogHeader><DialogTitle>{t("Rebind share to another release", "将分享关联到其他版本")}</DialogTitle></DialogHeader>
-        <DialogBody className="space-y-3">
-          <p className="text-sm text-foreground">
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{t("Point to another release", "更换关联版本")}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody className="grid gap-5">
+          <DialogDescription>
             {t("The public URL stays the same. Its version, build, download, and checksum will all point to the selected release.", "公开链接不变；其中的版本、构建、下载文件和校验和都会指向所选版本。")}
-          </p>
-          <div className="rounded-md border border-line-muted p-3 text-sm">
-            <div className="text-xs text-foreground-muted">{t("Current release", "当前版本")}</div>
-            <strong>{share.version_name} ({share.version_code})</strong>
-            <span className="ml-2 text-xs text-foreground-muted">{share.channel_slug}</span>
-          </div>
-          <label className="block text-xs text-foreground">
-            {t("Target active release", "目标有效版本")}
-            <Select
-              items={{
-                "": t("Select an active release…", "选择一个有效版本…"),
-                ...Object.fromEntries(options.map((release) => [
-                  release.id,
-                  `${release.version_name ?? release.id.slice(0, 8)} (${release.version_code ?? "—"})`,
-                ])),
-              }}
-              value={targetReleaseId}
-              onValueChange={(value) => setTargetReleaseId(value as string)}
-            >
-              <SelectTrigger className="mt-1 py-1.5!"><SelectValue /><SelectIcon /></SelectTrigger>
+          </DialogDescription>
+          <DescriptionList direction="horizontal">
+            <DescriptionItem>
+              <DescriptionTerm>{t("Current release", "当前版本")}</DescriptionTerm>
+              <DescriptionDetails>
+                <strong>{releaseLabel(share)}</strong> <span className="font-mono text-foreground-muted">{share.channel_slug}</span>
+              </DescriptionDetails>
+            </DescriptionItem>
+          </DescriptionList>
+          <Field>
+            <FieldLabel id="rebind-target-label">{t("Target active release", "目标有效版本")}</FieldLabel>
+            <Select items={items} value={targetReleaseId} onValueChange={(value) => setTargetReleaseId(value as string)}>
+              <SelectTrigger aria-labelledby="rebind-target-label"><SelectValue /><SelectIcon /></SelectTrigger>
               <SelectContent>
                 <SelectList>
-                <SelectItem value="">{t("Select an active release…", "选择一个有效版本…")}</SelectItem>
-                {options.map((release) => (
-                  <SelectItem key={release.id} value={release.id}>
-                    {release.version_name ?? release.id.slice(0, 8)} ({release.version_code ?? "—"})
-                  </SelectItem>
-                ))}
-              </SelectList>
+                  {Object.entries(items).map(([id, label]) => (
+                    <SelectItem key={id || "none"} value={id}>{label}</SelectItem>
+                  ))}
+                </SelectList>
               </SelectContent>
             </Select>
-          </label>
+            {options.length === 0 && releases.data && (
+              <FieldDescription>{t("This channel has no other active release.", "此渠道没有其他有效版本。")}</FieldDescription>
+            )}
+          </Field>
           {target.isLoading && <Skeleton className="h-20 w-full" />}
           {target.data && (
-            <div className="rounded-md border border-warning bg-warning-soft p-3 text-sm">
-              <div><strong>{target.data.build.version_name}</strong> ({target.data.build.version_code})</div>
-              <div className="mt-1 text-xs text-foreground">{t("Build:", "构建：")} <code>{target.data.build.id}</code></div>
-              <div className="mt-1 break-all text-xs text-foreground">{t("Checksum:", "校验和：")} <code>{installable?.file_hash ?? t("No installable asset", "没有可安装文件")}</code></div>
-            </div>
+            <Banner status="warning">
+              <AlertTriangle aria-hidden="true" />
+              <BannerTitle>{target.data.build.version_name} ({target.data.build.version_code})</BannerTitle>
+              <BannerDescription>
+                <span className="block">{t("Build:", "构建：")} <code className="font-mono">{target.data.build.id}</code></span>
+                <span className="block [overflow-wrap:anywhere]">{t("Checksum:", "校验和：")} <code className="font-mono">{installable?.file_hash ?? t("No installable asset", "没有可安装文件")}</code></span>
+              </BannerDescription>
+            </Banner>
           )}
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>{t("Cancel", "取消")}</Button>
+          <DialogClose render={<Button type="button" variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
           <Button
             variant="primary"
-            disabled={!targetReleaseId || !installable || rebind.isPending}
+            size="lg"
+            disabled={!targetReleaseId || !installable}
+            loading={rebind.isPending}
+            loadingLabel={t("Rebinding", "正在更换")}
             onClick={() => rebind.mutate()}
           >
-            {rebind.isPending ? t("Rebinding…", "更换中…") : t("Rebind release", "更换关联版本")}
+            {t("Rebind release", "更换关联版本")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -489,7 +761,7 @@ function CreateShareModal({
   const options = useMemo(
     () =>
       (releases.data?.releases ?? [])
-        .filter((r: any) => r.status === "active" || r.status === "superseded")
+        .filter((r) => r.status === "active" || r.status === "superseded")
         .slice(0, 30),
     [releases.data],
   );
@@ -516,76 +788,68 @@ function CreateShareModal({
       }),
   });
 
+  const statusText = (status: string) => t(status, status === "active" ? "有效" : status === "superseded" ? "已被替代" : status);
+  const items: Record<string, string> = {
+    "": t("Select a release…", "选择版本…"),
+    ...Object.fromEntries(options.map((r) => [r.id, `${r.version_name ?? r.id.slice(0, 8)} · ${statusText(r.status)}`])),
+  };
+
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-md">
+      <DialogContent size="md">
         <DialogHeader>
-          <DialogTitle>{t("New share link", "新建分享链接")}</DialogTitle>
+          <DialogTitle>{t("New share", "新建分享")}</DialogTitle>
+          <DialogClose />
         </DialogHeader>
-        <DialogBody className="space-y-3">
-          <label className="block text-xs text-foreground">
-            {t("Release", "版本")}
-            <Select
-              items={{
-                "": t("Select a release…", "选择版本…"),
-                ...Object.fromEntries(
-                  options.map((r: any) => [r.id, `${r.version_name ?? r.id.slice(0, 8)} · ${t(r.status, r.status === "active" ? "有效" : r.status === "superseded" ? "已被替代" : r.status)}`]),
-                ),
-              }}
-              value={releaseId}
-              onValueChange={(v) => setReleaseId(v as string)}
+        <form
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (releaseId && !create.isPending) create.mutate();
+          }}
+        >
+          <DialogBody className="grid gap-5">
+            <Field>
+              <FieldLabel id="new-share-release-label">{t("Release", "版本")}</FieldLabel>
+              <Select items={items} value={releaseId} onValueChange={(v) => setReleaseId(v as string)}>
+                <SelectTrigger aria-labelledby="new-share-release-label">
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectList>
+                    {Object.entries(items).map(([id, label]) => (
+                      <SelectItem key={id || "none"} value={id}>{label}</SelectItem>
+                    ))}
+                  </SelectList>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-share-days" optional>{t("Expires in days", "有效天数")}</FieldLabel>
+              <Input id="new-share-days" type="number" min={1} value={ttlDays} onChange={(e) => setTtlDays(e.target.value)} />
+              <FieldDescription>{t("Leave empty and the link works until it is revoked.", "留空表示链接在撤销前一直有效。")}</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-share-password" optional>{t("Password", "密码")}</FieldLabel>
+              <Input id="new-share-password" type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <FieldDescription>{t("Leave empty for a public link.", "留空则为公开链接。")}</FieldDescription>
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              disabled={!releaseId}
+              loading={create.isPending}
+              loadingLabel={t("Creating share", "正在创建分享")}
             >
-              <SelectTrigger className="mt-1 py-1.5!">
-                <SelectValue />
-                <SelectIcon />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectList>
-                <SelectItem value="">{t("Select a release…", "选择版本…")}</SelectItem>
-                {options.map((r: any) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.version_name ?? r.id.slice(0, 8)} · {t(r.status, r.status === "active" ? "有效" : r.status === "superseded" ? "已被替代" : r.status)}
-                  </SelectItem>
-                ))}
-              </SelectList>
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="block text-xs text-foreground">
-            {t("Expires in days (optional)", "有效天数（可选）")}
-            <Input
-              type="number"
-              min={1}
-              value={ttlDays}
-              onChange={(e) => setTtlDays(e.target.value)}
-              placeholder={t("Leave empty — link lives until revoked", "留空表示链接在撤销前一直有效")}
-              className="mt-1 py-1.5!"
-            />
-          </label>
-          <label className="block text-xs text-foreground">
-            {t("Password (optional)", "密码（可选）")}
-            <Input
-              type="text"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={t("Leave empty for a public link", "留空则为公开链接")}
-              className="mt-1 py-1.5!"
-            />
-          </label>
-        </DialogBody>
-        <DialogFooter>
-          <Button variant="outline" className="text-sm" onClick={onClose} disabled={create.isPending}>
-            {t("Cancel", "取消")}
-          </Button>
-          <Button
-            variant="primary"
-            className="text-sm"
-            onClick={() => create.mutate()}
-            disabled={create.isPending || !releaseId}
-          >
-            {create.isPending ? t("Creating…", "创建中…") : t("Create", "创建")}
-          </Button>
-        </DialogFooter>
+              {t("Create share", "创建分享")}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

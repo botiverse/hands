@@ -48,7 +48,7 @@ describe("TrustedPublisherList", () => {
     expect(screen.getByText("refs/heads/main refs/tags/desktop-v*")).toBeTruthy();
     expect(screen.getByText(/hands github-oidc-login --app raft-deck/)).toBeTruthy();
 
-    fireEvent.click(screen.getByText("+ Add"));
+    fireEvent.click(screen.getByText("Add publisher"));
     fireEvent.change(screen.getByLabelText("Repository"), { target: { value: " botiverse/raft-deck " } });
     fireEvent.change(screen.getByLabelText("Workflow file"), { target: { value: ".github/workflows/mobile.yml" } });
     fireEvent.change(screen.getByLabelText("Allowed refs"), { target: { value: "refs/heads/main, refs/tags/mobile-v*" } });

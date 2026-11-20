@@ -1,11 +1,18 @@
 import { errorMessage } from "../../lib/errorMessage";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Play } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import {
   Badge,
+  Banner,
+  BannerAction,
+  BannerDescription,
   Button,
+  Field,
+  FieldDescription,
+  FieldLabel,
   Input,
+  ListRowGroup,
   Select,
   SelectContent,
   SelectList,
@@ -13,6 +20,10 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Switch,
+  Text,
+  TextLink,
+  TextLinkExternalIcon,
 } from "@botiverse/raft-ui";
 import {
   deleteGooglePlayBinding,
@@ -30,8 +41,27 @@ import {
 import { googlePlayPackageOptions } from "../../lib/googlePlayPackages";
 import { googlePlayMessage as gp, googlePlayOAuthFailureMessage } from "../../lib/googlePlayMessages";
 import { useToast } from "../Toast";
+import { useText } from "../../lib/locale";
+import { DetailSection } from "../ListPage";
+import { DangerRow, FormActions, SettingRow, type ConnectorState } from "./ConnectorParts";
+
+/** The state of an app's Google Play connection, for its row in the list.
+ *  Reads the same query the connector does. */
+export function useGooglePlayState(appId: string, enabled = true): ConnectorState | undefined {
+  const t = useText();
+  const query = useQuery({ queryKey: ["google-play-binding", appId], queryFn: () => getGooglePlayBinding(appId), enabled });
+  if (!query.data) return undefined;
+  const meta = query.data.google_play;
+  if (!meta) return { tone: "off", label: t("Not connected", "未连接") };
+  if (!meta.package_name) return { tone: "attention", label: t("Needs attention", "需要处理"), detail: gp("needsConfig") };
+  if (meta.verification_state !== "verified") return { tone: "attention", label: t("Needs attention", "需要处理"), detail: `${meta.package_name} · ${gp("stale")}` };
+  if (!meta.enabled) return { tone: "paused", label: gp("disabled"), detail: meta.package_name };
+  const reports = query.data.reports_grant ? "" : ` · ${t("statistics not authorized", "统计未授权")}`;
+  return { tone: "connected", label: gp("connected"), detail: `${meta.package_name}${reports}` };
+}
 
 export function GooglePlayConnector({ appId }: { appId: string }) {
+  const t = useText();
   const toast = useToast();
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ["google-play-binding", appId], queryFn: () => getGooglePlayBinding(appId) });
@@ -190,7 +220,6 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
   // Same rule as the server: an enabled Google-account binding, or one a failed
   // verification disabled, can be reauthorized in place and keeps its package and tracks.
   const reauthorizable = Boolean(meta?.credential_kind === "authorized_user" && (meta.enabled || meta.verification_state === "stale"));
-  const showForm = editing || (!meta && !query.isLoading);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const [tokenRejected, setTokenRejected] = useState(false);
   // The connector stays mounted across apps; a hint about one app's grant must not carry over.
@@ -224,246 +253,280 @@ export function GooglePlayConnector({ appId }: { appId: string }) {
     onError: fail,
   });
 
+  const confirmUnbind = () => {
+    if (window.confirm(gp("confirmUnbind"))) remove.mutate();
+  };
+  const isManualPackage = !packageOptions.some((option) => option.packageName === packageName);
+
   const packageTrackFields = (
-    <div className="grid gap-3 md:grid-cols-2">
-      <div>
-        {packageOptions.length > 0 && <>
-          <div className="text-xs text-foreground">{gp("packageName")}</div>
+    <div className="grid gap-4">
+      {packageOptions.length > 0 && (
+        <Field>
+          <FieldLabel htmlFor={`gp-package-${appId}`}>{gp("existingPackage")}</FieldLabel>
           <Select items={Object.fromEntries([...packageOptions.map((option) => [option.packageName, `${option.packageName} · ${gp(option.source)}`]), ["__manual__", gp("manualPackage")]])}
-            value={packageOptions.some((option) => option.packageName === packageName) ? packageName : "__manual__"}
+            value={isManualPackage ? "__manual__" : packageName}
             onValueChange={(value) => setPackageName(value === "__manual__" ? "" : String(value))}>
-            <SelectTrigger className="mt-1 w-full" aria-label={gp("existingPackage")}><SelectValue /><SelectIcon /></SelectTrigger>
+            <SelectTrigger id={`gp-package-${appId}`} className="w-full" aria-label={gp("existingPackage")}><SelectValue /><SelectIcon /></SelectTrigger>
             <SelectContent>
               <SelectList>
-              {packageOptions.map((option) => <SelectItem key={option.packageName} value={option.packageName}>{option.packageName} · {gp(option.source)}</SelectItem>)}
-              <SelectItem value="__manual__">{gp("manualPackage")}</SelectItem>
-            </SelectList>
+                {packageOptions.map((option) => <SelectItem key={option.packageName} value={option.packageName}>{option.packageName} · {gp(option.source)}</SelectItem>)}
+                <SelectItem value="__manual__">{gp("manualPackage")}</SelectItem>
+              </SelectList>
             </SelectContent>
           </Select>
-        </>}
-        {!packageOptions.some((option) => option.packageName === packageName) && <label className="text-xs text-foreground">{gp("manualPackage")}
-          <Input aria-label={gp("packageName")} className="mt-1 font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
-        </label>}
-      </div>
-      <div className="md:col-span-2 text-xs text-foreground-muted">
-        {tracksLoading ? gp("loadingTracks") : tracksError ? <span role="alert">{errorMessage(tracksError)}</span> : discovered && availableTracks.length === 0 ? gp("noTracks") : gp("tracksHelp")}
-        {meta && <Button variant="outline" className="ml-2" disabled={tracksLoading || !packageName} onClick={() => setTrackReload((n) => n + 1)}>{gp("reloadTracks")}</Button>}
+        </Field>
+      )}
+      {isManualPackage && (
+        <Field>
+          <FieldLabel htmlFor={`gp-package-manual-${appId}`}>{packageOptions.length > 0 ? gp("manualPackage") : gp("packageName")}</FieldLabel>
+          <Input id={`gp-package-manual-${appId}`} aria-label={packageOptions.length > 0 ? gp("packageName") : undefined} className="font-mono" value={packageName} onChange={(event) => setPackageName(event.target.value)} placeholder="com.example.app" />
+          {!packageName.trim() && <FieldDescription>{gp("packageMissing")}</FieldDescription>}
+        </Field>
+      )}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Text.Sans size="small" variant="muted" className="min-w-0 flex-1">
+          {tracksLoading ? gp("loadingTracks") : tracksError ? <span role="alert">{errorMessage(tracksError)}</span> : discovered && availableTracks.length === 0 ? gp("noTracks") : gp("tracksHelp")}
+        </Text.Sans>
+        {meta && <Button variant="outline" disabled={tracksLoading || !packageName} onClick={() => setTrackReload((n) => n + 1)}>{gp("reloadTracks")}</Button>}
       </div>
       {([
         ["internalTrack", internalTrack, setInternalTrack],
         ["closedTrack", closedTrack, setClosedTrack],
         ["productionTrack", productionTrack, setProductionTrack],
-      ] as const).map(([label, value, setValue]) => <label key={label} className="text-xs text-foreground">{gp(label)}
-        <Select items={Object.fromEntries(availableTracks.map((id) => [id, id]))} value={availableTracks.includes(value) ? value : null} onValueChange={(id) => setValue(id ? String(id) : "")}>
-          <SelectTrigger className="mt-1 w-full" aria-label={gp(label)} disabled={tracksLoading || availableTracks.length === 0}><SelectValue placeholder={gp("chooseTrack")} /><SelectIcon /></SelectTrigger>
-          <SelectContent>
-            <SelectList>{availableTracks.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}</SelectList>
-          </SelectContent>
-        </Select>
-      </label>)}
+      ] as const).map(([label, value, setValue]) => (
+        <Field key={label}>
+          <FieldLabel htmlFor={`gp-${label}-${appId}`}>{gp(label)}</FieldLabel>
+          <Select items={Object.fromEntries(availableTracks.map((id) => [id, id]))} value={availableTracks.includes(value) ? value : null} onValueChange={(id) => setValue(id ? String(id) : "")}>
+            <SelectTrigger id={`gp-${label}-${appId}`} className="w-full" aria-label={gp(label)} disabled={tracksLoading || availableTracks.length === 0}><SelectValue placeholder={gp("chooseTrack")} /><SelectIcon /></SelectTrigger>
+            <SelectContent>
+              <SelectList>{availableTracks.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}</SelectList>
+            </SelectContent>
+          </Select>
+        </Field>
+      ))}
     </div>
   );
 
   const serviceCredentialField = (
-    <>
-      <label className="block text-xs font-medium">{gp("credentialJson")}</label>
-      <input type="file" accept=".json,application/json" aria-label={gp("chooseFile")} onChange={(event) => {
+    <Field>
+      <FieldLabel htmlFor={`gp-credential-${appId}`}>{gp("credentialJson")}</FieldLabel>
+      <input id={`gp-credential-${appId}`} className="text-callout text-foreground file:mr-3 file:rounded-control file:border file:border-line-strong file:bg-transparent file:px-3 file:py-1 file:text-foreground" type="file" accept=".json,application/json" aria-label={gp("chooseFile")} onChange={(event) => {
         const file = event.target.files?.[0];
         if (file) file.text().then(setCredentialJson, fail);
       }} />
-      {credentialJson && !credentialLooksValid && <p className="text-xs text-warning">{gp("invalidJson")}</p>}
-    </>
+      <FieldDescription>{credentialJson && !credentialLooksValid ? <span className="text-warning-strong">{gp("invalidJson")}</span> : gp("formHelp")}</FieldDescription>
+    </Field>
+  );
+
+  const saveButton = (
+    <Button variant="primary" disabled={!formValid || save.isPending} loading={save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
   );
 
   return (
-    <section data-testid="google-play-binding-panel" className="border-t border-line-hairline pt-5">
-      <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fill-muted text-foreground-muted">
-          <Play className="size-4" aria-hidden="true" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-medium text-foreground-strong">{gp("title")}</h3>
-          <p className="mt-0.5 text-xs text-foreground-muted">{gp("description")}</p>
-        {meta ? (
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
-              {needsConfig ? (
-                <>
-                  <Badge variant="success">{gp("connected")}</Badge>
-                  <Badge variant="warning">{gp("needsConfig")}</Badge>
-                </>
-              ) : (
-                <>
-                  <Badge variant={meta.enabled ? "success" : "muted"}>{gp(meta.enabled ? "enabled" : "disabled")}</Badge>
-                  <Badge variant={meta.verification_state === "verified" ? "muted" : "warning"}>
-                    {gp(meta.verification_state === "verified" ? "verified" : "stale")}
-                  </Badge>
-                  <span className="min-w-0 truncate font-mono">{meta.package_name}</span>
-                </>
-              )}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-2">
-          {!meta ? (
+    <div data-testid="google-play-binding-panel" className="flex flex-col gap-6">
+      {meta && (
+        <div className="flex flex-wrap items-center gap-2">
+          {needsConfig ? (
             <>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setConnectionMethod("service");
-                  setUserExpanded(true);
-                }}
-              >
-                {gp("serviceAccount")}
-              </Button>
-              <Button
-                variant="primary"
-                disabled={query.isLoading || authorize.isPending || !query.data?.oauth_available}
-                onClick={startConnect}
-              >
-                {gp(authorize.isPending ? "connecting" : "connect")}
-              </Button>
+              <Badge appearance="soft" variant="success">{gp("connected")}</Badge>
+              <Badge appearance="soft" variant="warning">{gp("needsConfig")}</Badge>
             </>
           ) : (
-            <Button
-              variant="outline"
-              size="icon-sm"
-              aria-expanded={expanded}
-              aria-label={gp(expanded ? "collapse" : "expand")}
-              onClick={() => setUserExpanded(!expanded)}
-            >
-              <ChevronDown
-                className={`size-4 transition-transform${expanded ? " rotate-180" : ""}`}
-                aria-hidden="true"
-              />
-            </Button>
+            <>
+              <Badge appearance={meta.enabled ? "soft" : "outline"} variant={meta.enabled ? "success" : "muted"}>{gp(meta.enabled ? "enabled" : "disabled")}</Badge>
+              <Badge appearance={meta.verification_state === "verified" ? "outline" : "soft"} variant={meta.verification_state === "verified" ? "muted" : "warning"}>
+                {gp(meta.verification_state === "verified" ? "verified" : "stale")}
+              </Badge>
+            </>
           )}
         </div>
-      </div>
-      {!meta && !query.isLoading && !query.data?.oauth_available ? (
-        <p className="mt-3 border-t border-line-hairline pt-2 text-xs text-foreground-muted">
-          {gp("oauthUnavailable")}
-        </p>
-      ) : null}
+      )}
+
       {tokenRejected && reauthorizable && !oauthResult ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
-          <span className="min-w-0 flex-1 text-danger">{gp("tokenRejected")}</span>
-          <Button size="xs" variant="outline" disabled={authorize.isPending} onClick={startConnect}>
-            {gp("reauthorize")}
-          </Button>
-        </div>
+        <Banner status="warning">
+          <AlertTriangle aria-hidden="true" />
+          <BannerDescription>{gp("tokenRejected")}</BannerDescription>
+          <BannerAction>
+            <Button variant="outline" disabled={authorize.isPending} onClick={startConnect}>{gp("reauthorize")}</Button>
+          </BannerAction>
+        </Banner>
       ) : null}
       {oauthResult ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line-hairline pt-2 text-xs">
-          <span className="min-w-0 flex-1 text-danger">
-            {oauthResult.kind === "failed"
-              ? googlePlayOAuthFailureMessage(oauthResult.errorCode)
-              : gp("oauthCancelled")}
-          </span>
-          <Button size="xs" variant="outline" onClick={oauthResult.purpose === "reports" ? startReports : startConnect}>
-            {gp("retry")}
-          </Button>
-        </div>
+        <Banner status="warning">
+          <AlertTriangle aria-hidden="true" />
+          <BannerDescription>
+            {oauthResult.kind === "failed" ? googlePlayOAuthFailureMessage(oauthResult.errorCode) : gp("oauthCancelled")}
+          </BannerDescription>
+          <BannerAction>
+            <Button variant="outline" onClick={oauthResult.purpose === "reports" ? startReports : startConnect}>{gp("retry")}</Button>
+          </BannerAction>
+        </Banner>
       ) : null}
-      {expanded ? (
-        <div className="mt-3 space-y-3 border-t border-line-hairline pt-4">
-          {meta ? (
-            <div className="space-y-0.5 text-xs text-foreground-muted">
-              <div className="break-all font-mono">
-                {gp(meta.credential_kind === "authorized_user" ? "authorizedAccount" : "serviceAccount")}: {meta.service_account_email}
-              </div>
-              {!needsConfig && <div className="font-mono">{meta.internal_track} · {meta.closed_track} · {meta.production_track}</div>}
-            </div>
-          ) : null}
 
-          {needsConfig ? (
-            /* Connected via Google, configuration pending: the saved credential
-               is reused by the save call, no second authorization. */
-            <div className="space-y-3">
-              <p className="text-xs text-foreground">{gp("needsConfigHelp")}</p>
-              {!packageName.trim() && <p className="text-xs text-foreground-muted">{gp("packageMissing")}</p>}
-              {packageTrackFields}
-              <p className="text-xs text-foreground-muted">{gp("noPublish")}</p>
-              <div className="flex justify-end gap-2">
-                <Button variant="danger" disabled={remove.isPending} onClick={() => {
-                  if (window.confirm(gp("confirmUnbind"))) remove.mutate();
-                }}>{gp("unbind")}</Button>
-                <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
-              </div>
-            </div>
-          ) : meta ? (
-            <>
-              {!editing && <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={verify.isPending} onClick={() => verify.mutate()}>
-                  {verify.isPending ? gp("testing") : gp("test")}
-                </Button>
-                {reauthorizable && (
-                  <Button variant="outline" disabled={authorize.isPending} onClick={startConnect}>{gp("reauthorize")}</Button>
-                )}
-                <Button variant="outline" onClick={() => { setConnectionMethod("service"); setEditing(true); }}>{gp("replace")}</Button>
-                <Button
-                  variant="outline"
+      {!meta && !expanded && (
+        <DetailSection title={t("Connect", "连接")}>
+          <Text.Sans size="small" variant="muted">{gp("description")}</Text.Sans>
+          <ListRowGroup>
+            <SettingRow
+              title={t("Sign in with Google", "使用 Google 登录")}
+              description={query.isLoading || query.data?.oauth_available
+                ? t("Recommended. Hands keeps the authorization encrypted; no key file is needed.", "推荐。Hands 加密保存授权，不需要密钥文件。")
+                : gp("oauthUnavailable")}
+            >
+              <Button variant="primary" disabled={query.isLoading || authorize.isPending || !query.data?.oauth_available} onClick={startConnect}>
+                {gp(authorize.isPending ? "connecting" : "connect")}
+              </Button>
+            </SettingRow>
+            <SettingRow
+              title={t("Use a key file", "使用密钥文件")}
+              description={t("A Google Cloud service account with access to this app in Play Console.", "使用能访问 Play Console 中此应用的 Google Cloud 服务账号。")}
+            >
+              <Button variant="outline" onClick={() => { setConnectionMethod("service"); setUserExpanded(true); }}>{gp("serviceAccount")}</Button>
+            </SettingRow>
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {!meta && expanded && (
+        /* Service-account path (secondary entry): reachable from the
+           "Service account" button of the unconnected connector. */
+        <DetailSection title={gp("serviceAccount")}>
+          {serviceCredentialField}
+          {packageTrackFields}
+          <Text.Sans size="small" variant="muted">{gp("noPublish")}</Text.Sans>
+          <FormActions>
+            {saveButton}
+            <Button variant="outline" onClick={() => setUserExpanded(false)}>{gp("cancel")}</Button>
+          </FormActions>
+        </DetailSection>
+      )}
+
+      {meta && (
+        <DetailSection title={t("Connection", "连接")}>
+          <ListRowGroup>
+            <SettingRow
+              title={gp(meta.credential_kind === "authorized_user" ? "authorizedAccount" : "serviceAccount")}
+              description={<span className="font-mono [overflow-wrap:anywhere]">{meta.service_account_email}</span>}
+            />
+            {!needsConfig && (
+              <SettingRow
+                title={gp("packageName")}
+                description={<>
+                  <span className="block font-mono [overflow-wrap:anywhere]">{meta.package_name}</span>
+                  <span className="block font-mono">{meta.internal_track} · {meta.closed_track} · {meta.production_track}</span>
+                </>}
+              />
+            )}
+            {!needsConfig && (
+              <SettingRow
+                title={t("Publish to Google Play", "发布到 Google Play")}
+                description={meta.enabled
+                  ? t("Releases of this app can be promoted to its Play tracks.", "此应用的版本可以推送到它的 Play 轨道。")
+                  : t("Off: nothing is sent to Google Play.", "已关闭：不会向 Google Play 发送任何内容。")}
+              >
+                <Switch
+                  aria-label={t("Publish to Google Play", "发布到 Google Play")}
+                  checked={meta.enabled}
                   disabled={toggle.isPending}
-                  onClick={() => {
-                    if (meta.enabled && !window.confirm(gp("confirmDisable"))) return;
-                    toggle.mutate(!meta.enabled);
+                  onCheckedChange={(next) => {
+                    if (!next && !window.confirm(gp("confirmDisable"))) return;
+                    toggle.mutate(next);
                   }}
-                >
-                  {gp(meta.enabled ? "disable" : "enable")}
-                </Button>
-                <Button variant="danger" disabled={remove.isPending} onClick={() => {
-                  if (window.confirm(gp("confirmUnbind"))) remove.mutate();
-                }}>{gp("unbind")}</Button>
-              </div>}
-              {reauthorizable && !editing && <p className="text-xs text-foreground-muted">{gp("reauthorizeHelp")}</p>}
-              {meta.package_name && !editing && (
-                <div className="space-y-1 rounded-md border border-line-hairline p-3" data-testid="google-play-reports">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 flex-1 text-xs font-medium text-foreground">{gp("reportsTitle")}</span>
-                    <Button size="xs" variant="outline" disabled={authorize.isPending || !query.data?.oauth_available} onClick={startReports}>
-                      {gp(reportsGrant ? "reportsReauthorize" : "reportsAuthorize")}
-                    </Button>
-                    {reportsGrant && (
-                      <Button size="xs" variant="outline" disabled={removeReports.isPending} onClick={() => {
-                        if (window.confirm(gp("reportsConfirmRemove"))) removeReports.mutate();
-                      }}>{gp("reportsRemove")}</Button>
-                    )}
-                  </div>
-                  {reportsGrant && <div className="break-all font-mono text-xs text-foreground-muted">{gp("reportsAccount")}: {reportsGrant.account_email}</div>}
-                  <p className="text-xs text-foreground-muted">{gp("reportsHelp")}</p>
-                </div>
+                />
+              </SettingRow>
+            )}
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {needsConfig && (
+        /* Connected via Google, configuration pending: the saved credential
+           is reused by the save call, no second authorization. */
+        <DetailSection title={t("Package and tracks", "包名和轨道")}>
+          <Text.Sans size="small">{gp("needsConfigHelp")}</Text.Sans>
+          {packageTrackFields}
+          <Text.Sans size="small" variant="muted">{gp("noPublish")}</Text.Sans>
+          <FormActions>{saveButton}</FormActions>
+        </DetailSection>
+      )}
+
+      {meta && !needsConfig && !editing && (
+        <DetailSection title={t("Checks and access", "检查与授权")}>
+          <ListRowGroup>
+            <SettingRow title={t("Check the connection", "检查连接")} description={gp("noPublish")}>
+              <Button variant="outline" disabled={verify.isPending} onClick={() => verify.mutate()}>
+                {verify.isPending ? gp("testing") : gp("test")}
+              </Button>
+            </SettingRow>
+            {reauthorizable && (
+              <SettingRow title={t("Google authorization", "Google 授权")} description={gp("reauthorizeHelp")}>
+                <Button variant="outline" disabled={authorize.isPending} onClick={startConnect}>{gp("reauthorize")}</Button>
+              </SettingRow>
+            )}
+            <SettingRow
+              title={t("Credential", "凭据")}
+              description={t("Replace the stored credential with a service account key file.", "用服务账号密钥文件替换已保存的凭据。")}
+            >
+              <Button variant="outline" onClick={() => { setConnectionMethod("service"); setEditing(true); }}>{gp("replace")}</Button>
+            </SettingRow>
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {meta?.package_name && !editing && (
+        <DetailSection title={gp("reportsTitle")}>
+          <ListRowGroup data-testid="google-play-reports">
+            <SettingRow
+              title={reportsGrant ? gp("reportsAccount") : t("Not authorized", "未授权")}
+              description={<>
+                {reportsGrant && <span className="block font-mono [overflow-wrap:anywhere]">{reportsGrant.account_email}</span>}
+                <span className="block">{gp("reportsHelp")}</span>
+              </>}
+            >
+              <Button variant="outline" disabled={authorize.isPending || !query.data?.oauth_available} onClick={startReports}>
+                {gp(reportsGrant ? "reportsReauthorize" : "reportsAuthorize")}
+              </Button>
+              {reportsGrant && (
+                <Button variant="outline" disabled={removeReports.isPending} onClick={() => {
+                  if (window.confirm(gp("reportsConfirmRemove"))) removeReports.mutate();
+                }}>{gp("reportsRemove")}</Button>
               )}
-              {meta.credential_kind === "authorized_user" && <p className="text-xs text-foreground-muted">{gp("disconnectHelp")}{" "}
-                <a className="text-info-strong hover:underline" href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">{gp("authorizedAccount")}</a>
-              </p>}
-              {showForm && <div className="space-y-3 rounded-md bg-fill-muted p-3">
-                <p className="text-xs text-foreground">{gp("formHelp")}</p>
-                {packageTrackFields}
-                {serviceCredentialField}
-                <p className="text-xs text-foreground-muted">{gp("noPublish")}</p>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>{gp("cancel")}</Button>
-                  <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
-                </div>
-              </div>}
-            </>
-          ) : (
-            /* Service-account path (secondary entry): reachable from the
-               "Service account" button on the unconnected row. */
-            <div className="space-y-3">
-              <p className="text-xs text-foreground">{gp("formHelp")}</p>
-              {!packageName.trim() && <p className="text-xs text-foreground-muted">{gp("packageMissing")}</p>}
-              {packageTrackFields}
-              {serviceCredentialField}
-              <p className="text-xs text-foreground-muted">{gp("noPublish")}</p>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setUserExpanded(false)}>{gp("cancel")}</Button>
-                <Button variant="primary" disabled={!formValid || save.isPending} onClick={() => save.mutate()}>{gp("saveEnable")}</Button>
-              </div>
-            </div>
+            </SettingRow>
+          </ListRowGroup>
+        </DetailSection>
+      )}
+
+      {meta && !needsConfig && editing && (
+        <DetailSection title={gp("replace")}>
+          {serviceCredentialField}
+          {packageTrackFields}
+          <Text.Sans size="small" variant="muted">{gp("noPublish")}</Text.Sans>
+          <FormActions>
+            {saveButton}
+            <Button variant="outline" onClick={() => { setCredentialJson(""); setEditing(false); }}>{gp("cancel")}</Button>
+          </FormActions>
+        </DetailSection>
+      )}
+
+      {meta && (
+        <DetailSection title={t("Danger zone", "危险操作")}>
+          <DangerRow
+            title={gp("unbind")}
+            description={meta.credential_kind === "authorized_user"
+              ? gp("disconnectHelp")
+              : t("Deletes the stored credential, the package and the tracks.", "删除已保存的凭据、包名和轨道。")}
+            disabled={remove.isPending}
+            onClick={confirmUnbind}
+          />
+          {meta.credential_kind === "authorized_user" && (
+            <TextLink className="text-footnote" render={<a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer" />} nativeButton={false}>
+              {t("Google account connections", "Google 账号第三方连接")}
+              <TextLinkExternalIcon label={t("(opens in a new tab)", "（在新标签页打开）")} />
+            </TextLink>
           )}
-        </div>
-      ) : null}
-    </section>
+        </DetailSection>
+      )}
+    </div>
   );
 }
 
