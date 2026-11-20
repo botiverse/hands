@@ -16,7 +16,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { acceptInvite, getAuthMe, loginUrl, type Invite } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Button } from "raft-ui";
+import { Button } from "@botiverse/raft-ui";
 import { LanguagePicker, useLocale, useText } from "../lib/locale";
 
 export function AcceptInvite({ token }: { token: string }) {

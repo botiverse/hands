@@ -5,7 +5,7 @@ import { ChevronDown, Smartphone } from "lucide-react";
 import {
   Badge,
   Button,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import {
   deleteAgcCredentials,
   getAgcCredentials,

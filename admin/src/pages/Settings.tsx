@@ -9,7 +9,7 @@ import {
   TextHeading,
   TextMono,
   TextSans,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { getAuthMe } from "../lib/api";
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { LanguagePicker, useText } from "../lib/locale";

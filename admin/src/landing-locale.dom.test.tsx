@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ThemeProvider } from "raft-ui";
+import { ThemeProvider } from "@botiverse/raft-ui";
 import { PublicLanding } from "./App";
 import { LocaleProvider, LOCALE_COOKIE, LOCALE_STORAGE } from "./lib/locale";
 

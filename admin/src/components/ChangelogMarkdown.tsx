@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Button, Input } from "raft-ui";
+import { Button, Input } from "@botiverse/raft-ui";
 import {
   addChangelogLanguage,
   isValidChangelogLanguage,

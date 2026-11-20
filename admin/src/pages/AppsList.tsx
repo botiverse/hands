@@ -22,7 +22,7 @@ import {
   EmptyStateIcon,
   EmptyStateTitle,
   Skeleton,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { AlertTriangle, Archive, LayoutGrid, Package, Rocket } from "lucide-react";
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {

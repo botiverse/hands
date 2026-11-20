@@ -14,7 +14,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuItem,
   DropdownMenuSeparator,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { getAuthMe, listOrgs, loginUrl, setActiveOrgId, type Org } from "../lib/api";
 import { useText } from "../lib/locale";
 

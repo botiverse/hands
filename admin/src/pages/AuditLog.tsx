@@ -1,6 +1,6 @@
 import { errorMessage } from "../lib/errorMessage";
 import { useQuery } from "@tanstack/react-query";
-import { Avatar, AvatarImage, AvatarFallback, Badge } from "raft-ui";
+import { Avatar, AvatarImage, AvatarFallback, Badge } from "@botiverse/raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
 import { collidingPrincipalLabels, needsServerBadge } from "../lib/principalIdentity";
 import { useLocale, useText } from "../lib/locale";

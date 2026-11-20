@@ -7,7 +7,7 @@ import { errorMessage } from "../lib/errorMessage";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getFeedbackBuildFilter, listCrashGroups } from "../lib/api";
-import { EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
+import { EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "@botiverse/raft-ui";
 import { AlertTriangle } from "lucide-react";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
 import { useLocale, useText } from "../lib/locale";

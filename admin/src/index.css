@@ -1,14 +1,9 @@
 @import 'tailwindcss';
-/* raft-ui elegant component library: its @theme token contract + component
-   styles. Tailwind v4 skips node_modules, so @source makes it generate the
-   utility classes raft-ui's compiled components reference. */
-@import 'raft-ui/styles.css';
-@source '../node_modules/raft-ui/dist';
-
-/* Tailwind utilities scoped to the Brutal theme root (same contract as the
-   platform web app). Enables `theme-brutal:` classes for surfaces and
-   dividers that follow Raft's hard-edged Brutal recipe. */
-@custom-variant theme-brutal (&:where([data-theme="brutal"], [data-theme="brutal"] *));
+/* Raft Design System (@botiverse/raft-ui): its @theme token contract and
+   component styles. Tailwind v4 skips node_modules, so @source makes it
+   generate the utility classes raft-ui's compiled components reference. */
+@import '@botiverse/raft-ui/styles.css';
+@source '../node_modules/@botiverse/raft-ui/dist/**/*.{js,mjs}';
 
 /* Chart series tokens. Light surfaces use darkened amber/green so every
    series keeps >= 3:1 against the canvas; dark surfaces keep the brighter

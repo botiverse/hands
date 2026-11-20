@@ -28,7 +28,7 @@ import {
   Skeleton,
   Badge,
   type BadgeProps,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { DeviceAnalytics } from "../components/DeviceAnalytics";
 import { ReleaseHealth } from "../components/ReleaseHealth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -892,7 +892,6 @@ function PublicHistoryToggle({ appId, app }: { appId: string; app: App }) {
               {(channelsQuery.data?.channels ?? []).map((ch) => (
                 <label key={ch.id} className="flex items-center gap-1 text-xs">
                   <Checkbox
-                    size="sm"
                     checked={selectedChannels.includes(ch.slug)}
                     disabled={channelsMutation.isPending}
                     onCheckedChange={() => toggleChannel(ch.slug)}

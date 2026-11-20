@@ -35,7 +35,7 @@ import {
 import { errorMessage } from "../lib/errorMessage";
 import { useText } from "../lib/locale";
 import { useToast } from "../components/Toast";
-import { Button, EmptyState, EmptyStateTitle, Input, Label, Skeleton } from "raft-ui";
+import { TextLink, Button, EmptyState, EmptyStateTitle, Input, Label, Skeleton } from "@botiverse/raft-ui";
 
 const KIND_LABEL: Record<SigningIdentity["kind"], [string, string]> = {
   android_keystore: ["Android key", "安卓签名密钥"],
@@ -167,9 +167,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
                   {t("Download backup (once)", "下载备份（仅一次）")}
                 </Button>
               )}
-              <Button
-                variant="link"
-                size="sm"
+              <TextLink
                 className="text-danger"
                 disabled={revoke.isPending}
                 onClick={() => {
@@ -177,7 +175,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
                 }}
               >
                 {t("Revoke", "撤销")}
-              </Button>
+              </TextLink>
             </div>
           </div>
           <div>
@@ -550,9 +548,9 @@ function PendingRequest({ orgId, request, onCompleted, onCancel }: {
       <div className="font-medium">{request.name} · {t("waiting for Apple's certificate", "等待 Apple 证书")}</div>
       <ol className="list-decimal space-y-1 pl-4 text-xs">
         <li>
-          <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={() => download(`${base}.certSigningRequest`, request.csr_pem)}>
+          <TextLink type="button" className="h-auto p-0" onClick={() => download(`${base}.certSigningRequest`, request.csr_pem)}>
             {t("Download the request (.certSigningRequest)", "下载请求文件（.certSigningRequest）")}
-          </Button>
+          </TextLink>
         </li>
         <li>
           {t(`On the Apple Developer site, create a "${certName}" certificate, upload this request, and download the .cer. `, `在 Apple Developer 网站创建“${certName}”证书，上传这个请求文件，下载 .cer。`)}

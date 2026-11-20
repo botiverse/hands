@@ -60,7 +60,7 @@ import {
   SidebarItem,
   SidebarRoot,
   useTheme,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { appRouteMessage } from "./lib/appRouteMessages";
 import { legalMessage } from "./lib/legalMessages";
 import { LanguagePicker, useLocale, useText } from "./lib/locale";
@@ -184,43 +184,17 @@ function SidebarNavItem({
   );
 }
 
-/** Appearance presets offered from the account menu (same vocabulary as the
- *  Settings page picker). */
-const APPEARANCE_OPTIONS: Array<{
-  id: string;
-  label: string;
-  isActive: (theme: string, mode: string) => boolean;
-  apply: (setTheme: ReturnType<typeof useTheme>["setTheme"]) => void;
-}> = [
-  {
-    id: "brutal",
-    label: "Brutal",
-    isActive: (theme) => theme === "brutal",
-    apply: (setTheme) => setTheme("brutal"),
-  },
-  {
-    id: "elegant-light",
-    label: "Elegant Light",
-    isActive: (theme, mode) => theme === "elegant" && mode === "light",
-    apply: (setTheme) => setTheme("elegant", { mode: "light" }),
-  },
-  {
-    id: "elegant-dark",
-    label: "Elegant Dark",
-    isActive: (theme, mode) => theme === "elegant" && mode === "dark",
-    apply: (setTheme) => setTheme("elegant", { mode: "dark" }),
-  },
-  {
-    id: "elegant-system",
-    label: "System",
-    isActive: (theme, mode) => theme === "elegant" && mode === "system",
-    apply: (setTheme) => setTheme("elegant", { mode: "system" }),
-  },
+/** Appearance modes offered from the account menu (same vocabulary as the
+ *  Settings page picker). Raft has one look; only the mode changes. */
+const APPEARANCE_OPTIONS: Array<{ id: "light" | "dark" | "system"; label: [string, string] }> = [
+  { id: "light", label: ["Light", "浅色"] },
+  { id: "dark", label: ["Dark", "深色"] },
+  { id: "system", label: ["System", "跟随系统"] },
 ];
 
 function Header({ account }: { account: AuthAccount }) {
   const t = useText();
-  const { theme, mode, setTheme } = useTheme();
+  const { mode, setMode } = useTheme();
   const navigate = useNavigate();
   const onLogout = async () => {
     await logout();
@@ -262,11 +236,11 @@ function Header({ account }: { account: AuthAccount }) {
 
   return (
     <SidebarRoot
-      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted pt-2 pb-1.5 transition-[width] duration-150 theme-brutal:border-r-2 theme-brutal:border-black md:flex ${
+      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted pt-2 pb-1.5 transition-[width] duration-150 md:flex ${
         collapsed ? "w-16 items-center" : "w-16 items-stretch md:w-60"
       }`}
     >
-      <div className={`mb-2 flex h-9 items-center theme-brutal:mb-2 theme-brutal:h-10 theme-brutal:border-b-2 theme-brutal:border-black theme-brutal:pb-2 ${collapsed ? "justify-center" : "justify-between px-3"}`}>
+      <div className={`mb-2 flex h-9 items-center ${collapsed ? "justify-center" : "justify-between px-3"}`}>
         <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
           <QuiverMark className="h-9 w-9 flex-none" />
           {!collapsed && <span className="hidden truncate text-sm font-semibold text-foreground-strong md:inline">Hands</span>}
@@ -286,7 +260,7 @@ function Header({ account }: { account: AuthAccount }) {
       <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-3">
         {appId && appBase && (
           <>
-            <div className="relative w-full border-t border-line-hairline pt-2 theme-brutal:border-t-2 theme-brutal:border-black">
+            <div className="relative w-full border-t border-line-hairline pt-2">
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
@@ -480,13 +454,13 @@ function Header({ account }: { account: AuthAccount }) {
                   <DropdownMenuItem
                     key={option.id}
                     closeOnClick={false}
-                    onClick={() => option.apply(setTheme)}
+                    onClick={() => setMode(option.id)}
                   >
                     <Check
-                      className={`size-3.5 ${option.isActive(theme, mode) ? "opacity-100" : "opacity-0"}`}
+                      className={`size-3.5 ${mode === option.id ? "opacity-100" : "opacity-0"}`}
                       aria-hidden="true"
                     />
-                    <span>{option.id === "elegant-light" ? t("Elegant Light", "Elegant 浅色") : option.id === "elegant-dark" ? t("Elegant Dark", "Elegant 深色") : option.id === "elegant-system" ? t("System", "跟随系统") : option.label}</span>
+                    <span>{t(...option.label)}</span>
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>

@@ -9,7 +9,7 @@ import { errorMessage } from "../lib/errorMessage";
  * recorded as `testflight-publish` operations.
  */
 import { useQuery } from "@tanstack/react-query";
-import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "raft-ui";
+import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "@botiverse/raft-ui";
 import { Plane } from "lucide-react";
 import {
   listOperations,

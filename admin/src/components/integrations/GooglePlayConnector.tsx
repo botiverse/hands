@@ -13,7 +13,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import {
   deleteGooglePlayBinding,
   getGooglePlayBinding,

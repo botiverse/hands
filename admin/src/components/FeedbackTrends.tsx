@@ -13,7 +13,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Button, Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "@botiverse/raft-ui";
 import { getFeedbackStats, type FeedbackBuildScope } from "../lib/api";
 import { useText } from "../lib/locale";
 

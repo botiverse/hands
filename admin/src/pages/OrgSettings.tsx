@@ -48,7 +48,7 @@ import { useToast } from "../components/Toast";
 import { useText } from "../lib/locale";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
-import {
+import { TextLink,
   Badge,
   Button,
   Input,
@@ -79,9 +79,8 @@ import {
   Textarea,
   TabsList,
   TabsTab,
-  TabsIndicator,
-} from "raft-ui";
-import type { BadgeProps } from "raft-ui";
+} from "@botiverse/raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 
 const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   general: "General",
@@ -160,7 +159,6 @@ export function OrgSettings({
               {t(ORG_SETTINGS_TAB_LABELS[item], ORG_SETTINGS_TAB_LABELS_ZH[item])}
             </TabsTab>
           ))}
-          <TabsIndicator />
         </TabsList>
       </Tabs>
 
@@ -460,9 +458,7 @@ function MembersTab({
                 {isAdmin && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <Button
-                        variant="link"
-                        size="sm"
+                      <TextLink
                         className="text-danger"
                         onClick={() => {
                           if (
@@ -476,7 +472,7 @@ function MembersTab({
                         disabled={remove.isPending}
                       >
                         {t("Remove", "移除")}
-                      </Button>
+                      </TextLink>
                     )}
                   </td>
                 )}
@@ -639,17 +635,13 @@ function InvitesTab({
                 </td>
                 {canManage && inv.status === "pending" && (
                   <td className="py-2 text-xs space-x-2">
-                    <Button
-                      variant="link"
-                      size="sm"
+                    <TextLink
                       onClick={() => resend.mutate(inv.id)}
                       disabled={resend.isPending}
                     >
                       {t("Refresh link", "刷新链接")}
-                    </Button>
-                    <Button
-                      variant="link"
-                      size="sm"
+                    </TextLink>
+                    <TextLink
                       className="text-danger"
                       onClick={() => {
                         if (confirm(t(`Revoke invite to ${inv.email}?`, `撤销发给 ${inv.email} 的邀请？`))) {
@@ -659,7 +651,7 @@ function InvitesTab({
                       disabled={revoke.isPending}
                     >
                       {t("Revoke", "撤销")}
-                    </Button>
+                    </TextLink>
                   </td>
                 )}
               </tr>

@@ -39,7 +39,7 @@ import {
   Button,
   Input,
   Label,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { useText } from "../lib/locale";
 
 export interface ConfirmActionDialogProps {
