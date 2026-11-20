@@ -275,10 +275,18 @@ describe("integration reporter changes", () => {
     f.env.FEEDBACK_AUDIT_HMAC_KEY = "short";
     expect((await f.request(changesPath, auth)).status).toBe(503);
     f.env.FEEDBACK_AUDIT_HMAC_KEY = "reporter-changes-test-audit-key-long-enough";
-    for (let i = 0; i < 60; i++) expect((await f.request(changesPath, auth)).status).toBe(200);
-    const limited = await f.request(changesPath, auth);
-    expect(limited.status).toBe(429);
-    expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    // The limit is per clock minute: keep all 61 requests inside one, or a
+    // run that crosses a minute boundary starts a new window and gets 200.
+    const minuteStart = Math.floor(Date.now() / 60_000) * 60_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(minuteStart + 1_000);
+    try {
+      for (let i = 0; i < 60; i++) expect((await f.request(changesPath, auth)).status).toBe(200);
+      const limited = await f.request(changesPath, auth);
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 
