@@ -63,7 +63,6 @@ import {
   SidebarContent,
   SidebarGroupLabel,
   SidebarHeader,
-  SidebarHeaderTitle,
   SidebarItem,
   SidebarItemContent,
   SidebarItemIcon,
@@ -95,7 +94,13 @@ import { AppShares } from "./pages/Shares";
 import { AppFeedback, FeedbackTicketPage } from "./pages/Feedback";
 import { AppCrashes } from "./pages/Crashes";
 import { AppErrors } from "./pages/Errors";
-import { isOrgSettingsTab, OrgSettings } from "./pages/OrgSettings";
+import {
+  isOrgSettingsTab,
+  ORG_SETTINGS_NAV,
+  OrgSettings,
+  OrgSettingsList,
+  useIsDesktop,
+} from "./pages/OrgSettings";
 import { AcceptInvite } from "./pages/AcceptInvite";
 import { AppAccess } from "./pages/AppAccess";
 import { HandsAdmin } from "./pages/HandsAdmin";
@@ -234,7 +239,7 @@ function useRouteAppId() {
 
 /** Rows of the app switcher menu: the other apps, then New app / All apps.
  *  Shared by the desktop sidebar header and the phone top bar. */
-function AppSwitcherMenuItems({ appId }: { appId: string }) {
+function AppSwitcherMenuItems({ appId }: { appId: string | null }) {
   const t = useText();
   const navigate = useNavigate();
   const location = useLocation();
@@ -248,7 +253,8 @@ function AppSwitcherMenuItems({ appId }: { appId: string }) {
         <DropdownMenuItem
           key={app.id}
           onClick={() => {
-            const section = location.pathname.split("/")[3] ?? "";
+            // Inside an app, keep the section; elsewhere open the app.
+            const section = appId ? location.pathname.split("/")[3] ?? "" : "";
             navigate(section ? `/apps/${app.id}/${section}` : `/apps/${app.id}`);
           }}
         >
@@ -257,7 +263,9 @@ function AppSwitcherMenuItems({ appId }: { appId: string }) {
         </DropdownMenuItem>
       ))}
       {otherApps.length === 0 && (
-        <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
+        <div className="px-3 py-2 text-xs text-foreground-hint">
+          {appId ? t("No other apps", "没有其他应用") : t("No apps yet", "还没有应用")}
+        </div>
       )}
       <DropdownMenuSeparator />
       <DropdownMenuItem render={<Link to="/apps?new=1" />}>
@@ -352,6 +360,14 @@ export function Header({ account }: { account: AuthAccount }) {
   const currentApp = apps.data?.apps.find((app) => app.id === appId);
   const appName = currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable");
   const appBase = appId ? `/apps/${appId}` : null;
+  // On `/orgs/:orgId/...` the sidebar lists that organization's own pages.
+  const routeOrgId = location.pathname.startsWith("/orgs/")
+    ? location.pathname.split("/")[2] ?? null
+    : null;
+  const routeOrgTab = routeOrgId ? location.pathname.split("/")[3] ?? "general" : null;
+  const routeOrgName =
+    orgs.data?.orgs.find((org) => org.id === routeOrgId)?.name ??
+    (routeOrgId === orgId ? orgName : routeOrgId);
 
   useEffect(() => {
     try {
@@ -403,10 +419,30 @@ export function Header({ account }: { account: AuthAccount }) {
             </DropdownMenuContent>
           </DropdownMenu>
         ) : (
-          <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
-            <QuiverMark className="size-6 flex-none" />
-            {!collapsed && <SidebarHeaderTitle>Hands</SidebarHeaderTitle>}
-          </Link>
+          // Outside an app the workspace button still opens the app list, so
+          // every page has its way back to the apps.
+          <DropdownMenu>
+            {collapsed ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <DropdownMenuTrigger render={<PanelAction aria-label={t("Open an app", "打开应用")} />}>
+                      <QuiverMark className="size-6 flex-none" />
+                    </DropdownMenuTrigger>
+                  }
+                />
+                <TooltipContent side="right">{t("Open an app", "打开应用")}</TooltipContent>
+              </Tooltip>
+            ) : (
+              <DropdownMenuTrigger render={<WorkspaceButton aria-label={t("Open an app", "打开应用")} />}>
+                <QuiverMark className="size-6 flex-none" />
+                <WorkspaceButtonName>Hands</WorkspaceButtonName>
+              </DropdownMenuTrigger>
+            )}
+            <DropdownMenuContent side="bottom" align="start" className="w-64">
+              <AppSwitcherMenuItems appId={null} />
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
         {!collapsed && (
           <Tooltip>
@@ -445,6 +481,23 @@ export function Header({ account }: { account: AuthAccount }) {
               </SidebarList>
             </SidebarSection>
           ))}
+          {routeOrgId && (
+            <SidebarSection>
+              {!collapsed && <SidebarGroupLabel>{routeOrgName}</SidebarGroupLabel>}
+              <SidebarList>
+                {ORG_SETTINGS_NAV.map((item) => (
+                  <SidebarNavItem
+                    key={item.tab}
+                    to={`/orgs/${routeOrgId}/${item.tab}`}
+                    active={routeOrgTab === item.tab}
+                    collapsed={collapsed}
+                    label={t(item.label, item.labelZh)}
+                    icon={item.icon}
+                  />
+                ))}
+              </SidebarList>
+            </SidebarSection>
+          )}
         </SidebarContent>
       </SidebarBody>
 
@@ -467,14 +520,16 @@ export function Header({ account }: { account: AuthAccount }) {
             </SidebarList>
           </SidebarSection>
         )}
-        {orgId && (
+        {/* On an org page the organization's pages are the sidebar's list,
+            so a second way to the same place would only compete with it. */}
+        {orgId && !routeOrgId && (
           <>
             {!collapsed && <SidebarGroupLabel>{t("Organization", "组织")}</SidebarGroupLabel>}
             <SidebarSection>
               <SidebarList>
                 <SidebarNavItem
                   to={`/orgs/${orgId}/general`}
-                  active={location.pathname.startsWith("/orgs/")}
+                  active={false}
                   collapsed={collapsed}
                   label={orgName}
                   icon={Building2}
@@ -610,7 +665,7 @@ export function MobileTopNav({ account }: { account: AuthAccount }) {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   aria-current={onOrgPage ? "page" : undefined}
-                  render={<Link to={`/orgs/${orgId}/general`} />}
+                  render={<Link to={`/orgs/${orgId}`} />}
                 >
                   <Building2 aria-hidden="true" />
                   {t("Organization", "组织")}
@@ -804,7 +859,11 @@ function LegacyAccessRedirect() {
 
 function OrgSettingsRoute() {
   const { orgId, tab } = useParams();
+  const isDesktop = useIsDesktop();
   if (!orgId) return null;
+  // On a phone the bare org route is the list of its sections; on desktop
+  // the sidebar holds that list, so the route opens the first section.
+  if (tab === undefined && !isDesktop) return <OrgSettingsList orgId={orgId} />;
   if (!isOrgSettingsTab(tab)) {
     return <Navigate to={`/orgs/${orgId}/general`} replace />;
   }

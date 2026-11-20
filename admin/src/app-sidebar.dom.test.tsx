@@ -81,11 +81,31 @@ describe("app sidebar", () => {
     expect(org.getAttribute("aria-current")).toBeNull();
   });
 
-  it("marks the organization entry active on any org page", () => {
-    renderSidebar("/orgs/org-1/members");
-    const org = screen.getByRole("link", { name: "Raft HQ" });
-    expect(org.hasAttribute("data-active")).toBe(true);
-    expect(org.getAttribute("aria-current")).toBe("page");
+  it("lists the organization's own pages on an org route", () => {
+    renderSidebar("/orgs/org-1/signing");
+    const nav = screen.getByRole("navigation", { name: "Hands" });
+    // The org's pages replace the app nav, under a group named after the org.
+    expect(within(nav).getByText("Raft HQ")).toBeTruthy();
+    expect(within(nav).queryByRole("link", { name: "Releases" })).toBeNull();
+    const tabs = ["general", "members", "invites", "audit", "webhooks", "signing"];
+    const names = ["General", "Members", "Invites", "Audit", "Webhooks", "Signing"];
+    names.forEach((name, i) => {
+      const link = within(nav).getByRole("link", { name });
+      expect(link.getAttribute("href")).toBe(`/orgs/org-1/${tabs[i]}`);
+      const current = tabs[i] === "signing";
+      expect(link.hasAttribute("data-active")).toBe(current);
+      expect(link.getAttribute("aria-current")).toBe(current ? "page" : null);
+    });
+    // One way to the org: the bottom Organization entry steps aside here.
+    expect(within(nav).queryByRole("link", { name: "Raft HQ" })).toBeNull();
+    // The header still leads back to the apps.
+    expect(within(nav).getByRole("button", { name: "Open an app" })).toBeTruthy();
+  });
+
+  it("marks General active on the bare org route", () => {
+    renderSidebar("/orgs/org-1");
+    const general = screen.getByRole("link", { name: "General" });
+    expect(general.getAttribute("aria-current")).toBe("page");
   });
 
   it("hides the organization entry without an org", () => {
