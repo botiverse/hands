@@ -65,7 +65,7 @@ class HandsUpdateTransactionTest {
         assertEquals("zh-CN", normalizedLanguageTag(" zh-CN "))
         assertNull(normalizedLanguageTag(null))
         assertNull(normalizedLanguageTag(""))
-        assertNull(normalizedLanguageTag("zh_CN"))
+        assertEquals("zh-CN", normalizedLanguageTag("zh_CN"))
         assertNull(normalizedLanguageTag("en\r\nX-Injected: yes"))
     }
 

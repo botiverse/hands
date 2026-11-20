@@ -5,7 +5,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -280,6 +282,58 @@ class ApkInstaller(private val context: Context) {
         }
     }
 
+    /** DownloadManager rows whose file sits in the SDK's update directory under an SDK name. */
+    internal fun scanSdkDownloads(
+        isSdkFileName: (String) -> Boolean,
+    ): List<build.hands.update.SdkDownloadRow>? {
+        val dm = ContextCompat.getSystemService(context, DownloadManager::class.java) ?: return null
+        val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return null
+        val root = try {
+            directory.canonicalFile
+        } catch (_: Exception) {
+            return null
+        }
+        return try {
+            dm.query(DownloadManager.Query())?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_ID)
+                val statusColumn = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
+                val uriColumn = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)
+                val rows = mutableListOf<build.hands.update.SdkDownloadRow>()
+                while (cursor.moveToNext()) {
+                    val file = fileFromLocalUri(cursor.getString(uriColumn)) ?: continue
+                    val canonical = try {
+                        file.canonicalFile
+                    } catch (_: Exception) {
+                        continue
+                    }
+                    if (canonical.parentFile != root || !isSdkFileName(canonical.name)) continue
+                    rows += build.hands.update.SdkDownloadRow(
+                        id = cursor.getLong(idColumn),
+                        state = downloadStateFromRawStatus(cursor.getInt(statusColumn)),
+                        localPath = canonical.path.takeIf { canonical.isFile },
+                    )
+                }
+                rows
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** False while Android blocks package installs requested by this app (API 26+). */
+    fun canRequestPackageInstalls(): Boolean =
+        build.hands.update.installPermissionGranted(Build.VERSION.SDK_INT) {
+            context.packageManager.canRequestPackageInstalls()
+        }
+
+    /** The system screen where a person allows this app to install updates. */
+    fun installPermissionSettingsIntent(): Intent =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
     internal fun removeDownload(downloadId: Long): Boolean {
         val dm = ContextCompat.getSystemService(context, DownloadManager::class.java)
             ?: return queryDownload(downloadId).state == DownloadState.MISSING
@@ -374,6 +428,16 @@ class ApkInstaller(private val context: Context) {
      */
     fun installLocalApk(file: File) {
         installDownloadedApk(file)
+    }
+
+    private fun fileFromLocalUri(localUri: String?): File? {
+        val parsed = try {
+            URI(localUri ?: return null)
+        } catch (_: Exception) {
+            return null
+        }
+        if (parsed.scheme != "file") return null
+        return parsed.path?.takeIf { it.isNotBlank() }?.let(::File)
     }
 
     private companion object {
