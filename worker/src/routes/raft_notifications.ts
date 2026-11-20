@@ -17,7 +17,7 @@ import { formatExistingFeedbackRoot, formatRaftNotificationMessage } from "../li
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
 import { renderStatusCardAsText } from "../lib/raft_card_text";
-import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, sha256Hex } from "../lib/raft_notification_identity";
+import { appGalleryCardObjectKey, isFeedbackThreadEvent, isReleaseChannelEvent, notificationObjectKey, playFailureCardObjectKey, raftSubscriptionEvent, sha256Hex } from "../lib/raft_notification_identity";
 import { hmacSha256Hex, WEBHOOK_EVENT_TYPES } from "./webhooks";
 
 type NotificationEvent = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -1020,7 +1020,8 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     if (specific || !legacy) objectKey = specificAgcKey;
   }
   const events = parseStoredEvents(row.events_json);
-  if (events.length > 0 && !events.includes(event) && !events.includes("*")) {
+  const subscribedAs = raftSubscriptionEvent(eventBody);
+  if (events.length > 0 && !events.includes(subscribedAs) && !events.includes("*")) {
     // An already-started card request still needs reconciliation even if the
     // event was unsubscribed later. Do not deliver any new unsubscribed event.
     const prior = await c.env.DB.prepare(`SELECT pending_json FROM raft_notification_cards
