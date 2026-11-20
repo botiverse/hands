@@ -1565,7 +1565,7 @@ const APP_NAV_SECTIONS: Array<{
 
 const LAST_APP_KEY = "quiver:last-app-id";
 
-const FULL_BLEED_APP_PAGES = new Set(["channels", "releases"]);
+const FULL_BLEED_APP_PAGES = new Set(["channels", "releases", "builds"]);
 
 function AppShell() {
   const { appId } = useParams();
