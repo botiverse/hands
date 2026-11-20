@@ -48,7 +48,9 @@ describe("github-oidc-login", () => {
     expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({ app: "raft-deck", token: "github.jwt.value" });
     // The mask comes before anything else that could echo the token.
     expect(out[0]).toBe("::add-mask::qvdt_abc_secret");
-    expect(out.slice(1).join("\n")).not.toContain("qvdt_abc_secret");
+    // No part of the token, not even its prefix, is printed after the mask.
+    expect(out.slice(1).join("\n")).not.toContain("qvdt_abc");
+    expect(out.slice(1).join("\n")).toContain("later steps");
     expect(readFileSync(githubEnv, "utf8")).toBe("HANDS_BEARER_TOKEN=qvdt_abc_secret\n");
   });
 

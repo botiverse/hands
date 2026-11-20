@@ -89,7 +89,7 @@ steps:
   - run: hands builds publish-electron raft-deck ...   # 使用 HANDS_BEARER_TOKEN
 ```
 
-`hands github-oidc-login` 会屏蔽令牌并以 `HANDS_BEARER_TOKEN` 导出给后续步骤（`--print` 改为输出到 stdout）。运行必须来自指定的仓库和 workflow 文件，ref 匹配其中一个模式（`*` 只匹配一个路径段内的字符），设置了 GitHub environment 时还必须在该 environment 中。只有 `push`、`workflow_dispatch`、`release` 和 `schedule` 触发的运行会匹配：`pull_request_target`、`workflow_run`、`issue_comment` 等事件报告的是默认分支却处理外部输入，一律拒绝。workflow 路径区分大小写。`add` 会在 GitHub 上查询仓库的数字 ID（私有仓库需设置 `GH_TOKEN`）；否则仓库和所有者的数字 ID 在首次被接受的运行时固定，删除后重建的同名仓库或所有者会被拒绝。建议配合受保护的 GitHub environment（`--environment`）。受信任 job 调用的第三方 action 和可复用 workflow 拥有同样的身份，应视为受信任代码。每个 GitHub 令牌只能兑换一次，每次兑换都会以运行 ID、commit 和 ref 记入应用审计日志。同样的设置也在应用设置 › 访问 › 可信发布者中。
+`hands github-oidc-login` 会屏蔽令牌并以 `HANDS_BEARER_TOKEN` 导出给后续步骤；运行它的那个步骤本身读不到这个变量，所以发布要放在单独的步骤里（`--print` 改为把令牌输出到 stdout）。输出只包含应用、角色和过期时间，不打印令牌的任何部分。运行必须来自指定的仓库和 workflow 文件，ref 匹配其中一个模式（`*` 只匹配一个路径段内的字符），设置了 GitHub environment 时还必须在该 environment 中。只有 `push`、`workflow_dispatch`、`release` 和 `schedule` 触发的运行会匹配：`pull_request_target`、`workflow_run`、`issue_comment` 等事件报告的是默认分支却处理外部输入，一律拒绝。workflow 路径区分大小写。`add` 会在 GitHub 上查询仓库的数字 ID（私有仓库需设置 `GH_TOKEN`）；否则仓库和所有者的数字 ID 在首次被接受的运行时固定，删除后重建的同名仓库或所有者会被拒绝。建议配合受保护的 GitHub environment（`--environment`）。受信任 job 调用的第三方 action 和可复用 workflow 拥有同样的身份，应视为受信任代码。每个 GitHub 令牌只能兑换一次，每次兑换都会以运行 ID、commit 和 ref 记入应用审计日志。同样的设置也在应用设置 › 访问 › 可信发布者中。
 
 ## 签名（安卓、macOS）
 
