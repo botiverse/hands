@@ -1,14 +1,46 @@
+/**
+ * The App Store page of an iOS app (/apps/:appId/appstore): the live review
+ * state of its recent App Store versions and TestFlight builds, read from
+ * App Store Connect. Read-only.
+ *
+ * Layout: the current version's state as the first row, then a section of
+ * App Store versions and one of TestFlight builds' beta review, each a group
+ * of rows with the state as a soft badge. What keeps the page from loading
+ * (no App Store Connect key, no bundle ID, an Apple error) is an empty state
+ * or a banner that links to where it is fixed.
+ */
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Badge,
   type BadgeProps,
+  Banner,
+  BannerDescription,
+  BannerTitle,
+  Button,
   EmptyState,
+  EmptyStateActions,
+  EmptyStateContent,
   EmptyStateDescription,
+  EmptyStateIcon,
   EmptyStateTitle,
-  Skeleton,
+  ListRow,
+  ListRowBody,
+  ListRowBottom,
+  ListRowDescription,
+  ListRowGroup,
+  ListRowMeta,
+  ListRowTitle,
+  ListRowTop,
+  Text,
+  TextLink,
+  TextLinkExternalIcon,
 } from "@botiverse/raft-ui";
+import { ListRowSkeleton } from "@botiverse/raft-ui/wip";
+import { AlertTriangle, Plane, Store } from "lucide-react";
 import { getAppStoreReview, listApps, type App } from "../lib/api";
-import { useText } from "../lib/locale";
+import { useLocale, useText } from "../lib/locale";
+import { SettingsPage, SettingsSection } from "../components/SettingsPage";
 
 /** The App Store page of an iOS app (/apps/:appId/appstore). */
 export function AppStoreReview({ appId }: { appId: string }) {
@@ -16,22 +48,23 @@ export function AppStoreReview({ appId }: { appId: string }) {
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const app = apps.data?.apps.find((a) => a.id === appId);
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold">{t("App Store review status", "App Store 审核状态")}</h1>
-      </div>
+    <SettingsPage icon={<Store aria-hidden="true" />} title="App Store" meta={app?.name} busy={apps.isLoading}>
       {app && app.platform === "ios" ? (
         <AppStoreReviewPanel appId={appId} app={app} />
       ) : app ? (
-        <p className="text-sm text-foreground-muted">
-          {t("This is only available for iOS apps.", "此功能仅适用于 iOS 应用。")}
-        </p>
+        <EmptyState className="py-16">
+          <EmptyStateContent>
+            <EmptyStateIcon><Store aria-hidden="true" /></EmptyStateIcon>
+            <EmptyStateTitle>{t("Only for iOS apps", "仅适用于 iOS 应用")}</EmptyStateTitle>
+            <EmptyStateDescription>
+              {t("App Store review states are shown for iOS apps.", "App Store 审核状态只对 iOS 应用显示。")}
+            </EmptyStateDescription>
+          </EmptyStateContent>
+        </EmptyState>
       ) : null}
-    </div>
+    </SettingsPage>
   );
 }
-
-// --- App Store review status (read-only) ---------------------------------
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 
@@ -46,7 +79,7 @@ function appStoreStateBadge(state: string | null): {
     case "IN_REVIEW":
       return { variant: "information", label: "In review" };
     case "WAITING_FOR_REVIEW":
-      return { variant: "warning", label: "Waiting for review" };
+      return { variant: "muted", label: "Waiting for review" };
     case "PENDING_DEVELOPER_RELEASE":
       return { variant: "accent", label: "Pending developer release" };
     case "PENDING_APPLE_RELEASE":
@@ -79,7 +112,7 @@ function betaReviewStateBadge(state: string | null): {
     case "IN_REVIEW":
       return { variant: "information", label: "In review" };
     case "WAITING_FOR_REVIEW":
-      return { variant: "warning", label: "Waiting for review" };
+      return { variant: "muted", label: "Waiting for review" };
     case "REJECTED":
       return { variant: "danger", label: "Rejected" };
     default:
@@ -87,9 +120,32 @@ function betaReviewStateBadge(state: string | null): {
   }
 }
 
+const BADGE_ZH: Record<string, string> = { "Ready for sale": "已上架", "In review": "审核中", "Waiting for review": "等待审核", "Pending developer release": "等待开发者发布", "Pending Apple release": "等待 Apple 发布", "Preparing": "准备中", "Rejected": "已拒绝", "Metadata rejected": "元数据被拒绝", "Developer rejected": "开发者已撤回", "Unknown": "未知", "Approved": "已批准", "No beta review": "暂无测试审核" };
+const PROCESSING_ZH: Record<string, string> = { PROCESSING: "处理中", FAILED: "处理失败", INVALID: "无效" };
+const REJECTED = new Set(["REJECTED", "METADATA_REJECTED", "DEVELOPER_REJECTED"]);
+
+function StateBadge({ badge, raw }: { badge: { variant: BadgeVariant; label: string }; raw: string | null }) {
+  const t = useText();
+  const label = t(badge.label, BADGE_ZH[badge.label] ?? raw ?? badge.label);
+  return badge.variant === "muted"
+    ? <Badge appearance="outline">{label}</Badge>
+    : <Badge appearance="soft" variant={badge.variant}>{label}</Badge>;
+}
+
+function shortDate(value: string | null, locale: string) {
+  if (!value) return null;
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return null;
+  return new Date(at).toLocaleDateString(locale === "zh-CN" ? "zh-CN" : "en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function ascAppUrl(ascAppId: string | undefined) {
+  return ascAppId ? `https://appstoreconnect.apple.com/apps/${ascAppId}/distribution` : "https://appstoreconnect.apple.com/apps";
+}
+
 export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
   const t = useText();
-  const badgeZh: Record<string, string> = { "Ready for sale": "已上架", "In review": "审核中", "Waiting for review": "等待审核", "Pending developer release": "等待开发者发布", "Pending Apple release": "等待 Apple 发布", "Preparing": "准备中", "Rejected": "已拒绝", "Metadata rejected": "元数据被拒绝", "Developer rejected": "开发者已撤回", "Unknown": "未知", "Approved": "已批准", "No beta review": "暂无测试审核" };
+  const { locale } = useLocale();
   // Non-iOS apps never render this panel — the parent guards on
   // app.platform === "ios" (mirrors the worker's applicable:false response).
   const review = useQuery({
@@ -101,140 +157,166 @@ export function AppStoreReviewPanel({ appId }: { appId: string; app: App }) {
   const versions = data?.app_store_versions ?? [];
   const builds = data?.testflight_builds ?? [];
   const current = versions[0];
-  const currentBadge = current ? appStoreStateBadge(current.appStoreState) : null;
+
+  if (review.isLoading) {
+    return (
+      <ListRowGroup>
+        {[0, 1, 2].map((n) => <ListRowSkeleton key={n} />)}
+      </ListRowGroup>
+    );
+  }
+
+  if (review.error) {
+    return (
+      <Banner status="warning">
+        <AlertTriangle aria-hidden="true" />
+        <BannerTitle>{t("Could not load the review status", "无法加载审核状态")}</BannerTitle>
+        <BannerDescription>{review.error instanceof Error ? review.error.message : String(review.error)}</BannerDescription>
+      </Banner>
+    );
+  }
+
+  if (data?.configured === false) {
+    return (
+      <EmptyState className="py-16">
+        <EmptyStateContent>
+          <EmptyStateIcon><Store aria-hidden="true" /></EmptyStateIcon>
+          <EmptyStateTitle>{t("App Store Connect not configured", "尚未配置 App Store Connect")}</EmptyStateTitle>
+          <EmptyStateDescription>
+            {t("Add the App Store Connect key in Integrations to see review states here.", "在“集成”中添加 App Store Connect 密钥后，这里会显示审核状态。")}
+          </EmptyStateDescription>
+        </EmptyStateContent>
+        <EmptyStateActions>
+          <Button variant="primary" render={<Link to={`/apps/${appId}/integrations`} />} nativeButton={false}>
+            {t("Open Integrations", "打开集成")}
+          </Button>
+        </EmptyStateActions>
+      </EmptyState>
+    );
+  }
+
+  if (data?.bundle_id === null) {
+    return (
+      <EmptyState className="py-16">
+        <EmptyStateContent>
+          <EmptyStateIcon><Store aria-hidden="true" /></EmptyStateIcon>
+          <EmptyStateTitle>{t("No App Store bundle ID configured", "尚未配置 App Store Bundle ID")}</EmptyStateTitle>
+          <EmptyStateDescription>
+            {t("Set the production App Store bundle ID on the main channel. Only the main channel's bundle ID is used here; preview and nightly bundle IDs are ignored.", "请在 main 渠道设置正式版 App Store Bundle ID。这里只使用 main 渠道的 Bundle ID，不会使用 preview 或 nightly 的 Bundle ID。")}
+          </EmptyStateDescription>
+        </EmptyStateContent>
+        <EmptyStateActions>
+          <Button variant="outline" render={<Link to={`/apps/${appId}/channels`} />} nativeButton={false}>
+            {t("Open Channels", "打开渠道")}
+          </Button>
+        </EmptyStateActions>
+      </EmptyState>
+    );
+  }
+
+  if (data?.error) {
+    return (
+      <Banner status="warning">
+        <AlertTriangle aria-hidden="true" />
+        <BannerTitle>{t("Could not load review status from App Store Connect", "无法从 App Store Connect 加载审核状态")}</BannerTitle>
+        <BannerDescription>
+          <span className="block font-mono [overflow-wrap:anywhere]">{data.error}</span>
+          {data.bundle_id && (
+            <span className="mt-1 block">
+              {t("Bundle ID ", "Bundle ID ")}
+              <span className="font-mono">{data.bundle_id}</span>
+              {t(" is set on the main channel. If it doesn't match your App Store app, change it in ", " 设置在 main 渠道上。如果与 App Store 应用不一致，请在")}
+              <TextLink render={<Link to={`/apps/${appId}/channels`} />} nativeButton={false}>{t("Channels", "渠道")}</TextLink>
+              {t(".", "中修改。")}
+            </span>
+          )}
+        </BannerDescription>
+      </Banner>
+    );
+  }
 
   return (
-    <div className="border-t border-line-hairline pt-3">
-      <div className="flex items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">{t("App Store review status", "App Store 审核状态")}</div>
-            {currentBadge && (
-              <Badge variant={currentBadge.variant}>{t(currentBadge.label, badgeZh[currentBadge.label] ?? current?.appStoreState ?? currentBadge.label)}</Badge>
-            )}
-          </div>
-          <div className="text-xs text-foreground-muted">
-            {t("Live review state of this app's recent App Store versions and TestFlight builds, from App Store Connect. Read-only.", "从 App Store Connect 查看此应用近期 App Store 版本和 TestFlight 构建的实时审核状态。仅供查看。")}
-          </div>
-        </div>
-      </div>
+    <>
+      <Text.Sans size="small" variant="muted">
+        {t("Live from App Store Connect for ", "实时读取自 App Store Connect，Bundle ID ")}
+        <span className="font-mono">{data?.bundle_id}</span>
+        {t(". Read-only; submit and release in ", "。仅供查看；提交和发布请在 ")}
+        <TextLink render={<a href={ascAppUrl(data?.asc_app_id)} target="_blank" rel="noopener noreferrer" />} nativeButton={false}>
+          App Store Connect
+          <TextLinkExternalIcon label={t("(opens in a new tab)", "（在新标签页打开）")} />
+        </TextLink>
+        {t(".", " 中进行。")}
+      </Text.Sans>
 
-      <div className="mt-3">
-        {review.isLoading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
-        ) : data?.configured === false ? (
-          <EmptyState>
-            <EmptyStateTitle>{t("App Store Connect not configured", "尚未配置 App Store Connect")}</EmptyStateTitle>
-            <EmptyStateDescription>
-              {t("Add App Store Connect credentials under Integrations → TestFlight to see review status.", "请在“集成 → TestFlight”中添加 App Store Connect 凭据，以查看审核状态。")}
-            </EmptyStateDescription>
-          </EmptyState>
-        ) : data?.bundle_id === null ? (
-          <EmptyState>
-            <EmptyStateTitle>{t("No App Store bundle ID configured", "尚未配置 App Store Bundle ID")}</EmptyStateTitle>
-            <EmptyStateDescription>
-              {t("Set the production App Store bundle ID on the", "请在")}{" "}
-              <a
-                href={`/apps/${appId}/channels`}
-                className="underline font-medium"
-              >
-                {t("main channel", "main 渠道")}
-              </a>{" "}
-              {t("(Channels tab). Only the main channel's bundle ID is used — preview/nightly channels are ignored, so their beta bundle IDs won't be picked up here.", "（渠道页面）设置正式版 App Store Bundle ID。这里只使用 main 渠道的 Bundle ID，不会使用 preview 或 nightly 的测试版 Bundle ID。")}
-            </EmptyStateDescription>
-          </EmptyState>
-        ) : data?.error ? (
-          <div className="rounded-md bg-warning-soft px-3 py-2 text-xs text-warning-strong">
-            {t("Could not load review status from App Store Connect:", "无法从 App Store Connect 加载审核状态：")} {data.error}
-            {data.bundle_id && (
-              <div className="mt-1">
-                {t("Bundle ID", "Bundle ID")} {" "}
-                <span className="font-mono">{data.bundle_id}</span>{t(" is set on the main channel. If it doesn't match your App Store app, update it in", "设置在 main 渠道上。如果与 App Store 应用不一致，请在")}{" "}
-                <a
-                  href={`/apps/${appId}/channels`}
-                  className="underline font-medium"
-                >
-                  {t("Channels", "渠道")}
-                </a>
-                {t(".", "中更新。")}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div>
-              <div className="text-xs font-medium text-foreground-muted mb-1">
-                {t("Recent App Store versions", "近期 App Store 版本")}
-              </div>
-              {versions.length === 0 ? (
-                <div className="text-xs text-foreground-hint">
-                  {t("No App Store versions yet.", "暂无 App Store 版本。")}
-                </div>
-              ) : (
-                <ul className="space-y-1">
-                  {versions.map((v, i) => {
-                    const b = appStoreStateBadge(v.appStoreState);
-                    return (
-                      <li
-                        key={`${v.versionString}-${i}`}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <span className="font-mono">
-                          {v.versionString ?? "—"}
-                        </span>
-                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? v.appStoreState ?? b.label)}</Badge>
-                        {(v.appStoreState === "REJECTED" ||
-                          v.appStoreState === "METADATA_REJECTED" ||
-                          v.appStoreState === "DEVELOPER_REJECTED") && (
-                          <span className="text-xs text-foreground-hint">
-                            {t("(see App Store Connect for the rejection details)", "（拒绝详情请查看 App Store Connect）")}
-                          </span>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
+      <SettingsSection id="appstore-versions" icon={<Store />} title={t("App Store versions", "App Store 版本")}>
+        <ListRowGroup>
+          {versions.length === 0 && (
+            <ListRow variant="plain" interactive={false}>
+              <ListRowBody>
+                <ListRowDescription wrap>{t("No App Store versions yet.", "暂无 App Store 版本。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+          )}
+          {versions.map((v, i) => {
+            const date = shortDate(v.createdDate, locale);
+            return (
+              <ListRow key={`${v.versionString}-${i}`} variant="plain" interactive={false} data-testid="appstore-version">
+                <ListRowBody>
+                  <ListRowTop>
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <ListRowTitle className="flex-none font-mono">{v.versionString ?? "—"}</ListRowTitle>
+                      {v === current && <Badge appearance="outline" className="shrink-0">{t("Latest", "最新")}</Badge>}
+                    </span>
+                    {date && <ListRowMeta>{date}</ListRowMeta>}
+                  </ListRowTop>
+                  <ListRowBottom>
+                    <ListRowDescription>
+                      {REJECTED.has(v.appStoreState ?? "")
+                        ? t("See App Store Connect for why.", "拒绝原因请查看 App Store Connect。")
+                        : ""}
+                    </ListRowDescription>
+                    <StateBadge badge={appStoreStateBadge(v.appStoreState)} raw={v.appStoreState} />
+                  </ListRowBottom>
+                </ListRowBody>
+              </ListRow>
+            );
+          })}
+        </ListRowGroup>
+      </SettingsSection>
 
-            <div>
-              <div className="text-xs font-medium text-foreground-muted mb-1">
-                {t("Recent TestFlight builds — beta review", "近期 TestFlight 构建 — 测试审核")}
-              </div>
-              {builds.length === 0 ? (
-                <div className="text-xs text-foreground-hint">
-                  {t("No builds on App Store Connect yet.", "App Store Connect 暂无构建。")}
-                </div>
-              ) : (
-                <ul className="space-y-1">
-                  {builds.map((bld, i) => {
-                    const b = betaReviewStateBadge(bld.betaReviewState);
-                    return (
-                      <li
-                        key={`${bld.version}-${i}`}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <span className="font-mono">{bld.version ?? "—"}</span>
-                        <Badge variant={b.variant}>{t(b.label, badgeZh[b.label] ?? b.label)}</Badge>
-                        {bld.processingState &&
-                          bld.processingState !== "VALID" && (
-                            <span className="text-xs text-foreground-hint">
-                              {t(bld.processingState.toLowerCase(), ({ PROCESSING: "处理中", FAILED: "处理失败", INVALID: "无效" } as Record<string, string>)[bld.processingState] ?? bld.processingState)}
-                            </span>
-                          )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+      <SettingsSection id="appstore-beta-review" icon={<Plane />} title={t("TestFlight builds: beta review", "TestFlight 构建：测试审核")}>
+        <ListRowGroup>
+          {builds.length === 0 && (
+            <ListRow variant="plain" interactive={false}>
+              <ListRowBody>
+                <ListRowDescription wrap>{t("No builds on App Store Connect yet.", "App Store Connect 暂无构建。")}</ListRowDescription>
+              </ListRowBody>
+            </ListRow>
+          )}
+          {builds.map((bld, i) => {
+            const date = shortDate(bld.uploadedDate, locale);
+            const processing = bld.processingState && bld.processingState !== "VALID" ? bld.processingState : null;
+            return (
+              <ListRow key={`${bld.version}-${i}`} variant="plain" interactive={false} data-testid="appstore-build">
+                <ListRowBody>
+                  <ListRowTop>
+                    <ListRowTitle className="font-mono">{bld.version ?? "—"}</ListRowTitle>
+                    {date && <ListRowMeta>{date}</ListRowMeta>}
+                  </ListRowTop>
+                  <ListRowBottom>
+                    <ListRowDescription>
+                      {processing
+                        ? t(`Apple: ${processing.toLowerCase()}`, `Apple：${PROCESSING_ZH[processing] ?? processing}`)
+                        : t("Processed", "已处理")}
+                    </ListRowDescription>
+                    <StateBadge badge={betaReviewStateBadge(bld.betaReviewState)} raw={bld.betaReviewState} />
+                  </ListRowBottom>
+                </ListRowBody>
+              </ListRow>
+            );
+          })}
+        </ListRowGroup>
+      </SettingsSection>
+    </>
   );
 }
-

@@ -7,11 +7,43 @@ import { errorMessage } from "../lib/errorMessage";
  * polled live, so the operation's "upload succeeded" is separated from
  * Apple's async accept/reject verdict. Group assignment/review attempts are
  * recorded as `testflight-publish` operations.
+ *
+ * Layout: a page of two sections, Uploads and Distributions, each a group
+ * of rows (version and build number in mono, the time, the state as a
+ * badge, details under it). The page is read-only: uploads start from
+ * Builds and the key lives in Integrations, which the header line links to.
  */
+import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle } from "@botiverse/raft-ui";
-import { Plane } from "lucide-react";
 import {
+  Badge,
+  type BadgeProps,
+  Banner,
+  BannerDescription,
+  Button,
+  EmptyState,
+  EmptyStateActions,
+  EmptyStateContent,
+  EmptyStateDescription,
+  EmptyStateIcon,
+  EmptyStateTitle,
+  ListRow,
+  ListRowBody,
+  ListRowGroup,
+  ListRowMeta,
+  ListRowSubtitle,
+  ListRowTitle,
+  ListRowTop,
+  Text,
+  TextLink,
+  TextLinkExternalIcon,
+} from "@botiverse/raft-ui";
+import { ListRowSkeleton } from "@botiverse/raft-ui/wip";
+import { AlertTriangle, Plane, Send, Upload } from "lucide-react";
+import {
+  getAscCredentials,
+  listApps,
   listOperations,
   getTestflightPublishStatus,
   getTestflightUploadStatus,
@@ -19,13 +51,21 @@ import {
   type AscUploadState,
   type TestflightPublishState,
 } from "../lib/api";
-import { useText } from "../lib/locale";
+import { useLocale, useText } from "../lib/locale";
+import { SettingsPage, SettingsSection } from "../components/SettingsPage";
+import { timeAgo } from "./Operations";
 
 const STATE_ZH: Record<string, string> = {
   pending: "等待中", in_progress: "进行中", success: "成功", failed: "失败", cancelled: "已取消",
   rejected: "已拒绝", expired: "已过期", processing_failed: "处理失败", blocked_export_compliance: "等待出口合规信息",
   not_applicable: "不适用", testing: "测试中", approved: "已批准", approved_not_notified: "已批准，尚未通知",
   internal: "内部", external: "外部",
+};
+const STATE_EN: Record<string, string> = {
+  pending: "Pending", in_progress: "In progress", success: "Done", failed: "Failed", cancelled: "Cancelled",
+  rejected: "Rejected", expired: "Expired", processing_failed: "Processing failed", blocked_export_compliance: "Needs export compliance",
+  not_applicable: "Not applicable", testing: "Testing", approved: "Approved", approved_not_notified: "Approved, not notified",
+  waiting_for_review: "Waiting for review", in_review: "In review", processing: "Processing", ready: "Ready",
 };
 
 interface UploadInput {
@@ -52,13 +92,28 @@ function ascTestflightUrl(ascAppId: string | undefined): string {
     : "https://appstoreconnect.apple.com/apps";
 }
 
+function parse<T>(raw: string | null | undefined): T {
+  try {
+    return JSON.parse(raw || "{}") as T;
+  } catch {
+    return {} as T;
+  }
+}
+
 export function Testflight({ appId }: { appId: string }) {
   const t = useText();
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+  const app = apps.data?.apps.find((a) => a.id === appId);
   const ops = useQuery({
     queryKey: ["operations", appId],
     queryFn: () => listOperations(appId, 100),
     refetchInterval: 10000,
   });
+  const creds = useQuery({
+    queryKey: ["asc-credentials", appId],
+    queryFn: () => getAscCredentials(appId),
+  });
+  const notConfigured = creds.data !== undefined && creds.data.asc_credentials === null;
 
   const uploads = (ops.data?.operations ?? []).filter(
     (o) => o.kind === "testflight-upload",
@@ -66,75 +121,135 @@ export function Testflight({ appId }: { appId: string }) {
   const publishes = (ops.data?.operations ?? []).filter(
     (o) => o.kind === "testflight-publish",
   );
+  const empty = !ops.isLoading && !ops.error && uploads.length === 0 && publishes.length === 0;
 
   return (
-    <div>
-      <div className="mb-4">
-        <h2 className="text-lg font-semibold">TestFlight</h2>
-        <p className="text-xs text-foreground-muted mt-1">
-          {t("Hands→Apple uploads, processing, beta-group distribution, and review state. Configure the key in", "查看 Hands 向 Apple 上传、处理、测试组分发和审核的状态。在")}{" "}
-          <a className="underline" href={`/apps/${appId}/integrations`}>
-            {t("Integrations → TestFlight", "集成 → TestFlight")}
-          </a>
-          {t("; upload a build from the", "中配置密钥；从")}{" "}
-          <a className="underline" href={`/apps/${appId}/builds`}>
-            {t("Builds", "构建")}
-          </a>{" "}
-          {t("tab.", "页面上传构建。")}
-        </p>
-      </div>
+    <SettingsPage
+      icon={<Plane aria-hidden="true" />}
+      title="TestFlight"
+      meta={app?.name}
+      busy={ops.isLoading}
+    >
+      {!(empty && notConfigured) && (
+        <Text.Sans size="small" variant="muted">
+          {t("Builds Hands sent to Apple, Apple's processing, and the beta groups they went to. Upload a build from ", "Hands 发送给 Apple 的构建、Apple 的处理状态和分发到的测试组。从")}
+          <TextLink render={<Link to={`/apps/${appId}/builds`} />} nativeButton={false}>{t("Builds", "构建")}</TextLink>
+          {t("; the App Store Connect key is in ", "页面上传构建；App Store Connect 密钥在")}
+          <TextLink render={<Link to={`/apps/${appId}/integrations`} />} nativeButton={false}>{t("Integrations", "集成")}</TextLink>
+          {t(".", "中设置。")}
+        </Text.Sans>
+      )}
 
-      {ops.isLoading && <p className="text-foreground-muted text-sm">{t("Loading…", "加载中…")}</p>}
-      {!ops.isLoading && uploads.length === 0 && publishes.length === 0 && (
-        <EmptyState>
+      {notConfigured && !empty && (
+        <Banner status="warning" size="sm">
+          <AlertTriangle aria-hidden="true" />
+          <BannerDescription>
+            {t("The App Store Connect key is no longer set, so states below stop updating. Add it again in ", "App Store Connect 密钥已不存在，下面的状态不再更新。请在")}
+            <TextLink render={<Link to={`/apps/${appId}/integrations`} />} nativeButton={false}>{t("Integrations", "集成")}</TextLink>
+            {t(".", "中重新添加。")}
+          </BannerDescription>
+        </Banner>
+      )}
+
+      {ops.error && (
+        <Banner status="warning">
+          <AlertTriangle aria-hidden="true" />
+          <BannerDescription>
+            {t("Could not load TestFlight activity:", "无法加载 TestFlight 记录：")} {errorMessage(ops.error)}
+          </BannerDescription>
+        </Banner>
+      )}
+
+      {ops.isLoading && (
+        <ListRowGroup>
+          {[0, 1, 2].map((n) => <ListRowSkeleton key={n} />)}
+        </ListRowGroup>
+      )}
+
+      {empty && (
+        <EmptyState className="py-16">
           <EmptyStateContent>
             <EmptyStateIcon>
               <Plane aria-hidden="true" />
             </EmptyStateIcon>
-            <EmptyStateTitle>{t("No TestFlight activity yet", "暂无 TestFlight 活动")}</EmptyStateTitle>
+            {notConfigured ? (
+              <>
+                <EmptyStateTitle>{t("Connect App Store Connect first", "请先连接 App Store Connect")}</EmptyStateTitle>
+                <EmptyStateDescription>
+                  {t("Hands uploads builds to TestFlight with this app's App Store Connect API key. Add the key in Integrations, then upload a build from Builds.", "Hands 用此应用的 App Store Connect API 密钥把构建上传到 TestFlight。请先在“集成”中添加密钥，再从“构建”页面上传。")}
+                </EmptyStateDescription>
+              </>
+            ) : (
+              <>
+                <EmptyStateTitle>{t("No TestFlight activity yet", "暂无 TestFlight 活动")}</EmptyStateTitle>
+                <EmptyStateDescription>
+                  {t("Upload a build to TestFlight from Builds; it shows here with Apple's processing state.", "从“构建”页面把构建上传到 TestFlight 后，会在这里显示 Apple 的处理状态。")}
+                </EmptyStateDescription>
+              </>
+            )}
           </EmptyStateContent>
+          <EmptyStateActions>
+            {notConfigured ? (
+              <Button variant="primary" render={<Link to={`/apps/${appId}/integrations`} />} nativeButton={false}>
+                {t("Open Integrations", "打开集成")}
+              </Button>
+            ) : (
+              <Button variant="outline" render={<Link to={`/apps/${appId}/builds`} />} nativeButton={false}>
+                {t("Open Builds", "打开构建")}
+              </Button>
+            )}
+          </EmptyStateActions>
         </EmptyState>
       )}
 
       {uploads.length > 0 && (
-        <section className="mb-6">
-          <h3 className="text-sm font-medium text-foreground-strong mb-2">{t("Uploads", "上传")}</h3>
-          <div className="space-y-6">
+        <SettingsSection id="testflight-uploads" icon={<Upload />} title={t("Uploads", "上传")}>
+          <ListRowGroup>
             {uploads.map((op) => (
               <UploadRow key={op.id} appId={appId} op={op} />
             ))}
-          </div>
-        </section>
+          </ListRowGroup>
+        </SettingsSection>
       )}
 
       {publishes.length > 0 && (
-        <section>
-          <h3 className="text-sm font-medium text-foreground-strong mb-2">{t("Distributions", "分发")}</h3>
-          <div className="space-y-6">
+        <SettingsSection id="testflight-distributions" icon={<Send />} title={t("Distributions", "分发")}>
+          <ListRowGroup>
             {publishes.map((op) => (
               <PublishRow key={op.id} appId={appId} op={op} />
             ))}
-          </div>
-        </section>
+          </ListRowGroup>
+        </SettingsSection>
       )}
-    </div>
+    </SettingsPage>
   );
+}
+
+/** A row's facts under its title: badges on one wrapping line, then lines. */
+function RowFacts({ badges, children }: { badges: ReactNode; children?: ReactNode }) {
+  return (
+    <>
+      <span className="mt-1.5 flex flex-wrap items-center gap-1.5">{badges}</span>
+      {children}
+    </>
+  );
+}
+
+function Line({ tone, mono, children }: { tone?: "danger" | "success" | "muted"; mono?: boolean; children: ReactNode }) {
+  const color = tone === "danger" ? "text-danger-strong" : tone === "success" ? "text-success-strong" : tone === "muted" ? "text-foreground-muted" : "text-foreground";
+  return <span className={`mt-1 block text-footnote ${color} ${mono ? "font-mono [overflow-wrap:anywhere]" : ""}`}>{children}</span>;
+}
+
+function versionTitle(version: string | undefined, build: string | number | undefined, fallback: string) {
+  if (!version) return fallback;
+  return `${version}${build ? ` (${build})` : ""}`;
 }
 
 function UploadRow({ appId, op }: { appId: string; op: Operation }) {
   const t = useText();
-  let input: UploadInput = {};
-  let output: UploadOutput = {};
-  try {
-    input = JSON.parse(op.input || "{}");
-  } catch {
-    /* ignore */
-  }
-  try {
-    output = JSON.parse(op.output || "{}");
-  } catch {
-    /* ignore */
-  }
+  const { locale } = useLocale();
+  const input = parse<UploadInput>(op.input);
+  const output = parse<UploadOutput>(op.output);
   const buildUploadId = output.build_upload_id;
 
   const status = useQuery({
@@ -151,59 +266,41 @@ function UploadRow({ appId, op }: { appId: string; op: Operation }) {
   const uploadFailed = op.status === "failed";
 
   return (
-    <section className="border-t border-line-hairline pt-5">
-      <div className="flex items-center gap-3 flex-wrap text-sm">
-        <span className="font-mono font-medium">
-          {input.version_name ? `v${input.version_name}` : "—"}
-          {input.version_code ? ` (${input.version_code})` : ""}
-        </span>
-        {input.bundle_id && <Badge variant="muted">{input.bundle_id}</Badge>}
-        <StateBadge uploadFailed={uploadFailed} appleState={appleState} />
-        {!uploadFailed && (
-          <a
-            className="text-xs underline text-info-strong"
-            href={ascTestflightUrl(output.asc_app_id)}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {t("View in App Store Connect ↗", "在 App Store Connect 中查看 ↗")}
-          </a>
-        )}
-        <span className="text-xs text-foreground-muted ml-auto">
-          {new Date(op.created_at).toISOString().slice(0, 16)}Z
-        </span>
-      </div>
-
-      {uploadFailed && op.error && (
-        <p className="mt-1 text-xs text-danger font-mono break-all">
-          {friendlyError(op.error)}
-        </p>
-      )}
-      {appleState?.errors && appleState.errors.length > 0 && (
-        <ul className="mt-1 text-xs text-danger list-disc pl-5">
-          {appleState.errors.map((e, i) => (
-            <li key={i}>
-              {e.code ? `[${e.code}] ` : ""}
-              {e.description}
-            </li>
-          ))}
-        </ul>
-      )}
-      {appleState?.state === "COMPLETE" && (
-        <p className="mt-1 text-xs text-success-strong">
-          {t("Upload processed. Ready for group distribution. Inspect the build in", "上传已处理完成，可以分发给测试组。在")}{" "}
-          <a
-            className="underline"
-            href={ascTestflightUrl(output.asc_app_id)}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            App Store Connect → TestFlight
-          </a>
-          {t(".", "中查看构建。")}
-        </p>
-      )}
-    </section>
+    <ListRow variant="plain" interactive={false} data-testid="testflight-upload">
+      <ListRowBody>
+        <ListRowTop>
+          <ListRowTitle className="font-mono">
+            {versionTitle(input.version_name, input.version_code, "—")}
+          </ListRowTitle>
+          <ListRowMeta title={new Date(op.created_at).toISOString()}>{timeAgo(op.created_at, locale)}</ListRowMeta>
+        </ListRowTop>
+        {input.bundle_id && <ListRowSubtitle className="font-mono">{input.bundle_id}</ListRowSubtitle>}
+        <RowFacts badges={<StateBadge uploadFailed={uploadFailed} appleState={appleState} />}>
+          {uploadFailed && op.error && <Line tone="danger" mono>{friendlyError(op.error)}</Line>}
+          {appleState?.errors && appleState.errors.length > 0 && (
+            <ul className="mt-1 list-disc pl-5 text-footnote text-danger-strong">
+              {appleState.errors.map((e, i) => (
+                <li key={i}>
+                  {e.code ? `[${e.code}] ` : ""}
+                  {e.description}
+                </li>
+              ))}
+            </ul>
+          )}
+          {appleState?.state === "COMPLETE" && (
+            <Line tone="muted">{t("Processed by Apple. Ready to send to beta groups.", "Apple 已处理完成，可以分发给测试组。")}</Line>
+          )}
+          {!uploadFailed && (
+            <span className="mt-1 block text-footnote">
+              <TextLink render={<a href={ascTestflightUrl(output.asc_app_id)} target="_blank" rel="noopener noreferrer" />} nativeButton={false}>
+                {t("View in App Store Connect", "在 App Store Connect 中查看")}
+                <TextLinkExternalIcon label={t("(opens in a new tab)", "（在新标签页打开）")} />
+              </TextLink>
+            </span>
+          )}
+        </RowFacts>
+      </ListRowBody>
+    </ListRow>
   );
 }
 
@@ -229,20 +326,16 @@ function isTerminalPublishState(
   );
 }
 
+function stateLabel(state: string, t: ReturnType<typeof useText>) {
+  const en = STATE_EN[state] ?? state.replace(/_/g, " ").toLowerCase();
+  return t(en, STATE_ZH[state] ?? en);
+}
+
 function PublishRow({ appId, op }: { appId: string; op: Operation }) {
   const t = useText();
-  let input: PublishInput = {};
-  let output: PublishOutput = {};
-  try {
-    input = JSON.parse(op.input || "{}");
-  } catch {
-    /* ignore */
-  }
-  try {
-    output = JSON.parse(op.output || "{}");
-  } catch {
-    /* ignore */
-  }
+  const { locale } = useLocale();
+  const input = parse<PublishInput>(op.input);
+  const output = parse<PublishOutput>(op.output);
   const buildId = input.hands_build_id;
   const liveStatus = useQuery({
     queryKey: [
@@ -271,7 +364,7 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
     state === "processing_failed" ||
     state === "blocked_export_compliance" ||
     state === "not_applicable";
-  const badgeVariant =
+  const badgeVariant: BadgeProps["variant"] =
     failed || blocked
       ? "danger"
       : state === "testing"
@@ -280,63 +373,54 @@ function PublishRow({ appId, op }: { appId: string; op: Operation }) {
   const localizationLocales = (current.localizations ?? [])
     .map((item) => item.locale)
     .filter((locale): locale is string => Boolean(locale));
+  const groups = (current.assigned_groups ?? []).map((group) => group.name ?? group.id);
 
   return (
-    <section className="border-t border-line-hairline pt-5">
-      <div className="flex items-center gap-3 flex-wrap text-sm">
-        <span className="font-mono font-medium">
-          {current.version
-            ? `v${current.version}`
-            : input.hands_build_id?.slice(0, 8) ?? "—"}
-          {current.build_number ? ` (${current.build_number})` : ""}
-        </span>
-        {input.distribution && (
-          <Badge variant="muted">{t(input.distribution, STATE_ZH[input.distribution] ?? input.distribution)}</Badge>
+    <ListRow variant="plain" interactive={false} data-testid="testflight-distribution">
+      <ListRowBody>
+        <ListRowTop>
+          <ListRowTitle className="font-mono">
+            {versionTitle(current.version, current.build_number, input.hands_build_id?.slice(0, 8) ?? "—")}
+          </ListRowTitle>
+          <ListRowMeta title={new Date(op.created_at).toISOString()}>{timeAgo(op.created_at, locale)}</ListRowMeta>
+        </ListRowTop>
+        {groups.length > 0 && (
+          <ListRowSubtitle>{t("Groups:", "测试组：")} {groups.join(", ")}</ListRowSubtitle>
         )}
-        <Badge variant={badgeVariant}>{t(state, STATE_ZH[state] ?? state)}</Badge>
-        {current.beta_review?.state && (
-          <Badge variant="muted">
-            {t("review:", "审核：")} {current.beta_review.state}
-          </Badge>
-        )}
-        {current.beta_detail?.auto_notify_enabled && (
-          <Badge variant="muted">{t("auto notify on", "已开启自动通知")}</Badge>
-        )}
-        <span className="text-xs text-foreground-muted ml-auto">
-          {new Date(op.created_at).toISOString().slice(0, 16)}Z
-        </span>
-      </div>
-      {current.assigned_groups && current.assigned_groups.length > 0 && (
-        <p className="mt-1 text-xs text-foreground">
-          {t("Groups:", "测试组：")} {current.assigned_groups.map((group) => group.name ?? group.id).join(", ")}
-        </p>
-      )}
-      {localizationLocales.length > 0 && (
-        <p className="mt-1 text-xs text-foreground">
-          {t("What to Test:", "测试说明：")} {localizationLocales.join(", ")}
-        </p>
-      )}
-      {current.expiration_date && (
-        <p className="mt-1 text-xs text-foreground-muted">
-          {t("Expires:", "过期日期：")} {new Date(current.expiration_date).toISOString().slice(0, 10)}
-        </p>
-      )}
-      {output.notification && (
-        <p className="mt-1 text-xs text-foreground">
-          {t("Notification action:", "通知操作：")} {output.notification}
-        </p>
-      )}
-      {failed && op.error && (
-        <p className="mt-1 text-xs text-danger font-mono break-all">
-          {friendlyError(op.error)}
-        </p>
-      )}
-      {liveStatus.isError && !failed && (
-        <p className="mt-1 text-xs text-danger">
-          {t("Live state refresh failed:", "实时状态刷新失败：")} {friendlyError(liveStatus.error)}
-        </p>
-      )}
-    </section>
+        <RowFacts
+          badges={
+            <>
+              <Badge appearance="soft" variant={badgeVariant}>{stateLabel(state, t)}</Badge>
+              {input.distribution && (
+                <Badge appearance="outline">{t(input.distribution === "internal" ? "Internal" : "External", STATE_ZH[input.distribution] ?? input.distribution)}</Badge>
+              )}
+              {current.beta_review?.state && (
+                <Badge appearance="outline">
+                  {t("Review:", "审核：")} {stateLabel(current.beta_review.state.toLowerCase(), t)}
+                </Badge>
+              )}
+              {current.beta_detail?.auto_notify_enabled && (
+                <Badge appearance="outline">{t("Auto notify on", "已开启自动通知")}</Badge>
+              )}
+            </>
+          }
+        >
+          {localizationLocales.length > 0 && (
+            <Line tone="muted">{t("What to Test:", "测试说明：")} {localizationLocales.join(", ")}</Line>
+          )}
+          {current.expiration_date && (
+            <Line tone="muted">{t("Expires", "过期日期")} {new Date(current.expiration_date).toISOString().slice(0, 10)}</Line>
+          )}
+          {output.notification && (
+            <Line tone="muted">{t("Notification:", "通知操作：")} {output.notification}</Line>
+          )}
+          {failed && op.error && <Line tone="danger" mono>{friendlyError(op.error)}</Line>}
+          {liveStatus.isError && !failed && (
+            <Line tone="danger">{t("Live state refresh failed:", "实时状态刷新失败：")} {friendlyError(liveStatus.error)}</Line>
+          )}
+        </RowFacts>
+      </ListRowBody>
+    </ListRow>
   );
 }
 
@@ -349,15 +433,15 @@ function StateBadge({
 }) {
   const t = useText();
   if (uploadFailed) {
-    return <Badge variant="danger">{t("upload failed", "上传失败")}</Badge>;
+    return <Badge appearance="soft" variant="danger">{t("Upload failed", "上传失败")}</Badge>;
   }
   const s = appleState?.state;
-  if (!s) return <Badge variant="muted">{t("uploaded", "已上传")}</Badge>;
+  if (!s) return <Badge appearance="outline">{t("Uploaded", "已上传")}</Badge>;
   if (s === "COMPLETE")
-    return <Badge variant="success">{t("complete", "已完成")}</Badge>;
+    return <Badge appearance="soft" variant="success">{t("Processed", "已完成")}</Badge>;
   if (s === "FAILED")
-    return <Badge variant="danger">{t("Apple rejected", "Apple 已拒绝")}</Badge>;
-  return <Badge variant="information">{t("Apple processing…", "Apple 处理中…")}</Badge>;
+    return <Badge appearance="soft" variant="danger">{t("Apple rejected", "Apple 已拒绝")}</Badge>;
+  return <Badge appearance="soft" variant="information">{t("Apple processing", "Apple 处理中")}</Badge>;
 }
 
 function friendlyError(raw: unknown): string {
