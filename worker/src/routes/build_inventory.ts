@@ -209,7 +209,8 @@ export async function handleRefreshBuildInventory(c: Ctx) {
   }
   let inventory: unknown;
   try {
-    inventory = await fetchInventoryFromContainer(c.env, asset.platform, await object.arrayBuffer());
+    // Streamed: an IPA can be larger than the Worker's memory.
+    inventory = await fetchInventoryFromContainer(c.env, asset.platform, object.body, object.size);
   } catch (err) {
     return c.json({ error: `inventory extraction failed: ${err instanceof Error ? err.message : String(err)}`, code: "INVENTORY_FAILED" }, 502);
   }
@@ -230,15 +231,22 @@ export async function handleRefreshBuildInventory(c: Ctx) {
   return c.json({ build: buildSummary(build), ...metaOf(row), inventory: validateInventory(inventory) });
 }
 
-async function fetchInventoryFromContainer(env: Env, platform: "android" | "ios", bytes: ArrayBuffer): Promise<unknown> {
+async function fetchInventoryFromContainer(
+  env: Env,
+  platform: "android" | "ios",
+  pkg: ReadableStream,
+  size: number,
+): Promise<unknown> {
   // Lazy import: @cloudflare/containers needs the Workers runtime.
   const { getRandom } = await import("@cloudflare/containers");
   const container = await getRandom(env.APK_PARSER, 1);
   const res = await container.fetch(new Request(`http://container/inventory?platform=${platform}`, {
     method: "POST",
-    body: bytes,
-    headers: { "content-type": "application/octet-stream" },
-  }));
+    body: pkg,
+    headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+    // A streamed body: required by fetch implementations outside Workers.
+    duplex: "half",
+  } as RequestInit));
   const body = (await res.json().catch(() => ({}))) as { inventory?: unknown; error?: string };
   if (!res.ok || !body.inventory) throw new Error(body.error ?? `container returned ${res.status}`);
   return body.inventory;

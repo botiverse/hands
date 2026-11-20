@@ -60,6 +60,8 @@ class MemoryR2 {
     const bytes = this.objects.get(key);
     if (!bytes) return null;
     return {
+      size: bytes.byteLength,
+      body: new Blob([bytes]).stream(),
       arrayBuffer: async () => bytes.slice().buffer,
       text: async () => new TextDecoder().decode(bytes),
     };
