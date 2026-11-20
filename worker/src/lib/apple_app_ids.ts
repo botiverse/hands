@@ -217,7 +217,7 @@ export async function planAppId(creds: AscApiCredentials, bundleId: string, enti
   const bundle = await findAppId(creds, bundleId);
   let enabled = new Set<string>();
   if (bundle) {
-    const caps = await all<{ capabilityType: string }>(creds, `/v1/bundleIds/${encodeURIComponent(bundle.id)}/bundleIdCapabilities?limit=200`);
+    const caps = await all<{ capabilityType: string }>(creds, `/v1/bundleIds/${encodeURIComponent(bundle.id)}/bundleIdCapabilities`);
     enabled = new Set(caps.map((c) => c.attributes.capabilityType));
   }
   return {

@@ -587,7 +587,7 @@ describe("Apple App IDs", () => {
           ...(state.registered ? [{ id: "B1", type: "bundleIds", attributes: { identifier: "build.raft.deck", platform: "IOS" } }] : []),
         ] });
       }
-      if (method === "GET" && path.startsWith("/v1/bundleIds/B1/bundleIdCapabilities")) {
+      if (method === "GET" && path === "/v1/bundleIds/B1/bundleIdCapabilities") {
         return json({ data: state.caps.map((c, i) => ({ id: `cap${i}`, type: "bundleIdCapabilities", attributes: { capabilityType: c } })) });
       }
       if (method === "GET" && path.startsWith("/v1/bundleIds/B1/profiles")) {
