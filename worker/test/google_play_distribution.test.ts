@@ -3230,6 +3230,13 @@ describe("app-wide Play review status", () => {
     h.sqlite.prepare(`INSERT INTO google_play_release_observations (app_id,package_name,play_track,version_code,state,revision,nonce,observed_at)
       SELECT 'app', package_name, ?, 12600002, 'RELEASE_LIFECYCLE_STATE_PUBLISHED', 1, 'n', 5000 FROM app_google_play_bindings WHERE app_id='app'`)
       .run(tracks.production_track);
+    // A release that left the track long ago keeps its last observed state; it must not show as in review.
+    h.sqlite.prepare(`INSERT INTO google_play_release_observations (app_id,package_name,play_track,version_code,state,revision,nonce,observed_at)
+      SELECT 'app', package_name, ?, 12400004, 'RELEASE_LIFECYCLE_STATE_IN_REVIEW', 1, 'n2', 1000 FROM app_google_play_bindings WHERE app_id='app'`)
+      .run(tracks.production_track);
+    h.sqlite.prepare(`INSERT INTO google_play_release_observations (app_id,package_name,play_track,version_code,state,revision,nonce,observed_at)
+      SELECT 'app', package_name, ?, 12700006, 'RELEASE_LIFECYCLE_STATE_IN_REVIEW', 1, 'n3', 6000 FROM app_google_play_bindings WHERE app_id='app'`)
+      .run(tracks.production_track);
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async (input) => {
       const track = input.tracks[input.handsTrack as "internal" | "closed" | "production"];
       if (input.handsTrack === "internal") {
@@ -3245,9 +3252,15 @@ describe("app-wide Play review status", () => {
     const body = await res.json() as any;
     const internal = body.tracks.find((t: any) => t.hands_track === "internal");
     expect(internal).toMatchObject({ source: "live", releases: [{ release_name: "1.27.0", state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW", state_label: "审核中", version_codes: [12700006] }] });
-    expect(body.in_review).toEqual([expect.objectContaining({ hands_track: "internal", version_codes: [12700006], source: "live" })]);
+    expect(body.in_review).toEqual([
+      expect.objectContaining({ hands_track: "internal", version_codes: [12700006], source: "live" }),
+      expect.objectContaining({ hands_track: "production", version_codes: [12700006], source: "stored" }),
+    ]);
     const production = body.tracks.find((t: any) => t.hands_track === "production");
-    expect(production).toMatchObject({ source: "stored", error_code: "play_api_rejected", releases: [{ state: "RELEASE_LIFECYCLE_STATE_PUBLISHED", version_codes: [12600002], observed_at: 5000 }] });
+    expect(production).toMatchObject({ source: "stored", error_code: "play_api_rejected", releases: [
+      { state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW", version_codes: [12700006], observed_at: 6000 },
+      { state: "RELEASE_LIFECYCLE_STATE_PUBLISHED", version_codes: [12600002], observed_at: 5000 },
+    ] });
     expect(body.production_version_code).toBe(12600002);
     expect(JSON.stringify(body)).not.toContain("refused");
 

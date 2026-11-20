@@ -27,6 +27,9 @@ type TrackStatus = {
   error_code?: string;
 };
 
+/** PUBLISHED, not APPROVED_NOT_PUBLISHED. */
+const isPublished = (state: string) => state.endsWith("_PUBLISHED") && !state.endsWith("NOT_PUBLISHED");
+
 export async function handleGetPlayReviewStatus(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS).catch(() => null);
@@ -60,10 +63,16 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
       }
       errorCode = reply.error.code;
     }
-    const { results } = await c.env.DB.prepare(
+    const { results: observed } = await c.env.DB.prepare(
       `SELECT version_code, state, observed_at FROM google_play_release_observations
-       WHERE app_id = ?1 AND package_name = ?2 AND play_track = ?3 ORDER BY version_code DESC LIMIT 20`,
+       WHERE app_id = ?1 AND package_name = ?2 AND play_track = ?3 ORDER BY version_code DESC LIMIT 50`,
     ).bind(appId, packageName, playTrack).all<{ version_code: number; state: string; observed_at: number }>();
+    // The poll records a versionCode's state only when it changes, so a
+    // release that left the track keeps its last state forever. A newer
+    // published release supersedes everything below it on a track: keep
+    // that one and anything newer.
+    const newestPublished = observed.find((r) => isPublished(r.state))?.version_code ?? 0;
+    const results = observed.filter((r) => r.version_code >= newestPublished);
     tracks.push({
       hands_track: handsTrack,
       play_track: playTrack,
@@ -77,7 +86,7 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
   const inReview = tracks.flatMap((t) => t.releases.filter((r) => r.state.endsWith("IN_REVIEW"))
     .map((r) => ({ hands_track: t.hands_track, play_track: t.play_track, version_codes: r.version_codes, release_name: r.release_name, source: t.source })));
   const production = tracks.find((t) => t.hands_track === "production");
-  const publishedProduction = production?.releases.filter((r) => r.state.endsWith("PUBLISHED") && !r.state.includes("NOT")).flatMap((r) => r.version_codes) ?? [];
+  const publishedProduction = production?.releases.filter((r) => isPublished(r.state)).flatMap((r) => r.version_codes) ?? [];
   const access = await c.env.DB.prepare(
     "SELECT failing_since, last_error_code FROM google_play_access_state WHERE app_id = ?1 AND access = 'publishing'",
   ).bind(appId).first<{ failing_since: number; last_error_code: string }>().catch(() => null);
