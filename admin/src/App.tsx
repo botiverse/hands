@@ -83,7 +83,8 @@ import { legalMessage } from "./lib/legalMessages";
 import { LanguagePicker, useLocale, useText } from "./lib/locale";
 import { AppRouteBoundary } from "./components/AppRouteBoundary";
 import { AppsList } from "./pages/AppsList";
-import { AppChannels, AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
+import { AppDetail, AppSettings, AppStoreReviewPanel } from "./pages/AppDetail";
+import { AppChannels } from "./pages/Channels";
 import { AuditLog } from "./pages/AuditLog";
 import { Integrations } from "./pages/Integrations";
 import { Settings } from "./pages/Settings";
@@ -1564,17 +1565,22 @@ const APP_NAV_SECTIONS: Array<{
 
 const LAST_APP_KEY = "quiver:last-app-id";
 
+const FULL_BLEED_APP_PAGES = new Set(["channels"]);
+
 function AppShell() {
   const { appId } = useParams();
-  // The overview draws its own panel header across the main area and scrolls
-  // under it; the other app pages sit in the padded column.
+  // The overview and the list pages (FULL_BLEED_APP_PAGES) draw their own
+  // panel header across the main area and scroll under it; the other app
+  // pages sit in the padded column.
   const isOverview = useMatch({ path: "/apps/:appId", end: true }) !== null;
+  const page = useMatch({ path: "/apps/:appId/:page", end: true })?.params.page;
+  const fullBleed = isOverview || (page !== undefined && FULL_BLEED_APP_PAGES.has(page));
   if (!appId) return null;
   return (
     <AppRouteBoundary appId={appId}>
     <div className="flex flex-1 min-h-0 items-stretch">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className={isOverview ? "flex min-h-0 w-full flex-1 flex-col" : "w-full px-8 py-6"}>
+        <div className={fullBleed ? "flex min-h-0 w-full flex-1 flex-col" : "w-full px-8 py-6"}>
         <Routes>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<LegacyPublishRedirect />} />
