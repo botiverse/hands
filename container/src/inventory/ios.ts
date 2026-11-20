@@ -22,16 +22,20 @@ const LABELS: Record<string, string> = {
   bundles: "Resource bundles",
   localizations: "Localizations (.lproj)",
   signature: "Code signature and profile",
+  compose_resources: "Compose resources",
   swift_support: "SwiftSupport",
+  symbols: "Debug symbols (not installed)",
   other: "Other",
 };
 
-const ORDER = ["executable", "frameworks", "plugins", "watch", "app_clips", "assets_car", "bundles", "localizations", "signature", "swift_support", "other"];
+const ORDER = ["executable", "frameworks", "plugins", "watch", "app_clips", "assets_car", "bundles", "localizations", "compose_resources", "signature", "swift_support", "symbols", "other"];
 
 export function classifyIpaEntry(name: string, appRoot: string, executable: string | null): { key: string; label: string } {
   const pick = (key: string) => ({ key, label: LABELS[key]! });
   if (!name.startsWith(appRoot)) {
     if (name.startsWith("SwiftSupport/")) return pick("swift_support");
+    // Symbols/ is uploaded for crash reports and stripped by the App Store.
+    if (name.startsWith("Symbols/")) return pick("symbols");
     return pick("other");
   }
   const rel = name.slice(appRoot.length);
@@ -43,6 +47,7 @@ export function classifyIpaEntry(name: string, appRoot: string, executable: stri
   if (rel === "Assets.car") return pick("assets_car");
   if (/(^|\/)[^/]+\.bundle\//.test(rel)) return pick("bundles");
   if (/(^|\/)[^/]+\.lproj\//.test(rel)) return pick("localizations");
+  if (rel.startsWith("compose-resources/")) return pick("compose_resources");
   if (rel.startsWith("_CodeSignature/") || rel === "embedded.mobileprovision") return pick("signature");
   return pick("other");
 }
