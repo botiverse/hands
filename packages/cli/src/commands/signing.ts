@@ -176,6 +176,17 @@ function parseDuration(value: string): number {
   return n * (match[2] === "h" ? 3_600_000 : match[2] === "s" ? 1000 : 60_000);
 }
 
+/** An App Store Connect API key given as files, or copied from an app that holds one. */
+async function apiKeyOption(fromApp: string | undefined, keyId: string | undefined, issuerId: string | undefined, keyPath: string | undefined) {
+  if (fromApp) {
+    if (keyId || issuerId || keyPath) throw new Error("give either --*-from-app or the key id, issuer id and .p8, not both");
+    return { from_app: await resolveAppId(fromApp) };
+  }
+  if (!keyId && !issuerId && !keyPath) return null;
+  if (!keyId || !issuerId || !keyPath) throw new Error("an App Store Connect API key needs its key id, issuer id and .p8 file");
+  return { key_id: keyId, issuer_id: issuerId, p8: await readFile(keyPath, "utf8") };
+}
+
 export function registerSigningCommands(program: Command): void {
   program
     .command("sign <file>")
@@ -289,12 +300,11 @@ export function registerSigningCommands(program: Command): void {
     .option("--notary-key-id <id>", "App Store Connect API key id.")
     .option("--notary-issuer-id <id>", "App Store Connect issuer id.")
     .option("--notary-key <p8>", "Path to the AuthKey_<id>.p8 file.")
+    .option("--notary-from-app <appIdOrSlug>", "Use the App Store Connect API key that this app already holds for TestFlight.")
     .option("--org <orgId>", "Organization (default: your current org).")
-    .action(async (name: string, p12: string, opts: { notaryKeyId?: string; notaryIssuerId?: string; notaryKey?: string; org?: string }) => {
+    .action(async (name: string, p12: string, opts: { notaryKeyId?: string; notaryIssuerId?: string; notaryKey?: string; notaryFromApp?: string; org?: string }) => {
       const orgId = await orgOf(opts.org);
-      const notary = opts.notaryKeyId && opts.notaryIssuerId && opts.notaryKey
-        ? { key_id: opts.notaryKeyId, issuer_id: opts.notaryIssuerId, p8: await readFile(opts.notaryKey, "utf8") }
-        : null;
+      const notary = await apiKeyOption(opts.notaryFromApp, opts.notaryKeyId, opts.notaryIssuerId, opts.notaryKey);
       const res = await apiRequest<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities`, {
         method: "POST",
         body: {
@@ -303,6 +313,35 @@ export function registerSigningCommands(program: Command): void {
           p12_b64: (await readFile(p12)).toString("base64"),
           p12_password: process.env.HANDS_P12_PASSWORD ?? "",
           notary,
+        },
+        retryOnUnauthorized: false,
+      });
+      console.log(`Uploaded ${res.signing_identity.name} (${res.signing_identity.id}): ${res.signing_identity.metadata.subject}.`);
+    });
+
+  identities.command("upload-apple-ios <name> <p12>")
+    .description(
+      "Upload an Apple Distribution certificate (.p12; password from HANDS_P12_PASSWORD) for iOS. Give an App Store Connect " +
+      "API key (App Manager or Admin role) so Hands creates the App Store provisioning profile, or upload profiles with --profile.",
+    )
+    .option("--asc-key-id <id>", "App Store Connect API key id.")
+    .option("--asc-issuer-id <id>", "App Store Connect issuer id.")
+    .option("--asc-key <p8>", "Path to the AuthKey_<id>.p8 file.")
+    .option("--asc-from-app <appIdOrSlug>", "Use the App Store Connect API key that this app already holds for TestFlight.")
+    .option("--profile <path>", "A .mobileprovision file. Repeatable.", (value: string, all: string[]) => [...all, value], [] as string[])
+    .option("--org <orgId>", "Organization (default: your current org).")
+    .action(async (name: string, p12: string, opts: { ascKeyId?: string; ascIssuerId?: string; ascKey?: string; ascFromApp?: string; profile: string[]; org?: string }) => {
+      const orgId = await orgOf(opts.org);
+      const asc = await apiKeyOption(opts.ascFromApp, opts.ascKeyId, opts.ascIssuerId, opts.ascKey);
+      const res = await apiRequest<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities`, {
+        method: "POST",
+        body: {
+          kind: "apple_ios_distribution",
+          name,
+          p12_b64: (await readFile(p12)).toString("base64"),
+          p12_password: process.env.HANDS_P12_PASSWORD ?? "",
+          asc,
+          provisioning_profiles_b64: await Promise.all(opts.profile.map(async (path) => (await readFile(path)).toString("base64"))),
         },
         retryOnUnauthorized: false,
       });

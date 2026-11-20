@@ -3,6 +3,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { currentAccount, insertAuditLog } from "../lib/permissions";
 import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { createAscJwt } from "../lib/asc_api";
+import { getAscCredentials } from "../lib/asc_credentials";
 import { sha256Hex } from "../lib/deploy_tokens";
 import {
   ARTIFACT_TYPES,
@@ -13,6 +14,7 @@ import {
   decryptSigningSecret,
   encryptSigningSecret,
   type ArtifactType,
+  type NotaryKey,
   type SigningKind,
   type SigningMetadata,
   type SigningSecret,
@@ -140,8 +142,43 @@ function b64(value: unknown): string | null {
   return s && /^[A-Za-z0-9+/]+={0,2}$/.test(s) ? s : null;
 }
 
+type ResolvedKey = { key: NotaryKey | null; fromApp: { id: string; slug: string } | null };
+
+/**
+ * An App Store Connect API key given inline (`key_id`, `issuer_id`, `p8`) or
+ * as `{ from_app: <app id or slug> }`: a copy of the TestFlight key that an
+ * app in the same organization already holds, so a team key is entered once.
+ */
+async function resolveApiKey(c: AdminContext, orgId: string, value: unknown, field: string): Promise<ResolvedKey> {
+  if (value === undefined || value === null) return { key: null, fromApp: null };
+  const n = value as Record<string, unknown>;
+  if (n.from_app !== undefined) {
+    const ref = str(n.from_app, 128);
+    if (!ref) throw new SigningError(400, "invalid_request", `${field}.from_app must name an app`);
+    const app = await c.env.DB.prepare("SELECT id, slug FROM apps WHERE org_id = ?1 AND (id = ?2 OR slug = ?2)")
+      .bind(orgId, ref).first<{ id: string; slug: string }>();
+    if (!app) throw new SigningError(404, "app_not_in_org", `${field}.from_app: app not found in this organization`);
+    if (!c.env.ASC_CRED_ENC_KEY) throw new SigningError(500, "signing_not_configured", "server is missing its credential encryption key");
+    const creds = await getAscCredentials(c.env.DB, c.env.ASC_CRED_ENC_KEY, app.id);
+    if (!creds) throw new SigningError(409, "asc_credentials_missing", `${app.slug} has no App Store Connect API key`);
+    return { key: { key_id: creds.key_id, issuer_id: creds.issuer_id, p8: creds.p8 }, fromApp: app };
+  }
+  const keyId = str(n.key_id, 32);
+  const issuerId = str(n.issuer_id, 64);
+  const p8 = str(n.p8, 8192);
+  if (!keyId || !issuerId || !p8 || !p8.includes("PRIVATE KEY")) {
+    throw new SigningError(400, "invalid_request", `${field} needs key_id, issuer_id and the .p8 contents, or from_app`);
+  }
+  return { key: { key_id: keyId, issuer_id: issuerId, p8 }, fromApp: null };
+}
+
 /** Validate an upload body into a secret bundle; the container then proves it opens. */
-function secretFromBody(kind: SigningKind, body: Record<string, unknown>): SigningSecret {
+async function secretFromBody(
+  c: AdminContext,
+  orgId: string,
+  kind: SigningKind,
+  body: Record<string, unknown>,
+): Promise<{ secret: SigningSecret; extra: SigningMetadata }> {
   if (kind === "android_keystore") {
     const keystore = b64(body.keystore_b64);
     const storePassword = str(body.store_password, 256);
@@ -150,35 +187,40 @@ function secretFromBody(kind: SigningKind, body: Record<string, unknown>): Signi
       throw new SigningError(400, "invalid_request", "keystore_b64, store_password and key_alias (letters, digits, . _ -) are required");
     }
     return {
-      kind,
-      keystore_b64: keystore,
-      store_password: storePassword,
-      key_alias: alias,
-      key_password: str(body.key_password, 256) ?? storePassword,
+      secret: {
+        kind,
+        keystore_b64: keystore,
+        store_password: storePassword,
+        key_alias: alias,
+        key_password: str(body.key_password, 256) ?? storePassword,
+      },
+      extra: {},
     };
   }
   const p12 = b64(body.p12_b64);
   const password = typeof body.p12_password === "string" && body.p12_password.length <= 256 ? body.p12_password : null;
   if (!p12 || password === null) throw new SigningError(400, "invalid_request", "p12_b64 and p12_password are required");
   if (kind === "apple_developer_id") {
-    let notary = null;
-    if (body.notary !== undefined && body.notary !== null) {
-      const n = body.notary as Record<string, unknown>;
-      const keyId = str(n.key_id, 32);
-      const issuerId = str(n.issuer_id, 64);
-      const p8 = str(n.p8, 8192);
-      if (!keyId || !issuerId || !p8 || !p8.includes("PRIVATE KEY")) {
-        throw new SigningError(400, "invalid_request", "notary needs key_id, issuer_id and the .p8 contents");
-      }
-      notary = { key_id: keyId, issuer_id: issuerId, p8 };
-    }
-    return { kind, p12_b64: p12, p12_password: password, notary };
+    const notary = await resolveApiKey(c, orgId, body.notary, "notary");
+    return {
+      secret: { kind, p12_b64: p12, p12_password: password, notary: notary.key },
+      extra: notary.fromApp ? { api_key_from_app: notary.fromApp.slug } : {},
+    };
   }
   const profiles = Array.isArray(body.provisioning_profiles_b64) ? body.provisioning_profiles_b64.map(b64) : [];
-  if (profiles.length === 0 || profiles.some((p) => !p)) {
-    throw new SigningError(400, "invalid_request", "provisioning_profiles_b64 must list at least one profile");
+  if (profiles.some((p) => !p)) throw new SigningError(400, "invalid_request", "provisioning_profiles_b64 must be base64 files");
+  const asc = await resolveApiKey(c, orgId, body.asc, "asc");
+  if (profiles.length === 0 && !asc.key) {
+    throw new SigningError(400, "invalid_request", "give an App Store Connect API key (asc) so Hands can create the profile, or upload a provisioning profile");
   }
-  return { kind, p12_b64: p12, p12_password: password, provisioning_profiles_b64: profiles as string[] };
+  return {
+    secret: { kind, p12_b64: p12, p12_password: password, provisioning_profiles_b64: profiles as string[], asc: asc.key },
+    extra: {
+      asc_key_id: asc.key?.key_id ?? null,
+      provisioning_profile_count: profiles.length,
+      ...(asc.fromApp ? { api_key_from_app: asc.fromApp.slug } : {}),
+    },
+  };
 }
 
 async function storeIdentity(
@@ -211,6 +253,17 @@ export async function handleListSigningIdentities(c: AdminContext) {
   return c.json({ signing_identities: await Promise.all(results.map((row) => identityResponse(c.env.DB, row))) });
 }
 
+/** Apps in the organization that hold an App Store Connect API key (ids only, never the key). */
+export async function handleListSigningApiKeySources(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const { results } = await c.env.DB.prepare(
+    `SELECT a.id AS app_id, a.slug, a.name, k.key_id, k.issuer_id, k.updated_at
+     FROM app_asc_credentials k JOIN apps a ON a.id = k.app_id
+     WHERE a.org_id = ?1 ORDER BY a.slug`,
+  ).bind(orgId).all<{ app_id: string; slug: string; name: string; key_id: string; issuer_id: string; updated_at: number }>();
+  return c.json({ api_keys: results });
+}
+
 export async function handleUploadSigningIdentity(c: AdminContext) {
   const orgId = c.req.param("orgId") ?? "";
   try {
@@ -221,9 +274,9 @@ export async function handleUploadSigningIdentity(c: AdminContext) {
     }
     const name = typeof body.name === "string" ? body.name.trim() : "";
     if (!NAME_PATTERN.test(name)) throw new SigningError(400, "invalid_request", "name is required (letters, digits, spaces, . _ - ( ))");
-    const secret = secretFromBody(kind, body);
+    const { secret, extra } = await secretFromBody(c, orgId, kind, body);
     const { metadata } = await callSigningContainer<{ metadata: SigningMetadata }>(c.env, "/signing/inspect", { secret }, 60_000);
-    const row = await storeIdentity(c, orgId, { kind, name, origin: "uploaded", secret, metadata });
+    const row = await storeIdentity(c, orgId, { kind, name, origin: "uploaded", secret, metadata: { ...metadata, ...extra } });
     return c.json({ signing_identity: await identityResponse(c.env.DB, row) }, 201);
   } catch (error) {
     return fail(c, error);

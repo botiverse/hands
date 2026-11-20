@@ -27,7 +27,14 @@ export type NotaryKey = { key_id: string; issuer_id: string; p8: string };
 export type SigningSecret =
   | { kind: "android_keystore"; keystore_b64: string; store_password: string; key_alias: string; key_password: string }
   | { kind: "apple_developer_id"; p12_b64: string; p12_password: string; notary: NotaryKey | null }
-  | { kind: "apple_ios_distribution"; p12_b64: string; p12_password: string; provisioning_profiles_b64: string[] };
+  | {
+    kind: "apple_ios_distribution";
+    p12_b64: string;
+    p12_password: string;
+    provisioning_profiles_b64: string[];
+    /** App Store Connect API key used to create and renew App Store profiles. */
+    asc?: NotaryKey | null;
+  };
 
 /** Public facts reported by the container; never key material. */
 export type SigningMetadata = {
@@ -40,6 +47,11 @@ export type SigningMetadata = {
   key_algorithm?: string;
   team_id?: string;
   notary_key_id?: string | null;
+  /** iOS: key id of the App Store Connect API key that manages profiles. */
+  asc_key_id?: string | null;
+  /** Where the API key came from when it was copied from an app's TestFlight credentials. */
+  api_key_from_app?: string | null;
+  provisioning_profile_count?: number;
 };
 
 function b64Encode(bytes: Uint8Array): string {

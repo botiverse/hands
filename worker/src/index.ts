@@ -158,6 +158,7 @@ import {
   handleGetSigningJob,
   handleGrantSigningIdentity,
   handleListSigningIdentities,
+  handleListSigningApiKeySources,
   handleRevokeSigningIdentity,
   handleRunSigningJob,
   handleUngrantSigningIdentity,
@@ -1433,6 +1434,7 @@ bindAdmin("post", "/api/apps/:appId/trusted-publishers", requireAppRole("admin")
 bindAdmin("delete", "/api/apps/:appId/trusted-publishers/:publisherId", requireAppRole("admin"), handleRevokeTrustedPublisher);
 bindAdmin("get", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", "admin"), handleListSigningIdentities);
 bindAdmin("post", "/api/orgs/:orgId/signing-identities", requireOrgRole("orgId", "admin"), handleUploadSigningIdentity);
+bindAdmin("get", "/api/orgs/:orgId/signing-identities/api-keys", requireOrgRole("orgId", "admin"), handleListSigningApiKeySources);
 bindAdmin("post", "/api/orgs/:orgId/signing-identities/generate-android", requireOrgRole("orgId", "admin"), handleGenerateAndroidSigningIdentity);
 bindAdmin("post", "/api/orgs/:orgId/signing-identities/:identityId/backup", requireOrgRole("orgId", "admin"), handleExportSigningIdentityBackup);
 bindAdmin("delete", "/api/orgs/:orgId/signing-identities/:identityId", requireOrgRole("orgId", "admin"), handleRevokeSigningIdentity);

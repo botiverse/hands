@@ -15,6 +15,7 @@ import {
   handleGenerateAndroidSigningIdentity,
   handleGetSigningJob,
   handleGrantSigningIdentity,
+  handleListSigningApiKeySources,
   handleListSigningIdentities,
   handleRevokeSigningIdentity,
   handleRunSigningJob,
@@ -22,6 +23,7 @@ import {
   handleUploadSigningIdentity,
 } from "../src/routes/signing";
 import { setSigningContainerForTests } from "../src/lib/signing";
+import { storeAscCredentials } from "../src/lib/asc_credentials";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const ORG = "org";
@@ -139,6 +141,47 @@ describe("signing identities", () => {
     expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
       kind: "apple_developer_id", name: "Dev ID", p12_b64: "QUJD", p12_password: "x", notary: { key_id: "K", issuer_id: "I", p8: "nope" },
     })).status).toBe(400);
+  });
+
+  it("reuses an app's App Store Connect key for notarization and iOS profiles", async () => {
+    const { env, sqlite } = environment();
+    const p8 = "-----BEGIN PRIVATE KEY-----\nTEAMKEYMATERIAL\n-----END PRIVATE KEY-----";
+    await storeAscCredentials(env.DB, "test-master-key", { app_id: "app-mac", key_id: "TEAMKEY1", issuer_id: "ISS-1", p8, actor: "t" });
+    await storeAscCredentials(env.DB, "test-master-key", { app_id: "app-foreign", key_id: "OTHER", issuer_id: "ISS-2", p8, actor: "t" });
+
+    // The picker lists key ids of this org's apps only, never the key itself.
+    const sources = await call(handleListSigningApiKeySources, env, { orgId: ORG });
+    expect(sources.body.api_keys).toEqual([expect.objectContaining({ app_id: "app-mac", slug: "raft-deck", key_id: "TEAMKEY1", issuer_id: "ISS-1" })]);
+    expect(JSON.stringify(sources.body)).not.toContain("TEAMKEYMATERIAL");
+
+    const calls = recorder((_path, body) => ({ body: { metadata: { subject: "CN=x", notary_key_id: body.secret.notary?.key_id ?? null } } }));
+    const devId = await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
+      kind: "apple_developer_id", name: "Dev ID", p12_b64: "QUJD", p12_password: "pw", notary: { from_app: "raft-deck" },
+    });
+    expect(devId.status).toBe(201);
+    expect(calls[0]!.body.secret.notary).toEqual({ key_id: "TEAMKEY1", issuer_id: "ISS-1", p8 });
+    expect(devId.body.signing_identity.metadata).toMatchObject({ notary_key_id: "TEAMKEY1", api_key_from_app: "raft-deck" });
+    expect(JSON.stringify(devId.body)).not.toContain("TEAMKEYMATERIAL");
+
+    // Another org's app, or an app without a key, cannot be the source.
+    expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
+      kind: "apple_developer_id", name: "Dev ID 2", p12_b64: "QUJD", p12_password: "pw", notary: { from_app: "other" },
+    })).body.code).toBe("app_not_in_org");
+    expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
+      kind: "apple_developer_id", name: "Dev ID 3", p12_b64: "QUJD", p12_password: "pw", notary: { from_app: "raft-deck-android" },
+    })).body.code).toBe("asc_credentials_missing");
+
+    // iOS: a profile or an API key (so Hands can create the profile) is required.
+    const ios = { kind: "apple_ios_distribution", name: "Deck iOS", p12_b64: "QUJD", p12_password: "pw" };
+    expect((await call(handleUploadSigningIdentity, env, { orgId: ORG }, ios)).status).toBe(400);
+    const created = await call(handleUploadSigningIdentity, env, { orgId: ORG }, { ...ios, asc: { from_app: "app-mac" } });
+    expect(created.status).toBe(201);
+    expect(calls.at(-1)!.body.secret).toMatchObject({ kind: "apple_ios_distribution", provisioning_profiles_b64: [], asc: { key_id: "TEAMKEY1", p8 } });
+    expect(created.body.signing_identity.metadata).toMatchObject({ asc_key_id: "TEAMKEY1", provisioning_profile_count: 0, api_key_from_app: "raft-deck" });
+    const withProfile = await call(handleUploadSigningIdentity, env, { orgId: ORG }, { ...ios, name: "Deck iOS 2", provisioning_profiles_b64: ["UFJPRklMRQ=="] });
+    expect(withProfile.body.signing_identity.metadata).toMatchObject({ asc_key_id: null, provisioning_profile_count: 1 });
+    const stored = sqlite.prepare("SELECT secret_ciphertext_b64 FROM signing_identities").all() as Array<{ secret_ciphertext_b64: string }>;
+    for (const row of stored) expect(Buffer.from(row.secret_ciphertext_b64, "base64").toString("latin1")).not.toContain("TEAMKEYMATERIAL");
   });
 
   it("generates an Android key in Hands and gives out its backup once", async () => {

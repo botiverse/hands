@@ -104,7 +104,7 @@ steps:
 
 Hands holds signing keys and certificates for an organization, encrypted, and signs files for the apps they are granted to. Keys never reach CI: the CLI uploads the unsigned file, Hands signs it (macOS: also notarizes with Apple and staples the ticket) and the CLI downloads the signed file, checking its SHA-256.
 
-Org admins manage identities under Organization › Signing, or with the CLI:
+Org admins manage identities under Organization › Signing, or with the CLI. The upload forms for Apple certificates list where each file comes from: the certificate signing request from Keychain Access, the certificate in the Apple Developer site, the `.p12` export from Keychain Access, and the App Store Connect API key. Instead of entering an API key again, an identity can use a copy of the key that an app in the same organization already holds for TestFlight; the form lists those apps by key ID. iOS signing itself is not available yet; a Distribution certificate can be stored and granted ahead of it.
 
 ```bash
 # A new Android key created inside Hands (RSA 4096, valid 30 years)
@@ -114,6 +114,11 @@ HANDS_KEYSTORE_PASSWORD=... hands signing identities upload-android "Raft releas
 # A Developer ID Application certificate, with an App Store Connect API key for notarization
 HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 \
   --notary-key-id ABC123 --notary-issuer-id <issuer> --notary-key AuthKey_ABC123.p8
+# ...or reuse the API key an app in the organization already holds for TestFlight
+HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 --notary-from-app raft-ios
+# An Apple Distribution certificate for iOS: with an API key (App Manager or Admin role)
+# Hands manages the App Store provisioning profile; or upload profiles with --profile
+HANDS_P12_PASSWORD=... hands signing identities upload-apple-ios "Apple Distribution" dist.p12 --asc-from-app raft-ios
 
 hands signing identities grant <identityId> raft-deck-android
 hands signing identities list
