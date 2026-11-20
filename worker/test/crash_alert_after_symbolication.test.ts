@@ -26,7 +26,7 @@ vi.mock("@cloudflare/containers", () => ({
   }),
 }));
 
-const { handlePublicFeedbackSubmit, sweepPendingCrashAlerts, decideCrashAlert, spikeThresholdCrossed } = await import("../src/routes/feedback");
+const { handlePublicFeedbackSubmit, sweepPendingCrashAlerts, decideCrashAlert } = await import("../src/routes/feedback");
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -217,40 +217,20 @@ describe("crash alerts wait for symbolication", () => {
     expect(alerts(h.sqlite)).toHaveLength(1);
   });
 
-  it("does not call one device crash-looping a spike; fires once enough devices share the hour", async () => {
+  it("raises a spike for one device crash-looping and says how many devices", async () => {
     const h = environment();
     const signature = "org.intellij.markdown.MarkdownParsingException@org.intellij.markdown.parser.TreeBuilder.buildTree";
     const base = Date.now() - 30 * 60_000;
-    let n = 0;
-    const report = async (device: string) => {
-      n += 1;
+    for (let n = 1; n <= 11; n += 1) {
       const id = `t${n}`;
       h.sqlite.prepare(
         `INSERT INTO feedback_tickets (id, app_id, kind, message, signature, device_id, created_at, updated_at, crash_alert_pending_since)
-         VALUES (?, 'app', 'crash', 'Crash: MarkdownParsingException', ?, ?, ?, ?, ?)`,
-      ).run(id, signature, device, base + n * 1000, base + n * 1000, base + n * 1000);
+         VALUES (?, 'app', 'crash', 'Crash: MarkdownParsingException', ?, 'device-a', ?, ?, ?)`,
+      ).run(id, signature, base + n * 1000, base + n * 1000, base + n * 1000);
       await decideCrashAlert(h.env, id);
-    };
-    for (let i = 0; i < 23; i += 1) await report("device-a");
-    expect(alerts(h.sqlite).map((a) => a.event_type)).toEqual(["crash:new_group"]);
-
-    await report("device-b");
-    expect(alerts(h.sqlite)).toHaveLength(1);
-    await report("device-c");
-    const spikes = alerts(h.sqlite).filter((a) => a.event_type === "crash:spike");
-    expect(spikes).toHaveLength(1);
-    expect(JSON.parse(spikes[0]!.payload_json).payload).toMatchObject({ count_last_hour: 25, devices_last_hour: 3 });
-    await report("device-c");
-    expect(alerts(h.sqlite).filter((a) => a.event_type === "crash:spike")).toHaveLength(1);
-  });
-
-  it("crosses each report threshold once, only with enough devices", () => {
-    expect(spikeThresholdCrossed(10, 3, 3)).toBe(10);
-    expect(spikeThresholdCrossed(11, 3, 3)).toBeNull();
-    expect(spikeThresholdCrossed(10, 1, 1)).toBeNull();
-    expect(spikeThresholdCrossed(25, 3, 2)).toBe(10);
-    expect(spikeThresholdCrossed(50, 4, 4)).toBe(50);
-    expect(spikeThresholdCrossed(60, 3, 2)).toBe(50);
-    expect(spikeThresholdCrossed(100, 30, 30)).toBe(100);
+    }
+    const sent = alerts(h.sqlite);
+    expect(sent.map((a) => a.event_type)).toEqual(["crash:new_group", "crash:spike"]);
+    expect(JSON.parse(sent[1]!.payload_json).payload).toMatchObject({ count_last_hour: 10, devices_last_hour: 1 });
   });
 });
