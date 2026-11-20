@@ -1,67 +1,34 @@
-import { errorMessage } from "../lib/errorMessage";
 /**
- * Dedicated crash triage page (/apps/:appId/crashes): crashes-by-version
- * overview plus signature groups. Clicking a group jumps to the Feedback
- * list pre-filtered to crash tickets.
+ * Crashes (/apps/:appId/crashes): crash groups by signature, filtered by
+ * crash type (exceptions, native crashes, ANRs, system kills, WebView
+ * renderer exits) and report origin, with crashes by version above them.
+ * Opening a group shows it beside the list with its tickets.
  */
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getFeedbackStats, getFeedbackBuildFilter, listCrashGroups, type CrashType } from "../lib/api";
-import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "@botiverse/raft-ui";
 import { Bug } from "lucide-react";
+import { Select, SelectContent, SelectIcon, SelectItem, SelectList, SelectTrigger, SelectValue } from "@botiverse/raft-ui";
+import { getFeedbackStats, type CrashType } from "../lib/api";
 import { CrashByVersion } from "../components/FeedbackTrends";
-import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
+import { feedbackBuildScope } from "../components/FeedbackBuildScope";
+import { CrashGroupsPage, crashTypeLabel } from "../components/CrashGroups";
 import { useLocale, useText } from "../lib/locale";
 
-export const CRASH_TYPE_LABELS: Record<CrashType, string> = {
-  exception: "Exception",
-  native: "Native",
-  anr: "ANR",
-  system_kill: "System kill",
-  webview_renderer_gone: "WebView renderer gone",
-};
-
-export const CRASH_TYPE_BADGE_VARIANTS: Record<CrashType, BadgeProps["variant"]> = {
-  exception: "danger",
-  native: "accent",
-  anr: "warning",
-  system_kill: "muted",
-  webview_renderer_gone: "muted",
-};
-
-const TYPE_FILTERS: Array<{ value: CrashType | ""; label: string; labelZh: string }> = [
-  { value: "", label: "All", labelZh: "全部" },
-  { value: "exception", label: "Exceptions", labelZh: "异常" },
-  { value: "native", label: "Native", labelZh: "原生崩溃" },
-  { value: "anr", label: "ANRs", labelZh: "无响应（ANR）" },
-  { value: "system_kill", label: "System kills", labelZh: "系统强杀" },
-  { value: "webview_renderer_gone", label: "WebView renderer gone", labelZh: "WebView 渲染进程退出" },
-];
-
-const CRASH_TYPE_LABELS_ZH: Record<CrashType, string> = {
-  exception: "异常",
-  native: "原生崩溃",
-  anr: "无响应（ANR）",
-  system_kill: "系统强杀",
-  webview_renderer_gone: "WebView 渲染进程退出",
-};
-
-export const BACKGROUND_SYSTEM_KILL_SIGNATURE = "SystemKill@background";
+const CRASH_TYPES: CrashType[] = ["exception", "native", "anr", "system_kill", "webview_renderer_gone"];
 
 function parseCrashType(raw: string | null): CrashType | "" {
-  return raw === "anr" || raw === "system_kill" || raw === "native" || raw === "exception" || raw === "webview_renderer_gone" ? raw : "";
+  return CRASH_TYPES.includes(raw as CrashType) ? (raw as CrashType) : "";
 }
 
 export function AppCrashes({ appId }: { appId: string }) {
   const t = useText();
   const { locale } = useLocale();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const crashType = parseCrashType(searchParams.get("crash_type"));
   const buildScope = feedbackBuildScope(searchParams.get("build_scope"));
-  const originPolicy = useQuery({
-    queryKey: ["feedback-build-filter", appId],
-    queryFn: () => getFeedbackBuildFilter(appId),
+  const stats = useQuery({
+    queryKey: ["feedback-stats", appId, buildScope],
+    queryFn: () => getFeedbackStats(appId, buildScope),
   });
   const setCrashType = (value: CrashType | "") => {
     const next = new URLSearchParams(searchParams);
@@ -69,219 +36,52 @@ export function AppCrashes({ appId }: { appId: string }) {
     else next.delete("crash_type");
     setSearchParams(next, { replace: true });
   };
-  const groups = useQuery({
-    queryKey: ["crash-groups", appId, crashType, buildScope],
-    queryFn: () => listCrashGroups(appId, undefined, crashType || undefined, buildScope),
-  });
-  const stats = useQuery({
-    queryKey: ["feedback-stats", appId, buildScope],
-    queryFn: () => getFeedbackStats(appId, buildScope),
-  });
-  const rows = groups.data?.groups ?? [];
-  const bgKillGroup = rows.find((g) => g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE);
+  const typeItems: Record<string, string> = {
+    "": t("All crash types", "所有崩溃类型"),
+    ...Object.fromEntries(CRASH_TYPES.map((c) => [c, crashTypeLabel(c, locale)])),
+  };
+  const byVersion = stats.data?.crashes_by_version ?? [];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h2 className="text-lg font-semibold">{t("Crashes", "崩溃")}</h2>
-          <p className="text-sm text-foreground-muted">
-            {t("Grouped by signature (exception class + top app frame; ANRs by the main thread's first app frame). Stacks are auto-deobfuscated when the build's mapping was uploaded.", "按特征分组（异常类和栈顶应用帧；无响应按主线程的首个应用帧）。上传构建的映射文件后，调用栈会自动反混淆。")}
-          </p>
-        </div>
-        <SegmentedControl
-          value={crashType}
-          onValueChange={(value) => setCrashType(value as CrashType | "")}
-          aria-label={t("Crash type", "崩溃类型")}
-          className="w-fit"
-        >
-          {TYPE_FILTERS.map((f) => (
-            <SegmentedControlItem key={f.value || "all"} value={f.value}>
-              <SegmentedControlLabel>{t(f.label, f.labelZh)}</SegmentedControlLabel>
-            </SegmentedControlItem>
-          ))}
-        </SegmentedControl>
-      </div>
-
-      {originPolicy.data?.default_enabled === 1 && (
-        <FeedbackBuildScopeSelector value={buildScope} onChange={(value) => {
-          const next = new URLSearchParams(searchParams);
-          if (value === "standard") next.delete("build_scope"); else next.set("build_scope", value);
-          setSearchParams(next, { replace: true });
-        }} />
-      )}
-      {(stats.data?.crashes_by_version.length ?? 0) > 0 && (
-        <div className="max-w-md">
-          <CrashByVersion rows={stats.data!.crashes_by_version} />
-        </div>
-      )}
-
-      <div className="overflow-x-auto">
-        {groups.isLoading && <p className="text-sm text-foreground-muted">{t("Loading…", "加载中…")}</p>}
-        {groups.error && (
-          <p className="text-sm text-danger">
-            {t("Failed to load crash groups:", "加载崩溃分组失败：")} {errorMessage(groups.error)}
-          </p>
-        )}
-        {!groups.isLoading && rows.length === 0 && (
-          <EmptyState>
-            <EmptyStateContent>
-              <EmptyStateIcon>
-                <Bug aria-hidden="true" />
-              </EmptyStateIcon>
-              <EmptyStateTitle>
-                {crashType ? t(`No ${CRASH_TYPE_LABELS[crashType]} crashes reported`, `尚无${CRASH_TYPE_LABELS_ZH[crashType]}报告`) : t("No crashes reported yet", "尚无崩溃报告")}
-              </EmptyStateTitle>
-            </EmptyStateContent>
-          </EmptyState>
-        )}
-        {rows.length > 0 && (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-foreground-muted border-b border-line-muted">
-                <th className="py-2 pr-3">{t("Type", "类型")}</th>
-                <th className="py-2 pr-3">{t("Signature", "特征")}</th>
-                <th className="py-2 pr-3">{t("Count", "次数")}</th>
-                <th className="py-2 pr-3">{t("Devices", "设备")}</th>
-                <th className="py-2 pr-3">{t("Open", "未关闭")}</th>
-                <th className="py-2 pr-3">{t("Versions", "版本")}</th>
-                <th className="py-2 pr-3">{t("First seen", "首次出现")}</th>
-                <th className="py-2 pr-3">{t("Last seen", "最近出现")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((g) => (
-                <tr
-                  key={g.signature}
-                  className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
-                  onClick={() =>
-                    navigate(
-                      `/apps/${appId}/feedback?kind=crash&signature=${encodeURIComponent(g.signature)}&build_scope=${buildScope}`,
-                    )
-                  }
-                >
-                  <td className="py-2 pr-3">
-                    <Badge variant={CRASH_TYPE_BADGE_VARIANTS[g.crash_type] ?? CRASH_TYPE_BADGE_VARIANTS.exception}>
-                      {g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE
-                        ? t("Background system kill", "后台被系统结束")
-                        : t(CRASH_TYPE_LABELS[g.crash_type] ?? g.crash_type, CRASH_TYPE_LABELS_ZH[g.crash_type] ?? g.crash_type)}
-                    </Badge>
-                    {g.fatal === 0 && (
-                      <Badge variant="muted" className="ml-1">{t("Non-fatal", "非致命")}</Badge>
-                    )}
-                  </td>
-                  <td className="py-2 pr-3 max-w-lg">
-                    {g.signature === BACKGROUND_SYSTEM_KILL_SIGNATURE ? (
-                      <span>
-                        <span className="font-medium">{t("Killed by system in background", "后台被系统结束")}</span>{" "}
-                        <code className="text-xs text-foreground-muted break-all">({g.signature})</code>
-                      </span>
-                    ) : (
-                      <code className="text-xs break-all">{g.signature}</code>
-                    )}
-                  </td>
-                  <td className="py-2 pr-3 tabular-nums">{g.count}</td>
-                  <td className="py-2 pr-3 tabular-nums">{g.device_count}</td>
-                  <td className="py-2 pr-3 tabular-nums">{g.open_count}</td>
-                  <td className="py-2 pr-3 text-xs text-foreground-muted max-w-40 truncate">
-                    {g.versions ?? "—"}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-foreground-muted">
-                    {new Date(g.first_seen).toLocaleDateString(locale)}
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-foreground-muted">
-                    {new Date(g.last_seen).toLocaleString(locale)}
-                  </td>
-                </tr>
+    <CrashGroupsPage
+      appId={appId}
+      kind="crash"
+      icon={<Bug aria-hidden="true" />}
+      title={t("Crashes", "崩溃")}
+      crashType={crashType || undefined}
+      toolbarStart={
+        <Select items={typeItems} value={crashType} onValueChange={(v) => setCrashType(parseCrashType(v as string))}>
+          <SelectTrigger aria-label={t("Crash type", "崩溃类型")} className="min-w-0 flex-1 sm:w-auto sm:min-w-44 sm:flex-none">
+            <SelectValue />
+            <SelectIcon />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectList>
+              {Object.entries(typeItems).map(([value, label]) => (
+                <SelectItem key={value || "all"} value={value}>{label}</SelectItem>
               ))}
-            </tbody>
-          </table>
-        )}
-        </div>
-
-      {bgKillGroup && ((bgKillGroup.by_version?.length ?? 0) > 0 || (bgKillGroup.by_device?.length ?? 0) > 0) && (
-        <div className="grid grid-cols-1 gap-4 pt-2 md:grid-cols-2">
-          {(bgKillGroup.by_version?.length ?? 0) > 0 && (
-            <div className="rounded-md border border-line-hairline p-3 space-y-2">
-              <h3 className="text-xs font-semibold text-foreground-strong">
-                {t("Background system kills by version", "后台被系统结束 · 按版本统计")}
-              </h3>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-foreground-muted border-b border-line-hairline">
-                    <th className="py-1 pr-2">{t("Version", "版本")}</th>
-                    <th className="py-1 pr-2">{t("Count", "次数")}</th>
-                    <th className="py-1 pr-2">{t("Devices", "设备")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bgKillGroup.by_version!.map((v, idx) => (
-                    <tr
-                      key={`${v.version_name}-${v.version_code ?? idx}`}
-                      className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
-                      onClick={() => {
-                        const qs = new URLSearchParams({
-                          kind: "crash",
-                          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
-                          build_scope: buildScope,
-                        });
-                        if (v.version_code != null) qs.set("version_code", String(v.version_code));
-                        navigate(`/apps/${appId}/feedback?${qs.toString()}`);
-                      }}
-                    >
-                      <td className="py-1 pr-2 font-mono">
-                        {v.version_name}{v.version_code != null ? ` (${v.version_code})` : ""}
-                      </td>
-                      <td className="py-1 pr-2 tabular-nums">{v.count}</td>
-                      <td className="py-1 pr-2 tabular-nums">{v.device_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {(bgKillGroup.by_device?.length ?? 0) > 0 && (
-            <div className="rounded-md border border-line-hairline p-3 space-y-2">
-              <h3 className="text-xs font-semibold text-foreground-strong">
-                {t("Background system kills by device", "后台被系统结束 · 按设备统计")}
-              </h3>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-foreground-muted border-b border-line-hairline">
-                    <th className="py-1 pr-2">{t("Device", "设备")}</th>
-                    <th className="py-1 pr-2">{t("Total", "总次数")}</th>
-                    <th className="py-1 pr-2">{t("Max / day", "单日最高")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bgKillGroup.by_device!.map((d) => (
-                    <tr
-                      key={d.device_id}
-                      className="border-b border-line-hairline last:border-0 cursor-pointer hover:bg-fill-muted"
-                      onClick={() => {
-                        const qs = new URLSearchParams({
-                          kind: "crash",
-                          signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
-                          build_scope: buildScope,
-                        });
-                        if (d.device_id && d.device_id !== "unknown") qs.set("device_id", d.device_id);
-                        navigate(`/apps/${appId}/feedback?${qs.toString()}`);
-                      }}
-                    >
-                      <td className="py-1 pr-2">
-                        <span className="font-mono">{d.device_id.slice(0, 12)}</span>
-                        {d.device_model ? <span className="ml-1 text-foreground-muted">· {d.device_model}</span> : null}
-                      </td>
-                      <td className="py-1 pr-2 tabular-nums">{d.count}</td>
-                      <td className="py-1 pr-2 tabular-nums">{d.max_daily_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
+            </SelectList>
+          </SelectContent>
+        </Select>
+      }
+      above={
+        byVersion.length > 0 && (
+          <div className="max-w-md px-(--column-margin)">
+            <CrashByVersion rows={byVersion} />
+          </div>
+        )
+      }
+      empty={
+        crashType
+          ? {
+              title: t(`No ${crashTypeLabel(crashType, "en")} reports`, `没有${crashTypeLabel(crashType, "zh-CN")}报告`),
+              description: t("Choose another crash type to see the rest.", "选择其他崩溃类型查看其余报告。"),
+            }
+          : {
+              title: t("No crashes yet", "还没有崩溃"),
+              description: t("Crashes the SDK reports are grouped here by signature.", "SDK 上报的崩溃会按特征分组显示在这里。"),
+            }
+      }
+    />
   );
 }

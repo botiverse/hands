@@ -78,6 +78,7 @@ export function DetailColumn({
   label,
   title,
   meta,
+  actions,
   onClose,
   children,
 }: {
@@ -85,6 +86,8 @@ export function DetailColumn({
   label: string;
   title: ReactNode;
   meta?: ReactNode;
+  /** PanelActions that change the view (Open as a page), before Close. */
+  actions?: ReactNode;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -103,6 +106,7 @@ export function DetailColumn({
           {meta && <PanelMeta>{meta}</PanelMeta>}
         </PanelHeaderContent>
         <PanelActions>
+          {actions}
           <PanelAction aria-label={t("Close", "关闭")} onClick={onClose}>
             <X />
           </PanelAction>
