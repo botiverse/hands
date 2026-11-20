@@ -259,13 +259,24 @@ async function submitSystemKill(h: ReturnType<typeof environment>, ip: string, e
 }
 
 describe("crash alerts skip kills from outside the app", () => {
-  it("keeps a SIGKILL sent to the process but raises no alert; other foreground kills still alert", async () => {
+  it("keeps a SIGKILL sent to the process, alerts only when many devices are killed; other foreground kills still alert", async () => {
     retraceGate = Promise.resolve();
     const h = environment();
-    const id = await submitSystemKill(h, "192.0.2.40", { crash_exit_reason_code: 2, crash_exit_status: 9, crash_exit_reason: "signaled" });
+    const signaled = { crash_exit_reason_code: 2, crash_exit_status: 9, crash_exit_reason: "signaled" };
+    const id = await submitSystemKill(h, "192.0.2.40", { ...signaled, device_id: "test-phone" });
     await Promise.all(h.pending);
     expect(h.sqlite.prepare("SELECT kind FROM feedback_tickets WHERE id = ?").get(id)).toEqual({ kind: "crash" });
     expect(alerts(h.sqlite)).toEqual([]);
+    // Ten kills of one test phone: still nothing.
+    for (let i = 1; i < 10; i += 1) await submitSystemKill(h, `192.0.2.${50 + i}`, { ...signaled, device_id: "test-phone" });
+    await Promise.all(h.pending);
+    expect(alerts(h.sqlite)).toEqual([]);
+    // Ten distinct devices within the hour: one spike, marked as external.
+    for (let i = 1; i < 10; i += 1) await submitSystemKill(h, `192.0.2.${70 + i}`, { ...signaled, device_id: `device-${i}` });
+    await Promise.all(h.pending);
+    const sent = alerts(h.sqlite);
+    expect(sent.map((a) => a.event_type)).toEqual(["crash:spike"]);
+    expect(JSON.parse(sent[0]!.payload_json).payload).toMatchObject({ devices_last_hour: 10, external_kill: true });
 
     // The same report as a foreground low-memory kill is a new group.
     const other = environment();

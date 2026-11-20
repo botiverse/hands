@@ -221,8 +221,9 @@ The Feedback tab is a lightweight ticket system for reports submitted from the a
   occurrences within an hour, even from a single device (the payload carries
   `count_last_hour` and `devices_last_hour`). An Android system kill recorded
   as SIGKILL sent to the process (`REASON_SIGNALED`, status 9: `adb shell kill
-  -9`, a test harness, an OEM task killer) is kept and listed but raises
-  neither alert. Subscribe a webhook to either event (Org
+  -9`, a test harness, an OEM task killer) is kept and listed, raises no
+  `crash:new_group`, and raises `crash:spike` (with `external_kill: true`) only
+  when 10, 50 or 100 distinct devices are killed that way within an hour. Subscribe a webhook to either event (Org
   settings → Webhooks) to get paged instead of polling the console. A
   `crash:new_group` payload carries `exception` (the first exception line) and
   up to three `top_frames`, deobfuscated when the build's R8 mapping was
