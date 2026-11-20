@@ -259,7 +259,7 @@ function AppSwitcherMenuItems({ appId }: { appId: string | null }) {
           }}
         >
           <span className="truncate">{app.name}</span>
-          <Badge variant="information" className="ml-auto">{app.platform}</Badge>
+          <Badge appearance="outline" className="ml-auto">{app.platform}</Badge>
         </DropdownMenuItem>
       ))}
       {otherApps.length === 0 && (

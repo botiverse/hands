@@ -1246,7 +1246,7 @@ function WebhookRow({
               <span className="italic">{t("(all)", "（全部）")}</span>
             ) : (
               events.map((e) => (
-                <Badge key={e} variant="information" className="mr-1">
+                <Badge key={e} appearance="outline" className="mr-1">
                   {e}
                 </Badge>
               ))

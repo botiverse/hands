@@ -187,7 +187,7 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             </Tooltip>
           </div>
         </div>
-        <Badge variant="information" className="ml-3">{app.platform}</Badge>
+        <Badge appearance="outline" className="ml-3">{app.platform}</Badge>
       </div>
     </button>
   );
