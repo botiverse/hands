@@ -640,15 +640,20 @@ app.post("/parse", async (c) => {
  * Returns only the content inventory; no signature verification, so it also
  * works for packages the full /parse refuses (used to backfill old builds).
  */
+const INVENTORY_MAX_BYTES = 1024 * 1024 * 1024;
+
 app.post("/inventory", async (c) => {
   const platform = c.req.query("platform");
   if (platform !== "android" && platform !== "ios") {
     return c.json({ error: "platform must be android or ios" }, 400);
   }
+  // IPAs with symbols and Swift support run to several hundred MB.
+  const declared = Number(c.req.header("content-length") ?? "0");
+  if (declared > INVENTORY_MAX_BYTES) return c.json({ error: "file too large (>1GiB)" }, 413);
   const ab = await c.req.arrayBuffer();
   if (ab.byteLength === 0) return c.json({ error: "empty body" }, 400);
-  if (ab.byteLength > 200 * 1024 * 1024) {
-    return c.json({ error: "file too large (>200MB)" }, 413);
+  if (ab.byteLength > INVENTORY_MAX_BYTES) {
+    return c.json({ error: "file too large (>1GiB)" }, 413);
   }
   try {
     return c.json({ inventory: await computeInventory(platform, new Uint8Array(ab)) });
