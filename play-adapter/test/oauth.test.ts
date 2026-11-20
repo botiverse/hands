@@ -15,8 +15,21 @@ describe("Google OAuth refresh", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
   it.each([400, 401, 403, 500])("redacts Google credential errors for HTTP %s", async (status) => {
-    await expect(createAccessToken(credential, vi.fn(async () => Response.json({ error: JSON.stringify(credential) }, { status }))))
-      .rejects.toMatchObject({ status: status < 500 ? 403 : 502, message: "Google OAuth authorization needs reconnection" });
+    const error = await createAccessToken(credential, vi.fn(async () => Response.json({ error: JSON.stringify(credential) }, { status }))).catch((e) => e);
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain("private-refresh");
+    expect(error.status).toBe(status === 401 ? 403 : 502);
+  });
+  it("asks for reconnection only when Google refuses the grant or client", async () => {
+    const answer = (status: number, body: unknown) => createAccessToken(credential, vi.fn(async () => Response.json(body, { status }))).catch((e) => e);
+    for (const code of ["invalid_grant", "invalid_client", "unauthorized_client"]) {
+      expect(await answer(400, { error: code })).toMatchObject({ status: 403, code: "play_token_rejected" });
+    }
+    expect(await answer(401, {})).toMatchObject({ code: "play_token_rejected" });
+    // Rate limits, outages and unnamed refusals are retried, not a reconnection.
+    expect(await answer(429, { error: "rate_limit_exceeded" })).toMatchObject({ status: 502, code: "play_token_unavailable" });
+    expect(await answer(503, { error: "backend_error" })).toMatchObject({ status: 502, code: "play_token_unavailable" });
+    expect(await answer(400, { error: "invalid_request" })).toMatchObject({ status: 502, code: "play_token_unavailable" });
+    expect(await answer(403, {})).toMatchObject({ status: 502, code: "play_token_unavailable" });
   });
   it("logs only Google's OAuth reason codes when a grant is refused", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -24,7 +37,7 @@ describe("Google OAuth refresh", () => {
       error: "invalid_grant", error_subtype: "invalid_rapt", error_description: "reauth related error (invalid_rapt) for private-refresh",
     }, { status: 400 })))).rejects.toMatchObject({ code: "play_token_rejected" });
     await expect(createAccessToken(credential, vi.fn(async () => Response.json({ error: JSON.stringify(credential) }, { status: 400 }))))
-      .rejects.toMatchObject({ code: "play_token_rejected" });
+      .rejects.toMatchObject({ code: "play_token_unavailable" });
     const lines = warn.mock.calls.filter((c) => c[0] === "hands_play_token_rejection").map((c) => JSON.parse(String(c[1])));
     expect(lines[0]).toEqual({ grant: "publishing", status: 400, error: "invalid_grant", error_subtype: "invalid_rapt", reauth_required: true, expired_or_revoked: false });
     expect(lines[1]).toMatchObject({ error: null, error_subtype: null });
