@@ -95,7 +95,7 @@ steps:
 
 Hands 以组织为单位加密保存签名密钥和证书，为被授权的应用签名。密钥不会发到 CI：命令行上传未签名的文件，Hands 签名（macOS 还会向 Apple 公证并 staple 票据），命令行再下载签好的文件并核对 SHA-256。
 
-组织管理员在 组织 › 签名 中管理，或用命令行：
+组织管理员在 组织 › 签名 中管理，或用命令行。Apple 证书的上传表单会列出每个文件从哪里来：用钥匙串访问创建证书签名请求、在 Apple Developer 网站创建证书、从钥匙串访问导出 `.p12`，以及 App Store Connect API key。API key 不必重新填写：可以复用同一组织内某个应用已为 TestFlight 保存的 key，表单按 Key ID 列出这些应用。iOS 签名本身还没有上线；可以先保存并授权 Distribution 证书。
 
 ```bash
 # 在 Hands 内新建安卓密钥（RSA 4096，有效期 30 年）
@@ -105,6 +105,11 @@ HANDS_KEYSTORE_PASSWORD=... hands signing identities upload-android "Raft releas
 # Developer ID Application 证书，加上用于公证的 App Store Connect API key
 HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 \
   --notary-key-id ABC123 --notary-issuer-id <issuer> --notary-key AuthKey_ABC123.p8
+# 或直接复用组织内某个应用已为 TestFlight 保存的 API key
+HANDS_P12_PASSWORD=... hands signing identities upload-apple "Developer ID" devid.p12 --notary-from-app raft-ios
+# iOS 的 Apple Distribution 证书：带 API key（App Manager 或 Admin 权限）时由 Hands 管理
+# App Store 描述文件；也可以用 --profile 上传描述文件
+HANDS_P12_PASSWORD=... hands signing identities upload-apple-ios "Apple Distribution" dist.p12 --asc-from-app raft-ios
 
 hands signing identities grant <identityId> raft-deck-android
 hands signing identities list

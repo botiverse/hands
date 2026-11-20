@@ -2,8 +2,9 @@
  * Organization › Signing — signing keys and certificates held by Hands.
  *
  * Android keys can be generated here (the private key is created inside Hands)
- * or uploaded; Apple Developer ID certificates are uploaded with an optional
- * App Store Connect API key for notarization. Each identity is granted to the
+ * or uploaded. Apple Developer ID (macOS) and Apple Distribution (iOS)
+ * certificates are uploaded with step-by-step guidance and an App Store Connect
+ * API key, which can be copied from an app here that already has one. Each identity is granted to the
  * apps that may sign with it; CI then runs `hands sign`.
  */
 
@@ -14,6 +15,7 @@ import {
   generateAndroidSigningIdentity,
   grantSigningIdentity,
   listApps,
+  listSigningApiKeySources,
   listSigningIdentities,
   revokeSigningIdentity,
   ungrantSigningIdentity,
@@ -53,7 +55,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
   const t = useText();
   const qc = useQueryClient();
   const toast = useToast();
-  const [mode, setMode] = useState<"none" | "generate" | "android" | "apple">("none");
+  const [mode, setMode] = useState<"none" | "generate" | "android" | "apple" | "ios">("none");
   const key = ["signing-identities", orgId];
   const identities = useQuery({ queryKey: key, queryFn: () => listSigningIdentities(orgId), enabled: canManage });
   const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
@@ -106,11 +108,13 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" onClick={() => setMode("generate")}>{t("New Android key", "新建安卓签名密钥")}</Button>
         <Button variant="outline" onClick={() => setMode("android")}>{t("Upload Android keystore", "上传安卓 keystore")}</Button>
-        <Button variant="outline" onClick={() => setMode("apple")}>{t("Upload Apple Developer ID", "上传 Apple Developer ID")}</Button>
+        <Button variant="outline" onClick={() => setMode("apple")}>{t("Upload Apple Developer ID (macOS)", "上传 Apple Developer ID（macOS）")}</Button>
+        <Button variant="outline" onClick={() => setMode("ios")}>{t("Upload Apple Distribution (iOS)", "上传 Apple 分发证书（iOS）")}</Button>
       </div>
       {mode === "generate" && <GenerateForm orgId={orgId} onDone={() => done(t("Android key created", "安卓签名密钥已创建"))} onCancel={() => setMode("none")} />}
       {mode === "android" && <AndroidUploadForm orgId={orgId} onDone={() => done(t("Keystore uploaded", "keystore 已上传"))} onCancel={() => setMode("none")} />}
-      {mode === "apple" && <AppleUploadForm orgId={orgId} onDone={() => done(t("Certificate uploaded", "证书已上传"))} onCancel={() => setMode("none")} />}
+      {mode === "apple" && <AppleUploadForm key="apple" orgId={orgId} kind="apple_developer_id" onDone={() => done(t("Certificate uploaded", "证书已上传"))} onCancel={() => setMode("none")} />}
+      {mode === "ios" && <AppleUploadForm key="ios" orgId={orgId} kind="apple_ios_distribution" onDone={() => done(t("Certificate uploaded", "证书已上传"))} onCancel={() => setMode("none")} />}
 
       {identities.isLoading && <Skeleton className="h-10 w-full" />}
       {identities.error && <p className="text-danger">{errorMessage(identities.error)}</p>}
@@ -128,6 +132,8 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
                 {identity.metadata.not_after ? ` · ${t("expires", "到期")} ${identity.metadata.not_after}` : ""}
                 {identity.metadata.team_id ? ` · team ${identity.metadata.team_id}` : ""}
                 {identity.kind === "apple_developer_id" ? ` · ${identity.metadata.notary_key_id ? t("notarization on", "已配置公证") : t("no notarization key", "未配置公证")}` : ""}
+                {identity.kind === "apple_ios_distribution" ? ` · ${identity.metadata.asc_key_id ? t("profiles managed by Hands", "描述文件由 Hands 管理") : t(`${identity.metadata.provisioning_profile_count ?? 0} uploaded profile(s)`, `已上传 ${identity.metadata.provisioning_profile_count ?? 0} 个描述文件`)}` : ""}
+                {identity.metadata.api_key_from_app ? ` · ${t(`API key from ${identity.metadata.api_key_from_app}`, `API key 来自 ${identity.metadata.api_key_from_app}`)}` : ""}
               </div>
               <div className="font-mono text-xs text-foreground-muted break-all">SHA-256 {identity.metadata.sha256_fingerprint ?? "—"}</div>
               {identity.metadata.subject && <div className="text-xs text-foreground-muted">{identity.metadata.subject}</div>}
@@ -256,32 +262,144 @@ function AndroidUploadForm({ orgId, onDone, onCancel }: { orgId: string; onDone:
   );
 }
 
-function AppleUploadForm({ orgId, onDone, onCancel }: { orgId: string; onDone: () => void; onCancel: () => void }) {
+type AppleKind = "apple_developer_id" | "apple_ios_distribution";
+
+const APPLE_LINKS = {
+  certificates: "https://developer.apple.com/account/resources/certificates/add",
+  identifiers: "https://developer.apple.com/account/resources/identifiers/list",
+  profiles: "https://developer.apple.com/account/resources/profiles/add",
+  apiKeys: "https://appstoreconnect.apple.com/access/integrations/api",
+  csr: "https://developer.apple.com/help/account/certificates/create-a-certificate-signing-request",
+};
+
+function ExternalLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return <a className="underline" href={href} target="_blank" rel="noreferrer">{children}</a>;
+}
+
+/** Where each file comes from, in the order an admin does it. */
+function AppleSteps({ kind }: { kind: AppleKind }) {
+  const t = useText();
+  const certName = kind === "apple_developer_id" ? "Developer ID Application" : "Apple Distribution";
+  return (
+    <div className="sm:col-span-2 rounded bg-layer-inset p-3 text-xs space-y-2">
+      <div className="font-medium">{t("How to get these files", "这些文件从哪里来")}</div>
+      <ol className="list-decimal space-y-1 pl-4">
+        <li>
+          {t("On a Mac, create a certificate signing request: ", "在 Mac 上创建证书签名请求：")}
+          {t("Keychain Access › Certificate Assistant › Request a Certificate From a Certificate Authority, saved to disk. ", "钥匙串访问 › 证书助理 › 从证书颁发机构请求证书，存储到磁盘。")}
+          <ExternalLink href={APPLE_LINKS.csr}>{t("Apple's guide", "Apple 说明")}</ExternalLink>
+        </li>
+        <li>
+          {t(`In the Apple Developer site, create a "${certName}" certificate from that request and download the .cer file. `, `在 Apple Developer 网站用这个请求创建“${certName}”证书，下载 .cer 文件。`)}
+          {kind === "apple_developer_id" && t("Only the Account Holder can create Developer ID certificates. ", "只有 Account Holder 能创建 Developer ID 证书。")}
+          <ExternalLink href={APPLE_LINKS.certificates}>{t("Certificates", "证书")}</ExternalLink>
+        </li>
+        <li>
+          {t(`Double-click the .cer to add it to Keychain Access. Under My Certificates, right-click "${certName}: …", choose Export, save as .p12 and set a password.`, `双击 .cer 加入钥匙串访问。在“我的证书”里右键“${certName}: …”，选择导出，存为 .p12 并设置密码。`)}
+        </li>
+        {kind === "apple_developer_id" ? (
+          <li>
+            {t("For notarization, use the App Store Connect API key an app here already has, or create a Team key with the Developer role and download its .p8 (it can be downloaded only once). ", "公证需要 App Store Connect API key：可以直接用这里某个应用已有的 key，或者新建一个 Developer 权限的 Team key 并下载 .p8（只能下载一次）。")}
+            <ExternalLink href={APPLE_LINKS.apiKeys}>{t("API keys", "API key")}</ExternalLink>
+          </li>
+        ) : (
+          <>
+            <li>
+              {t("Make sure the app's bundle ID exists as an App ID with the capabilities the app uses, such as Associated Domains. ", "确认应用的 bundle ID 已经注册为 App ID，并打开应用用到的能力，比如 Associated Domains。")}
+              <ExternalLink href={APPLE_LINKS.identifiers}>{t("Identifiers", "标识符")}</ExternalLink>
+            </li>
+            <li>
+              {t("With an App Store Connect API key (App Manager or Admin role), Hands creates and renews the App Store provisioning profile itself. Without one, create an App Store profile and upload the .mobileprovision here. ", "有 App Store Connect API key（App Manager 或 Admin 权限）时，Hands 自己创建和续期 App Store 描述文件。没有的话，先创建 App Store 描述文件，把 .mobileprovision 传到这里。")}
+              <ExternalLink href={APPLE_LINKS.profiles}>{t("Profiles", "描述文件")}</ExternalLink>
+            </li>
+          </>
+        )}
+      </ol>
+    </div>
+  );
+}
+
+type KeyChoice = { mode: "app"; appId: string } | { mode: "new" } | { mode: "none" };
+
+function ApiKeyPicker({ orgId, kind, choice, onChange, keyId, setKeyId, issuerId, setIssuerId, setP8 }: {
+  orgId: string; kind: AppleKind; choice: KeyChoice; onChange: (c: KeyChoice) => void;
+  keyId: string; setKeyId: (v: string) => void; issuerId: string; setIssuerId: (v: string) => void; setP8: (f: File | null) => void;
+}) {
+  const t = useText();
+  const sources = useQuery({ queryKey: ["signing-api-keys", orgId], queryFn: () => listSigningApiKeySources(orgId) });
+  const keys = sources.data?.api_keys ?? [];
+  const label = kind === "apple_developer_id"
+    ? t("App Store Connect API key for notarization", "公证用的 App Store Connect API key")
+    : t("App Store Connect API key for provisioning profiles", "管理描述文件用的 App Store Connect API key");
+  return (
+    <fieldset className="sm:col-span-2 space-y-2 text-sm">
+      <legend className="text-xs text-foreground-muted">{label}</legend>
+      {keys.map((k) => (
+        <label key={k.app_id} className="flex items-center gap-2">
+          <input type="radio" name="api-key" checked={choice.mode === "app" && choice.appId === k.app_id} onChange={() => onChange({ mode: "app", appId: k.app_id })} />
+          {t(`Use the key of ${k.slug} (Key ID ${k.key_id})`, `使用 ${k.slug} 的 key（Key ID ${k.key_id}）`)}
+        </label>
+      ))}
+      <label className="flex items-center gap-2">
+        <input type="radio" name="api-key" checked={choice.mode === "new"} onChange={() => onChange({ mode: "new" })} />
+        {t("Enter a new key", "填写新的 key")}
+      </label>
+      <label className="flex items-center gap-2">
+        <input type="radio" name="api-key" checked={choice.mode === "none"} onChange={() => onChange({ mode: "none" })} />
+        {kind === "apple_developer_id" ? t("No notarization", "不公证") : t("No key: I upload a provisioning profile", "不用 key：我自己上传描述文件")}
+      </label>
+      {choice.mode === "new" && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field id="ap-key" label="Key ID"><Input id="ap-key" value={keyId} onChange={(e) => setKeyId(e.target.value)} required /></Field>
+          <Field id="ap-iss" label="Issuer ID"><Input id="ap-iss" value={issuerId} onChange={(e) => setIssuerId(e.target.value)} required /></Field>
+          <Field id="ap-p8" label="AuthKey_XXXX.p8"><input id="ap-p8" type="file" accept=".p8" onChange={(e) => setP8(e.target.files?.[0] ?? null)} required /></Field>
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
+function AppleUploadForm({ orgId, kind, onDone, onCancel }: { orgId: string; kind: AppleKind; onDone: () => void; onCancel: () => void }) {
   const t = useText();
   const toast = useToast();
   const [name, setName] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [password, setPassword] = useState("");
+  const [choice, setChoice] = useState<KeyChoice>({ mode: "none" });
   const [keyId, setKeyId] = useState("");
   const [issuerId, setIssuerId] = useState("");
   const [p8, setP8] = useState<File | null>(null);
+  const [profiles, setProfiles] = useState<File[]>([]);
+  const ios = kind === "apple_ios_distribution";
   const m = useMutation({
-    mutationFn: async () => uploadSigningIdentity(orgId, {
-      kind: "apple_developer_id", name: name.trim(), p12_b64: await fileBase64(file!), p12_password: password,
-      notary: keyId && issuerId && p8 ? { key_id: keyId.trim(), issuer_id: issuerId.trim(), p8: await p8.text() } : null,
-    }),
+    mutationFn: async () => {
+      const key = choice.mode === "app"
+        ? { from_app: choice.appId }
+        : choice.mode === "new" && p8 ? { key_id: keyId.trim(), issuer_id: issuerId.trim(), p8: await p8.text() } : null;
+      return uploadSigningIdentity(orgId, {
+        kind, name: name.trim(), p12_b64: await fileBase64(file!), p12_password: password,
+        ...(ios
+          ? { asc: key, provisioning_profiles_b64: await Promise.all(profiles.map(fileBase64)) }
+          : { notary: key }),
+      });
+    },
     onSuccess: onDone,
     onError: (e) => toast.show({ kind: "error", title: t("Upload failed", "上传失败"), description: errorMessage(e) }),
   });
+  const certLabel = ios ? t("Apple Distribution certificate (.p12)", "Apple Distribution 证书（.p12）") : t("Developer ID Application certificate (.p12)", "Developer ID Application 证书（.p12）");
+  const missing = !file || (choice.mode === "new" && !p8) || (ios && choice.mode === "none" && profiles.length === 0);
   return (
-    <FormShell onSubmit={() => m.mutate()} onCancel={onCancel} pending={m.isPending || !file}>
+    <FormShell onSubmit={() => m.mutate()} onCancel={onCancel} pending={m.isPending || missing}>
+      <AppleSteps kind={kind} />
       <Field id="ap-name" label={t("Name", "名称")}><Input id="ap-name" value={name} onChange={(e) => setName(e.target.value)} required /></Field>
-      <Field id="ap-file" label={t("Developer ID Application certificate (.p12)", "Developer ID Application 证书（.p12）")}><input id="ap-file" type="file" accept=".p12,.pfx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} required /></Field>
+      <Field id="ap-file" label={certLabel}><input id="ap-file" type="file" accept=".p12,.pfx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} required /></Field>
       <Field id="ap-pass" label={t(".p12 password", ".p12 密码")}><Input id="ap-pass" type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
-      <div className="sm:col-span-2 text-xs text-foreground-muted">{t("Notarization (App Store Connect API key, Developer role):", "公证（App Store Connect API key，Developer 权限）：")}</div>
-      <Field id="ap-key" label="Key ID"><Input id="ap-key" value={keyId} onChange={(e) => setKeyId(e.target.value)} /></Field>
-      <Field id="ap-iss" label="Issuer ID"><Input id="ap-iss" value={issuerId} onChange={(e) => setIssuerId(e.target.value)} /></Field>
-      <Field id="ap-p8" label="AuthKey_XXXX.p8"><input id="ap-p8" type="file" accept=".p8" onChange={(e) => setP8(e.target.files?.[0] ?? null)} /></Field>
+      <ApiKeyPicker orgId={orgId} kind={kind} choice={choice} onChange={setChoice} keyId={keyId} setKeyId={setKeyId} issuerId={issuerId} setIssuerId={setIssuerId} setP8={setP8} />
+      {ios && (
+        <Field id="ap-profiles" label={choice.mode === "none" ? t("Provisioning profile (.mobileprovision)", "描述文件（.mobileprovision）") : t("Provisioning profile (optional)", "描述文件（可选）")}>
+          <input id="ap-profiles" type="file" accept=".mobileprovision" multiple onChange={(e) => setProfiles(Array.from(e.target.files ?? []))} />
+        </Field>
+      )}
     </FormShell>
   );
 }

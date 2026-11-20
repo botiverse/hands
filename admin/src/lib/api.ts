@@ -1716,6 +1716,9 @@ export interface SigningIdentity {
     key_alias?: string;
     team_id?: string;
     notary_key_id?: string | null;
+    asc_key_id?: string | null;
+    api_key_from_app?: string | null;
+    provisioning_profile_count?: number;
   };
   backup_exported_at: number | null;
   created_by_actor: string;
@@ -1726,6 +1729,19 @@ export interface SigningIdentity {
 
 export const listSigningIdentities = (orgId: string) =>
   request<{ signing_identities: SigningIdentity[] }>(`/api/orgs/${orgId}/signing-identities`, { admin: true });
+
+export interface SigningApiKeySource {
+  app_id: string;
+  slug: string;
+  name: string;
+  key_id: string;
+  issuer_id: string;
+  updated_at: number;
+}
+
+/** Apps of the org that already hold an App Store Connect API key (ids only). */
+export const listSigningApiKeySources = (orgId: string) =>
+  request<{ api_keys: SigningApiKeySource[] }>(`/api/orgs/${orgId}/signing-identities/api-keys`, { admin: true });
 
 export const uploadSigningIdentity = (orgId: string, input: Record<string, unknown>) =>
   request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities`, {

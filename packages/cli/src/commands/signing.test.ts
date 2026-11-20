@@ -13,12 +13,14 @@ vi.mock("../lib/api.js", async (importOriginal) => ({
       return { job: { id: "job-1", status: "awaiting_upload" }, upload_url: "https://r2.example/upload", upload_headers: { "content-type": "application/octet-stream" } };
     }
     if (path.endsWith("/sign")) return { job: { id: "job-1", status: "signing" } };
+    if (path.endsWith("/signing-identities")) return { signing_identity: { id: "si-1", name: "Deck iOS", metadata: { subject: "CN=Apple Distribution" } } };
     state.polls += 1;
     return { job: { id: "job-1", status: "succeeded", output_sha256: state.outputSha, download_url: "https://r2.example/download" } };
   },
 }));
 
-import { signFile } from "./signing.js";
+import { Command } from "commander";
+import { registerSigningCommands, signFile } from "./signing.js";
 
 afterEach(() => { vi.unstubAllGlobals(); state.calls.length = 0; state.polls = 0; });
 
@@ -55,5 +57,30 @@ describe("hands sign", () => {
 
   it("refuses files it cannot classify", async () => {
     await expect(signFile({ app: APP_ID, file: "/tmp/x.bin", timeoutMs: 1000, log: () => {} })).rejects.toThrow(/--type/);
+  });
+});
+
+describe("hands signing identities upload-apple-ios", () => {
+  it("sends the certificate with an API key copied from an app, or with uploaded profiles", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-ios-id-"));
+    const p12 = join(dir, "dist.p12");
+    const profile = join(dir, "Deck.mobileprovision");
+    writeFileSync(p12, "P12");
+    writeFileSync(profile, "PROFILE");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const run = async (...args: string[]) => {
+      const program = new Command();
+      program.exitOverride();
+      registerSigningCommands(program);
+      await program.parseAsync(["node", "hands", "signing", "identities", "upload-apple-ios", "Deck iOS", p12, "--org", "org", ...args]);
+    };
+    await run("--asc-from-app", APP_ID);
+    expect(state.calls.at(-1)).toMatchObject({
+      path: "/api/orgs/org/signing-identities",
+      body: { kind: "apple_ios_distribution", p12_b64: Buffer.from("P12").toString("base64"), asc: { from_app: APP_ID }, provisioning_profiles_b64: [] },
+    });
+    await run("--profile", profile);
+    expect(state.calls.at(-1)!.body).toMatchObject({ asc: null, provisioning_profiles_b64: [Buffer.from("PROFILE").toString("base64")] });
+    await expect(run("--asc-from-app", APP_ID, "--asc-key-id", "K")).rejects.toThrow(/not both/);
   });
 });
