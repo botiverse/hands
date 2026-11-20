@@ -61,6 +61,8 @@ data class HandsUpdateStatus(
     val targetVersionName: String? = null,
     /** Bytes so far while [state] is DOWNLOADING or PATCHING; null otherwise. */
     val progress: HandsUpdateProgress? = null,
+    /** Release notes of the target, in [resolvedLanguageTag] when one matched. */
+    val releaseNotes: String? = null,
 )
 
 /** Structured update events that hosts can include in their own diagnostics. */
@@ -281,6 +283,7 @@ internal data class UpdateTransactionRecord(
     val targetVersionCode: Long? = null,
     val targetBuildId: String? = null,
     val targetVersionName: String? = null,
+    val releaseNotes: String? = null,
     val assetSizeBytes: Long? = null,
     val assetSha256: String? = null,
     val filetype: String? = null,
@@ -306,6 +309,7 @@ internal data class UpdateTransactionRecord(
         resolvedLanguageTag = resolvedLanguageTag,
         updatedAt = updatedAt,
         targetVersionName = targetVersionName,
+        releaseNotes = releaseNotes,
     )
 }
 

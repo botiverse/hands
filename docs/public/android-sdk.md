@@ -87,6 +87,25 @@ version. If the user returns without accepting the system installer, the state
 remains installable; `reopenPendingInstaller()` reopens the same APK without a
 duplicate download.
 
+### Checking without installing
+
+`checker.check()` asks Hands for an offer without starting anything. The
+returned `HandsUpdateCheck.offer` has `versionName`, `versionCode`,
+`releaseNotes` (the release's notes for the requested language, falling back
+to English and then to the plain changelog), `downloadSizeBytes` (the patch
+size when this device can apply the offered patch, else the full APK),
+`fullSizeBytes`, `forceUpdate` and `releasedAt`; `status` is the current
+transaction. Show the offer, then call `install()`. While an update is in
+progress, `HandsUpdateStatus.releaseNotes` and `targetVersionName` keep the
+same notes and version, so a page reopened later needs no new request.
+
+```kotlin
+val check = checker.check()
+check.offer?.let { offer ->
+    showUpdate(offer.versionName, offer.releaseNotes, offer.downloadSizeBytes)
+}
+```
+
 ### Progress, install permission and offline install
 
 `checker.statusUpdates()` is a `Flow<HandsUpdateStatus>` for an update page.
@@ -162,6 +181,22 @@ universal APK (`arch: null`).
 To check without installing (e.g. to render your own "update available" UI),
 call `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` and act on
 the result.
+
+### Java hosts
+
+Every suspending call has a callback twin that delivers on the main thread:
+`checkAsync`, `installAsync`, `statusAsync`, `reopenPendingInstallerAsync`,
+and `observeStatus(listener)` for `statusUpdates()`. Each returns a
+`Closeable`; close it to cancel (closing `installAsync` stops waiting, not the
+update). The constructor has Java overloads for its defaulted parameters.
+
+```java
+UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
+checker.checkAsync((check, error) -> {
+    if (check != null && check.getOffer() != null) showUpdate(check.getOffer());
+});
+Closeable watching = checker.observeStatus(status -> render(status));
+```
 
 ## Feedback
 

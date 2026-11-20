@@ -76,6 +76,17 @@ val status = checker.install()
 
 在更新页面或生命周期恢复时调用 `checker.status()`，根据稳定的小写状态更新界面：`idle`、`checking`、`patching`、`downloading`、`ready_to_install`、`installer_opened`、`failed`、`stale` 和 `installed`。只有 PackageManager 观察到完全匹配的目标版本后才进入 `installed`。如果用户返回时未接受系统安装器，状态仍可安装；`reopenPendingInstaller()` 会重新打开同一 APK，不会重复下载。
 
+### 只检查不安装
+
+`checker.check()` 向 Hands 查询更新，但不开始下载。返回的 `HandsUpdateCheck.offer` 包含 `versionName`、`versionCode`、`releaseNotes`（按请求语言挑选的更新日志，没有则用英文，再没有则用普通 changelog）、`downloadSizeBytes`（本机能应用增量补丁时为补丁大小，否则为完整 APK 大小）、`fullSizeBytes`、`forceUpdate` 和 `releasedAt`；`status` 是当前事务状态。先展示这些信息，再调用 `install()`。更新进行中，`HandsUpdateStatus.releaseNotes` 和 `targetVersionName` 保留同一份日志和版本，之后重新打开页面无需再请求。
+
+```kotlin
+val check = checker.check()
+check.offer?.let { offer ->
+    showUpdate(offer.versionName, offer.releaseNotes, offer.downloadSizeBytes)
+}
+```
+
 ### 进度、安装权限与离线安装
 
 `checker.statusUpdates()` 返回供更新页面使用的 `Flow<HandsUpdateStatus>`。它先给出核对后的状态，之后跟随同一应用和渠道下任何 `UpdateChecker` 产生的变化。下载完整 APK（`downloading`）或增量补丁（`patching`）期间每 500 毫秒重新读取一次，`status.progress` 随之更新：`downloadedBytes`、`totalBytes`（未知时为 null）、`percent`，以及 `paused` 和 `pauseReason`（如 `waiting_for_network`）。`status.targetVersionName` 是正在安装的版本名。
@@ -111,6 +122,18 @@ SDK 发送每次安装稳定的 ID（通过 `HandsDeviceId` 生成的 `X-Hands-D
 SDK 上报 `Build.SUPPORTED_ABIS` 的第一个值。存在针对该 ABI 的 APK 时 Hands 优先选择它，否则回退到通用 APK（`arch: null`）。
 
 如果只需检查而不安装，例如显示自定义“有可用更新”界面，请调用 `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` 并处理结果。
+
+### Java 宿主
+
+每个挂起调用都有在主线程回调的对应方法：`checkAsync`、`installAsync`、`statusAsync`、`reopenPendingInstallerAsync`，以及对应 `statusUpdates()` 的 `observeStatus(listener)`。它们都返回 `Closeable`，关闭即取消（关闭 `installAsync` 只是不再等待，更新本身继续）。构造函数为有默认值的参数提供了 Java 重载。
+
+```java
+UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
+checker.checkAsync((check, error) -> {
+    if (check != null && check.getOffer() != null) showUpdate(check.getOffer());
+});
+Closeable watching = checker.observeStatus(status -> render(status));
+```
 
 ## 反馈
 
