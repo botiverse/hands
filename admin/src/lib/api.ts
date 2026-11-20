@@ -1379,6 +1379,79 @@ export const listBuildAssets = (appId: string, buildId: string) =>
     { admin: true },
   );
 
+// ---------- Build content inventory ----------
+
+export interface InventoryCategory { key: string; label: string; bytes: number; compressed_bytes: number; files: number }
+export interface InventoryFile { path: string; bytes: number; compressed_bytes: number; category: string }
+export interface InventoryLibrary {
+  name: string;
+  kind: "dex-package" | "native" | "framework" | "extension" | string;
+  bytes: number;
+  compressed_bytes?: number;
+  version?: string | null;
+  sdk?: string | null;
+  classes?: number;
+  methods?: number;
+  estimated?: boolean;
+  abis?: string[];
+  bundle_id?: string | null;
+}
+export interface InventorySdk { name: string; bytes: number; compressed_bytes: number; kinds: string[] }
+export interface BuildInventory {
+  schema: 1;
+  platform: "android" | "ios";
+  generator?: string;
+  total_bytes: number;
+  uncompressed_bytes: number;
+  file_count: number;
+  app: Record<string, string | number | null>;
+  categories: InventoryCategory[];
+  largest_files: InventoryFile[];
+  components: Record<string, string[]>;
+  libraries: InventoryLibrary[];
+  sdks: InventorySdk[];
+  dex?: { files: number; classes: number; methods: number; size_estimate: string };
+  notes: string[];
+  truncated: boolean;
+}
+export interface InventoryBuildRef { build_id: string; version_name: string; version_code: number; product_type: string; computed_at?: number }
+export interface BuildInventoryResponse {
+  build: InventoryBuildRef;
+  computed_at: number;
+  source_asset_id: string | null;
+  source_file_hash: string | null;
+  inventory: BuildInventory;
+}
+export interface InventoryLibraryChange {
+  name: string; kind: string; sdk: string | null; before: number; after: number; delta: number; compressed_delta: number;
+  version_before: string | null; version_after: string | null;
+}
+export interface InventoryFileDelta { path: string; category: string; before: number; after: number; delta: number }
+export interface InventoryDiff {
+  schema: 1;
+  platform: "android" | "ios";
+  total: { before: number; after: number; delta: number; uncompressed_before: number; uncompressed_after: number; uncompressed_delta: number };
+  categories: Array<{ key: string; label: string; before: number; after: number; delta: number; compressed_before: number; compressed_after: number; compressed_delta: number }>;
+  components: Record<string, { added: string[]; removed: string[] }>;
+  libraries: { added: InventoryLibrary[]; removed: InventoryLibrary[]; changed: InventoryLibraryChange[] };
+  sdks: { added: InventorySdk[]; removed: InventorySdk[]; changed: Array<{ name: string; before: number; after: number; delta: number }> };
+  files: { grown: InventoryFileDelta[]; shrunk: InventoryFileDelta[]; added: InventoryFileDelta[]; removed: InventoryFileDelta[] };
+  notes: string[];
+}
+export interface BuildInventoryDiffResponse { base: InventoryBuildRef; head: InventoryBuildRef; diff: InventoryDiff }
+
+export const getBuildInventory = (appId: string, buildId: string) =>
+  request<BuildInventoryResponse>(`/api/apps/${appId}/builds/${buildId}/inventory`, { admin: true });
+
+export const refreshBuildInventory = (appId: string, buildId: string) =>
+  request<BuildInventoryResponse>(`/api/apps/${appId}/builds/${buildId}/inventory`, { method: "POST", admin: true });
+
+export const getBuildInventoryDiff = (appId: string, buildId: string, against = "previous") =>
+  request<BuildInventoryDiffResponse>(
+    `/api/apps/${appId}/builds/${buildId}/inventory/diff?against=${encodeURIComponent(against)}`,
+    { admin: true },
+  );
+
 export const createBuildAsset = (
   appId: string,
   buildId: string,
