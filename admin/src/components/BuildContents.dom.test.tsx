@@ -108,6 +108,22 @@ describe("BuildContents", () => {
     expect(screen.queryByText(/^Services/)).toBeNull();
   });
 
+  it("says when names were restored with the R8 mapping", async () => {
+    const mapped = { ...inventory, dex: { files: 1, classes: 10, methods: 1, size_estimate: "", obfuscated: true }, mapping: { used: true as const, classes_mapped: 1234, classes_unmapped: 5 } };
+    mocks.getBuildInventory.mockResolvedValue({ build: { build_id: "b2" }, computed_at: 1, source_asset_id: null, source_file_hash: null, inventory: mapped });
+    renderContents();
+    expect(await screen.findByText("Names restored with the R8 mapping (1,234 classes).")).toBeTruthy();
+    expect(screen.queryByText(/Upload its mapping\.txt/)).toBeNull();
+  });
+
+  it("asks for the mapping when an obfuscated build has none", async () => {
+    const obfuscated = { ...inventory, dex: { files: 1, classes: 10, methods: 1, size_estimate: "", obfuscated: true } };
+    mocks.getBuildInventory.mockResolvedValue({ build: { build_id: "b2" }, computed_at: 1, source_asset_id: null, source_file_hash: null, inventory: obfuscated });
+    renderContents();
+    expect(await screen.findByText(/Upload its mapping\.txt to see library names/)).toBeTruthy();
+    expect(screen.queryByText(/Names restored/)).toBeNull();
+  });
+
   it("offers to read an older build's contents", async () => {
     mocks.getBuildInventory.mockRejectedValueOnce(new ApiError(404, { code: "INVENTORY_MISSING", build_id: "b2" }, "missing"));
     mocks.refreshBuildInventory.mockResolvedValue({});

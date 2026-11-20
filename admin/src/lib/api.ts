@@ -1410,7 +1410,10 @@ export interface BuildInventory {
   components: Record<string, string[]>;
   libraries: InventoryLibrary[];
   sdks: InventorySdk[];
-  dex?: { files: number; classes: number; methods: number; size_estimate: string };
+  /** `obfuscated`: the dex class names look R8-minified (judged before any mapping). */
+  dex?: { files: number; classes: number; methods: number; size_estimate: string; obfuscated?: boolean };
+  /** Android: present when the build's R8 mapping restored class names. */
+  mapping?: { used: true; classes_mapped: number; classes_unmapped: number };
   notes: string[];
   truncated: boolean;
 }

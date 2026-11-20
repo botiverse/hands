@@ -97,6 +97,17 @@ describe("builds inventory / diff", () => {
     expect(text).not.toContain("services");
   });
 
+  it("says whether dex names were restored with the R8 mapping", () => {
+    const withInventory = (extra: Partial<InventoryResponse["inventory"]>) =>
+      renderInventory({ ...inventoryResponse, inventory: { ...inventoryResponse.inventory, ...extra } });
+    expect(withInventory({ dex: { obfuscated: true }, mapping: { used: true, classes_mapped: 900, classes_unmapped: 3 } }))
+      .toContain("(names restored with the R8 mapping: 900 classes mapped, 3 not in the mapping)");
+    const obfuscated = withInventory({ dex: { obfuscated: true } });
+    expect(obfuscated).toContain("upload mapping.txt to see library names");
+    expect(obfuscated).toContain("hands builds attach-symbols");
+    expect(renderInventory(inventoryResponse)).not.toMatch(/mapping/);
+  });
+
   it("renders a diff with growth, added and removed items", () => {
     const text = renderDiff(diffResponse);
     expect(text).toContain("1.0.0 (100) -> 1.1.0 (110)");

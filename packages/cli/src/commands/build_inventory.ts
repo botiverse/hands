@@ -30,6 +30,10 @@ export interface Inventory {
   components: Record<string, string[]>;
   libraries: Library[];
   sdks: Sdk[];
+  /** `obfuscated`: the dex class names look R8-minified. */
+  dex?: { obfuscated?: boolean };
+  /** Present when the build's R8 mapping restored class names. */
+  mapping?: { used: boolean; classes_mapped: number; classes_unmapped: number };
   notes: string[];
 }
 
@@ -97,6 +101,11 @@ export function renderInventory(res: InventoryResponse, opts: { libraries?: numb
       lines.push(`  ${pad(l.name, 40)} ${pad(l.kind, 12)} ${pad(`${l.estimated ? "~" : ""}${formatBytes(l.compressed_bytes ?? l.bytes)}`, 11)} ${extra}`.trimEnd());
     }
     if (inv.platform === "android") lines.push("  (~ dex package sizes are estimates: each dex file split by its packages' share of code)");
+    if (inv.platform === "android" && inv.mapping?.used) {
+      lines.push(`  (names restored with the R8 mapping: ${inv.mapping.classes_mapped} classes mapped, ${inv.mapping.classes_unmapped} not in the mapping)`);
+    } else if (inv.platform === "android" && inv.dex?.obfuscated) {
+      lines.push("  (obfuscated by R8: upload mapping.txt to see library names, with: hands builds attach-symbols <app> <build> mapping.txt)");
+    }
   }
   for (const [key, values] of Object.entries(inv.components)) {
     if (!values.length) continue;
