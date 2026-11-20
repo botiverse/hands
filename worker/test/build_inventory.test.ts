@@ -8,12 +8,14 @@ import {
   handleBuildInventoryDiff,
   handleGetBuildInventory,
   handleRefreshBuildInventory,
+  recomputeInventoryAfterMappingUpload,
 } from "../src/routes/build_inventory";
 import { autoParseInstallableAsset, handleDeleteBuild } from "../src/routes/builds";
 import { openApiDocument } from "../src/openapi";
 
 const container = vi.hoisted(() => ({
   calls: [] as string[],
+  mappingUrls: [] as Array<string | null>,
   respond: (_url: string): Response => new Response("unset", { status: 500 }),
 }));
 
@@ -21,6 +23,7 @@ vi.mock("@cloudflare/containers", () => ({
   getRandom: async () => ({
     fetch: async (req: Request) => {
       container.calls.push(req.url);
+      container.mappingUrls.push(req.headers.get("x-mapping-url"));
       return container.respond(req.url);
     },
   }),
@@ -211,8 +214,13 @@ describe("build inventory routes", () => {
     r2 = new MemoryR2();
     r2.objects.set("apps/app-1/old.apk", new Uint8Array([1, 2, 3, 4]));
     r2.objects.set("apps/app-1/new.apk", new Uint8Array([5, 6, 7, 8]));
-    env = { DB: d1(sqlite), APK_BUCKET: r2 as unknown as R2Bucket, APK_PARSER: {} as never } as unknown as Env;
+    env = {
+      DB: d1(sqlite), APK_BUCKET: r2 as unknown as R2Bucket, APK_PARSER: {} as never,
+      R2_S3_ENDPOINT: "https://r2.example.test", R2_BUCKET_NAME: "assets",
+      R2_S3_ACCESS_KEY_ID: "test-access", R2_S3_SECRET_ACCESS_KEY: "test-secret",
+    } as unknown as Env;
     container.calls = [];
+    container.mappingUrls = [];
     container.respond = (url) => {
       if (!url.includes("/inventory?platform=android")) return new Response("wrong endpoint", { status: 404 });
       return Response.json({ inventory: inventory() });
@@ -331,6 +339,81 @@ describe("build inventory routes", () => {
     }
     error.mockRestore();
     expect(sqlite.prepare("SELECT count(*) FROM build_inventories").pluck().get()).toBe(0);
+  });
+
+  const addMapping = (id: string, buildId: string, state: string | null, createdAt: number) => sqlite.prepare(
+    `INSERT INTO build_assets (id, build_id, platform, filetype, r2_key, file_hash, size_bytes, created_at, artifact_kind, metadata_json)
+     VALUES (?, ?, 'android', 'mapping.txt', ?, ?, 10, ?, 'proguard-mapping', ?)`,
+  ).run(id, buildId, `apps/app-1/builds/${buildId}/${id}/mapping.txt`, "d".repeat(64), createdAt, JSON.stringify(state ? { upload_state: state } : {}));
+
+  it("passes the build's own ready R8 mapping to the container as a presigned header", async () => {
+    // No mapping: no header.
+    await call("/api/apps/app-1/builds/build-new/inventory", { method: "POST" });
+    expect(container.mappingUrls).toEqual([null]);
+
+    // Another build's mapping and a mapping still uploading are not used.
+    addMapping("map-old", "build-old", "ready", 5);
+    addMapping("map-pending", "build-new", "pending_upload", 9);
+    await call("/api/apps/app-1/builds/build-new/inventory", { method: "POST" });
+    expect(container.mappingUrls[1]).toBeNull();
+
+    sqlite.prepare("UPDATE build_assets SET metadata_json = ? WHERE id = 'map-pending'").run(JSON.stringify({ upload_state: "ready" }));
+    container.respond = () => Response.json({ inventory: inventory({ mapping: { used: true, classes_mapped: 10, classes_unmapped: 2 } }) });
+    const res = await call("/api/apps/app-1/builds/build-new/inventory", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ inventory: { mapping: { used: true, classes_mapped: 10 } } });
+    const url = new URL(container.mappingUrls[2]!);
+    expect(url.origin).toBe("https://r2.example.test");
+    expect(url.pathname).toBe("/assets/apps/app-1/builds/build-new/map-pending/mapping.txt");
+    expect(url.searchParams.get("X-Amz-Signature")).toBeTruthy();
+    // Never in the container request URL.
+    expect(container.calls[2]).toBe("http://container/inventory?platform=android");
+    const audit = sqlite.prepare("SELECT payload FROM audit_logs WHERE action = 'build.inventory.refresh' ORDER BY created_at DESC LIMIT 1").pluck().get() as string;
+    expect(JSON.parse(audit)).toMatchObject({ buildId: "build-new", mapping: true });
+    expect(audit).not.toContain("X-Amz");
+  });
+
+  it("passes the mapping to upload parsing when it is already there", async () => {
+    addMapping("map-new", "build-new", null, 3);
+    container.respond = () => Response.json({
+      parser_kind: "apk-aapt", platform: "android", package_id: "dev.hands.app", version_code: 110, size_bytes: 4,
+      file_hash_sha256: "b".repeat(64), raw: { signer_lineages: [["c".repeat(64)]] }, inventory: inventory(),
+    });
+    await autoParseInstallableAsset(env, "app-1", "build-new", "apps/app-1/new.apk", "apk-aapt");
+    expect(container.calls).toEqual(["http://container/parse?parser_kind=apk-aapt"]);
+    expect(container.mappingUrls[0]).toContain("/map-new/mapping.txt");
+  });
+
+  it("recomputes an Android inventory with the mapping after the mapping upload, best effort", async () => {
+    // No mapping yet: nothing to do.
+    expect(await recomputeInventoryAfterMappingUpload(env, "app-1", "build-new")).toBe(false);
+    expect(container.calls).toEqual([]);
+
+    addMapping("map-new", "build-new", "ready", 3);
+    container.respond = () => Response.json({ inventory: grownInventory() });
+    expect(await recomputeInventoryAfterMappingUpload(env, "app-1", "build-new")).toBe(true);
+    expect(container.calls).toEqual(["http://container/inventory?platform=android"]);
+    expect(container.mappingUrls[0]).toContain("/map-new/mapping.txt");
+    expect(sqlite.prepare("SELECT source_asset_id, total_bytes FROM build_inventories WHERE build_id = 'build-new'").get())
+      .toEqual({ source_asset_id: "asset-new", total_bytes: 20_000_000 });
+
+    // Wrong app, or a build without an APK: nothing happens.
+    expect(await recomputeInventoryAfterMappingUpload(env, "app-2", "build-new")).toBe(false);
+    addMapping("map-ios", "build-ios", "ready", 3);
+    expect(await recomputeInventoryAfterMappingUpload(env, "app-1", "build-ios")).toBe(false);
+
+    // Container failure is swallowed.
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    container.respond = () => Response.json({ error: "boom" }, { status: 422 });
+    expect(await recomputeInventoryAfterMappingUpload(env, "app-1", "build-new")).toBe(false);
+    expect(error.mock.calls.flat().join(" ")).not.toContain("X-Amz");
+    error.mockRestore();
+  });
+
+  it("notes when only one of two compared builds had names restored", () => {
+    const diff = diffInventories(inventory(), inventory({ mapping: { used: true, classes_mapped: 1, classes_unmapped: 0 } }));
+    expect(diff.notes.some((n) => n.includes("newer build only"))).toBe(true);
+    expect(diffInventories(inventory(), inventory()).notes.some((n) => n.includes("R8 mapping"))).toBe(false);
   });
 
   it("removes the inventory when the build is deleted", async () => {

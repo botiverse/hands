@@ -4,7 +4,7 @@ import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { requestOrigin } from "../lib/origin";
 import { appOwningOrgId, emitWebhookEvent } from "./webhooks";
-import { storeBuildInventory } from "./build_inventory";
+import { buildMappingUrl, storeBuildInventory } from "./build_inventory";
 import { inventoryR2Key } from "../lib/build_inventory";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -1164,11 +1164,18 @@ export async function autoParseInstallableAsset(
     // builtin, which only exists in the Workers runtime (not vitest/node).
     const { getRandom } = await import("@cloudflare/containers");
     const container = await getRandom(env.APK_PARSER, 1);
+    const headers: Record<string, string> = { "content-type": "application/octet-stream" };
+    if (parserKind === "apk-aapt") {
+      // The R8 mapping names obfuscated classes in the inventory. It usually
+      // arrives after the APK; its upload then recomputes the inventory.
+      const mappingUrl = await buildMappingUrl(env, buildId).catch(() => null);
+      if (mappingUrl) headers["x-mapping-url"] = mappingUrl;
+    }
     const res = await container.fetch(
       new Request(`http://container/parse?parser_kind=${parserKind}`, {
         method: "POST",
         body: bytes,
-        headers: { "content-type": "application/octet-stream" },
+        headers,
       }),
     );
     if (!res.ok) {

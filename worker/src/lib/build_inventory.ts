@@ -56,7 +56,10 @@ export interface BuildInventory {
   components: Record<string, string[]>;
   libraries: InventoryLibrary[];
   sdks: InventorySdk[];
-  dex?: Record<string, unknown>;
+  /** `dex.obfuscated`: the dex class names look R8-minified (judged before any mapping). */
+  dex?: Record<string, unknown> & { obfuscated?: boolean };
+  /** Android: present when the build's R8 mapping restored class names. */
+  mapping?: { used: true; classes_mapped: number; classes_unmapped: number };
   notes: string[];
   truncated: boolean;
 }
@@ -148,6 +151,11 @@ export function diffInventories(base: BuildInventory, head: BuildInventory): Inv
   const notes: string[] = [];
   if (base.platform !== head.platform) notes.push(`Comparing a ${head.platform} build with a ${base.platform} build.`);
   if (base.truncated || head.truncated) notes.push("One of the inventories was shortened; small items may be missing from the comparison.");
+  if (Boolean(base.mapping?.used) !== Boolean(head.mapping?.used)) {
+    notes.push(
+      `Class names were restored with the R8 mapping for the ${head.mapping?.used ? "newer" : "older"} build only, so package rows do not line up between the two.`,
+    );
+  }
   if (base.generator !== head.generator) notes.push(`Inventories come from different extractors (${base.generator ?? "unknown"} and ${head.generator ?? "unknown"}).`);
 
   // Categories.

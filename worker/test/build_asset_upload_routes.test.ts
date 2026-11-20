@@ -14,6 +14,15 @@ import {
 import { handleUpdateBuild } from "../src/routes/builds";
 import { openApiDocument } from "../src/openapi";
 
+const inventoryHook = vi.hoisted(() => ({ calls: [] as Array<[string, string]> }));
+vi.mock("../src/routes/build_inventory", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/routes/build_inventory")>(),
+  recomputeInventoryAfterMappingUpload: async (_env: unknown, appId: string, buildId: string) => {
+    inventoryHook.calls.push([appId, buildId]);
+    return true;
+  },
+}));
+
 function d1(
   sqlite: Database.Database,
   afterRead?: (sql: string, kind: "all" | "first") => void,
@@ -561,6 +570,33 @@ describe("direct build asset upload routes", () => {
     const conflict = await declare("0".repeat(64), bytes.length, "run-1");
     expect(conflict.status).toBe(409);
     expect((await conflict.json() as any).code).toBe("ASSET_UPLOAD_REPLAY_CONFLICT");
+  });
+
+  it("recomputes the build inventory once a proguard mapping upload completes, and only then", async () => {
+    inventoryHook.calls = [];
+    env.APK_PARSER = {};
+    const upload = async (kind: string, filetype: string, bytes: Buffer, key: string) => {
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      const declared = await app.request("http://hands.test/api/apps/app-1/builds/build-1/assets/uploads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          idempotency_key: key, artifact_kind: kind, platform: "android", arch: null, variant: null, filetype, sha256: hash,
+          size_bytes: bytes.length, filename: "f", content_type: "application/octet-stream",
+        }),
+      }, env);
+      const body = await declared.json() as any;
+      expect(declared.status, JSON.stringify(body)).toBe(201);
+      const attempt = sqlite.prepare("SELECT staging_key FROM build_asset_ingest_attempt WHERE asset_id = ?").get(body.asset_id) as any;
+      bucket.objects.set(attempt.staging_key, bytes);
+      return app.request(`http://hands.test/api/apps/app-1/builds/build-1/assets/${body.asset_id}/upload/complete`, { method: "POST" }, env);
+    };
+    // Symbols are appended after publishing, as `hands builds upload-symbols` does.
+    markBuildSucceeded();
+    expect((await upload("native-symbols", "symbols.zip", Buffer.from("zip-bytes"), "run-sym")).status).toBe(200);
+    expect(inventoryHook.calls).toEqual([]);
+    expect((await upload("proguard-mapping", "mapping.txt", Buffer.from("a.B -> a:\n"), "run-map")).status).toBe(200);
+    expect(inventoryHook.calls).toEqual([["app-1", "build-1"]]);
   });
 
   it("marks ready only after exact size and SHA verification and deletes staging", async () => {

@@ -633,7 +633,7 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["Builds"],
     summary: "Get build content inventory",
     description:
-      "What the build's APK or IPA contains: size by category (compressed and uncompressed), the largest files, libraries (dex packages with estimated sizes, native .so files per ABI, iOS frameworks and extensions with versions), known SDKs, and components (permissions, services, receivers, providers, activities, background modes, URL schemes, entitlements). Computed when the package is uploaded; 404 INVENTORY_MISSING for older builds until POST computes it.",
+      "What the build's APK or IPA contains: size by category (compressed and uncompressed), the largest files, libraries (dex packages with estimated sizes, native .so files per ABI, iOS frameworks and extensions with versions), known SDKs, and components (permissions, services, receivers, providers, activities, background modes, URL schemes, entitlements). Computed when the package is uploaded; 404 INVENTORY_MISSING for older builds until POST computes it. For Android, the build's R8 mapping (proguard-mapping asset) restores obfuscated class names before packages are grouped: `inventory.mapping` then reports classes_mapped and classes_unmapped, and uploading the mapping after the APK recomputes the inventory. `inventory.dex.obfuscated` is true when the dex class names look R8-minified.",
     security: auth,
     request: { params: AppBuildParams },
     responses: {

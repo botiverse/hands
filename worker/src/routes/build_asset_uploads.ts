@@ -3,6 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { presignR2UploadUrl } from "../lib/r2_presign";
+import { recomputeInventoryAfterMappingUpload } from "./build_inventory";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -1061,6 +1062,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
   }
   await c.env.APK_BUCKET.delete(row.staging_key).catch(() => {});
+  if (row.artifact_kind === "proguard-mapping" && c.env.APK_PARSER) {
+    // The mapping usually lands after the APK: recompute the build's content
+    // inventory so obfuscated classes get their library names. Best effort,
+    // in the background; it never affects the upload.
+    const recompute = recomputeInventoryAfterMappingUpload(c.env, appId, buildId);
+    try {
+      c.executionCtx.waitUntil(recompute);
+    } catch {
+      // No execution context (tests): the promise still runs.
+    }
+  }
   return c.json({ asset_id: assetId, state: "ready", r2_key: finalKey, file_hash: actual.sha256, size_bytes: actual.size, replayed: false });
 }
 
