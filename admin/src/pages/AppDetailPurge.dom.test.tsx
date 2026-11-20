@@ -26,7 +26,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   listChannels: mocks.listChannels,
 }));
 
-import { AppSettings } from "./AppDetail";
+import { AppSettings } from "./AppSettings";
 import { LanguagePicker, LocaleProvider } from "../lib/locale";
 
 afterEach(() => { cleanup(); localStorage.clear(); document.cookie = "hands_locale=; Path=/; Max-Age=0"; });
@@ -121,7 +121,7 @@ describe("AppDetail purge confirmation gate", () => {
     // value or straight off the app object. They diverge exactly when the gate is broken - which is
     // the case worth guarding - so the property is asserted structurally: both the disabled
     // condition and the submitted argument must read the ONE state the dialog writes.
-    const src = readFileSync("src/pages/AppDetail.tsx", "utf8");
+    const src = readFileSync("src/pages/AppSettings.tsx", "utf8");
     // The purge dialog's gate reads the typed state, not the app object.
     expect(src).toContain("confirmDisabled={purgeTyped !== app.slug}");
     // ...and the mutation submits that same state.
