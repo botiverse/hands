@@ -9,7 +9,9 @@
  *                        Auto-detects apk / aab / ipa / asar / RN bundle / ELF CLI
  *                        binary and returns { parser_kind, platform, arch,
  *                        version, version_code, package_id, app_label,
- *                        size_bytes, file_hash_sha256, raw }.
+ *                        size_bytes, file_hash_sha256, raw }. APKs and IPAs
+ *                        also carry `inventory` (or `inventory_error`).
+ *   POST /inventory?platform=android|ios — content inventory only.
  *   POST /parse?parser_kind=... — same as above, but with the dispatch hint
  *                        baked into the URL.
  *
@@ -31,6 +33,7 @@ import {
   parseWithDispatcher,
   type ParserKind,
 } from "./parsers/index.js";
+import { computeInventory } from "./inventory/index.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
 import { registerSigningRoutes } from "./signing.js";
 import { downloadMapping, filterMapping, indexMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
@@ -588,6 +591,22 @@ app.post("/parse", async (c) => {
       filename,
       filePath: tmpPath,
     });
+    // Content inventory for installable mobile packages. Failure here must
+    // never fail the parse itself.
+    let inventoryFields: Record<string, unknown> = {};
+    if (metadata.parser_kind === "apk-aapt" || metadata.parser_kind === "ipa-info") {
+      try {
+        inventoryFields = {
+          inventory: await computeInventory(
+            metadata.parser_kind === "ipa-info" ? "ios" : "android",
+            bytes,
+            tmpPath,
+          ),
+        };
+      } catch (err) {
+        inventoryFields = { inventory_error: err instanceof Error ? err.message : String(err) };
+      }
+    }
     // Backward compat: when parser_kind === 'apk-aapt' also surface the
     // historical flat keys (package_name, version_name, ...) so the
     // existing admin UI client doesn't break.
@@ -599,9 +618,10 @@ app.post("/parse", async (c) => {
         signature_sha256: (metadata.raw.signature_sha256 as string) ?? "",
         min_sdk: metadata.raw.min_sdk ?? null,
         target_sdk: metadata.raw.target_sdk ?? null,
+        ...inventoryFields,
       });
     }
-    return c.json(metadata);
+    return c.json({ ...metadata, ...inventoryFields });
   } catch (err) {
     console.error("parse error:", err);
     return c.json(
@@ -612,6 +632,29 @@ app.post("/parse", async (c) => {
     if (tmpPath) {
       await unlink(tmpPath).catch(() => {});
     }
+  }
+});
+
+/**
+ * POST /inventory?platform=android|ios — body = raw APK or IPA bytes.
+ * Returns only the content inventory; no signature verification, so it also
+ * works for packages the full /parse refuses (used to backfill old builds).
+ */
+app.post("/inventory", async (c) => {
+  const platform = c.req.query("platform");
+  if (platform !== "android" && platform !== "ios") {
+    return c.json({ error: "platform must be android or ios" }, 400);
+  }
+  const ab = await c.req.arrayBuffer();
+  if (ab.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (ab.byteLength > 200 * 1024 * 1024) {
+    return c.json({ error: "file too large (>200MB)" }, 413);
+  }
+  try {
+    return c.json({ inventory: await computeInventory(platform, new Uint8Array(ab)) });
+  } catch (err) {
+    console.error("inventory error:", err);
+    return c.json({ error: err instanceof Error ? err.message : String(err) }, 422);
   }
 });
 
