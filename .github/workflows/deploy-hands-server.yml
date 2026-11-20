@@ -950,13 +950,20 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/${HANDS_WORKER_NAME}"
-          deployments=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/deployments")
-          if [[ "$(jq -r '.success' <<<"${deployments}")" != "true" ]]; then
-            echo "::error::cannot read deployments; the deployed version is unverified" >&2
-            exit 1
-          fi
-          live=$(jq -r '.result.deployments[0].versions[0].version_id // empty' <<<"${deployments}")
-          traffic=$(jq -r '[.result.deployments[0].versions[]?.percentage] | add // 0' <<<"${deployments}")
+          # The deployments list can lag the last secret upload by a few
+          # seconds; read again for up to a minute while it still shows the
+          # pre-deploy version.
+          for attempt in 1 2 3 4 5 6 7; do
+            deployments=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/deployments")
+            if [[ "$(jq -r '.success' <<<"${deployments}")" != "true" ]]; then
+              echo "::error::cannot read deployments; the deployed version is unverified" >&2
+              exit 1
+            fi
+            live=$(jq -r '.result.deployments[0].versions[0].version_id // empty' <<<"${deployments}")
+            traffic=$(jq -r '[.result.deployments[0].versions[]?.percentage] | add // 0' <<<"${deployments}")
+            if [[ -n "${live}" && "${live}" != "${PRE_DEPLOY_VERSION}" ]]; then break; fi
+            if [[ "${attempt}" != 7 ]]; then sleep 10; fi
+          done
           if [[ -z "${live}" ]]; then
             echo "::error::no live version after deploy" >&2
             exit 1
