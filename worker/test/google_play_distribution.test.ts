@@ -442,6 +442,7 @@ function routeHarness(principal: "human" | "agent" = "human", role: "publisher" 
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/upload-symbols", requireAppRole("publisher"), handleUploadPlaySymbols);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/release-notes", requireAppRole("publisher"), handleUpdatePlayReleaseNotes);
   app.post("/api/apps/:appId/releases/:releaseId/distributions/play/rollback", handleRollbackPlayDistribution);
+  app.get("/api/apps/:appId/distributions/play/review-status", handleGetPlayReviewStatus);
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
   return { sqlite, bucket, env, request };
@@ -2188,6 +2189,7 @@ describe("Google Play track discovery routes", () => {
 });
 
 import { observePlayRelease, pollGooglePlayReleases } from "../src/lib/play_release_poll";
+import { handleGetPlayReviewStatus } from "../src/routes/play_review_status";
 function notificationSubscriptions(sql: Database.Database) {
   sql.exec(`INSERT INTO organizations(id,slug,name,external_id,created_at) VALUES('org','org','Org','org',0);
     UPDATE apps SET org_id='org' WHERE id='app';
@@ -3217,5 +3219,39 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     const response = await uploadSymbols(h, { mode: "commit" });
     expect(response.status).toBe(502);
     expect(receipts(h)[0]).toMatchObject({ action: "upload-symbols", verdict: "failed-closed" });
+  });
+});
+
+describe("app-wide Play review status", () => {
+  it("reads every bound track live, and falls back to the poll's stored states when Play refuses one", async () => {
+    const h = await readyRelease();
+    const tracks = h.sqlite.prepare("SELECT internal_track, closed_track, production_track FROM app_google_play_bindings WHERE app_id='app'").get() as Record<string, string>;
+    // The poll saw production earlier.
+    h.sqlite.prepare(`INSERT INTO google_play_release_observations (app_id,package_name,play_track,version_code,state,revision,nonce,observed_at)
+      SELECT 'app', package_name, ?, 12600002, 'RELEASE_LIFECYCLE_STATE_PUBLISHED', 1, 'n', 5000 FROM app_google_play_bindings WHERE app_id='app'`)
+      .run(tracks.production_track);
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async (input) => {
+      const track = input.tracks[input.handsTrack as "internal" | "closed" | "production"];
+      if (input.handsTrack === "internal") {
+        return { ok: true, value: [
+          { releaseName: "1.27.0", track, activeArtifacts: [{ versionCode: 12700006 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" },
+          { releaseName: "other", track: "elsewhere", activeArtifacts: [{ versionCode: 1 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_DRAFT" },
+        ] };
+      }
+      return { ok: false, error: { status: 403, code: "play_api_rejected", message: "refused" } };
+    } });
+    const res = await h.request("/api/apps/app/distributions/play/review-status");
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    const internal = body.tracks.find((t: any) => t.hands_track === "internal");
+    expect(internal).toMatchObject({ source: "live", releases: [{ release_name: "1.27.0", state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW", state_label: "审核中", version_codes: [12700006] }] });
+    expect(body.in_review).toEqual([expect.objectContaining({ hands_track: "internal", version_codes: [12700006], source: "live" })]);
+    const production = body.tracks.find((t: any) => t.hands_track === "production");
+    expect(production).toMatchObject({ source: "stored", error_code: "play_api_rejected", releases: [{ state: "RELEASE_LIFECYCLE_STATE_PUBLISHED", version_codes: [12600002], observed_at: 5000 }] });
+    expect(body.production_version_code).toBe(12600002);
+    expect(JSON.stringify(body)).not.toContain("refused");
+
+    h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
+    expect((await h.request("/api/apps/app/distributions/play/review-status")).status).toBe(409);
   });
 });

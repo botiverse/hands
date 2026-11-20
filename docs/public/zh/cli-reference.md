@@ -284,6 +284,16 @@ API：`POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，�
 
 之后再次推送同一版本时，如果先前成功回执确认精确文件且 Play 仍持有相同 AAB，Hands 可以省略映射上传。新回执引用旧回执作为历史证据；Play 不提供映射文件回读，因此这不能验证其当前内容。没有该证据时 Hands 会继续尝试上传。要明确替换映射，请使用下文的 `play-upload-symbols`。
 
+## Google Play：查看审核状态
+
+推广前，先看 Play 上这个应用每个轨道的情况：
+
+```bash
+hands play review-status raft-android
+```
+
+输出当前在审核中的内容（轨道和 versionCode）、生产轨道的 versionCode，以及每个轨道上各个版本的状态：`IN_REVIEW`、`APPROVED_NOT_PUBLISHED`、`NOT_APPROVED`、`PUBLISHED`、`DRAFT`。状态实时从 Play 读取；如果 Play 拒绝列出某个轨道，会改为显示 Hands 每五分钟轮询记录的最近状态和记录时间，并注明。`--json` 输出同样内容的 JSON。viewer 角色即可。
+
 ## Google Play：Play 写操作没有响应时
 
 CLI 放弃等待（`fetch failed`）之后，Play 写操作仍可能在 Google Play 上完成。此时 CLI 会报告 `no response from Hands`，且不会自动重试。再次运行前，先用 `hands releases receipts <app> <release>` 和 `hands releases play-status <app> <release>` 检查，并与 Play Console 对照。

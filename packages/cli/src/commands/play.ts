@@ -228,4 +228,64 @@ export function registerPlayCommands(program: Command): void {
         console.log(JSON.stringify(res.data ?? null, null, 2));
       },
     );
+
+  play
+    .command("review-status <appIdOrSlug>")
+    .description(
+      "What Google Play holds on every track of the app: each release with its review state (in review, approved, " +
+        "published, rejected, ...) and versionCodes, what is in review now, and the production versionCode. Read live " +
+        "from Play; a track Play refuses to list shows the last states Hands' poll observed, with when.",
+    )
+    .option("--json", "Print JSON output.", false)
+    .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const res = await apiRequest<PlayReviewStatus>(`/api/apps/${encodeURIComponent(appId)}/distributions/play/review-status`);
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      console.log(formatPlayReviewStatus(res));
+    });
+}
+
+type PlayReviewStatus = {
+  package_name: string;
+  read_at: number;
+  tracks: Array<{
+    hands_track: string;
+    play_track: string;
+    source: "live" | "stored" | "unavailable";
+    error_code?: string;
+    releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
+  }>;
+  in_review: Array<{ hands_track: string; play_track: string; version_codes: number[]; release_name: string | null; source: string }>;
+  production_version_code: number | null;
+  publishing_access: { failing_since: number; last_error_code: string } | null;
+};
+
+const shortState = (state: string) => state.replace(/^RELEASE_LIFECYCLE_STATE_/, "");
+
+export function formatPlayReviewStatus(res: PlayReviewStatus): string {
+  const lines = [`Google Play · ${res.package_name} · read ${new Date(res.read_at).toISOString()}`];
+  lines.push(res.in_review.length
+    ? `In review: ${res.in_review.map((r) => `${r.hands_track} (${r.play_track}) ${r.version_codes.join(", ")}${r.source === "live" ? "" : " [stored]"}`).join("; ")}`
+    : "In review: nothing");
+  lines.push(`Production versionCode: ${res.production_version_code ?? "none published"}`);
+  for (const track of res.tracks) {
+    const head = `${track.hands_track} (${track.play_track})`;
+    if (track.source === "unavailable") {
+      lines.push(`${head}: Play refused the read (${track.error_code}) and Hands has no stored state`);
+      continue;
+    }
+    lines.push(track.source === "live" ? `${head}: live` : `${head}: Play refused the read (${track.error_code}); last states the poll observed`);
+    if (track.releases.length === 0) lines.push("  (no releases)");
+    for (const r of track.releases) {
+      const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";
+      lines.push(`  ${shortState(r.state).padEnd(24)} ${r.version_codes.join(", ")}${r.release_name ? `  ${r.release_name}` : ""}${when}`);
+    }
+  }
+  if (res.publishing_access) {
+    lines.push(`Warning: Hands' Play status poll has been failing since ${new Date(res.publishing_access.failing_since).toISOString()} (${res.publishing_access.last_error_code}).`);
+  }
+  return lines.join("\n");
 }
