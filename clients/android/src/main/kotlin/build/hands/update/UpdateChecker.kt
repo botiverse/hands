@@ -240,7 +240,7 @@ class UpdateChecker @JvmOverloads constructor(
             languageTag = requested,
         )
         val offer = updateOffer(response, installedVersionCode, deltaApplyEnabled, requested)
-        return HandsUpdateCheck(updateAvailable = offer != null, offer = offer, status = status())
+        return HandsUpdateCheck(updateAvailable = offer != null, offer = offer, status = liveStatus())
     }
 
     /** [check] for Java hosts. Close the result to cancel. */
