@@ -32,8 +32,8 @@ function MarkdownContent({ markdown }: { markdown: string }) {
           skipHtml
           allowedElements={PUBLIC_MARKDOWN_ELEMENTS}
           unwrapDisallowed
-          className="!bg-transparent !text-sm !text-foreground-strong"
-          style={{ padding: 0, overflowWrap: "anywhere" }}
+          // Inline, so the editor's light theme can't paint dark text on a dark page.
+          style={{ padding: 0, overflowWrap: "anywhere", color: "inherit", background: "transparent", fontFamily: "inherit", fontSize: "0.875rem" }}
         />
       </Suspense>
     </div>
