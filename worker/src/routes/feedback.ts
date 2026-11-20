@@ -1135,6 +1135,7 @@ async function emitCrashAlert(
   // what the SDK reported.
   const summary = (input.stack ? stackSummary(input.stack) : null) ?? stackSummary(message);
   const nonFatal = kind === "crash" && isNonFatalCrash(metadata);
+  const signalKill = kind === "crash" && isExternalSignalKill(metadata);
   const base = {
     app_slug: input.appSlug,
     signature,
@@ -1158,6 +1159,8 @@ async function emitCrashAlert(
     .bind(appId, signature, ticketId)
     .first<{ n: number }>();
   if ((prior?.n ?? 0) === 0) {
+    // A kill from outside the process is not a new crash.
+    if (signalKill) return;
     await emitWebhookEvent(env, {
       orgId,
       appId,
@@ -1186,6 +1189,22 @@ async function emitCrashAlert(
     .bind(appId, signature, createdAt - 60 * 60 * 1000, createdAt)
     .first<{ n: number; devices: number }>();
   const hourCount = recent?.n ?? 0;
+  if (signalKill) {
+    // Kills from outside: one device (a test phone, a task killer) says
+    // nothing about the app; many devices at once may (the system judging a
+    // background service abusive). Alert on distinct devices only.
+    const devices = recent?.devices ?? 0;
+    if (devices === 10 || devices === 50 || devices === 100) {
+      await emitWebhookEvent(env, {
+        orgId,
+        appId,
+        event: `${eventPrefix}:spike`,
+        eventId: `${eventPrefix}:spike:${appId}:${signature}:${Math.floor(createdAt / 3_600_000)}:devices:${devices}`,
+        body: { ...base, count_last_hour: hourCount, devices_last_hour: devices, external_kill: true },
+      });
+    }
+    return;
+  }
   if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
     await emitWebhookEvent(env, {
       orgId,
@@ -2894,6 +2913,23 @@ const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
  * into `SystemKill@background` ("后台被系统结束"), auto-closed as `not_planned`,
  * and alerted only on per-device daily repeats or version-over-version spikes.
  */
+/** ApplicationExitInfo.REASON_SIGNALED and SIGKILL. */
+const REASON_SIGNALED = 2;
+const SIGKILL = 9;
+
+/**
+ * A system kill recorded as SIGKILL sent to the process (REASON_SIGNALED,
+ * status 9): someone ended it from outside, such as `adb shell kill -9` or
+ * am kill in a test run, or an OEM task killer. The app did not fail, so the
+ * report is kept and listed, raises no new-group alert, and spikes only when
+ * many devices are killed within an hour.
+ */
+export function isExternalSignalKill(metadata: Record<string, unknown>): boolean {
+  if (metadata["crash_type"] !== "system_kill") return false;
+  return systemKillInteger(metadata["crash_exit_reason_code"]) === REASON_SIGNALED
+    && systemKillInteger(metadata["crash_exit_status"]) === SIGKILL;
+}
+
 export function isBackgroundSystemKill(metadata: Record<string, unknown>): boolean {
   if (metadata["crash_type"] !== "system_kill") return false;
   const reasonCode = systemKillInteger(metadata["crash_exit_reason_code"]);
