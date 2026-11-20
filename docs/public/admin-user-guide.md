@@ -189,6 +189,58 @@ Builds hold uploaded artifacts and provenance. Hands distinguishes installable a
 
 Registering an installable APK triggers automatic parsing: package id, SDK levels, and the launcher icon are extracted server-side (aapt) with no extra CI parameters. Public update checks only return installable artifacts; support artifacts remain available to authenticated admins and publishers.
 
+### Build contents
+
+Hands reads what every APK and IPA contains, so you can see what makes a
+package big and what changed between versions. Open a build on the Builds page;
+builds with an APK or IPA have a **Contents** section with two views.
+
+**This build** shows:
+
+- The package size, the uncompressed size and the number of files.
+- **Size by category**, as a share of the package: on Android, DEX code, native
+  libraries per ABI (`arm64-v8a`, `armeabi-v7a`, ...), resources (`res/` and
+  `resources.arsc`), assets, Kotlin metadata, Java resources from libraries and
+  `META-INF`; on iOS, the main executable, frameworks, app extensions, the asset
+  catalog (`Assets.car`), resource bundles, localizations and the code
+  signature.
+- **Known SDKs** (Firebase, Sentry, OkHttp, Jetpack Compose, Kotlin coroutines,
+  Google Play services, the Hands SDK and others) with their size.
+- **Libraries**: Java/Kotlin packages grouped by their first two or three
+  segments (`com.google.firebase`, `androidx.compose`) with class counts; native
+  `.so` libraries with the ABIs they ship for; iOS frameworks, dylibs and app
+  extensions with their versions.
+- **Components and capabilities**: Android permissions, services, broadcast
+  receivers, content providers, activities (marked `exported` when they are),
+  hardware features and manifest meta-data keys; iOS usage descriptions
+  (`NS…UsageDescription` keys), background modes, URL schemes, queried
+  schemes, App Transport Security exceptions, app extensions and entitlements.
+
+**Compare with previous** compares the build with the previous build of the
+same app and product type (the next lower version code): how much the package
+grew, which categories changed, which SDKs and libraries were added, removed or
+resized (largest impact first, with framework version changes), which
+permissions and components were added or removed, and which files grew most.
+
+Notes on the numbers:
+
+- Sizes are what each part takes inside the package (compressed), which is what
+  users download.
+- Java/Kotlin package sizes (marked ≈) are estimates: each `classes*.dex` file's
+  size is split across its packages by their share of method code. Strings and
+  other shared tables are spread the same way.
+- Manifest meta-data values are never shown (they can hold API keys), except
+  integer version markers such as `com.google.android.gms.version=12`. Only
+  entitlement keys are shown, plus each associated domain.
+- On iOS, SDKs linked statically into the main executable are part of the
+  executable and are not listed separately.
+
+Contents are read automatically when an APK or IPA is uploaded. For builds
+uploaded earlier, select **Read contents** (or **Read previous build** in the
+comparison); this needs the publisher role. The same data is available from the
+CLI (`hands builds inventory`, `hands builds diff`) and the API
+(`GET /api/apps/{appId}/builds/{buildId}/inventory`, `.../inventory/diff`).
+
 ## Channels
 
 Channels let you separate release tracks such as `main`, `preview`, `nightly`, or `debug`. Publish test builds to a non-production channel first, then publish to the production channel after validation.

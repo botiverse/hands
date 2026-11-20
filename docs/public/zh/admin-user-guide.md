@@ -84,6 +84,29 @@ Hands 为每个 Raft 服务器安装保存一份加密机器人凭据，控制�
 
 注册可安装 APK 会触发自动解析：服务端使用 aapt 提取包 ID、SDK 级别和启动图标，无需额外 CI 参数。公开更新检查只返回可安装文件；已认证的管理员和发布者仍可访问辅助文件。
 
+### 构建内容
+
+Hands 会读取每个 APK 和 IPA 的内容，帮助你看清安装包为什么大、两个版本之间变了什么。在“构建”页面打开一个构建；带 APK 或 IPA 的构建有一个**内容**区域，分两个视图。
+
+**本构建**显示：
+
+- 安装包大小、解压后大小和文件数。
+- **按类别的大小**（占安装包的比例）：Android 上为 DEX 代码、按 ABI 区分的原生库（`arm64-v8a`、`armeabi-v7a` 等）、资源（`res/` 与 `resources.arsc`）、assets、Kotlin 元数据、来自库的 Java 资源和 `META-INF`；iOS 上为主可执行文件、框架、App 扩展、资源目录（`Assets.car`）、资源包、本地化和代码签名。
+- **已识别的 SDK**（Firebase、Sentry、OkHttp、Jetpack Compose、Kotlin 协程、Google Play 服务、Hands SDK 等）及其大小。
+- **库**：按前两到三段分组的 Java/Kotlin 包（`com.google.firebase`、`androidx.compose`）及类数量；原生 `.so` 库及其 ABI；iOS 框架、dylib 和 App 扩展及其版本。
+- **组件与能力**：Android 的权限、服务、广播接收器、内容提供者、Activity（导出的会标注 `exported`）、硬件特性和清单 meta-data 键；iOS 的使用说明键（`NS…UsageDescription`）、后台模式、URL Scheme、查询的 Scheme、App Transport Security 例外、App 扩展和权利（Entitlements）。
+
+**与上一构建比较**将本构建与同一应用、同一产品类型的上一个构建（版本号 version code 紧邻的较小者）比较：安装包增长了多少、哪些类别变化、哪些 SDK 和库被新增、移除或变大变小（按影响从大到小，含框架版本变化）、哪些权限和组件被新增或移除，以及增长最多的文件。
+
+关于数字：
+
+- 大小是各部分在安装包内（压缩后）占用的大小，也就是用户下载的大小。
+- Java/Kotlin 包的大小（标 ≈）是估算值：按各包方法代码的占比拆分每个 `classes*.dex` 文件的大小，字符串等共享表也按同样比例分摊。
+- 清单 meta-data 的值从不显示（可能包含 API 密钥），整数版本标记除外，例如 `com.google.android.gms.version=12`。权利只显示键名，另外列出每个关联域名。
+- iOS 上静态链接进主可执行文件的 SDK 属于可执行文件的一部分，不单独列出。
+
+上传 APK 或 IPA 时会自动读取内容。更早上传的构建可点击**读取内容**（比较视图中为**读取上一个构建**），需要发布者角色。命令行（`hands builds inventory`、`hands builds diff`）和 API（`GET /api/apps/{appId}/builds/{buildId}/inventory`、`.../inventory/diff`）提供同样的数据。
+
 ## 渠道
 
 渠道用于区分 `main`、`preview`、`nightly` 或 `debug` 等发布轨道。先将测试构建发布到非生产渠道，验证后再发布到生产渠道。
