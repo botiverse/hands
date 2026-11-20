@@ -231,6 +231,8 @@ hands builds diff raft-android <build-id> --json
 hands builds inventory raft-android <build-id> --refresh
 ```
 
+对于经过 R8 混淆的 Android 构建，清单会先用构建的 R8 mapping（`mapping.txt`）还原类名，再对 Java/Kotlin 包分组，并输出 `(names restored with the R8 mapping: N classes mapped, M not in the mapping)`；`--json` 的 `inventory.mapping` 中有同样的计数。在 APK 之后附加的 mapping（`hands builds attach-symbols <app> <build-id> mapping.txt`）会触发重新计算清单。dex 看起来已混淆但未使用 mapping 时，输出会提示上传 `mapping.txt`（`inventory.dex.obfuscated` 为 `true`）。
+
 ## 注册外部 Node / CLI 文件
 
 对于平台为 `node` 的应用，`builds publish-version` 记录一个外部托管目标，不会将文件复制到 Hands 存储：

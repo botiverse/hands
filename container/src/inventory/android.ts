@@ -2,15 +2,19 @@
  * Android APK inventory: size by category from the zip central directory,
  * native libraries per ABI, dex classes grouped by package (see dex.ts for
  * the size estimate), and manifest components from `aapt dump xmltree`.
+ * With the build's R8 mapping, obfuscated class names are restored before
+ * grouping (see mapping.ts).
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createReadStream } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listZipEntries, readZipEntry } from "./zip.js";
 import { parseDex } from "./dex.js";
+import { looksMinified, OBFUSCATED_MIN_CLASSES, OBFUSCATED_SHARE, readMappingClassMap } from "./mapping.js";
 import { packageGroup, sdkForJavaPackage, sdkForNativeLib } from "./sdks.js";
 import { aggregateSdks, boundInventory, categorize, DIFF_FILES, LARGEST_FILES, uniqueSorted } from "./common.js";
 import { INVENTORY_GENERATOR, type BuildInventory, type InventoryLibrary } from "./types.js";
@@ -186,10 +190,14 @@ export interface AndroidInventoryInput {
   /** `aapt dump xmltree ... AndroidManifest.xml` output, when aapt ran. */
   manifestXmlTree?: string | null;
   manifestError?: string | null;
+  /** R8 mapping classes, obfuscated name -> original name (readMappingClassMap). */
+  classMap?: ReadonlyMap<string, string> | null;
+  /** Why a mapping that was offered could not be used. */
+  mappingError?: string | null;
 }
 
 export function buildAndroidInventory(input: AndroidInventoryInput): BuildInventory {
-  const { bytes } = input;
+  const { bytes, classMap } = input;
   const entries = listZipEntries(bytes);
   if (!entries.some((e) => e.name === "AndroidManifest.xml")) throw new Error("not an APK (no AndroidManifest.xml at the root)");
   const { categories, files } = categorize(entries, classifyApkEntry, CATEGORY_ORDER);
@@ -215,6 +223,8 @@ export function buildAndroidInventory(input: AndroidInventoryInput): BuildInvent
   let dexClasses = 0;
   let dexMethods = 0;
   let methodIds = 0;
+  let minified = 0;
+  let classesMapped = 0;
   for (const e of entries) {
     if (!/^classes\d*\.dex$/.test(e.name)) continue;
     try {
@@ -223,7 +233,14 @@ export function buildAndroidInventory(input: AndroidInventoryInput): BuildInvent
       methodIds += dex.methodIds;
       const total = dex.totalWeight || 1;
       for (const cls of dex.classes) {
-        const group = packageGroup(cls.name);
+        if (looksMinified(cls.name)) minified += 1;
+        let name = cls.name;
+        const original = classMap?.get(cls.name);
+        if (original !== undefined) {
+          name = original;
+          classesMapped += 1;
+        }
+        const group = packageGroup(name);
         const p = packages.get(group) ?? { classes: 0, methods: 0, bytes: 0, compressed: 0 };
         p.classes += 1;
         p.methods += cls.methods;
@@ -264,6 +281,11 @@ export function buildAndroidInventory(input: AndroidInventoryInput): BuildInvent
       sdk: null,
     });
   }
+  const obfuscated = dexClasses >= OBFUSCATED_MIN_CLASSES && minified / dexClasses >= OBFUSCATED_SHARE;
+  if (classMap && dexClasses > 0 && classesMapped / dexClasses < 0.5) {
+    notes.push(`The R8 mapping matched only ${classesMapped} of ${dexClasses} classes; it may belong to a different build.`);
+  }
+  if (input.mappingError) notes.push(`The R8 mapping could not be used: ${input.mappingError}`);
   // SDK totals use every package, not only the listed ones.
   const sdks = aggregateSdks([...dexLibs, ...natives.values()]);
 
@@ -303,14 +325,39 @@ export function buildAndroidInventory(input: AndroidInventoryInput): BuildInvent
       methods: dexMethods,
       method_ids: methodIds,
       size_estimate: "Package bytes are the dex file size split by each package's share of method code (code items, plus fixed per-class, field and method overhead).",
+      obfuscated,
     },
+    ...(classMap ? { mapping: { used: true as const, classes_mapped: classesMapped, classes_unmapped: dexClasses - classesMapped } } : {}),
     notes,
     truncated: false,
   });
 }
 
-/** Runs aapt for the manifest, then builds the inventory. Writes a temp file when no path is given. */
-export async function androidInventory(bytes: Uint8Array, filePath: string | null): Promise<BuildInventory> {
+export interface AndroidMappingInput {
+  /** A downloaded mapping.txt on disk. */
+  mappingPath?: string | null;
+  /** Why the mapping could not be downloaded. */
+  mappingError?: string | null;
+}
+
+/**
+ * Runs aapt for the manifest, reads the mapping's class lines when one is
+ * given, then builds the inventory. Writes a temp file when no path is given.
+ */
+export async function androidInventory(
+  bytes: Uint8Array,
+  filePath: string | null,
+  mapping: AndroidMappingInput = {},
+): Promise<BuildInventory> {
+  let classMap: Map<string, string> | null = null;
+  let mappingError = mapping.mappingError ?? null;
+  if (mapping.mappingPath) {
+    try {
+      classMap = await readMappingClassMap(createReadStream(mapping.mappingPath));
+    } catch (err) {
+      mappingError = err instanceof Error ? err.message : String(err);
+    }
+  }
   let dir: string | null = null;
   let path = filePath;
   let manifestXmlTree: string | null = null;
@@ -328,5 +375,5 @@ export async function androidInventory(bytes: Uint8Array, filePath: string | nul
   } finally {
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-  return buildAndroidInventory({ bytes, manifestXmlTree, manifestError });
+  return buildAndroidInventory({ bytes, manifestXmlTree, manifestError, classMap, mappingError });
 }

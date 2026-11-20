@@ -241,6 +241,16 @@ comparison); this needs the publisher role. The same data is available from the
 CLI (`hands builds inventory`, `hands builds diff`) and the API
 (`GET /api/apps/{appId}/builds/{buildId}/inventory`, `.../inventory/diff`).
 
+R8-obfuscated Android builds: with `-repackageclasses`, R8 moves renamed classes
+into one package, so without help they would show up as one large
+`(default package)` row. When the build has its R8 mapping (`mapping.txt`,
+uploaded with `hands builds publish-android --mapping` or attached later with
+`hands builds attach-symbols`), Hands restores the original class names before
+grouping packages, and **Libraries** says *Names restored with the R8 mapping*.
+Classes the mapping does not list keep their obfuscated package. Attaching the
+mapping after the APK reads the contents again automatically. An obfuscated
+build without a mapping shows *Upload its mapping.txt to see library names*.
+
 ## Channels
 
 Channels let you separate release tracks such as `main`, `preview`, `nightly`, or `debug`. Publish test builds to a non-production channel first, then publish to the production channel after validation.

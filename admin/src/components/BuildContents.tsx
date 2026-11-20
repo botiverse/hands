@@ -229,6 +229,32 @@ function libraryDetail(l: InventoryLibrary, t: T, locale: Locale): string {
   ].filter(Boolean).join(" · ");
 }
 
+/** Whether package names came from the R8 mapping, or why they look minified. */
+function MappingNote({ inventory: inv }: { inventory: BuildInventory }) {
+  const t = useText();
+  const { locale } = useLocale();
+  if (inv.platform !== "android") return null;
+  if (inv.mapping?.used) {
+    const n = inv.mapping.classes_mapped.toLocaleString(locale);
+    return (
+      <Text.Sans size="small" variant="muted">
+        {t(`Names restored with the R8 mapping (${n} classes).`, `已用 R8 mapping 还原名称（${n} 个类）。`)}
+      </Text.Sans>
+    );
+  }
+  if (inv.dex?.obfuscated) {
+    return (
+      <Text.Sans size="small" variant="warning">
+        {t(
+          "This build is obfuscated by R8, so packages show minified names. Upload its mapping.txt to see library names.",
+          "此构建经过 R8 混淆，包名为混淆后的名称。上传它的 mapping.txt 即可看到库名。",
+        )}
+      </Text.Sans>
+    );
+  }
+  return null;
+}
+
 function LibraryList({ inventory: inv }: { inventory: BuildInventory }) {
   const t = useText();
   const { locale } = useLocale();
@@ -243,6 +269,7 @@ function LibraryList({ inventory: inv }: { inventory: BuildInventory }) {
           {t("Package sizes are estimates: each dex file's size split by its packages' share of code.", "包大小为估算值：按各包代码占比拆分每个 dex 文件的大小。")}
         </Text.Sans>
       )}
+      <MappingNote inventory={inv} />
       <ListRowGroup>
         {shown.map((l) => (
           <ListRow key={`${l.kind}:${l.name}`} variant="plain" interactive={false}>

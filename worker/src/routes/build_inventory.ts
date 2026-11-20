@@ -6,10 +6,15 @@
  *
  * Storage: the JSON is in R2 at apps/<app>/builds/<build>/inventory.json and
  * build_inventories has one row per build pointing at it (migration 0102).
+ *
+ * Android inventories use the build's R8 mapping (proguard-mapping asset), when
+ * it has one, to name obfuscated classes; uploading a mapping after the APK
+ * recomputes the inventory (recomputeInventoryAfterMappingUpload).
  */
 
 import type { Context } from "hono";
 import { currentActor } from "../middleware/auth";
+import { presignR2DownloadUrl } from "../lib/r2_presign";
 import {
   diffInventories,
   inventoryR2Key,
@@ -208,9 +213,11 @@ export async function handleRefreshBuildInventory(c: Ctx) {
     return c.json({ error: "the build's package file is not in storage", code: "PACKAGE_NOT_STORED" }, 409);
   }
   let inventory: unknown;
+  let mappingUrl: string | null = null;
   try {
+    mappingUrl = asset.platform === "android" ? await buildMappingUrl(c.env, buildId) : null;
     // Streamed: an IPA can be larger than the Worker's memory.
-    inventory = await fetchInventoryFromContainer(c.env, asset.platform, object.body, object.size);
+    inventory = await fetchInventoryFromContainer(c.env, asset.platform, object.body, object.size, mappingUrl);
   } catch (err) {
     return c.json({ error: `inventory extraction failed: ${err instanceof Error ? err.message : String(err)}`, code: "INVENTORY_FAILED" }, 502);
   }
@@ -226,9 +233,60 @@ export async function handleRefreshBuildInventory(c: Ctx) {
     "INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
   ).bind(
     crypto.randomUUID(), appId, "build.inventory.refresh", currentActor(c),
-    JSON.stringify({ buildId, assetId: asset.id }), row.computed_at,
+    JSON.stringify({ buildId, assetId: asset.id, mapping: mappingUrl !== null }), row.computed_at,
   ).run();
   return c.json({ build: buildSummary(build), ...metaOf(row), inventory: validateInventory(inventory) });
+}
+
+/**
+ * A presigned URL of the build's R8 mapping, or null when it has none (or R2
+ * presigning is not configured). Same build only: a mapping from another build
+ * would put wrong names on the classes. Like crash retrace, the newest
+ * proguard-mapping asset wins; a direct upload still in flight is skipped.
+ */
+export async function buildMappingUrl(env: Env, buildId: string): Promise<string | null> {
+  const mapping = await env.DB.prepare(
+    `SELECT r2_key FROM build_assets
+     WHERE build_id = ?1 AND artifact_kind = 'proguard-mapping'
+       AND COALESCE(json_extract(metadata_json, '$.upload_state'), 'ready') = 'ready'
+     ORDER BY created_at DESC LIMIT 1`,
+  ).bind(buildId).first<{ r2_key: string }>();
+  if (!mapping) return null;
+  // The container streams it once, right away; an hour covers a slow start.
+  return presignR2DownloadUrl(env, { key: mapping.r2_key, filetype: "mapping.txt", contentDisposition: "attachment" }, 3600);
+}
+
+/**
+ * Called once a proguard-mapping upload completes: the mapping usually lands
+ * after the APK, whose upload-time inventory therefore has no class names.
+ * Recomputes the build's inventory from its APK with the mapping. Best effort:
+ * never throws.
+ */
+export async function recomputeInventoryAfterMappingUpload(env: Env, appId: string, buildId: string): Promise<boolean> {
+  try {
+    const asset = await env.DB.prepare(
+      `SELECT ba.id, ba.platform, ba.filetype, ba.r2_key, ba.file_hash
+       FROM build_assets ba JOIN builds b ON b.id = ba.build_id
+       WHERE ba.build_id = ?1 AND b.app_id = ?2 AND ba.artifact_kind = 'installable'
+         AND ba.platform = 'android' AND ba.filetype = 'apk'
+         AND COALESCE(json_extract(ba.metadata_json, '$.upload_state'), 'ready') = 'ready'
+       ORDER BY ba.created_at DESC
+       LIMIT 1`,
+    ).bind(buildId, appId).first<InstallableAsset>();
+    if (!asset) return false;
+    const mappingUrl = await buildMappingUrl(env, buildId);
+    if (!mappingUrl) return false;
+    const object = await env.APK_BUCKET.get(asset.r2_key);
+    if (!object) return false;
+    const inventory = await fetchInventoryFromContainer(env, "android", object.body, object.size, mappingUrl);
+    await storeBuildInventory(env, { appId, buildId, inventory, sourceAssetId: asset.id, sourceFileHash: asset.file_hash });
+    return true;
+  } catch (err) {
+    console.error(
+      `[inventory] not recomputed with the mapping for build ${buildId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
 }
 
 async function fetchInventoryFromContainer(
@@ -236,14 +294,18 @@ async function fetchInventoryFromContainer(
   platform: "android" | "ios",
   pkg: ReadableStream,
   size: number,
+  mappingUrl: string | null = null,
 ): Promise<unknown> {
   // Lazy import: @cloudflare/containers needs the Workers runtime.
   const { getRandom } = await import("@cloudflare/containers");
   const container = await getRandom(env.APK_PARSER, 1);
+  const headers: Record<string, string> = { "content-type": "application/octet-stream", "content-length": String(size) };
+  // A header, not a query parameter: the presigned URL must stay out of request logs.
+  if (mappingUrl) headers["x-mapping-url"] = mappingUrl;
   const res = await container.fetch(new Request(`http://container/inventory?platform=${platform}`, {
     method: "POST",
     body: pkg,
-    headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+    headers,
     // A streamed body: required by fetch implementations outside Workers.
     duplex: "half",
   } as RequestInit));

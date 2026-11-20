@@ -42,6 +42,14 @@ export interface InventorySdk {
   kinds: LibraryKind[];
 }
 
+export interface InventoryMapping {
+  used: true;
+  /** Dex classes found in the mapping (named by their original class). */
+  classes_mapped: number;
+  /** Dex classes not in the mapping; they stay under their name in the dex. */
+  classes_unmapped: number;
+}
+
 export interface BuildInventory {
   schema: 1;
   platform: "android" | "ios";
@@ -59,7 +67,10 @@ export interface BuildInventory {
   components: Record<string, string[]>;
   libraries: InventoryLibrary[];
   sdks: InventorySdk[];
-  dex?: { files: number; classes: number; methods: number; method_ids: number; size_estimate: string };
+  /** `obfuscated`: the raw class names look R8-minified (judged before any mapping is applied). */
+  dex?: { files: number; classes: number; methods: number; method_ids: number; size_estimate: string; obfuscated?: boolean };
+  /** Android: present when an R8 mapping was applied to restore original class names. */
+  mapping?: InventoryMapping;
   notes: string[];
   truncated: boolean;
 }
