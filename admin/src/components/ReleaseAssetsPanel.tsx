@@ -1,6 +1,6 @@
 /**
- * ReleaseAssetsPanel — thin wrapper around ReleaseAssetUploader for use
- * below each ReleaseRow.
+ * ReleaseAssetsPanel — thin wrapper around ReleaseAssetUploader for the
+ * Files section of an open release.
  *
  * Shows existing assets + a drop zone to attach more binaries (Android
  * multi-arch, Electron multi-OS, RN bundle). After the new release flow
@@ -24,7 +24,7 @@ export function ReleaseAssetsPanel({
   productTypeHint,
 }: Props) {
   return (
-    <div className="mt-2 pt-2 border-t border-line-hairline">
+    <div>
       <ReleaseAssetUploader
         variant="panel"
         appId={appId}

@@ -5,8 +5,8 @@ import { errorMessage } from "../lib/errorMessage";
  *
  * Used in two places:
  *   - pages/Releases.tsx → NewReleaseDialog (step 3, before publish)
- *   - components/ReleaseAssetsPanel.tsx (the panel below each ReleaseRow
- *     for adding more assets after publish)
+ *   - components/ReleaseAssetsPanel.tsx (the Files section of an open
+ *     release, for adding more assets after publish)
  *
  * The user drops N files; for each one we:
  *   1. POST /api/apps/:appId/upload        (raw bytes → R2 + sha256)
@@ -19,8 +19,16 @@ import { errorMessage } from "../lib/errorMessage";
 
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { TextLink,
+import { Upload, X } from "lucide-react";
+import {
   Button,
+  ListRow,
+  ListRowBody,
+  ListRowGroup,
+  ListRowSubtitle,
+  ListRowTitle,
+  Text,
+  TextLink,
   Input,
   Select,
   SelectTrigger,
@@ -210,78 +218,48 @@ export function ReleaseAssetUploader(props: Props) {
   return (
     <div>
       {props.variant === "panel" && existing.length > 0 && (
-        <div className="mb-3 text-xs text-foreground-muted">
-          {t(`${existing.length} asset${existing.length === 1 ? "" : "s"} · ${formatBuildAssetSize(totalBytes, locale)} total`, `${existing.length} 个文件 · 共 ${formatBuildAssetSize(totalBytes, locale)}`)}
-        </div>
-      )}
-
-      {props.variant === "panel" && existing.length > 0 && (
-        <div className="mb-3 overflow-x-auto">
-          <table className="w-full min-w-[760px] text-xs">
-            <thead>
-              <tr className="border-b border-line-hairline text-left text-foreground-muted">
-                <th className="py-1 pr-3 font-normal">{t("Asset", "文件")}</th>
-                <th className="py-1 pr-3 font-normal">{t("Kind", "类型")}</th>
-                <th className="py-1 pr-3 font-normal">{t("Platform", "平台")}</th>
-                <th className="py-1 pr-3 font-normal">{t("Arch", "架构")}</th>
-                <th className="py-1 pr-3 font-normal">{t("Size", "大小")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {existing.map((a: BuildAsset) => {
-                const filename = buildAssetFilename(a, locale);
-                return (
-                  <tr key={a.id} className="border-b border-line-hairline align-top">
-                    <td className="min-w-[16rem] py-2 pr-3">
-                      <div className="break-all font-mono text-foreground-strong">
-                        {filename}
-                      </div>
-                      <div className="mt-0.5 break-all font-mono text-[10px] text-foreground-hint">
-                        {a.id}
-                      </div>
-                      {/* Actions sit under the name so they stay on screen on a phone. */}
-                      <div className="mt-1 flex gap-2">
-                        <Button
-                          variant="outline"
-                          className="text-[10px]"
-                          aria-label={t(`Download ${filename}`, `下载 ${filename}`)}
-                          onClick={() => void download(a)}
-                          disabled={downloading.has(a.id)}
-                        >
-                          {downloading.has(a.id) ? t("Preparing…", "准备中…") : t("Download", "下载")}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="text-[10px]"
-                          aria-label={t(`Remove ${filename}`, `移除 ${filename}`)}
-                          onClick={() => setRemoveTarget(a)}
-                          disabled={remove.isPending}
-                        >
-                          {t("Remove", "移除")}
-                        </Button>
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 font-mono">
-                      <div>{a.artifact_kind}</div>
-                      <div className="text-[10px] text-foreground-hint">
-                        {a.filetype}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 font-mono">{a.platform}</td>
-                    <td className="py-2 pr-3 font-mono">{a.arch ?? "—"}</td>
-                    <td className="py-2 pr-3 font-mono whitespace-nowrap">
-                      {formatBuildAssetSize(a.size_bytes, locale)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="mb-3 flex flex-col gap-2">
+          <Text.Sans size="small" variant="muted">
+            {t(`${existing.length} asset${existing.length === 1 ? "" : "s"} · ${formatBuildAssetSize(totalBytes, locale)} total`, `${existing.length} 个文件 · 共 ${formatBuildAssetSize(totalBytes, locale)}`)}
+          </Text.Sans>
+          <ListRowGroup>
+            {existing.map((a: BuildAsset) => {
+              const filename = buildAssetFilename(a, locale);
+              return (
+                <ListRow key={a.id} variant="plain" interactive={false}>
+                  <ListRowBody>
+                    <ListRowTitle className="font-mono text-footnote [overflow-wrap:anywhere] whitespace-normal">{filename}</ListRowTitle>
+                    <ListRowSubtitle className="whitespace-normal font-mono">
+                      {[formatBuildAssetSize(a.size_bytes, locale), `${a.platform}${a.arch ? `/${a.arch}` : ""}`, a.filetype, a.artifact_kind].join(" · ")}
+                    </ListRowSubtitle>
+                    {/* Actions sit under the name so they stay on screen on a phone. */}
+                    <div className="mt-1 flex gap-4 text-footnote">
+                      <TextLink
+                        aria-label={t(`Download ${filename}`, `下载 ${filename}`)}
+                        onClick={() => void download(a)}
+                        disabled={downloading.has(a.id)}
+                      >
+                        {downloading.has(a.id) ? t("Preparing…", "准备中…") : t("Download", "下载")}
+                      </TextLink>
+                      <TextLink
+                        aria-label={t(`Remove ${filename}`, `移除 ${filename}`)}
+                        onClick={() => setRemoveTarget(a)}
+                        disabled={remove.isPending}
+                      >
+                        {t("Remove", "移除")}
+                      </TextLink>
+                    </div>
+                  </ListRowBody>
+                </ListRow>
+              );
+            })}
+          </ListRowGroup>
         </div>
       )}
 
       {/* Drop zone */}
-      <div
+      <button
+        type="button"
         onDragOver={(e) => {
           e.preventDefault();
           setDragOver(true);
@@ -289,14 +267,15 @@ export function ReleaseAssetUploader(props: Props) {
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         onClick={() => fileInputRef.current?.click()}
-        className={`cursor-pointer rounded border-2 border-dashed p-4 text-center text-xs transition-colors ${
+        className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-container border border-dashed px-4 py-5 text-center text-footnote transition-colors ${
           dragOver
-            ? "border-info bg-info-soft text-info-strong"
-            : "border-line-muted text-foreground-muted hover:border-line-strong"
+            ? "border-line-strong bg-fill-muted text-foreground"
+            : "border-line-muted text-foreground-muted hover:border-line-strong hover:text-foreground"
         }`}
       >
+        <Upload aria-hidden="true" className="size-4 shrink-0" />
         {t("Drop APK / dmg / deb / exe here, or click to choose. Multiple files OK.", "将 APK / dmg / deb / exe 文件拖到此处，或点击选择。可选择多个文件。")}
-      </div>
+      </button>
       <input
         ref={fileInputRef}
         type="file"
@@ -384,7 +363,7 @@ export function PendingFileRow({
   ].filter(Boolean).join(" / ");
 
   return (
-    <div className="text-xs bg-layer-canvas-muted rounded-sm p-2">
+    <div className="rounded-container border border-line-hairline p-2 text-footnote">
       <div className="flex items-center gap-2">
         <span
           className={`w-2 h-2 rounded-full shrink-0 ${
@@ -417,12 +396,11 @@ export function PendingFileRow({
         )}
         <Button
           variant="ghost"
-          size="icon-sm"
-          className="text-foreground-hint hover:text-danger text-xs"
+          size="icon-md"
           onClick={onRemove}
           aria-label={t("Dismiss", "关闭")}
         >
-          ✕
+          <X aria-hidden="true" />
         </Button>
       </div>
 
