@@ -85,7 +85,11 @@ export async function createAccessToken(
     }
     if (!response.ok) {
       logTokenRejection(reports ? "reports" : "publishing", response.status, body);
-      throw new PlayAdapterError(response.status < 500 ? 403 : 502, "play_token_rejected", "Google OAuth authorization needs reconnection");
+      if (!authorizationRefused(response.status, body)) {
+        // Rate limits, Google outages and unexplained refusals: retried by the next call, alerted only if they last.
+        throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`);
+      }
+      throw new PlayAdapterError(403, "play_token_rejected", "Google OAuth authorization needs reconnection");
     }
     if (typeof body?.access_token !== "string" || !body.access_token || body.token_type !== "Bearer") {
       throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
@@ -130,8 +134,10 @@ export async function createAccessToken(
   }
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok) {
-    const status = [400, 401, 403, 404].includes(response.status) ? 403 : 502;
-    throw new PlayAdapterError(status, "play_token_rejected", `Google OAuth token request failed with ${response.status}`);
+    if (!authorizationRefused(response.status, body)) {
+      throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`);
+    }
+    throw new PlayAdapterError(403, "play_token_rejected", `Google OAuth token request failed with ${response.status}`);
   }
   if (!body || typeof body.access_token !== "string" || !body.access_token) {
     throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
@@ -146,6 +152,18 @@ const OAUTH_CODE = /^[a-z_]{1,40}$/;
  * (`error`, `error_subtype`, e.g. invalid_grant / invalid_rapt for a Workspace
  * re-verification policy). Never the description, the token or the client.
  */
+/**
+ * Whether Google refused the credential itself (revoked or expired grant,
+ * unknown or disabled client), which only a reconnection fixes. Anything
+ * else (429, 5xx, an error Google does not name) may pass on the next call.
+ */
+const REFUSED_GRANT_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);
+export function authorizationRefused(status: number, body: Record<string, unknown> | null): boolean {
+  if (status >= 500 || status === 429) return false;
+  if (status === 401) return true;
+  return typeof body?.error === "string" && REFUSED_GRANT_ERRORS.has(body.error);
+}
+
 function logTokenRejection(grant: "reports" | "publishing", status: number, body: Record<string, unknown> | null) {
   const code = (value: unknown) => (typeof value === "string" && OAUTH_CODE.test(value) ? value : null);
   const description = typeof body?.error_description === "string" ? body.error_description : "";
