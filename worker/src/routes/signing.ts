@@ -4,6 +4,7 @@ import { currentAccount, insertAuditLog } from "../lib/permissions";
 import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { createAscJwt } from "../lib/asc_api";
 import { getAscCredentials } from "../lib/asc_credentials";
+import { appStoreProfile, type ResolvedProfile } from "../lib/ios_profiles";
 import { sha256Hex } from "../lib/deploy_tokens";
 import {
   ARTIFACT_TYPES,
@@ -443,7 +444,6 @@ export async function handleCreateSigningJob(c: AdminContext) {
     if (!(ARTIFACT_TYPES as readonly string[]).includes(artifactType)) {
       throw new SigningError(400, "invalid_request", `artifact_type must be one of ${ARTIFACT_TYPES.join(", ")}`);
     }
-    if (artifactType === "ipa") throw new SigningError(400, "signing_unsupported", "iOS signing is not available yet");
     const filename = typeof body.filename === "string" ? body.filename.trim() : "";
     if (!/^[A-Za-z0-9 ._()+-]{1,200}$/.test(filename)) throw new SigningError(400, "invalid_request", "filename is required");
     const size = body.size;
@@ -521,7 +521,31 @@ export async function handleRunSigningJob(c: AdminContext) {
     const outputUrl = await presignR2UploadUrl(c.env, outputKey, "application/octet-stream", 3600);
     if (!inputUrl || !outputUrl) throw new SigningError(503, "signing_storage_unavailable", "direct storage is not configured");
     const entitlements = typeof body.entitlements_b64 === "string" && body.entitlements_b64.length < 64 * 1024 ? body.entitlements_b64 : undefined;
-    const result = await callSigningContainer<{ output_size: number; output_sha256: string; input_sha256?: string; notary_submission_id: string | null }>(
+    // iOS with an App Store Connect key: read the bundle ID, then find or create its App Store profile.
+    let profile: ResolvedProfile | null = null;
+    if (job.artifact_type === "ipa" && secret.kind === "apple_ios_distribution" && secret.asc) {
+      const info = await callSigningContainer<{ bundle_id: string; extensions: string[] }>(
+        c.env, "/signing/ipa-info", { input_url: inputUrl, expected_input_sha256: job.input_sha256 }, 10 * 60 * 1000,
+      );
+      if (info.extensions?.length) {
+        throw new SigningError(400, "signing_unsupported", `app extensions are not supported yet: ${info.extensions.join(", ")}`);
+      }
+      const fingerprint = parseMetadata(identity.metadata_json).sha256_fingerprint;
+      if (!fingerprint) throw new SigningError(409, "signing_identity_invalid", "the identity has no certificate fingerprint; upload it again");
+      profile = await appStoreProfile(secret.asc, info.bundle_id, fingerprint);
+      await insertAuditLog(c.env.DB, c, {
+        app_id: appId,
+        action: profile.created ? "signing_profile.create" : "signing_profile.reuse",
+        payload: { job_id: jobId, identity_id: identity.id, bundle_id: info.bundle_id, profile_id: profile.profile_id, name: profile.name, expiration: profile.expiration },
+      }).catch(() => undefined);
+    }
+    const result = await callSigningContainer<{
+      output_size: number;
+      output_sha256: string;
+      input_sha256?: string;
+      notary_submission_id: string | null;
+      ios?: { bundle_id: string; version: string | null; build: string | null; profile: { name: string; uuid: string; expiration: string; team_id: string }; entitlement_keys: string[] };
+    }>(
       c.env,
       "/signing/sign",
       {
@@ -532,6 +556,7 @@ export async function handleRunSigningJob(c: AdminContext) {
         expected_input_sha256: job.input_sha256,
         notarize: job.notarize === 1,
         ...(entitlements ? { entitlements_b64: entitlements } : {}),
+        ...(profile ? { provisioning_profile_b64: profile.profile_b64 } : {}),
       },
       SIGN_TIMEOUT_MS,
     );
@@ -558,6 +583,7 @@ export async function handleRunSigningJob(c: AdminContext) {
           output_sha256: result.output_sha256, notary_submission_id: result.notary_submission_id,
           fingerprint: parseMetadata(identity.metadata_json).sha256_fingerprint ?? null,
           entitlements_sha256: entitlements ? await sha256Hex(entitlements) : null,
+          ...(result.ios ? { ios: result.ios } : {}),
         },
       }).catch(() => undefined);
     }

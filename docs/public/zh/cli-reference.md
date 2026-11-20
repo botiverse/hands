@@ -91,11 +91,11 @@ steps:
 
 `hands github-oidc-login` 会屏蔽令牌并以 `HANDS_BEARER_TOKEN` 导出给后续步骤；运行它的那个步骤本身读不到这个变量，所以发布要放在单独的步骤里（`--print` 改为把令牌输出到 stdout）。输出只包含应用、角色和过期时间，不打印令牌的任何部分。运行必须来自指定的仓库和 workflow 文件，ref 匹配其中一个模式（`*` 只匹配一个路径段内的字符），设置了 GitHub environment 时还必须在该 environment 中。只有 `push`、`workflow_dispatch`、`release` 和 `schedule` 触发的运行会匹配：`pull_request_target`、`workflow_run`、`issue_comment` 等事件报告的是默认分支却处理外部输入，一律拒绝。workflow 路径区分大小写。`add` 会在 GitHub 上查询仓库的数字 ID（私有仓库需设置 `GH_TOKEN`）；否则仓库和所有者的数字 ID 在首次被接受的运行时固定，删除后重建的同名仓库或所有者会被拒绝。建议配合受保护的 GitHub environment（`--environment`）。受信任 job 调用的第三方 action 和可复用 workflow 拥有同样的身份，应视为受信任代码。每个 GitHub 令牌只能兑换一次，每次兑换都会以运行 ID、commit 和 ref 记入应用审计日志。同样的设置也在应用设置 › 访问 › 可信发布者中。
 
-## 签名（安卓、macOS）
+## 签名（安卓、macOS、iOS）
 
 Hands 以组织为单位加密保存签名密钥和证书，为被授权的应用签名。密钥不会发到 CI：命令行上传未签名的文件，Hands 签名（macOS 还会向 Apple 公证并 staple 票据），命令行再下载签好的文件并核对 SHA-256。
 
-组织管理员在 组织 › 签名 中管理，或用命令行。Apple 证书的上传表单会列出每个文件从哪里来：用钥匙串访问创建证书签名请求、在 Apple Developer 网站创建证书、从钥匙串访问导出 `.p12`，以及 App Store Connect API key。API key 不必重新填写：可以复用同一组织内某个应用已为 TestFlight 保存的 key，表单按 Key ID 列出这些应用。iOS 签名本身还没有上线；可以先保存并授权 Distribution 证书。
+组织管理员在 组织 › 签名 中管理，或用命令行。Apple 证书的上传表单会列出每个文件从哪里来：用钥匙串访问创建证书签名请求、在 Apple Developer 网站创建证书、从钥匙串访问导出 `.p12`，以及 App Store Connect API key。API key 不必重新填写：可以复用同一组织内某个应用已为 TestFlight 保存的 key，表单按 Key ID 列出这些应用。
 
 ```bash
 # 在 Hands 内新建安卓密钥（RSA 4096，有效期 30 年）
@@ -122,9 +122,12 @@ hands signing identities backup <identityId> deck-release.p12   # 仅限在 Hand
 hands sign app-release-unsigned.apk --app raft-deck-android            # 原地替换；--out 写到别处
 hands sign app-release.aab --app raft-deck-android
 hands sign "dist/mac-arm64/Raft Deck.app" --app raft-deck --notarize --entitlements entitlements.mac.plist
+hands sign build/Deck.ipa --app raft-deck-ios --entitlements ios/Deck/Deck.entitlements
 ```
 
-APK 用 apksigner 签名（按需使用 v1–v4 方案，native 库按 16 KB 页对齐），AAB 用 jarsigner。macOS 的 `.app`（目录或 `.app.zip`）以 hardened runtime 和安全时间戳签名，可选公证；签名后再打包成 dmg 或 zip。在 Hands 内生成的密钥可以下载一次备份，之后 Hands 是唯一持有者。每次身份变更和签名任务都会连同文件哈希和密钥指纹记入审计日志。
+APK 用 apksigner 签名（按需使用 v1–v4 方案，native 库按 16 KB 页对齐），AAB 用 jarsigner。macOS 的 `.app`（目录或 `.app.zip`）以 hardened runtime 和安全时间戳签名，可选公证；签名后再打包成 dmg 或 zip。
+
+iOS 的 `.ipa` 先不签名构建（`CODE_SIGNING_ALLOWED=NO`），再用 Apple Distribution 身份和 App Store 描述文件重新签名，可直接上传 TestFlight 和 App Store。身份带 App Store Connect API key 时，Hands 从应用里读出 bundle ID，复用该 App ID 和证书下剩余一周以上的有效 App Store 描述文件，没有就新建一个。App ID 需要事先在 Apple Developer 网站注册并打开应用用到的能力，Hands 不会创建它。没有 API key 时，Hands 使用已上传、覆盖该 bundle ID 的描述文件。`--entitlements` 传入 Xcode 工程里的 entitlements 文件（会展开 `$(AppIdentifierPrefix)`）；每一项都必须被描述文件允许，缺少的能力会让任务失败并写明名称。`application-identifier`、团队标识和 `get-task-allow = false` 取自描述文件。暂不支持带扩展的应用（`PlugIns`、手表应用、App Clip）。在 Hands 内生成的密钥可以下载一次备份，之后 Hands 是唯一持有者。每次身份变更和签名任务都会连同文件哈希和密钥指纹记入审计日志。
 
 ## 组织访问令牌
 
