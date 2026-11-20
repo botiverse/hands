@@ -19,6 +19,7 @@ import { useText } from "../lib/locale";
 
 const KINDS = ["feedback", "bug", "crash", "error"] as const;
 const KIND_ZH: Record<(typeof KINDS)[number], string> = { feedback: "反馈", bug: "缺陷", crash: "崩溃", error: "错误" };
+const KIND_EN: Record<(typeof KINDS)[number], string> = { feedback: "Feedback", bug: "Bug", crash: "Crash", error: "Error" };
 const KIND_COLOR: Record<(typeof KINDS)[number], string> = {
   feedback: "var(--chart-feedback)",
   bug: "var(--chart-bug)",
@@ -73,32 +74,28 @@ export function FeedbackTrends({ appId, buildScope }: { appId: string; buildScop
   if (total === 0) return null;
 
   return (
-    <section className="mb-4 border-t border-line-hairline pt-5">
-      <div className="flex items-center justify-between mb-1">
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-medium text-foreground-strong">{t("Last 30 days", "最近 30 天")}</h3>
-          <p className="text-xs text-foreground-muted">
-            {t(`${total} ticket${total === 1 ? "" : "s"} · hover for daily detail`, `${total} 个工单 · 悬停查看每天的详情`)}
+          <h2 className="text-footnote font-bold text-foreground-hint">{t("Last 30 days", "最近 30 天")}</h2>
+          <p className="text-footnote text-foreground-muted">
+            {t(`${total} ticket${total === 1 ? "" : "s"} · hover for each day`, `${total} 个工单 · 悬停查看每天的详情`)}
           </p>
         </div>
         <div className="flex items-center gap-4">
           {/* Legend — identity channel for the three kinds */}
-          <div className="hidden sm:flex items-center gap-3 text-xs text-foreground">
+          <div className="hidden sm:flex items-center gap-3 text-footnote text-foreground">
             {KINDS.map((k) => (
               <span key={k} className="inline-flex items-center gap-1.5">
                 <span
                   className="inline-block h-2.5 w-2.5 rounded-xs"
                   style={{ background: KIND_COLOR[k] }}
                 />
-                {t(k, KIND_ZH[k])}
+                {t(KIND_EN[k], KIND_ZH[k])}
               </span>
             ))}
           </div>
-          <Button
-            variant="outline"
-            className="py-0.5! px-2! text-xs!"
-            onClick={() => setShowTable((v) => !v)}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setShowTable((v) => !v)}>
             {showTable ? t("Chart", "图表") : t("Table", "表格")}
           </Button>
         </div>
@@ -216,7 +213,7 @@ export function CrashByVersion({
   const max = Math.max(...rows.map((r) => r.n));
   return (
     <div>
-      <h4 className="text-xs font-medium text-foreground mb-2">{t("Crashes by version", "各版本崩溃次数")}</h4>
+      <h2 className="mb-2 text-footnote font-bold text-foreground-hint">{t("Crashes by version", "各版本崩溃次数")}</h2>
       <div className="space-y-1.5">
         {rows.map((r) => (
           <div key={`${r.version_name}-${r.version_code}`} className="flex items-center gap-2 text-xs">
@@ -262,7 +259,7 @@ function TrendTable({
         <tr className="text-left text-foreground-muted">
           <th className="py-1 font-medium">{t("Day", "日期")}</th>
           {KINDS.map((k) => (
-            <th key={k} className="py-1 font-medium capitalize">{t(k, KIND_ZH[k])}</th>
+            <th key={k} className="py-1 font-medium">{t(KIND_EN[k], KIND_ZH[k])}</th>
           ))}
           <th className="py-1 font-medium">{t("Total", "总计")}</th>
         </tr>
