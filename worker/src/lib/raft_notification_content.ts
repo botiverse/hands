@@ -538,7 +538,10 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       `Version background kill spike: ${curCount ?? "?"} reports across ${curDevices ?? "?"} devices vs ${prevCount ?? "?"} reports (${prevDevices ?? "?"} devices) on ${prevLabel}`,
     );
   } else if (typeof payload.count_last_hour === "number" && Number.isSafeInteger(payload.count_last_hour) && payload.count_last_hour >= 0) {
-    lines.push(`${payload.count_last_hour} reports in the last hour`);
+    const devices = payload.devices_last_hour;
+    lines.push(typeof devices === "number" && Number.isSafeInteger(devices) && devices > 0
+      ? `${payload.count_last_hour} reports from ${devices} devices in the last hour`
+      : `${payload.count_last_hour} reports in the last hour`);
   }
   // A new group says what crashed (artin, 2026-11-19), bounded and escaped like
   // feedback previews; spike notices stay counts-only and link to the ticket.
