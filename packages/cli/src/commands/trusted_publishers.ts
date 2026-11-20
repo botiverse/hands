@@ -179,7 +179,7 @@ export function registerTrustedPublisherCommands(program: Command): void {
     .command("github-oidc-login")
     .description(
       "In GitHub Actions: exchange the job's OIDC token for a 1-hour Hands token on one app. " +
-      "By default the token is masked and exported as HANDS_BEARER_TOKEN for later steps.",
+      "By default the token is masked and exported as HANDS_BEARER_TOKEN for the job's later steps (not the current one).",
     )
     .requiredOption("--app <appIdOrSlug>", "App to publish to.")
     .option("--print", "Print the token to stdout instead of exporting it.", false)
@@ -204,8 +204,8 @@ export function registerTrustedPublisherCommands(program: Command): void {
       console.log(`::add-mask::${res.token}`);
       appendFileSync(githubEnv, `HANDS_BEARER_TOKEN=${res.token}\n`);
       console.log(
-        `Hands token for ${res.app_slug} (${res.app_role}, ${res.token_prefix}…) exported as HANDS_BEARER_TOKEN; ` +
-        `expires ${new Date(res.expires_at).toISOString()}.`,
+        `Hands ${res.app_role} token for ${res.app_slug} exported as HANDS_BEARER_TOKEN for the job's later steps ` +
+        `(not this one); expires ${new Date(res.expires_at).toISOString()}.`,
       );
     });
 }
