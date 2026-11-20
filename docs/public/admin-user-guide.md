@@ -219,7 +219,10 @@ The Feedback tab is a lightweight ticket system for reports submitted from the a
 - Crash alerting: `crash:new_group` fires the first time a crash signature is
   seen for an app; `crash:spike` fires as a signature crosses 10, 50, and 100
   occurrences within an hour, even from a single device (the payload carries
-  `count_last_hour` and `devices_last_hour`). Subscribe a webhook to either event (Org
+  `count_last_hour` and `devices_last_hour`). An Android system kill recorded
+  as SIGKILL sent to the process (`REASON_SIGNALED`, status 9: `adb shell kill
+  -9`, a test harness, an OEM task killer) is kept and listed but raises
+  neither alert. Subscribe a webhook to either event (Org
   settings → Webhooks) to get paged instead of polling the console. A
   `crash:new_group` payload carries `exception` (the first exception line) and
   up to three `top_frames`, deobfuscated when the build's R8 mapping was

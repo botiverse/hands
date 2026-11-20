@@ -686,7 +686,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // ticket's group (see decideCrashAlert). Background system kills skip
   // real-time alerts and are reported via a once-a-day summary instead.
   const crashAlertEligible = !externalBuild && (kind === "crash" || kind === "error")
-    && Boolean(signature) && Boolean(app.org_id) && !backgroundSystemKill;
+    && Boolean(signature) && Boolean(app.org_id) && !backgroundSystemKill && !isExternalSignalKill(metadata);
   // Same pseudonymous actor that reporter comments carry
   // (`reporter:<HMAC(app, integration, reporter)>`), so a webhook consumer can
   // correlate a ticket with its later comments without seeing the raw id.
@@ -2894,6 +2894,22 @@ const ACTIONABLE_SYSTEM_KILL_REASONS = new Set([
  * into `SystemKill@background` ("后台被系统结束"), auto-closed as `not_planned`,
  * and alerted only on per-device daily repeats or version-over-version spikes.
  */
+/** ApplicationExitInfo.REASON_SIGNALED and SIGKILL. */
+const REASON_SIGNALED = 2;
+const SIGKILL = 9;
+
+/**
+ * A system kill recorded as SIGKILL sent to the process (REASON_SIGNALED,
+ * status 9): someone ended it from outside, such as `adb shell kill -9` or
+ * am kill in a test run, or an OEM task killer. The app did not fail, so the
+ * report is kept and listed but raises no crash alert.
+ */
+export function isExternalSignalKill(metadata: Record<string, unknown>): boolean {
+  if (metadata["crash_type"] !== "system_kill") return false;
+  return systemKillInteger(metadata["crash_exit_reason_code"]) === REASON_SIGNALED
+    && systemKillInteger(metadata["crash_exit_status"]) === SIGKILL;
+}
+
 export function isBackgroundSystemKill(metadata: Record<string, unknown>): boolean {
   if (metadata["crash_type"] !== "system_kill") return false;
   const reasonCode = systemKillInteger(metadata["crash_exit_reason_code"]);

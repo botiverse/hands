@@ -234,3 +234,43 @@ describe("crash alerts wait for symbolication", () => {
     expect(JSON.parse(sent[1]!.payload_json).payload).toMatchObject({ count_last_hour: 10, devices_last_hour: 1 });
   });
 });
+
+async function submitSystemKill(h: ReturnType<typeof environment>, ip: string, extra: Record<string, unknown>) {
+  const form = new FormData();
+  form.set("kind", "crash");
+  form.set("message", "System kill: signaled (reasonCode=2 status=9 importance=125)");
+  form.set("metadata", JSON.stringify({ version_name: "1.0.0-alpha", version_code: 10000000, crash_type: "system_kill", crash_exception_class: "SystemKill", crash_top_frame: String(extra.crash_exit_reason), crash_exit_importance: 125, ...extra }));
+  const res = await handlePublicFeedbackSubmit({
+    env: h.env,
+    executionCtx: h.executionCtx,
+    req: {
+      url: "https://hands.test/public/v2/apps/raft-android/feedback",
+      raw: { cf: { clientIp: ip } },
+      param: (name: string) => (name === "slug" ? "raft-android" : undefined),
+      header: (name: string) => (name === "X-Hands-Client-Key" ? "client-key" : undefined),
+      query: () => undefined,
+      formData: async () => form,
+    },
+    header: () => undefined,
+    json: (data: unknown, status = 200) => Response.json(data, { status }),
+  } as any);
+  expect(res.status).toBe(201);
+  return String((await res.json() as { id: string }).id);
+}
+
+describe("crash alerts skip kills from outside the app", () => {
+  it("keeps a SIGKILL sent to the process but raises no alert; other foreground kills still alert", async () => {
+    retraceGate = Promise.resolve();
+    const h = environment();
+    const id = await submitSystemKill(h, "192.0.2.40", { crash_exit_reason_code: 2, crash_exit_status: 9, crash_exit_reason: "signaled" });
+    await Promise.all(h.pending);
+    expect(h.sqlite.prepare("SELECT kind FROM feedback_tickets WHERE id = ?").get(id)).toEqual({ kind: "crash" });
+    expect(alerts(h.sqlite)).toEqual([]);
+
+    // The same report as a foreground low-memory kill is a new group.
+    const other = environment();
+    await submitSystemKill(other, "192.0.2.41", { crash_exit_reason_code: 3, crash_exit_status: 0, crash_exit_reason: "low_memory" });
+    await Promise.all(other.pending);
+    expect(alerts(other.sqlite).map((a) => a.event_type)).toEqual(["crash:new_group"]);
+  });
+});
