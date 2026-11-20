@@ -22,6 +22,23 @@ export function isReleaseChannelEvent(event: unknown): boolean {
   );
 }
 
+const IN_PROGRESS_UPLOAD_STATES = new Set(["AWAITING_UPLOAD", "PROCESSING"]);
+
+/**
+ * The event a Raft destination must subscribe to for this notice. Apple's own
+ * upload callback reports in-progress states under
+ * app_store:build_upload_state_changed; those follow the same "upload
+ * processing" choice as testflight:upload_processing, so one setting silences
+ * every in-progress upload notice while the final state still posts.
+ */
+export function raftSubscriptionEvent(body: Record<string, unknown>): string {
+  const event = typeof body.event === "string" ? body.event : "";
+  const state = record(body.payload).state;
+  return event === "app_store:build_upload_state_changed"
+    && typeof state === "string" && IN_PROGRESS_UPLOAD_STATES.has(state)
+    ? "testflight:upload_processing" : event;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>

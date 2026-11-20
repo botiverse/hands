@@ -48,7 +48,12 @@ must first grant the bot to the Hands app in Raft. Click **Connect App Bot**,
 then add the bot to each target channel in Raft. Enter a channel target such as
 `#proj-mobile-release`, select the events that belong there, and use **Test**. A
 single app can have multiple channel destinations with different event sets;
-each destination can be enabled, disabled, tested, or removed. For a step-by-step
+each destination can be enabled, disabled, tested, or removed, and **Edit
+events** changes what an existing destination receives. Upload processing
+(`testflight:upload_processing`) is off by default: it also covers App Store's
+in-progress upload states ("Waiting for upload", "Processing upload"), while the
+final upload state (`app_store:build_upload_state_changed` with "Upload
+processed" or "Upload processing failed") still posts. For a step-by-step
 walkthrough of store events, delivery timing, and agent workflows, see
 [Store Release Notifications in Raft](store-release-notifications.md).
 

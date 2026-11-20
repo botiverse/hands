@@ -1317,6 +1317,30 @@ export function AppSettings({ appId }: { appId: string }) {
   );
 }
 
+// Off unless a destination opts in: "Processing upload" is a transient state
+// followed shortly by the final upload state.
+const RAFT_OPT_IN_EVENTS: WebhookEventType[] = ["testflight:upload_processing"];
+const DEFAULT_RAFT_EVENTS = WEBHOOK_EVENT_TYPES.filter((event) => !RAFT_OPT_IN_EVENTS.includes(event));
+
+function RaftEventPicker({ selected, onToggle }: { selected: WebhookEventType[]; onToggle: (event: WebhookEventType) => void }) {
+  const t = useText();
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
+      {WEBHOOK_EVENT_TYPES.map((event) => (
+        <label key={event} className="flex items-start gap-2 text-xs text-foreground-muted">
+          <Checkbox checked={selected.includes(event)} onCheckedChange={() => onToggle(event)} />
+          <span>
+            {event}
+            {event === "testflight:upload_processing" && (
+              <span className="block text-[11px]">{t("Upload processing: also covers App Store \"Waiting for upload\" and \"Processing upload\". Off by default; the final upload state still posts.", "上传处理中：也包括 App Store 的「等待上传」和「上传处理中」。默认不选；上传的最终状态仍会通知。")}</span>
+            )}
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function RaftNotificationsPanel({ appId }: { appId: string }) {
   const t = useText();
   const qc = useQueryClient();
@@ -1326,11 +1350,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
     queryFn: () => getRaftNotificationConfig(appId),
   });
   const [channelTarget, setChannelTarget] = useState("");
-  const [events, setEvents] = useState<WebhookEventType[]>(WEBHOOK_EVENT_TYPES);
-
-  useEffect(() => {
-    if (config.data?.events?.length && events.length === 0) setEvents(config.data.events);
-  }, [config.data?.events]);
+  const [events, setEvents] = useState<WebhookEventType[]>(DEFAULT_RAFT_EVENTS);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["raft-notifications", appId] });
   const connect = useMutation({
@@ -1411,14 +1431,7 @@ function RaftNotificationsPanel({ appId }: { appId: string }) {
           </div>
           <div>
             <div className="text-xs font-medium mb-1">{t("Events", "事件")}</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1">
-              {WEBHOOK_EVENT_TYPES.map((event) => (
-                <label key={event} className="flex items-center gap-2 text-xs text-foreground-muted">
-                  <Checkbox checked={events.includes(event)} onCheckedChange={() => toggleEvent(event)} />
-                  <span>{event}</span>
-                </label>
-              ))}
-            </div>
+            <RaftEventPicker selected={events} onToggle={toggleEvent} />
           </div>
           {subscriptions.length > 0 && (
             <div className="space-y-2">
@@ -1459,6 +1472,17 @@ function RaftNotificationRow({
     queryKey: ["raft-notification-failures", appId, subscription.id],
     queryFn: () => listRaftNotificationFailures(appId, subscription.id),
   });
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<WebhookEventType[]>(subscription.events);
+  const saveEvents = useMutation({
+    mutationFn: () => updateRaftNotification(appId, subscription.id, { events: draft }),
+    onSuccess: () => {
+      setEditing(false);
+      toast.show({ kind: "success", title: t("Events updated", "事件已更新") });
+      void qc.invalidateQueries({ queryKey: ["raft-notifications", appId] });
+    },
+    onError: (error) => toast.show({ kind: "error", title: t("Could not update events", "无法更新事件"), description: errorMessage(error) }),
+  });
   const retry = useMutation({
     mutationFn: (id: string) => retryRaftNotificationFailure(appId, subscription.id, id),
     onSuccess: () => {
@@ -1476,8 +1500,15 @@ function RaftNotificationRow({
       <Badge variant={subscription.enabled ? "success" : "muted"}>{subscription.enabled ? t("enabled", "已启用") : t("disabled", "已停用")}</Badge>
       <Button variant="ghost" size="xs" onClick={() => onToggleCards(!subscription.card_updates)} disabled={busy}>{subscription.card_updates ? t("Use text", "使用文字") : t("Use status cards", "使用状态卡片")}</Button>
       <Button variant="ghost" size="xs" onClick={() => onToggle(!subscription.enabled)} disabled={busy}>{subscription.enabled ? t("Disable", "停用") : t("Enable", "启用")}</Button>
+      <Button variant="ghost" size="xs" onClick={() => { setDraft(subscription.events); setEditing(!editing); }} disabled={busy || saveEvents.isPending}>{editing ? t("Cancel", "取消") : t("Edit events", "编辑事件")}</Button>
       <Button variant="ghost" size="xs" onClick={onTest} disabled={busy || !subscription.enabled}>{t("Test", "测试")}</Button>
       <Button variant="ghost" size="xs" onClick={onDelete} disabled={busy}>{t("Remove", "移除")}</Button>
+      {editing && (
+        <div className="w-full space-y-2 pt-1">
+          <RaftEventPicker selected={draft} onToggle={(event) => setDraft((current) => current.includes(event) ? current.filter((item) => item !== event) : [...current, event])} />
+          <Button variant="outline" size="xs" onClick={() => saveEvents.mutate()} disabled={draft.length === 0 || saveEvents.isPending}>{saveEvents.isPending ? t("Saving…", "保存中…") : t("Save events", "保存事件")}</Button>
+        </div>
+      )}
       {failures.isError && <div className="w-full text-xs text-foreground-muted">{t("Could not load failed notifications.", "无法加载失败的通知。")}</div>}
       {failures.data?.failures.map((failure) => (
         <div key={failure.id} className="w-full flex flex-wrap items-center gap-2 text-xs text-foreground-muted">

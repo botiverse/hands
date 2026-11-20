@@ -937,6 +937,53 @@ describe("Hands-managed Raft notifications", () => {
     expect(sqlite.prepare("SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ? AND object_key LIKE 'app_store:%'").get(SUBSCRIPTION_ID)).toMatchObject({ parent_message_id: "parent-message-1" });
   });
 
+  it("posts in-progress App Store upload states only to destinations that chose upload processing", async () => {
+    const { request, sqlite } = await harness();
+    const sent: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      sent.push(String((JSON.parse(String(init?.body)) as { content?: string }).content ?? ""));
+      return Response.json({ state: "sent", messageId: `${String(sent.length).padStart(8, "0")}-0000-4000-8000-000000000000` });
+    });
+    const upload = (state: string) => ({
+      event: "app_store:build_upload_state_changed", delivered_at: 100,
+      payload: { app: { slug: "raft-ios", name: "Raft App" }, resource: { type: "buildUploads", id: "upload-1" },
+        previous_state: state === "COMPLETE" ? "PROCESSING" : "AWAITING_UPLOAD", state },
+    });
+    const setEvents = (events: string[]) => sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?")
+      .run(JSON.stringify(events), SUBSCRIPTION_ID);
+
+    setEvents(["app_store:build_upload_state_changed"]);
+    expect(await (await request(upload("PROCESSING"), "delivery-1")).json()).toMatchObject({ skipped: true });
+    expect(await (await request({ ...upload("PROCESSING"), event: "testflight:upload_processing" }, "delivery-2")).json())
+      .toMatchObject({ skipped: true });
+    expect(sent).toHaveLength(0);
+    expect((await request(upload("COMPLETE"), "delivery-3")).status).toBe(200);
+    expect(sent).toHaveLength(1);
+
+    setEvents(["app_store:build_upload_state_changed", "testflight:upload_processing"]);
+    expect((await request({ ...upload("PROCESSING"), payload: { ...upload("PROCESSING").payload, resource: { type: "buildUploads", id: "upload-2" } } }, "delivery-4")).status).toBe(200);
+    expect(sent).toHaveLength(2);
+  });
+
+  it("drops upload processing from existing Raft destinations but keeps a destination's only event and generic webhooks", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`
+      CREATE TABLE webhooks (id TEXT PRIMARY KEY, events_json TEXT, updated_at INTEGER);
+      CREATE TABLE raft_notification_subscriptions (id TEXT PRIMARY KEY, events_json TEXT NOT NULL, webhook_id TEXT, updated_at INTEGER);
+      INSERT INTO webhooks VALUES ('w-raft', '["testflight:upload_processing","build:failed"]', 1),
+        ('w-only', '["testflight:upload_processing"]', 1), ('w-generic', '["testflight:upload_processing","build:failed"]', 1);
+      INSERT INTO raft_notification_subscriptions VALUES ('s-raft', '["testflight:upload_processing","build:failed"]', 'w-raft', 1),
+        ('s-only', '["testflight:upload_processing"]', 'w-only', 1);
+    `);
+    sqlite.exec(readFileSync(new URL("../../migrations/sql/0100_raft_upload_processing_opt_in.sql", import.meta.url), "utf8"));
+    const events = (table: string, id: string) => JSON.parse(String(sqlite.prepare(`SELECT events_json FROM ${table} WHERE id = ?`).pluck().get(id)));
+    expect(events("raft_notification_subscriptions", "s-raft")).toEqual(["build:failed"]);
+    expect(events("webhooks", "w-raft")).toEqual(["build:failed"]);
+    expect(events("raft_notification_subscriptions", "s-only")).toEqual(["testflight:upload_processing"]);
+    expect(events("webhooks", "w-only")).toEqual(["testflight:upload_processing"]);
+    expect(events("webhooks", "w-generic")).toEqual(["testflight:upload_processing", "build:failed"]);
+  });
+
   it("routes release families to the channel without changing feedback and crash grouping", () => {
     for (const event of ["release:published", "release:rolled_back", "build:failed",
       "app_store:version_state_changed", "app_store:build_upload_state_changed",
@@ -1214,7 +1261,8 @@ describe("Hands-managed Raft notifications", () => {
     // A timestamp is not needed to order standalone receipts.
     const first = { event: eventName, delivered_at: 100, payload: {
       release_id: "release-1", build_id: "build-1", version: "1.20.0", version_code: 12000003,
-      track: "production", state: "PROCESSING",
+      // In-progress App Store upload states follow the upload-processing choice.
+      track: "production", state: eventName === "app_store:build_upload_state_changed" ? "COMPLETE" : "PROCESSING",
     } };
     const second = { ...first, payload: { ...first.payload, version_code: 12000004 } };
     expect((await request(first, "one")).status).toBe(200);
