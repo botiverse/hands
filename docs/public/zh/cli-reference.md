@@ -193,6 +193,14 @@ hands apps list
 hands apps client-key hands-example-web
 ```
 
+设置应用的 App Store Connect API key，用于 TestFlight 上传、App Store 和 iOS 描述文件（需要应用管理员权限）。`--from-app` 复用组织里另一个应用已有的 key，需要两个应用的管理员权限；key 不会被返回：
+
+```bash
+hands apps asc-key raft-deck-ios --from-app raft-ios
+hands apps asc-key raft-deck-ios --key-id ABC123 --issuer-id <issuer> --p8 AuthKey_ABC123.p8
+hands apps asc-key raft-deck-ios   # 查看当前 key id
+```
+
 列出应用的构建：
 
 ```bash
@@ -437,7 +445,7 @@ hands builds publish-ios raft-ios \
 
 `--version-code` **必须与应用报告的值**（`CFBundleVersion`）一致，否则 iOS 崩溃无法使用正确的 dSYM 符号化。`--dsym` 文件是归档中 `*.dSYM` 包组成的 `.dSYM.zip`；没有它时该版本的 iOS 崩溃只显示原始堆栈帧。`--export-method`、`--appstore-build-number` 和 `--testflight-status` 记录为构建元数据。`publish-ios` 创建 Hands 构建和版本，本身不会上传到 Apple 或启用 TestFlight 测试。
 
-随后应用发布者通过 Hands 控制台、API 或命令行启动**服务端上传**。命令行可使用 `hands api POST /api/apps/<app-uuid>/builds/<build-id>/testflight-upload`，再通过上传状态 API 轮询返回的 Apple Build Upload ID，直到 `COMPLETE` 或 `FAILED`（`response.state.state`；旁边保留 Apple 的错误、警告和提示）。此阶段只上传并处理二进制文件，绝不会分配测试组、通知测试人员、激活 Hands 版本或提交 App Store 正式版本。
+随后应用发布者通过 Hands 控制台、API 或命令行启动**服务端上传**。命令行可使用 `hands builds testflight-upload raft-ios <hands-build-id>`（CLI 0.5.60 起），需要应用已配置 App Store Connect key（`hands apps asc-key`），且 App Store Connect 里已有该 bundle ID 的 app 记录。再通过上传状态 API 轮询返回的 Apple Build Upload ID，直到 `COMPLETE` 或 `FAILED`（`response.state.state`；旁边保留 Apple 的错误、警告和提示）。此阶段只上传并处理二进制文件，绝不会分配测试组、通知测试人员、激活 Hands 版本或提交 App Store 正式版本。
 
 Apple 将准确构建显示为 `VALID` 后，列出稳定测试组 ID：
 

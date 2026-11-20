@@ -153,6 +153,43 @@ export function registerAppCommands(program: Command): void {
     });
 
   apps
+    .command("asc-key <appIdOrSlug>")
+    .description(
+      "Set the app's App Store Connect API key (TestFlight upload, App Store, iOS profiles). " +
+      "--from-app reuses the key another app of the organization holds (admin of both apps); " +
+      "or pass --key-id, --issuer-id and --p8 <AuthKey_XXXX.p8>. Requires app admin. Without options, shows the current key id.",
+    )
+    .option("--from-app <appIdOrSlug>", "Copy the key of this app in the same organization.")
+    .option("--key-id <id>", "API key id.")
+    .option("--issuer-id <id>", "Issuer id.")
+    .option("--p8 <path>", "The downloaded AuthKey_XXXX.p8 file.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, opts: { fromApp?: string; keyId?: string; issuerId?: string; p8?: string; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      type Meta = { asc_credentials: { key_id: string; issuer_id: string; updated_at?: number } | null };
+      let result: Meta;
+      if (opts.fromApp) {
+        if (opts.keyId || opts.issuerId || opts.p8) throw new Error("Pass --from-app or --key-id/--issuer-id/--p8, not both.");
+        result = await apiRequest<Meta>(`/api/apps/${appId}/asc-credentials`, { method: "PUT", body: { from_app: opts.fromApp } });
+      } else if (opts.keyId || opts.issuerId || opts.p8) {
+        if (!opts.keyId || !opts.issuerId || !opts.p8) throw new Error("--key-id, --issuer-id and --p8 go together.");
+        const { readFile } = await import("node:fs/promises");
+        result = await apiRequest<Meta>(`/api/apps/${appId}/asc-credentials`, {
+          method: "PUT",
+          body: { key_id: opts.keyId, issuer_id: opts.issuerId, p8: await readFile(opts.p8, "utf8") },
+        });
+      } else {
+        result = await apiRequest<Meta>(`/api/apps/${appId}/asc-credentials`);
+      }
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const meta = result.asc_credentials;
+      console.log(meta ? `${appIdOrSlug}: App Store Connect key ${meta.key_id} (issuer ${meta.issuer_id}).` : `${appIdOrSlug} has no App Store Connect key.`);
+    });
+
+  apps
     .command("add-member <appIdOrSlug> <accountId> <role>")
     .description(
       "Grant a Hands account a direct role on one app (admin, publisher or viewer). " +

@@ -206,6 +206,16 @@ not rotate the key or return any deploy token):
 hands apps client-key hands-example-web
 ```
 
+Set the app's App Store Connect API key, used for TestFlight upload, App Store
+and iOS profiles (requires app admin). `--from-app` reuses the key another app of
+the organization holds and needs admin of both apps; the key is never returned:
+
+```bash
+hands apps asc-key raft-deck-ios --from-app raft-ios
+hands apps asc-key raft-deck-ios --key-id ABC123 --issuer-id <issuer> --p8 AuthKey_ABC123.p8
+hands apps asc-key raft-deck-ios   # show the current key id
+```
+
 List builds for an app:
 
 ```bash
@@ -654,7 +664,9 @@ storage through presigned uploads (up to 5 GiB each), so an IPA larger than
 is verified by SHA-256 and size; a mismatch leaves it pending with no release.
 
 An app publisher then starts the **server-side upload** through the Hands console,
-API, or CLI. Poll the returned Apple Build Upload id with the upload-status API until `COMPLETE` or
+API, or CLI (`hands builds testflight-upload raft-ios <hands-build-id>`, since CLI
+0.5.60). It needs the app's App Store Connect key (`hands apps asc-key`) and the
+App Store Connect app record for the bundle ID. Poll the returned Apple Build Upload id with the upload-status API until `COMPLETE` or
 `FAILED` (`response.state.state`; Apple errors/warnings/infos remain alongside
 it). This stage only uploads and processes the binary: it never assigns a beta
 group, notifies testers, activates the Hands release, or submits an App Store

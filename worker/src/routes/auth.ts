@@ -1907,6 +1907,143 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "list-signing-identities",
+        description:
+          "List an organization's signing identities (Apple Distribution, Developer ID, Android keystores) with public metadata, expiry and the apps granted to each. Never returns key material. Requires org admin.",
+        endpoint: { method: "GET", path: "/api/orgs/{org_id}/signing-identities" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+        },
+      },
+      {
+        name: "list-signing-api-key-sources",
+        description:
+          "List apps in the organization whose App Store Connect key can be reused (from_app) for certificates, profiles, App IDs and notarization. Key ids only. Requires org admin.",
+        endpoint: { method: "GET", path: "/api/orgs/{org_id}/signing-identities/api-keys" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+        },
+      },
+      {
+        name: "create-apple-distribution-certificate",
+        description:
+          "Create an Apple Distribution certificate in Hands: Hands makes the private key, App Store Connect issues the certificate, and the key never leaves Hands. Needs an App Store Connect key with the Admin role; Apple caps Distribution certificates per team. Pass the App Store Connect key as {from_app: <app id or slug>} to reuse the key an app in the organization already holds; never put key material in a request. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/signing-identities/generate-apple-ios" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          name: { type: "string", in: "body", required: true, description: "Display name for the identity." },
+          asc: { type: "object", in: "body", required: true, description: "App Store Connect key: {from_app: <app id or slug>}." },
+        },
+      },
+      {
+        name: "create-apple-certificate-request",
+        description:
+          "Start a certificate Apple issues to a person (Developer ID Application, or Apple Distribution without an Admin key): Hands makes the key and returns the certificate signing request (csr_pem) to upload on the Apple Developer site; finish with complete-apple-certificate-request. Pass the App Store Connect key as {from_app: <app id or slug>} to reuse the key an app in the organization already holds; never put key material in a request. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/signing-certificate-requests" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          kind: { type: "string", in: "body", required: true, description: "apple_developer_id or apple_ios_distribution." },
+          name: { type: "string", in: "body", required: true, description: "Display name for the identity." },
+          notary: { type: "object", in: "body", required: false, description: "Developer ID: notarization key {from_app: <app id or slug>}." },
+          asc: { type: "object", in: "body", required: false, description: "Apple Distribution: profile key {from_app: <app id or slug>}." },
+        },
+      },
+      {
+        name: "list-apple-certificate-requests",
+        description:
+          "List open certificate requests with their public request files. Requires org admin.",
+        endpoint: { method: "GET", path: "/api/orgs/{org_id}/signing-certificate-requests" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+        },
+      },
+      {
+        name: "complete-apple-certificate-request",
+        description:
+          "Finish a certificate request with the certificate Apple issued (.cer, DER, base64; public). Hands joins it with the key it holds into a signing identity. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/signing-certificate-requests/{request_id}/complete" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          request_id: { type: "string", in: "path", required: true, description: "Certificate request id." },
+          certificate_b64: { type: "string", in: "body", required: true, description: "The issued .cer file, base64." },
+        },
+      },
+      {
+        name: "cancel-apple-certificate-request",
+        description:
+          "Cancel an open certificate request and discard its key. Requires org admin.",
+        endpoint: { method: "DELETE", path: "/api/orgs/{org_id}/signing-certificate-requests/{request_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          request_id: { type: "string", in: "path", required: true, description: "Certificate request id." },
+        },
+      },
+      {
+        name: "generate-android-signing-key",
+        description:
+          "Generate an Android release key in Hands (PKCS12). Its one-time backup is downloaded by a person in the console or CLI, not through this action. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/signing-identities/generate-android" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          name: { type: "string", in: "body", required: true, description: "Display name; also the certificate CN unless common_name is given." },
+          common_name: { type: "string", in: "body", required: false, description: "Certificate CN." },
+          organization: { type: "string", in: "body", required: false, description: "Certificate O." },
+        },
+      },
+      {
+        name: "grant-signing-identity",
+        description:
+          "Let an app sign with this identity (its builds are signed with it). Requires org admin.",
+        endpoint: { method: "PUT", path: "/api/orgs/{org_id}/signing-identities/{identity_id}/apps/{app_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          identity_id: { type: "string", in: "path", required: true, description: "Signing identity id." },
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID in the same organization." },
+        },
+      },
+      {
+        name: "ungrant-signing-identity",
+        description:
+          "Stop an app from signing with this identity. Requires org admin.",
+        endpoint: { method: "DELETE", path: "/api/orgs/{org_id}/signing-identities/{identity_id}/apps/{app_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          identity_id: { type: "string", in: "path", required: true, description: "Signing identity id." },
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID in the same organization." },
+        },
+      },
+      {
+        name: "revoke-signing-identity",
+        description:
+          "Revoke a signing identity in Hands: no app can sign with it afterwards. Does not revoke the certificate at Apple. Irreversible. Requires org admin.",
+        endpoint: { method: "DELETE", path: "/api/orgs/{org_id}/signing-identities/{identity_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          identity_id: { type: "string", in: "path", required: true, description: "Signing identity id." },
+        },
+      },
+      {
+        name: "copy-app-asc-key",
+        description:
+          "Give an app the App Store Connect API key another app of the same organization already holds (for TestFlight upload, App Store and iOS profiles). The key stays encrypted in Hands and is never returned. Requires admin of both apps.",
+        endpoint: { method: "PUT", path: "/api/apps/{app_id}/asc-credentials" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID that receives the key." },
+          from_app: { type: "string", in: "body", required: true, description: "Id or slug of the app whose key to copy." },
+        },
+      },
+      {
+        name: "upload-testflight-build",
+        description:
+          "Upload a Hands iOS build's signed .ipa (registered with publish-ios) to App Store Connect for TestFlight, with the app's App Store Connect key. Needs the App Store Connect app record for the bundle ID. Requires publisher.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/builds/{build_id}/testflight-upload" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          build_id: { type: "string", in: "path", required: true, description: "Hands build id." },
+          bundle_id: { type: "string", in: "body", required: false, description: "Bundle-id assertion; must match the build metadata." },
+        },
+      },
+      {
         name: "list-app-webhooks",
         description: "List webhook metadata for this app only. Requires app admin; signing secrets are never returned.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/webhooks" },
