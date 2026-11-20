@@ -1515,13 +1515,13 @@ function AppsListWithNav() {
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
+  // Full-bleed: AppsList draws its own panel header and toolbar across the
+  // main area, and scrolls its rows under them.
   return (
-    <StandardPageShell>
-      <AppsList
-        onSelectApp={(appId) => navigate(`/apps/${appId}`)}
-        initialShowCreate={openNew || zeroApps}
-      />
-    </StandardPageShell>
+    <AppsList
+      onSelectApp={(appId) => navigate(`/apps/${appId}`)}
+      initialShowCreate={openNew || zeroApps}
+    />
   );
 }
 
