@@ -182,6 +182,22 @@ To check without installing (e.g. to render your own "update available" UI),
 call `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` and act on
 the result.
 
+### Java hosts
+
+Every suspending call has a callback twin that delivers on the main thread:
+`checkAsync`, `installAsync`, `statusAsync`, `reopenPendingInstallerAsync`,
+and `observeStatus(listener)` for `statusUpdates()`. Each returns a
+`Closeable`; close it to cancel (closing `installAsync` stops waiting, not the
+update). The constructor has Java overloads for its defaulted parameters.
+
+```java
+UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
+checker.checkAsync((check, error) -> {
+    if (check != null && check.getOffer() != null) showUpdate(check.getOffer());
+});
+Closeable watching = checker.observeStatus(status -> render(status));
+```
+
 ## Feedback
 
 `HandsFeedback` submits user feedback (with attachments) to the Hands

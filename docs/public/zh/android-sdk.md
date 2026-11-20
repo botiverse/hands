@@ -123,6 +123,18 @@ SDK 上报 `Build.SUPPORTED_ABIS` 的第一个值。存在针对该 ABI 的 APK 
 
 如果只需检查而不安装，例如显示自定义“有可用更新”界面，请调用 `HandsClient(baseUrl).checkForUpdate(..., languageTag = ...)` 并处理结果。
 
+### Java 宿主
+
+每个挂起调用都有在主线程回调的对应方法：`checkAsync`、`installAsync`、`statusAsync`、`reopenPendingInstallerAsync`，以及对应 `statusUpdates()` 的 `observeStatus(listener)`。它们都返回 `Closeable`，关闭即取消（关闭 `installAsync` 只是不再等待，更新本身继续）。构造函数为有默认值的参数提供了 Java 重载。
+
+```java
+UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
+checker.checkAsync((check, error) -> {
+    if (check != null && check.getOffer() != null) showUpdate(check.getOffer());
+});
+Closeable watching = checker.observeStatus(status -> render(status));
+```
+
 ## 反馈
 
 `HandsFeedback` 将用户反馈及附件提交到 Hands 工单系统，并自动附加应用和设备元数据及设备 ID。

@@ -175,6 +175,22 @@ GET /public/v2/apps/{slug}/updates/check
 
 The server resolves release scope, rollout, version comparison, and APK asset selection.
 
+### Java hosts
+
+Every suspending call has a callback twin that delivers on the main thread:
+`checkAsync`, `installAsync`, `statusAsync`, `reopenPendingInstallerAsync`,
+and `observeStatus(listener)` for `statusUpdates()`. Each returns a
+`Closeable`; close it to cancel (closing `installAsync` stops waiting, not the
+update). The constructor has Java overloads for its defaulted parameters.
+
+```java
+UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
+checker.checkAsync((check, error) -> {
+    if (check != null && check.getOffer() != null) showUpdate(check.getOffer());
+});
+Closeable watching = checker.observeStatus(status -> render(status));
+```
+
 ## Native symbols (for crash symbolication)
 
 The AAR ships a stripped `libhandscrash.so`. Release pipelines that report

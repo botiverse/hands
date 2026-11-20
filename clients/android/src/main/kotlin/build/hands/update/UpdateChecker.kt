@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -106,7 +107,7 @@ internal fun registerDownloadReceiverForSdk(
  *     reconciles the completed download before opening the package installer.
  *  5. If no update is available, returns silently.
  */
-class UpdateChecker(
+class UpdateChecker @JvmOverloads constructor(
     private val context: Context,
     private val baseUrl: String,
     private val appSlug: String,
@@ -240,6 +241,49 @@ class UpdateChecker(
         )
         val offer = updateOffer(response, installedVersionCode, deltaApplyEnabled, requested)
         return HandsUpdateCheck(updateAvailable = offer != null, offer = offer, status = status())
+    }
+
+    /** [check] for Java hosts. Close the result to cancel. */
+    @JvmOverloads
+    fun checkAsync(
+        languageTag: String? = this.languageTag,
+        callback: HandsUpdateCallback<HandsUpdateCheck>,
+    ): Closeable = scope.deliver(callback) { check(languageTag) }
+
+    /** [install] for Java hosts. Close the result to stop waiting (the update itself goes on). */
+    @JvmOverloads
+    fun installAsync(
+        languageTag: String? = this.languageTag,
+        callback: HandsUpdateCallback<HandsUpdateStatus>,
+    ): Closeable = scope.deliver(callback) { install(languageTag) }
+
+    /** [status] for Java hosts. */
+    fun statusAsync(callback: HandsUpdateCallback<HandsUpdateStatus>): Closeable =
+        scope.deliver(callback) { status() }
+
+    /** [reopenPendingInstaller] for Java hosts. */
+    fun reopenPendingInstallerAsync(callback: HandsUpdateCallback<HandsUpdateStatus>): Closeable =
+        scope.deliver(callback) { reopenPendingInstaller() }
+
+    /**
+     * [statusUpdates] for Java hosts: [listener] gets each status on the main
+     * thread until the returned handle is closed.
+     */
+    @JvmOverloads
+    fun observeStatus(
+        listener: HandsUpdateStatusListener,
+        pollIntervalMillis: Long = DEFAULT_POLL_INTERVAL_MS,
+    ): Closeable {
+        val job = scope.launch {
+            statusUpdates(pollIntervalMillis).collect { status ->
+                try {
+                    listener.onStatus(status)
+                } catch (_: Throwable) {
+                    // A host listener must not stop observation.
+                }
+            }
+        }
+        return Closeable { job.cancel() }
     }
 
     /** Reconcile the persisted transaction with PackageManager, DownloadManager and disk. */
