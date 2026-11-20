@@ -5,6 +5,7 @@ import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { createAscJwt } from "../lib/asc_api";
 import { getAscCredentials } from "../lib/asc_credentials";
 import { appStoreProfile, createDistributionCertificate, revokeDistributionCertificate, type ResolvedProfile } from "../lib/ios_profiles";
+import { applyAppIdPlan, planAppId, validBundleId } from "../lib/apple_app_ids";
 import { sha256Hex } from "../lib/deploy_tokens";
 import {
   ARTIFACT_TYPES,
@@ -800,6 +801,64 @@ export async function handleRunSigningJob(c: AdminContext) {
     await failJob(c, job, error, "signing");
   }
   return c.json({ job: await jobResponse(c.env, (await loadJob(c.env.DB, appId, jobId))!) });
+}
+
+// ---------- Apple App IDs (app admin; people and agents) ----------
+
+/**
+ * Plan or register the App ID for an iOS app and turn on the capabilities its
+ * entitlements ask for, with the App Store Connect key of the Distribution
+ * identity granted to the app. `apply: false` (the default) only reports what
+ * would change.
+ */
+export async function handleAppleAppId(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!validBundleId(body.bundle_id)) {
+      throw new SigningError(400, "invalid_request", "bundle_id must be an explicit bundle ID such as com.example.app (no wildcard)");
+    }
+    const bundleId = body.bundle_id;
+    let entitlements: Record<string, unknown>;
+    if (body.entitlements && typeof body.entitlements === "object" && !Array.isArray(body.entitlements)) {
+      if (body.entitlements_b64 !== undefined) throw new SigningError(400, "invalid_request", "pass entitlements or entitlements_b64, not both");
+      entitlements = body.entitlements as Record<string, unknown>;
+    } else if (typeof body.entitlements_b64 === "string") {
+      if (body.entitlements_b64.length > 64 * 1024) throw new SigningError(400, "signing_entitlements_invalid", "entitlements_b64 is too large");
+      entitlements = (await callSigningContainer<{ entitlements: Record<string, unknown> }>(
+        c.env, "/signing/entitlements", { entitlements_b64: body.entitlements_b64 }, 30_000,
+      )).entitlements;
+    } else if (body.entitlements === undefined && body.entitlements_b64 === undefined) {
+      // An app without an entitlements file needs only the App ID.
+      entitlements = {};
+    } else {
+      throw new SigningError(400, "invalid_request", "entitlements must be an object, or entitlements_b64 the .entitlements file in base64");
+    }
+    const identityId = typeof body.identity_id === "string" ? body.identity_id : null;
+    const identity = await identityForApp(c.env.DB, appId, "apple_ios_distribution", identityId);
+    const secret = await decryptSigningSecret(identity, c.env.ASC_CRED_ENC_KEY);
+    if (secret.kind !== "apple_ios_distribution" || !secret.asc) {
+      throw new SigningError(400, "signing_asc_key_missing", "this identity has no App Store Connect API key; add one to let Hands manage App IDs");
+    }
+    const plan = await planAppId(secret.asc, bundleId, entitlements);
+    if (body.apply !== true) return c.json({ plan, applied: null });
+    const applied = await applyAppIdPlan(secret.asc, plan);
+    await insertAuditLog(c.env.DB, c, {
+      app_id: appId,
+      action: "signing_app_id.apply",
+      payload: {
+        identity_id: identity.id,
+        bundle_id: bundleId,
+        app_id_resource_id: applied.app_id_resource_id,
+        created_app_id: applied.created_app_id,
+        enabled: applied.enabled,
+        profiles_removed: applied.profiles_removed,
+      },
+    }).catch(() => undefined);
+    return c.json({ plan, applied });
+  } catch (error) {
+    return fail(c, error);
+  }
 }
 
 /** Apple Notary API status for a submission (Accepted | In Progress | Invalid | Rejected). */

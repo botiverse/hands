@@ -188,6 +188,38 @@ async function apiKeyOption(fromApp: string | undefined, keyId: string | undefin
   return { key_id: keyId, issuer_id: issuerId, p8: await readFile(keyPath, "utf8") };
 }
 
+interface AppIdResponse {
+  plan: {
+    bundle_id: string;
+    create_app_id: boolean;
+    enable: Array<{ capability: string; entitlements: string[] }>;
+    already_enabled: string[];
+    manual: Array<{ capability: string; entitlement: string; values: string[]; step: string }>;
+    unknown_entitlements: string[];
+  };
+  applied: null | { created_app_id: boolean; enabled: string[]; profiles_removed: string[] };
+}
+
+export function describeAppId(res: AppIdResponse): string[] {
+  const { plan, applied } = res;
+  const lines: string[] = [];
+  if (applied) {
+    lines.push(applied.created_app_id ? `Registered App ID ${plan.bundle_id}.` : `App ID ${plan.bundle_id} was already registered.`);
+    lines.push(applied.enabled.length ? `Turned on: ${applied.enabled.join(", ")}.` : "No capability needed turning on.");
+    if (applied.profiles_removed.length) lines.push(`Removed ${applied.profiles_removed.length} Hands-made profile(s); the next signing makes a new one.`);
+  } else {
+    const changes = [
+      ...(plan.create_app_id ? [`register App ID ${plan.bundle_id}`] : []),
+      ...plan.enable.map((e) => `turn on ${e.capability} (${e.entitlements.join(", ")})`),
+    ];
+    lines.push(changes.length ? `Would ${changes.join("; ")}. Run again with --apply.` : `App ID ${plan.bundle_id} already has what the entitlements ask for.`);
+  }
+  if (plan.already_enabled.length) lines.push(`Already on: ${plan.already_enabled.join(", ")}.`);
+  for (const m of plan.manual) lines.push(`Manual step for ${m.capability}: ${m.step}: ${m.values.join(", ")}.`);
+  if (plan.unknown_entitlements.length) lines.push(`Not mapped to a capability (turn on by hand if signing refuses them): ${plan.unknown_entitlements.join(", ")}.`);
+  return lines;
+}
+
 export function registerSigningCommands(program: Command): void {
   program
     .command("sign <file>")
@@ -224,7 +256,36 @@ export function registerSigningCommands(program: Command): void {
       console.log(`Signed ${opts.out ?? file} (sha256 ${job.output_sha256}${job.notary_submission_id ? `, notarized ${job.notary_submission_id}` : ""}).`);
     });
 
-  const signing = program.command("signing").description("Manage signing identities held by Hands (org admin).");
+  const signing = program.command("signing").description("Manage signing identities held by Hands (org admin) and Apple App IDs (app admin).");
+
+  signing.command("app-id <appIdOrSlug> <bundleId>")
+    .description(
+      "Register an iOS App ID with Apple and turn on the capabilities its entitlements ask for, with the App Store Connect key " +
+      "of the Distribution identity granted to the app. Without --apply it only shows what would change.",
+    )
+    .option("--entitlements <plist>", "The app's .entitlements file; capabilities are read from it. Omit for an app with none.")
+    .option("--identity <id>", "Distribution identity id, when several are granted to the app.")
+    .option("--apply", "Make the changes in the Apple Developer account.", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (app: string, bundleId: string, opts: { entitlements?: string; identity?: string; apply?: boolean; json?: boolean }) => {
+      const json = jsonRequested(program, opts.json);
+      const appId = await resolveAppId(app);
+      const res = await apiRequest<AppIdResponse>(`/api/apps/${appId}/signing/apple-app-id`, {
+        method: "POST",
+        body: {
+          bundle_id: bundleId,
+          ...(opts.entitlements ? { entitlements_b64: (await readFile(opts.entitlements)).toString("base64") } : {}),
+          ...(opts.identity ? { identity_id: opts.identity } : {}),
+          apply: opts.apply === true,
+        },
+        retryOnUnauthorized: false,
+      });
+      if (json) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      for (const line of describeAppId(res)) console.log(line);
+    });
   const identities = signing.command("identities").description("Signing keys and certificates of an organization.");
 
   const orgOf = async (org?: string) => {

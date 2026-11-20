@@ -1893,6 +1893,20 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
       },
       {
+        name: "register-apple-app-id",
+        description:
+          "Register an iOS App ID with Apple and turn on the capabilities the app's entitlements ask for, using the App Store Connect key of the Apple Distribution identity granted to the app. Requires app admin. apply=false (default) returns the plan without changing anything; apply=true makes the changes and removes Hands-made App Store profiles that predate them. Capabilities come from the entitlements only; App Groups, iCloud containers, Merchant IDs and Pass Type IDs come back as manual steps.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/signing/apple-app-id" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID of the iOS app." },
+          bundle_id: { type: "string", in: "body", required: true, description: "Explicit bundle ID, e.g. build.raft.deck." },
+          entitlements: { type: "object", in: "body", required: false, description: "The app's entitlements as a JSON object (key to value). Pass this or entitlements_b64; omit both for an app with no entitlements." },
+          entitlements_b64: { type: "string", in: "body", required: false, description: "The app's .entitlements property list, base64." },
+          identity_id: { type: "string", in: "body", required: false, description: "Distribution identity id, when several are granted to the app." },
+          apply: { type: "boolean", in: "body", required: false, description: "true to make the changes; default false (plan only)." },
+        },
+      },
+      {
         name: "list-app-webhooks",
         description: "List webhook metadata for this app only. Requires app admin; signing secrets are never returned.",
         endpoint: { method: "GET", path: "/api/apps/{app_id}/webhooks" },

@@ -26,6 +26,7 @@ import {
   handleListSigningCertificateRequests,
   handleCompleteSigningCertificateRequest,
   handleCancelSigningCertificateRequest,
+  handleAppleAppId,
 } from "../src/routes/signing";
 import { setSigningContainerForTests } from "../src/lib/signing";
 import { storeAscCredentials } from "../src/lib/asc_credentials";
@@ -555,5 +556,101 @@ describe("Apple keys made in Hands", () => {
     expect((sqlite.prepare("SELECT secret_ciphertext_b64 FROM signing_certificate_requests WHERE id = ?").get(other) as any).secret_ciphertext_b64).toBeNull();
     expect((await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "android_keystore", name: "x" })).status).toBe(400);
     expect((await call(handleCreateSigningCertificateRequest, env, { orgId: ORG }, { kind: "apple_ios_distribution", name: "No key" })).body.error).toMatch(/API key/);
+  });
+});
+
+describe("Apple App IDs", () => {
+  async function iosApp() {
+    const { env, sqlite } = environment();
+    const { privateKey } = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const p8 = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(await crypto.subtle.exportKey("pkcs8", privateKey) as ArrayBuffer).toString("base64")}\n-----END PRIVATE KEY-----`;
+    recorder(() => ({ body: { metadata: { subject: "CN=Apple Distribution", team_id: "XDAPXFY8FZ", sha256_fingerprint: "ab".repeat(32) } } }));
+    const id = (await call(handleUploadSigningIdentity, env, { orgId: ORG }, {
+      kind: "apple_ios_distribution", name: "Deck iOS", p12_b64: "QUJD", p12_password: "pw", asc: { key_id: "KEY1", issuer_id: "ISS", p8 },
+    })).body.signing_identity.id;
+    sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES ('app-ios', ?, 'raft-deck-ios', 'Deck iOS', 'ios', 'ck4', 3)`).run(ORG);
+    await call(handleGrantSigningIdentity, env, { orgId: ORG, identityId: id, appId: "app-ios" });
+    return { env, sqlite };
+  }
+
+  function apple(state: { registered: boolean; caps: string[]; profiles?: Array<{ id: string; name: string }> }) {
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      const path = String(url).replace("https://api.appstoreconnect.apple.com", "");
+      const method = init.method ?? "GET";
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ method, path, body });
+      const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+      if (method === "GET" && path.startsWith("/v1/bundleIds?")) {
+        return json({ data: [
+          { id: "B-WIDGET", type: "bundleIds", attributes: { identifier: "build.raft.deck.widget", platform: "IOS" } },
+          ...(state.registered ? [{ id: "B1", type: "bundleIds", attributes: { identifier: "build.raft.deck", platform: "IOS" } }] : []),
+        ] });
+      }
+      if (method === "GET" && path.startsWith("/v1/bundleIds/B1/bundleIdCapabilities")) {
+        return json({ data: state.caps.map((c, i) => ({ id: `cap${i}`, type: "bundleIdCapabilities", attributes: { capabilityType: c } })) });
+      }
+      if (method === "GET" && path.startsWith("/v1/bundleIds/B1/profiles")) {
+        return json({ data: (state.profiles ?? []).map((p) => ({ id: p.id, type: "profiles", attributes: { name: p.name, profileType: "IOS_APP_STORE" } })) });
+      }
+      if (method === "POST" && path === "/v1/bundleIds") return json({ data: { id: "B-NEW", type: "bundleIds", attributes: { identifier: body.data.attributes.identifier } } }, 201);
+      if (method === "POST" && path === "/v1/bundleIdCapabilities") return json({ data: { id: "c", type: "bundleIdCapabilities", attributes: body.data.attributes } }, 201);
+      if (method === "DELETE" && path.startsWith("/v1/profiles/")) return new Response(null, { status: 204 });
+      return json({ errors: [{ title: "unexpected" }] }, 404);
+    }));
+    return calls;
+  }
+
+  const DECK = { "com.apple.developer.associated-domains": ["applinks:deck.raft.build", "webcredentials:deck.raft.build"] };
+
+  it("plans without writing, then registers the App ID with the capabilities the entitlements ask for", async () => {
+    const { env, sqlite } = await iosApp();
+    const calls = apple({ registered: false, caps: [] });
+    const planned = await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements: DECK });
+    expect(planned.status).toBe(200);
+    expect(planned.body.applied).toBeNull();
+    expect(planned.body.plan).toMatchObject({ bundle_id: "build.raft.deck", create_app_id: true, app_id_resource_id: null, enable: [{ capability: "ASSOCIATED_DOMAINS" }] });
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+
+    calls.length = 0;
+    const applied = await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements: DECK, apply: true });
+    expect(applied.body.applied).toMatchObject({ app_id_resource_id: "B-NEW", created_app_id: true, enabled: ["ASSOCIATED_DOMAINS"], profiles_removed: [] });
+    const writes = calls.filter((c) => c.method !== "GET");
+    expect(writes.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /v1/bundleIds", "POST /v1/bundleIdCapabilities"]);
+    expect(writes[0]!.body.data.attributes).toEqual({ identifier: "build.raft.deck", name: "Hands build raft deck", platform: "IOS" });
+    expect(writes[1]!.body.data).toMatchObject({ attributes: { capabilityType: "ASSOCIATED_DOMAINS" }, relationships: { bundleId: { data: { type: "bundleIds", id: "B-NEW" } } } });
+    const audit = sqlite.prepare("SELECT action, payload FROM audit_logs WHERE action = 'signing_app_id.apply'").get() as any;
+    expect(JSON.parse(audit.payload)).toMatchObject({ bundle_id: "build.raft.deck", created_app_id: true, enabled: ["ASSOCIATED_DOMAINS"] });
+  });
+
+  it("turns on only missing capabilities of an existing App ID and drops Hands-made profiles", async () => {
+    const { env } = await iosApp();
+    const calls = apple({ registered: true, caps: ["IN_APP_PURCHASE"], profiles: [{ id: "P-HANDS", name: "Hands build.raft.deck App Store 202611" }, { id: "P-MANUAL", name: "Deck App Store" }] });
+    const applied = await call(handleAppleAppId, env, { appId: "app-ios" }, {
+      bundle_id: "build.raft.deck", entitlements: { ...DECK, "aps-environment": "production" }, apply: true,
+    });
+    expect(applied.body.applied).toMatchObject({ created_app_id: false, enabled: ["PUSH_NOTIFICATIONS", "ASSOCIATED_DOMAINS"], profiles_removed: ["P-HANDS"] });
+    expect(calls.some((c) => c.method === "POST" && c.path === "/v1/bundleIds")).toBe(false);
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v1/profiles/P-HANDS"]);
+
+    // Nothing missing: nothing written.
+    calls.length = 0;
+    apple({ registered: true, caps: ["ASSOCIATED_DOMAINS"] });
+    const again = await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements: DECK, apply: true });
+    expect(again.body.plan).toMatchObject({ enable: [], already_enabled: ["ASSOCIATED_DOMAINS"] });
+    expect(again.body.applied).toMatchObject({ enabled: [], profiles_removed: [] });
+  });
+
+  it("reads an .entitlements file through the container and refuses bad input", async () => {
+    const { env } = await iosApp();
+    apple({ registered: true, caps: [] });
+    const calls = recorder((path) => path === "/signing/entitlements" ? { body: { entitlements: DECK } } : { status: 500, body: {} });
+    const res = await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements_b64: "PHBsaXN0Lz4=" });
+    expect(calls).toEqual([{ path: "/signing/entitlements", body: { entitlements_b64: "PHBsaXN0Lz4=" } }]);
+    expect(res.body.plan.enable).toEqual([{ capability: "ASSOCIATED_DOMAINS", entitlements: ["com.apple.developer.associated-domains"] }]);
+    expect((await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.*" })).body.code).toBe("invalid_request");
+    expect((await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements: DECK, entitlements_b64: "x" })).body.code).toBe("invalid_request");
+    // An app with no Distribution identity granted cannot use one.
+    expect((await call(handleAppleAppId, env, { appId: APP }, { bundle_id: "build.raft.deck" })).body.code).toBe("signing_identity_not_granted");
   });
 });
