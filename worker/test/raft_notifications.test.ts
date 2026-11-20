@@ -668,6 +668,9 @@ describe("Hands-managed Raft notifications", () => {
     });
     expect(message).toContain("📈 **sample-app · Crash spike**");
     expect(message).toContain("50 reports in the last hour");
+    expect(formatRaftNotificationMessage({
+      event: "crash:spike", payload: { app_slug: "sample-app", ticket_id: TICKET_ID, count_last_hour: 12, devices_last_hour: 4 },
+    })).toContain("12 reports from 4 devices in the last hour");
     expect(message).toContain(`hands feedback show sample-app ${TICKET_ID}`);
     expect(message.match(new RegExp(TICKET_ID, "g"))).toHaveLength(1);
     expect(message).not.toContain("PRIVATE STACK");
