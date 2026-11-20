@@ -13,7 +13,7 @@
  * whose Continue walks through taking it to Apple and bringing the .cer back.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Laptop, Smartphone, TabletSmartphone, Trash2, X } from "lucide-react";
@@ -122,7 +122,7 @@ const PLATFORMS: Array<{
     hint: ["Developer ID, notarized by Hands", "Developer ID，由 Hands 公证"],
     add: ["Add certificate", "添加证书"],
     empty: ["No Developer ID yet. Add one to sign and notarize macOS builds.", "还没有 Developer ID。添加后即可签名并公证 macOS 构建。"],
-    appPlatforms: ["electron", "tauri", "macos"],
+    appPlatforms: ["electron", "node"],
   },
   {
     id: "android", kind: "android_keystore", icon: <TabletSmartphone />, name: "Android",
@@ -192,6 +192,13 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
   const identities = useQuery({ queryKey: ["signing-identities", orgId], queryFn: () => listSigningIdentities(orgId), enabled: canManage });
   const requests = useQuery({ queryKey: ["signing-certificate-requests", orgId], queryFn: () => listSigningCertificateRequests(orgId), enabled: canManage });
   const apps = useQuery({ queryKey: ["apps"], queryFn: () => listApps() });
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Below the two-column width the panel stacks under the lists: bring it into view.
+  useEffect(() => {
+    if (openId && typeof window.matchMedia === "function" && !window.matchMedia("(min-width: 1024px)").matches) {
+      panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [openId]);
 
   if (!canManage) {
     return <Text.Sans size="small" variant="muted">{t("Only organization admins manage signing identities.", "只有组织管理员可以管理签名身份。")}</Text.Sans>;
@@ -206,7 +213,9 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
   };
   const rows = identities.data?.signing_identities ?? [];
   const pending = requests.data?.certificate_requests ?? [];
-  const orgApps = (apps.data?.apps ?? []).filter((a) => a.org_id === orgId && !a.archived);
+  const grantedIds = new Set(rows.flatMap((r) => r.apps.map((a) => a.app_id)));
+  // Archived apps stay listed while granted, so the grant can be turned off.
+  const orgApps = (apps.data?.apps ?? []).filter((a) => a.org_id === orgId && (!a.archived || grantedIds.has(a.id)));
   const open = rows.find((r) => r.id === openId) ?? null;
   const continuingRequest = pending.find((r) => r.id === continuing) ?? null;
 
@@ -250,6 +259,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
         })}
       </div>
       {open && (
+        <div ref={panelRef} className="scroll-mt-4 lg:sticky lg:top-4">
         <IdentityPanel
           key={open.id}
           orgId={orgId}
@@ -259,6 +269,7 @@ export function SigningTab({ orgId, canManage }: { orgId: string; canManage: boo
           onRevoked={() => { setOpenId(null); done(t("Revoked", "已撤销")); }}
           onChanged={refresh}
         />
+        </div>
       )}
       {adding && (
         <AddDialog
@@ -386,7 +397,7 @@ function IdentityPanel({ orgId, identity, orgApps, onClose, onRevoked, onChanged
   const apiKey = m.notary_key_id ?? m.asc_key_id;
 
   return (
-    <Panel edge="attached" aria-label={identity.name} className="flex min-h-0 flex-col rounded-container border border-line-seam bg-layer-canvas lg:sticky lg:top-4">
+    <Panel edge="attached" aria-label={identity.name} className="flex min-h-0 flex-col rounded-container border border-line-seam bg-layer-canvas">
       <PanelHeader>
         <PanelHeaderContent>
           <PanelHeading><PanelTitle render={<h2 />}>{identity.name}</PanelTitle></PanelHeading>
@@ -745,7 +756,7 @@ function AddDialog({ orgId, platform, onClose, onIdentity, onRequest }: {
   const title = step === "choose" ? t(...p.add) : step === "upload"
     ? (platform === "android" ? t("Upload a keystore", "上传 keystore") : t("Upload a .p12", "上传 .p12"))
     : platform === "android" ? t("Create key", "新建密钥") : t("Create certificate", "新建证书");
-  const back = <TextLink variant="muted" className="mr-auto" onClick={() => setStep("choose")}>{t("Back", "返回")}</TextLink>;
+  const back = <TextLink variant="muted" className="mr-auto" onClick={() => { setFile(null); setP8(null); setProfiles([]); setStep("choose"); }}>{t("Back", "返回")}</TextLink>;
   const cancel = <DialogClose render={<Button variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>;
   const nameField = (
     <Field>
@@ -821,7 +832,7 @@ function AddDialog({ orgId, platform, onClose, onIdentity, onRequest }: {
               {nameField}
               <Field>
                 <FieldLabel nativeLabel={false} render={<div />}>{platform === "android" ? t("Keystore (.p12 / PKCS12)", "Keystore（.p12 / PKCS12）") : t("Certificate (.p12)", "证书（.p12）")}</FieldLabel>
-                <FilePick label={platform === "android" ? t("Choose keystore", "选择 keystore") : t("Choose .p12 file", "选择 .p12 文件")} accept=".p12,.pfx,.keystore,.jks" onFile={setFile} />
+                <FilePick label={platform === "android" ? t("Choose keystore", "选择 keystore") : t("Choose .p12 file", "选择 .p12 文件")} accept={platform === "android" ? ".p12,.pfx,.keystore,.jks" : ".p12,.pfx"} onFile={setFile} />
               </Field>
               <Field>
                 <FieldLabel htmlFor="signing-password">{platform === "android" ? t("Store password", "Store 密码") : t("Password", "密码")}</FieldLabel>

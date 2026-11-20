@@ -13,6 +13,14 @@
       (function () {
         try {
           var mode = window.localStorage.getItem("hands-admin-mode");
+          // Carry over the mode saved under the previous key.
+          if (mode === null) {
+            var previous = window.localStorage.getItem("hands-admin-theme-mode");
+            if (previous === "light" || previous === "dark" || previous === "system") {
+              mode = previous;
+              window.localStorage.setItem("hands-admin-mode", mode);
+            }
+          }
           if (mode !== "light" && mode !== "dark" && mode !== "system") mode = "light";
           var resolved = mode;
           if (mode === "system") {
