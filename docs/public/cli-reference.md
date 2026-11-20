@@ -352,6 +352,22 @@ does not offer a mapping readback, so this does not verify its current contents.
 Without that evidence, Hands continues to attempt the upload. To explicitly
 replace the mapping, use `play-upload-symbols` below.
 
+## Google Play: what is in review
+
+Before promoting, read what Play holds on every track of the app:
+
+```bash
+hands play review-status raft-android
+```
+
+It prints what is in review now (track and versionCodes), the production
+versionCode, and each track's releases with their state: `IN_REVIEW`,
+`APPROVED_NOT_PUBLISHED`, `NOT_APPROVED`, `PUBLISHED`, `DRAFT`. States are read
+live from Play. If Play refuses to list a track, the command shows the last
+states Hands' five-minute poll observed for it, with the time of each
+observation, and says so. `--json` gives the same as JSON. Viewer role is
+enough.
+
 ## Google Play: when a Play write gets no response
 
 A Play write can finish on Google Play after the CLI has given up waiting

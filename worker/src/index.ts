@@ -1,3 +1,4 @@
+import { handleGetPlayReviewStatus } from "./routes/play_review_status";
 import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
 import { pollGooglePlayReleases } from "./lib/play_release_poll";
@@ -1213,6 +1214,9 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
   requireAppRole("publisher"),
   handleCreateAcceptanceReceipt,
 );
+// App-wide Play release states (what is in review, per track) and the
+// production versionCode: live tracks.releases.list, else the poll's last states.
+bindAdmin("get", "/api/apps/:appId/distributions/play/review-status", requireAppRole("viewer"), handleGetPlayReviewStatus);
 // Store listing text (edits.listings). App-scoped, not release-scoped.
 // Reading opens (and deletes) a Play edit with the app's credential: publisher, like the push.
 bindAdmin("get", "/api/apps/:appId/distributions/play/store-listing",
