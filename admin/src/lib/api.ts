@@ -1886,6 +1886,38 @@ export const ungrantSigningIdentity = (orgId: string, identityId: string, appId:
     { method: "DELETE", admin: true },
   );
 
+export type AppleCapabilityNeed = { capability: string; entitlements: string[] };
+export type AppleManualStep = { capability: string; entitlement: string; values: string[]; step: string };
+export interface AppleAppIdPlan {
+  bundle_id: string;
+  app_id_resource_id: string | null;
+  create_app_id: boolean;
+  enable: AppleCapabilityNeed[];
+  already_enabled: string[];
+  manual: AppleManualStep[];
+  unknown_entitlements: string[];
+}
+export interface AppleAppIdResult {
+  bundle_id: string;
+  app_id_resource_id: string;
+  created_app_id: boolean;
+  enabled: string[];
+  profiles_removed: string[];
+  manual: AppleManualStep[];
+  unknown_entitlements: string[];
+}
+
+/** Check (apply false) or register (apply true) an app's App ID with Apple, turning on the capabilities its entitlements need. */
+export const registerAppleAppId = (
+  appId: string,
+  input: { bundle_id: string; identity_id: string; entitlements_b64?: string | undefined; apply: boolean },
+) =>
+  request<{ plan: AppleAppIdPlan; applied: AppleAppIdResult | null }>(`/api/apps/${encodeURIComponent(appId)}/signing/apple-app-id`, {
+    method: "POST",
+    body: JSON.stringify(input),
+    admin: true,
+  });
+
 export const listOrgWebhooks = (orgId: string) =>
   request<{ webhooks: Webhook[] }>(`/api/orgs/${orgId}/webhooks`, { admin: true });
 
