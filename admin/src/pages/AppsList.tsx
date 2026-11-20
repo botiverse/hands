@@ -22,7 +22,7 @@ import {
   EmptyStateIcon,
   EmptyStateTitle,
   Skeleton,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { AlertTriangle, Archive, LayoutGrid, Package, Rocket } from "lucide-react";
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {
@@ -187,7 +187,7 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
             </Tooltip>
           </div>
         </div>
-        <Badge variant="information" className="ml-3">{app.platform}</Badge>
+        <Badge appearance="outline" className="ml-3">{app.platform}</Badge>
       </div>
     </button>
   );

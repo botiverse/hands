@@ -3,7 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import { Apple, Play, Smartphone } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
-import { Badge, TextHeading, TextSans } from "raft-ui";
+import { Badge, TextHeading, TextSans } from "@botiverse/raft-ui";
 import { listApps } from "../lib/api";
 import { useText } from "../lib/locale";
 import { AppGalleryConnector } from "../components/integrations/AppGalleryConnector";

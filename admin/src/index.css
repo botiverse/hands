@@ -1,14 +1,9 @@
 @import 'tailwindcss';
-/* raft-ui elegant component library: its @theme token contract + component
-   styles. Tailwind v4 skips node_modules, so @source makes it generate the
-   utility classes raft-ui's compiled components reference. */
-@import 'raft-ui/styles.css';
-@source '../node_modules/raft-ui/dist';
-
-/* Tailwind utilities scoped to the Brutal theme root (same contract as the
-   platform web app). Enables `theme-brutal:` classes for surfaces and
-   dividers that follow Raft's hard-edged Brutal recipe. */
-@custom-variant theme-brutal (&:where([data-theme="brutal"], [data-theme="brutal"] *));
+/* Raft Design System (@botiverse/raft-ui): its @theme token contract and
+   component styles. Tailwind v4 skips node_modules, so @source makes it
+   generate the utility classes raft-ui's compiled components reference. */
+@import '@botiverse/raft-ui/styles.css';
+@source '../node_modules/@botiverse/raft-ui/dist/**/*.{js,mjs}';
 
 /* Chart series tokens. Light surfaces use darkened amber/green so every
    series keeps >= 3:1 against the canvas; dark surfaces keep the brighter
@@ -26,30 +21,6 @@
   --chart-error: #e05252;
 }
 
-/* Sidebar navigation scroller: subtle themed scrollbar, present only on real
-   overflow (short viewports). */
-.sidebar-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklch, var(--ink) 24%, transparent) transparent;
-}
-.sidebar-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-.sidebar-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.sidebar-scroll::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 8px;
-  background-clip: padding-box;
-  background-color: color-mix(in oklch, var(--ink) 24%, transparent);
-}
-
-@theme {
-  --font-sans:
-    ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-}
-
 /*
   The default border color has changed to `currentcolor` in Tailwind CSS v4,
   so we've added these compatibility styles to make sure everything still
@@ -64,15 +35,10 @@
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentcolor);
+    border-color: var(--line-hairline, currentcolor);
   }
 }
 
 /* The legacy .btn/.input/.label/.card/.badge utilities were retired with
    the RUI componentization; every call site now uses Raft UI components. */
 
-@layer base {
-  body {
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-}

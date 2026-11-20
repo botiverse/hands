@@ -8,7 +8,7 @@ import {
   type Operation,
 } from "../lib/api";
 import { useToast } from "../components/Toast";
-import { Badge, Button, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Badge, Button, Progress, ProgressTrack, ProgressIndicator } from "@botiverse/raft-ui";
 import { useLocale, useText } from "../lib/locale";
 
 const STATUS_VARIANTS: Record<Operation["status"], "muted" | "information" | "success" | "danger"> = {

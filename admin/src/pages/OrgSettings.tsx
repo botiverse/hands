@@ -15,8 +15,19 @@ import { errorMessage } from "../lib/errorMessage";
  */
 
 import { SigningTab } from "./SigningIdentities";
-import { useState } from "react";
-import { NavLink } from "react-router-dom";
+import { useState, useSyncExternalStore } from "react";
+import { Link } from "react-router-dom";
+import {
+  ArrowLeft,
+  Building2,
+  KeyRound,
+  MailPlus,
+  ScrollText,
+  SlidersHorizontal,
+  Users,
+  Webhook as WebhookIcon,
+  type LucideIcon,
+} from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createOrgInvite,
@@ -24,6 +35,7 @@ import {
   listOrgAuditLogs,
   listOrgInvites,
   listOrgMembers,
+  listOrgs,
   removeOrgMember,
   resendOrgInvite,
   revokeOrgInvite,
@@ -48,7 +60,7 @@ import { useToast } from "../components/Toast";
 import { useText } from "../lib/locale";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
-import {
+import { TextLink,
   Badge,
   Button,
   Input,
@@ -75,14 +87,35 @@ import {
   EmptyState,
   EmptyStateTitle,
   Skeleton,
-  Tabs,
+  Panel,
+  PanelHeader,
+  PanelHeaderContent,
+  PanelHeaderIcon,
+  PanelHeading,
+  PanelMeta,
+  PanelTitle,
+  PanelAction,
+  SidebarBody,
+  SidebarContent,
+  SidebarItem,
+  SidebarItemContent,
+  SidebarItemIcon,
+  SidebarItemTitle,
+  SidebarList,
+  SidebarRoot,
+  SidebarSection,
   Textarea,
-  TabsList,
-  TabsTab,
-  TabsIndicator,
-} from "raft-ui";
-import type { BadgeProps } from "raft-ui";
+} from "@botiverse/raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 
+const ORG_SETTINGS_TAB_ICONS: Record<OrgSettingsTab, LucideIcon> = {
+  general: SlidersHorizontal,
+  members: Users,
+  invites: MailPlus,
+  audit: ScrollText,
+  webhooks: WebhookIcon,
+  signing: KeyRound,
+};
 const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   general: "General",
   members: "Members",
@@ -91,7 +124,7 @@ const ORG_SETTINGS_TAB_LABELS: Record<OrgSettingsTab, string> = {
   webhooks: "Webhooks",
   signing: "Signing",
 };
-const ORG_SETTINGS_TAB_LABELS_ZH: Record<OrgSettingsTab, string> = { general: "常规", members: "成员", invites: "邀请", audit: "审计", webhooks: "Webhook", signing: "签名" };
+const ORG_SETTINGS_TAB_LABELS_ZH: Record<OrgSettingsTab, string> = { general: "常规", members: "成员", invites: "邀请", audit: "审计", webhooks: "Webhooks", signing: "签名" };
 const ROLE_ZH: Record<string, string> = { owner: "所有者", admin: "管理员", member: "成员", viewer: "查看者", publisher: "发布者" };
 const INVITE_ZH: Record<string, string> = { pending: "待接受", accepted: "已接受", revoked: "已撤销", expired: "已过期" };
 const roleText = (role: string, t: (english: string, chinese: string) => string) => t(role, ROLE_ZH[role] ?? role);
@@ -111,6 +144,94 @@ export function isOrgSettingsTab(tab: string | undefined): tab is OrgSettingsTab
   return ORG_SETTINGS_TABS.some((candidate) => candidate === tab);
 }
 
+/** The organization's own pages, in order, with their sidebar icons. The
+ *  desktop sidebar lists them on `/orgs/...` routes; on a phone they are the
+ *  rows of the organization's list page. */
+export const ORG_SETTINGS_NAV: ReadonlyArray<{
+  tab: OrgSettingsTab;
+  label: string;
+  labelZh: string;
+  icon: LucideIcon;
+}> = ORG_SETTINGS_TABS.map((tab) => ({
+  tab,
+  label: ORG_SETTINGS_TAB_LABELS[tab],
+  labelZh: ORG_SETTINGS_TAB_LABELS_ZH[tab],
+  icon: ORG_SETTINGS_TAB_ICONS[tab],
+}));
+
+const DESKTOP_QUERY = "(min-width: 768px)";
+
+/** Whether the viewport is at least `md`, where the sidebar shows. */
+export function useIsDesktop() {
+  return useSyncExternalStore(
+    (onChange) => {
+      if (typeof window.matchMedia !== "function") return () => {};
+      const query = window.matchMedia(DESKTOP_QUERY);
+      query.addEventListener?.("change", onChange);
+      return () => query.removeEventListener?.("change", onChange);
+    },
+    () => typeof window.matchMedia !== "function" || window.matchMedia(DESKTOP_QUERY).matches,
+  );
+}
+
+function useOrgName(orgId: string) {
+  const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
+  const account = me.data?.account;
+  const orgs = useQuery({ queryKey: ["orgs"], queryFn: () => listOrgs() });
+  return (
+    orgs.data?.orgs.find((org) => org.id === orgId)?.name ??
+    (account?.org_id === orgId ? account?.server_slug ?? account?.server_id : undefined) ??
+    orgId
+  );
+}
+
+/** The organization's page on a phone (patterns: products/raft-chat/settings,
+ *  "on a phone ... each row opens another pushed page, with Back to the
+ *  list"): its header, then a row per section. Desktop never shows it; the
+ *  sidebar holds these rows there. */
+export function OrgSettingsList({ orgId }: { orgId: string }) {
+  const t = useText();
+  const orgName = useOrgName(orgId);
+  return (
+    <Panel className="flex min-h-0 flex-1 flex-col" aria-label={orgName}>
+      <PanelHeader>
+        <PanelHeaderIcon>
+          <Building2 aria-hidden="true" />
+        </PanelHeaderIcon>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle render={<h1 />}>{orgName}</PanelTitle>
+          </PanelHeading>
+          <PanelMeta>{t("Organization", "组织")}</PanelMeta>
+        </PanelHeaderContent>
+      </PanelHeader>
+      <SidebarRoot render={<nav aria-label={orgName} />} className="min-h-0 flex-1">
+        <SidebarBody>
+          <SidebarContent>
+            <SidebarSection>
+              <SidebarList>
+                {ORG_SETTINGS_NAV.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <SidebarItem key={item.tab} render={<Link to={`/orgs/${orgId}/${item.tab}`} />}>
+                      <SidebarItemIcon aria-hidden>
+                        <Icon />
+                      </SidebarItemIcon>
+                      <SidebarItemContent>
+                        <SidebarItemTitle>{t(item.label, item.labelZh)}</SidebarItemTitle>
+                      </SidebarItemContent>
+                    </SidebarItem>
+                  );
+                })}
+              </SidebarList>
+            </SidebarSection>
+          </SidebarContent>
+        </SidebarBody>
+      </SidebarRoot>
+    </Panel>
+  );
+}
+
 export function OrgSettings({
   orgId,
   tab,
@@ -126,18 +247,37 @@ export function OrgSettings({
   const isOwnerOrAdmin = currentRole === "owner" || currentRole === "admin";
   const isCurrentOrg = currentOrgId === orgId;
 
-  return (
-    <div>
-      <div className="mb-6">
-        <div className="text-sm text-foreground-muted">{t("Organization", "组织")}</div>
-        <h1 className="text-2xl font-bold">
-          {account
-            ? t(`${account.server_slug ?? account.server_id} · Raft org`, `${account.server_slug ?? account.server_id} · Raft 组织`)
-            : t("Settings", "设置")}
-        </h1>
-        <div className="text-sm text-foreground-muted font-mono">{orgId}</div>
-      </div>
+  const orgName = useOrgName(orgId);
+  const tabLabel = t(ORG_SETTINGS_TAB_LABELS[tab], ORG_SETTINGS_TAB_LABELS_ZH[tab]);
 
+  // The sections are the sidebar's rows on desktop and the rows of the
+  // organization's list page on a phone, so the page header names the
+  // section (its one level-1 heading) and, on a phone, has Back to that list.
+  return (
+    <Panel className="flex min-h-0 flex-1 flex-col" aria-label={`${tabLabel} · ${orgName}`}>
+      <PanelHeader>
+        <PanelAction
+          className="md:hidden"
+          aria-label={t("Back", "返回")}
+          render={<Link to={`/orgs/${orgId}`} />}
+          nativeButton={false}
+          activateOnTouchEnd
+        >
+          <ArrowLeft aria-hidden="true" />
+        </PanelAction>
+        <PanelHeaderIcon className="max-md:hidden">
+          <Building2 aria-hidden="true" />
+        </PanelHeaderIcon>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle render={<h1 />}>{tabLabel}</PanelTitle>
+          </PanelHeading>
+          <PanelMeta>{`${orgName} · ${t("Organization", "组织")}`}</PanelMeta>
+        </PanelHeaderContent>
+      </PanelHeader>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="w-full max-w-5xl px-(--column-margin) py-4">
       {me.isLoading && <p className="text-foreground-muted">{t("Loading…", "加载中…")}</p>}
 
       {!isCurrentOrg && currentOrgId && (
@@ -145,24 +285,6 @@ export function OrgSettings({
           {t(`⚠ The org in the URL (${orgId}) doesn't match your current org (${currentOrgId}). Multi-org support deferred to v2.`, `⚠ 链接中的组织（${orgId}）与当前组织（${currentOrgId}）不一致。多组织支持计划在 v2 提供。`)}
         </div>
       )}
-
-      {/* Visual-only Tabs: navigation stays with NavLink; the controlled
-          `value` is the active tab (already resolved from the route by the
-          parent route component) so the sliding indicator tracks it. */}
-      <Tabs value={tab} className="mb-4">
-        <TabsList>
-          {ORG_SETTINGS_TABS.map((item) => (
-            <TabsTab
-              key={item}
-              value={item}
-              render={<NavLink to={`/orgs/${orgId}/${item}`} end />}
-            >
-              {t(ORG_SETTINGS_TAB_LABELS[item], ORG_SETTINGS_TAB_LABELS_ZH[item])}
-            </TabsTab>
-          ))}
-          <TabsIndicator />
-        </TabsList>
-      </Tabs>
 
       {tab === "general" && (
         <div className="text-sm space-y-2">
@@ -224,7 +346,9 @@ export function OrgSettings({
       {tab === "signing" && (
         <SigningTab orgId={orgId} canManage={isOwnerOrAdmin} />
       )}
-    </div>
+      </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -460,9 +584,7 @@ function MembersTab({
                 {isAdmin && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <Button
-                        variant="link"
-                        size="sm"
+                      <TextLink
                         className="text-danger"
                         onClick={() => {
                           if (
@@ -476,7 +598,7 @@ function MembersTab({
                         disabled={remove.isPending}
                       >
                         {t("Remove", "移除")}
-                      </Button>
+                      </TextLink>
                     )}
                   </td>
                 )}
@@ -639,17 +761,13 @@ function InvitesTab({
                 </td>
                 {canManage && inv.status === "pending" && (
                   <td className="py-2 text-xs space-x-2">
-                    <Button
-                      variant="link"
-                      size="sm"
+                    <TextLink
                       onClick={() => resend.mutate(inv.id)}
                       disabled={resend.isPending}
                     >
                       {t("Refresh link", "刷新链接")}
-                    </Button>
-                    <Button
-                      variant="link"
-                      size="sm"
+                    </TextLink>
+                    <TextLink
                       className="text-danger"
                       onClick={() => {
                         if (confirm(t(`Revoke invite to ${inv.email}?`, `撤销发给 ${inv.email} 的邀请？`))) {
@@ -659,7 +777,7 @@ function InvitesTab({
                       disabled={revoke.isPending}
                     >
                       {t("Revoke", "撤销")}
-                    </Button>
+                    </TextLink>
                   </td>
                 )}
               </tr>
@@ -1128,7 +1246,7 @@ function WebhookRow({
               <span className="italic">{t("(all)", "（全部）")}</span>
             ) : (
               events.map((e) => (
-                <Badge key={e} variant="information" className="mr-1">
+                <Badge key={e} appearance="outline" className="mr-1">
                   {e}
                 </Badge>
               ))

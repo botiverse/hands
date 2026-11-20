@@ -20,7 +20,7 @@ import {
   DialogBody,
   DialogClose,
   Button,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { useText } from "../lib/locale";
 
 export function Modal({

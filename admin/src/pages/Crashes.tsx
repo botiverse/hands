@@ -7,7 +7,7 @@ import { errorMessage } from "../lib/errorMessage";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getFeedbackStats, getFeedbackBuildFilter, listCrashGroups, type CrashType } from "../lib/api";
-import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "raft-ui";
+import { Badge, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, SegmentedControl, SegmentedControlItem, SegmentedControlLabel, type BadgeProps } from "@botiverse/raft-ui";
 import { Bug } from "lucide-react";
 import { CrashByVersion } from "../components/FeedbackTrends";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";

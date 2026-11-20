@@ -14,7 +14,7 @@ import {
 import { errorMessage } from "../lib/errorMessage";
 import { useText } from "../lib/locale";
 import { useToast } from "../components/Toast";
-import { Button, EmptyState, EmptyStateTitle, Input, Label, Skeleton } from "raft-ui";
+import { TextLink, Button, EmptyState, EmptyStateTitle, Input, Label, Skeleton } from "@botiverse/raft-ui";
 
 export function TrustedPublisherList({ appId, appSlug }: { appId: string; appSlug?: string | undefined }) {
   const t = useText();
@@ -132,9 +132,7 @@ export function TrustedPublisherList({ appId, appSlug }: { appId: string; appSlu
                   {p.last_used_at ? new Date(p.last_used_at).toISOString().slice(0, 16).replace("T", " ") : "—"}
                 </td>
                 <td className="py-2 text-xs">
-                  <Button
-                    variant="link"
-                    size="sm"
+                  <TextLink
                     className="text-danger"
                     disabled={revoke.isPending}
                     onClick={() => {
@@ -144,7 +142,7 @@ export function TrustedPublisherList({ appId, appSlug }: { appId: string; appSlu
                     }}
                   >
                     {t("Remove", "移除")}
-                  </Button>
+                  </TextLink>
                 </td>
               </tr>
             ))}

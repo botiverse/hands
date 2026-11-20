@@ -1,4 +1,4 @@
-import { CopyableCode, CopyableCodeAction, CopyableCodeRoot } from "raft-ui";
+import { CopyableCode, CopyableCodeAction, CopyableCodeRoot } from "@botiverse/raft-ui";
 import type { BuildAsset } from "../lib/api";
 import {
   buildAssetFilename,

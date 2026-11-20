@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "raft-ui";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@botiverse/raft-ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider, LOCALE_STORAGE } from "../lib/locale";
 import { OrgSwitcher } from "./OrgSwitcher";

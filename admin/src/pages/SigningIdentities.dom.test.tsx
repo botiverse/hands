@@ -31,130 +31,112 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 function renderTab(canManage = true) {
   if (!mocks.requests.getMockImplementation()) mocks.requests.mockResolvedValue({ certificate_requests: [] });
+  if (!mocks.keys.getMockImplementation()) mocks.keys.mockResolvedValue({ api_keys: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><SigningTab orgId="org" canManage={canManage} /></QueryClientProvider>);
 }
 
+const ORG_APPS = [
+  { id: "app-ios", org_id: "org", slug: "raft-deck-ios", name: "Deck iOS", platform: "ios", archived: 0 },
+  { id: "app-mac", org_id: "org", slug: "raft-deck", name: "Deck", platform: "electron", archived: 0 },
+  { id: "app-and", org_id: "org", slug: "raft-deck-android", name: "Deck Android", platform: "android", archived: 0 },
+  { id: "app-x", org_id: "other", slug: "foreign", name: "Foreign", platform: "ios", archived: 0 },
+];
+const identity = (over: Record<string, unknown>) => ({
+  id: "si-1", org_id: "org", kind: "apple_ios_distribution", name: "Team Distribution", origin: "uploaded",
+  metadata: { team_id: "XDAPXFY8FZ", sha256_fingerprint: "ab".repeat(32), not_after: "Jul  9 11:16:01 2099 GMT", asc_key_id: "TEAMKEY1", api_key_from_app: "raft-ios" },
+  backup_exported_at: null, created_by_actor: "x", created_at: 1, revoked_at: null, apps: [], ...over,
+});
+const RAFT_IOS_KEY = { app_id: "app-raft-ios", slug: "raft-ios", name: "Raft", key_id: "TEAMKEY1", issuer_id: "ISS", updated_at: 1 };
+
 describe("SigningTab", () => {
-  it("shows identities without key material and toggles app grants", async () => {
-    mocks.list.mockResolvedValue({ signing_identities: [{
-      id: "si-1", org_id: "org", kind: "android_keystore", name: "Deck release", origin: "generated",
-      metadata: { sha256_fingerprint: "ab".repeat(32), not_after: "2056", key_alias: "release" },
-      backup_exported_at: null, created_by_actor: "x", created_at: 1, revoked_at: null, apps: [],
-    }] });
-    mocks.apps.mockResolvedValue({ apps: [{ id: "app-1", org_id: "org", slug: "raft-deck-android" }, { id: "app-x", org_id: "other", slug: "foreign" }] });
+  it("groups identities by platform and grants only apps of that platform", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [identity({})] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
     mocks.grant.mockResolvedValue({});
     renderTab();
-    expect(await screen.findByText("Deck release")).toBeTruthy();
-    expect(screen.getByText(/Download backup/)).toBeTruthy();
-    expect(screen.queryByText("foreign")).toBeNull();
-    fireEvent.click(await screen.findByLabelText("raft-deck-android"));
-    await waitFor(() => expect(mocks.grant).toHaveBeenCalledWith("org", "si-1", "app-1"));
+    const row = await screen.findByText("Team Distribution");
+    // macOS and Android have nothing yet and say so.
+    expect(screen.getByText(/No Developer ID yet/)).toBeTruthy();
+    expect(screen.getByText(/No key yet/)).toBeTruthy();
+    fireEvent.click(row);
+    const panel = await screen.findByRole("region", { name: "Team Distribution" }).catch(() => screen.getByLabelText("Team Distribution", { selector: "section,div,aside" }));
+    expect(panel.textContent).toContain("XDAPXFY8FZ");
+    expect(panel.textContent).toContain("TEAMKEY1");
+    // Only the iOS app of this org is offered.
+    expect(screen.queryByRole("switch", { name: "raft-deck" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "foreign" })).toBeNull();
+    fireEvent.click(screen.getByRole("switch", { name: "raft-deck-ios" }));
+    await waitFor(() => expect(mocks.grant).toHaveBeenCalledWith("org", "si-1", "app-ios"));
   });
 
-  it("generates a key from the form", async () => {
+  it("creates an iOS certificate in Hands with an app's App Store Connect key", async () => {
     mocks.list.mockResolvedValue({ signing_identities: [] });
-    mocks.apps.mockResolvedValue({ apps: [] });
-    mocks.generate.mockResolvedValue({ signing_identity: {} });
-    renderTab();
-    fireEvent.click(await screen.findByText("New Android key"));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck Android" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mocks.generate).toHaveBeenCalledWith("org", { name: "Deck Android" }));
-  });
-
-  it("guides the iOS upload and reuses an app's App Store Connect key", async () => {
-    mocks.list.mockResolvedValue({ signing_identities: [] });
-    mocks.apps.mockResolvedValue({ apps: [] });
-    mocks.keys.mockResolvedValue({ api_keys: [{ app_id: "app-ios", slug: "raft-ios", name: "Raft", key_id: "TEAMKEY1", issuer_id: "ISS", updated_at: 1 }] });
-    mocks.upload.mockResolvedValue({ signing_identity: {} });
-    renderTab();
-    fireEvent.click(await screen.findByText("Upload Apple Distribution (iOS)"));
-    expect(screen.getByText("How to get these files")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Identifiers" }).getAttribute("href")).toContain("developer.apple.com");
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck iOS" } });
-    fireEvent.change(screen.getByLabelText("Apple Distribution certificate (.p12)"), { target: { files: [new File(["ABC"], "dist.p12")] } });
-    fireEvent.change(screen.getByLabelText(".p12 password"), { target: { value: "pw" } });
-    // Without a key or a profile there is nothing to sign with yet.
-    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(await screen.findByLabelText("Use the key of raft-ios (Key ID TEAMKEY1)"));
-    const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
-    expect(save.disabled).toBe(false);
-    // jsdom cannot fill a required file input, so submit the form directly.
-    fireEvent.submit(save.closest("form")!);
-    await waitFor(() => expect(mocks.upload).toHaveBeenCalledWith("org", {
-      kind: "apple_ios_distribution", name: "Deck iOS", p12_b64: btoa("ABC"), p12_password: "pw",
-      asc: { from_app: "app-ios" }, provisioning_profiles_b64: [],
-    }));
-  });
-
-  it("is admin-only", () => {
-    renderTab(false);
-    expect(screen.getByText(/Only organization admins/)).toBeTruthy();
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-
-  it("creates an iOS certificate in Hands through App Store Connect", async () => {
-    mocks.list.mockResolvedValue({ signing_identities: [] });
-    mocks.apps.mockResolvedValue({ apps: [] });
-    mocks.keys.mockResolvedValue({ api_keys: [{ app_id: "app-ios", slug: "raft-ios", name: "Raft", key_id: "TEAMKEY1", issuer_id: "ISS", updated_at: 1 }] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
+    mocks.keys.mockResolvedValue({ api_keys: [RAFT_IOS_KEY] });
     mocks.genIos.mockResolvedValue({ signing_identity: {} });
-    mocks.createRequest.mockResolvedValue({ certificate_request: {} });
     renderTab();
-    fireEvent.click(await screen.findByText("New Apple Distribution certificate (iOS)"));
-    expect(screen.getByText("The private key is created inside Hands and never leaves it.")).toBeTruthy();
-    // iOS always needs a key: there is no "no key" choice here.
-    expect(screen.queryByText(/No key: I upload/)).toBeNull();
+    await screen.findByText(/No distribution certificate yet/);
+    fireEvent.click(screen.getAllByText("Add certificate")[0]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Botiverse, Inc. iOS" } });
-    fireEvent.click(await screen.findByLabelText("Use the key of raft-ios (Key ID TEAMKEY1)"));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mocks.genIos).toHaveBeenCalledWith("org", { name: "Botiverse, Inc. iOS", asc: { from_app: "app-ios" } }));
-    expect(mocks.createRequest).not.toHaveBeenCalled();
-
-    // Without an Admin key: a request file instead.
-    fireEvent.click(await screen.findByText("New Apple Distribution certificate (iOS)"));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck iOS" } });
-    fireEvent.click(screen.getByLabelText(/I take a request file/));
-    fireEvent.click(await screen.findByLabelText("Use the key of raft-ios (Key ID TEAMKEY1)"));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(mocks.createRequest).toHaveBeenCalledWith("org", { kind: "apple_ios_distribution", name: "Deck iOS", asc: { from_app: "app-ios" } }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Use the key of raft-ios (Key ID TEAMKEY1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create certificate" }));
+    await waitFor(() => expect(mocks.genIos).toHaveBeenCalledWith("org", { name: "Botiverse, Inc. iOS", asc: { from_app: "app-raft-ios" } }));
   });
 
-  it("makes a Developer ID request, offers it for download and takes the .cer back", async () => {
+  it("makes a Developer ID request, then takes the .cer back", async () => {
     mocks.list.mockResolvedValue({ signing_identities: [] });
-    mocks.apps.mockResolvedValue({ apps: [] });
-    mocks.keys.mockResolvedValue({ api_keys: [] });
-    mocks.createRequest.mockResolvedValue({ certificate_request: {} });
-    mocks.requests.mockResolvedValue({ certificate_requests: [{
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
+    const request = {
       id: "req-1", kind: "apple_developer_id", name: "Deck Mac", csr_pem: "-----BEGIN CERTIFICATE REQUEST-----", metadata: {},
-      identity_id: null, created_by_actor: "x", created_at: 1, completed_at: null, cancelled_at: null,
-    }] });
+      identity_id: null, created_by_actor: "x", created_at: Date.now(), completed_at: null, cancelled_at: null,
+    };
+    mocks.requests.mockResolvedValueOnce({ certificate_requests: [] }).mockResolvedValue({ certificate_requests: [request] });
+    mocks.createRequest.mockResolvedValue({ certificate_request: request });
     mocks.complete.mockResolvedValue({ signing_identity: {} });
     renderTab();
-    fireEvent.click(await screen.findByText("New Developer ID certificate (macOS)"));
-    expect(screen.getByText(/only the Account Holder/)).toBeTruthy();
+    await screen.findByText(/No Developer ID yet/);
+    fireEvent.click(screen.getAllByText("Add certificate")[1]!);
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck Mac" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Make request" }));
     await waitFor(() => expect(mocks.createRequest).toHaveBeenCalledWith("org", { kind: "apple_developer_id", name: "Deck Mac", notary: null }));
-
-    const pending = await screen.findByRole("form", { name: "Deck Mac" });
-    expect(pending.textContent).toContain("Download the request (.certSigningRequest)");
+    // The request opens straight away: download, Apple, upload.
+    expect(await screen.findByText("Finish Deck Mac")).toBeTruthy();
+    expect(screen.getByText("Deck-Mac.certSigningRequest")).toBeTruthy();
     const add = screen.getByRole("button", { name: "Add certificate" }) as HTMLButtonElement;
     expect(add.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Upload the .cer here:"), { target: { files: [new File(["CER"], "developerID_application.cer")] } });
+    fireEvent.change(screen.getByLabelText("Choose .cer file"), { target: { files: [new File(["CER"], "developerID_application.cer")] } });
     expect(add.disabled).toBe(false);
     fireEvent.click(add);
     await waitFor(() => expect(mocks.complete).toHaveBeenCalledWith("org", "req-1", btoa("CER")));
+    // The pending row stays in the list until Apple's certificate is in.
+    expect(screen.getByText("Waiting for Apple")).toBeTruthy();
   });
 
   it("flags a certificate that expires within 30 days", async () => {
-    mocks.list.mockResolvedValue({ signing_identities: [{
-      id: "si-2", org_id: "org", kind: "apple_developer_id", name: "Old Dev ID", origin: "uploaded",
-      metadata: { not_after: new Date(Date.now() + 5 * 86400_000).toUTCString() },
-      backup_exported_at: null, created_by_actor: "x", created_at: 1, revoked_at: null, apps: [],
-    }] });
-    mocks.apps.mockResolvedValue({ apps: [] });
+    mocks.list.mockResolvedValue({ signing_identities: [identity({ kind: "apple_developer_id", metadata: { not_after: new Date(Date.now() + 12 * 86_400_000).toUTCString() } })] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
     renderTab();
-    expect(await screen.findByText(/expires soon/)).toBeTruthy();
+    expect(await screen.findByText(/Expires in 1[12] days/)).toBeTruthy();
+  });
+
+  it("generates an Android key", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [] });
+    mocks.apps.mockResolvedValue({ apps: ORG_APPS });
+    mocks.generate.mockResolvedValue({ signing_identity: {} });
+    renderTab();
+    fireEvent.click(await screen.findByText("Add key"));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck Android" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    await waitFor(() => expect(mocks.generate).toHaveBeenCalledWith("org", { name: "Deck Android" }));
+  });
+
+  it("tells members that only admins manage signing", async () => {
+    mocks.apps.mockResolvedValue({ apps: [] });
+    renderTab(false);
+    expect(await screen.findByText(/Only organization admins/)).toBeTruthy();
   });
 });

@@ -32,7 +32,7 @@ import {
   MarkdownTable,
   MarkdownTableRow,
   MarkdownTableScroll,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 
 const LINK_PROPS = {
   target: "_blank",

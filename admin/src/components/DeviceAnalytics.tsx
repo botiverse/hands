@@ -5,7 +5,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "raft-ui";
+import { Tooltip, TooltipTrigger, TooltipContent, Progress, ProgressTrack, ProgressIndicator } from "@botiverse/raft-ui";
 import { getDeviceAnalytics, getVersionMetrics } from "../lib/api";
 import { useText } from "../lib/locale";
 

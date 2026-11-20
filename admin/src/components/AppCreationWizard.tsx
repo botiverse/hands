@@ -18,7 +18,7 @@ import {
   SelectValue,
   Label,
   Textarea,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import { createApp } from "../lib/api";
 import { useText } from "../lib/locale";
 import { useToast } from "./Toast";

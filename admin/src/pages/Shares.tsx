@@ -10,11 +10,11 @@ import { errorMessage } from "../lib/errorMessage";
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
+import { TextLink,
   Badge,
-  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, EmptyStateDescription, Skeleton } from "raft-ui";
+  Button, Input, Select, SelectTrigger, SelectValue, SelectIcon, SelectList, SelectContent, SelectItem, Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter, EmptyState, EmptyStateContent, EmptyStateIcon, EmptyStateTitle, EmptyStateDescription, Skeleton } from "@botiverse/raft-ui";
 import { Share2 } from "lucide-react";
-import type { BadgeProps } from "raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 
 type BadgeVariant = NonNullable<BadgeProps["variant"]>;
 import {
@@ -315,9 +315,9 @@ function ShareRow({
       </td>
       <td className="py-2 pr-3 text-xs">
         {share.share_url ? (
-          <Button variant="link" size="sm" onClick={onCopyUrl}>
+          <TextLink onClick={onCopyUrl}>
             {t("Copy URL", "复制链接")}
-          </Button>
+          </TextLink>
         ) : (
           <span className="text-foreground-hint" title={t("Created before URLs were stored; the link itself still works.", "此链接创建时尚未保存链接地址；链接本身仍然有效。") }>
             {t("unavailable (legacy)", "无法查看（旧链接）")}
@@ -335,18 +335,18 @@ function ShareRow({
       <td className="py-2 text-right text-xs whitespace-nowrap">
         {actionable && (
           <>
-            <Button variant="link" size="sm" className="mr-2" onClick={onSetExpiry} disabled={busy}>
+            <TextLink className="mr-2" onClick={onSetExpiry} disabled={busy}>
               {t("Expiry…", "有效期…")}
-            </Button>
-            <Button variant="link" size="sm" className="mr-2" onClick={onSetPassword} disabled={busy}>
+            </TextLink>
+            <TextLink className="mr-2" onClick={onSetPassword} disabled={busy}>
               {share.has_password ? t("Password…", "密码…") : t("Set password", "设置密码")}
-            </Button>
-            <Button variant="link" size="sm" className="mr-2" onClick={onRebind} disabled={busy}>
+            </TextLink>
+            <TextLink className="mr-2" onClick={onRebind} disabled={busy}>
               {t("Rebind release…", "更换关联版本…")}
-            </Button>
-            <Button variant="link" size="sm" className="text-danger" onClick={onRevoke} disabled={busy}>
+            </TextLink>
+            <TextLink className="text-danger" onClick={onRevoke} disabled={busy}>
               {t("Revoke", "撤销")}
-            </Button>
+            </TextLink>
           </>
         )}
       </td>

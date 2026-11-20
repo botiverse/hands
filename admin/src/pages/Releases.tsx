@@ -59,8 +59,8 @@ import {
   EmptyStateTitle,
   EmptyStateDescription,
   Skeleton,
-} from "raft-ui";
-import type { BadgeProps } from "raft-ui";
+} from "@botiverse/raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 import { useToast } from "../components/Toast";
 import { useLocale, useText } from "../lib/locale";
 import { ConfirmActionDialog } from "../components/ConfirmActionDialog";

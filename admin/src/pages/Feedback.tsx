@@ -27,7 +27,7 @@ import { useToast } from "../components/Toast";
 import { FeedbackTrends } from "../components/FeedbackTrends";
 import { FeedbackBuildScopeSelector, feedbackBuildScope } from "../components/FeedbackBuildScope";
 import { MarkdownText } from "../components/MarkdownText";
-import {
+import { TextLink,
   AlertDialog,
   AlertDialogAction,
   AlertDialogBody,
@@ -57,8 +57,8 @@ import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "raft-ui";
-import type { BadgeProps } from "raft-ui";
+} from "@botiverse/raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 import type { FeedbackTicket } from "../lib/api";
 
 const STATUSES = ["open", "in_progress", "resolved"] as const;
@@ -175,9 +175,9 @@ export function AppFeedback({ appId }: { appId: string }) {
           <span className="text-foreground-muted">
             {tx("Filtered to version code", "按版本号筛选")} <span className="font-mono text-foreground">{versionFilter}</span>
           </span>
-          <Button variant="link" size="sm" className="text-xs" onClick={() => clearScopeFilter("version_code")}>
+          <TextLink className="text-xs" onClick={() => clearScopeFilter("version_code")}>
             {tx("clear", "清除")}
-          </Button>
+          </TextLink>
         </div>
       )}
       {signatureFilter && (
@@ -194,9 +194,9 @@ export function AppFeedback({ appId }: { appId: string }) {
                 </div>
               )}
             </div>
-            <Button variant="link" size="sm" className="text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
+            <TextLink className="text-xs flex-none" onClick={() => clearScopeFilter("signature")}>
               {tx("clear", "清除")}
-            </Button>
+            </TextLink>
           </div>
         </div>
       )}
@@ -473,9 +473,9 @@ function DeviceScopeBanner({
         <h4 className="text-sm font-semibold">
           {tx("Device", "设备")} <span className="font-mono text-xs">{deviceId}</span>
         </h4>
-        <Button variant="link" size="sm" className="text-xs" onClick={onClear}>
+        <TextLink className="text-xs" onClick={onClear}>
           {tx("clear", "清除")}
-        </Button>
+        </TextLink>
       </div>
       {d ? (
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
@@ -549,14 +549,12 @@ function AttachmentList({
         <ul className="space-y-1 text-sm">
           {others.map((a) => (
             <li key={a.id}>
-              <Button
+              <TextLink
                 type="button"
-                variant="link"
-                size="sm"
                 onClick={() => void downloadFeedbackAttachment(appId, ticketId, a.id, a.filename)}
               >
                 {a.filename}
-              </Button>
+              </TextLink>
               <span className="ml-2 text-xs text-foreground-hint">
                 {(a.size_bytes / 1024).toFixed(1)} KB
               </span>
@@ -854,34 +852,28 @@ export function FeedbackTicketPage({
                 <>
                   <span>{t.assignee ?? tx("Unassigned", "未分配")}</span>
                   {myName && t.assignee !== myName && (
-                    <Button
-                      variant="link"
-                      size="sm"
+                    <TextLink
                       className="text-xs"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: myName })}
                     >
                       {tx("Assign to me", "分配给我")}
-                    </Button>
+                    </TextLink>
                   )}
-                  <Button
-                    variant="link"
-                    size="sm"
+                  <TextLink
                     className="text-xs"
                     onClick={() => setAssigneeDraft(t.assignee ?? "")}
                   >
                     {tx("Edit", "编辑")}
-                  </Button>
+                  </TextLink>
                   {t.assignee && (
-                    <Button
-                      variant="link"
-                      size="sm"
+                    <TextLink
                       className="text-xs text-danger"
                       disabled={update.isPending}
                       onClick={() => update.mutate({ assignee: null })}
                     >
                       {tx("Unassign", "取消分配")}
-                    </Button>
+                    </TextLink>
                   )}
                 </>
               ) : (
@@ -980,9 +972,7 @@ export function FeedbackTicketPage({
                           <Tooltip>
                             <TooltipTrigger
                               render={
-                                <Button
-                                  variant="link"
-                                  size="sm"
+                                <TextLink
                                   onClick={() =>
                                     navigate(
                                       `/apps/${appId}/feedback?version_code=${encodeURIComponent(format(v))}`,
@@ -990,7 +980,7 @@ export function FeedbackTicketPage({
                                   }
                                 >
                                   {format(v)}
-                                </Button>
+                                </TextLink>
                               }
                             />
                             <TooltipContent>{tx("All feedback on this version", "此版本的全部反馈")}</TooltipContent>
@@ -999,9 +989,7 @@ export function FeedbackTicketPage({
                           <Tooltip>
                             <TooltipTrigger
                               render={
-                                <Button
-                                  variant="link"
-                                  size="sm"
+                                <TextLink
                                   className="font-mono break-all"
                                   onClick={() =>
                                     navigate(
@@ -1010,7 +998,7 @@ export function FeedbackTicketPage({
                                   }
                                 >
                                   {format(v)}
-                                </Button>
+                                </TextLink>
                               }
                             />
                             <TooltipContent>{tx("This device's history", "此设备的历史记录")}</TooltipContent>

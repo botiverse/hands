@@ -50,7 +50,7 @@ import {
   buildTokenGrantDisplay,
   resolveGrantPreview,
 } from "../lib/appPermissionDisplay";
-import {
+import { TextLink,
   Badge,
   Button,
   Input,
@@ -77,7 +77,7 @@ import {
   Checkbox,
   Skeleton,
   Textarea,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 
 const ROLE_ZH: Record<string, string> = { owner: "所有者", admin: "管理员", publisher: "发布者", viewer: "查看者", member: "成员" };
 const roleText = (role: string, t: (english: string, chinese: string) => string) => t(role, ROLE_ZH[role] ?? role);
@@ -316,9 +316,7 @@ function AppServerGrantList({
                 </td>
                 {canManage && (
                   <td className="py-2 text-xs">
-                    <Button
-                      variant="link"
-                      size="sm"
+                    <TextLink
                       className="text-danger"
                       onClick={() => {
                         if (
@@ -332,7 +330,7 @@ function AppServerGrantList({
                       disabled={remove.isPending}
                     >
                       {t("Remove", "移除")}
-                    </Button>
+                    </TextLink>
                   </td>
                 )}
               </tr>
@@ -672,9 +670,7 @@ function AppMemberList({
                 {canManage && (
                   <td className="py-2 text-xs">
                     {m.account_id !== currentAccountId && (
-                      <Button
-                        variant="link"
-                        size="sm"
+                      <TextLink
                         className="text-danger"
                         onClick={() => {
                           if (
@@ -688,7 +684,7 @@ function AppMemberList({
                         disabled={remove.isPending}
                       >
                         {t("Remove", "移除")}
-                      </Button>
+                      </TextLink>
                     )}
                   </td>
                 )}
@@ -836,9 +832,7 @@ function AppDeployTokenList({
                     : "—"}
                 </td>
                 <td className="py-2 text-xs">
-                  <Button
-                    variant="link"
-                    size="sm"
+                  <TextLink
                     className="text-danger"
                     onClick={() => {
                       if (confirm(t(`Revoke deploy token ${token.name}?`, `撤销部署令牌 ${token.name}？`))) {
@@ -848,7 +842,7 @@ function AppDeployTokenList({
                     disabled={revoke.isPending}
                   >
                     {t("Revoke", "撤销")}
-                  </Button>
+                  </TextLink>
                 </td>
                 </tr>
               );

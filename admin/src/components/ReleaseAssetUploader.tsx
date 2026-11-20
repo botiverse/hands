@@ -19,7 +19,7 @@ import { errorMessage } from "../lib/errorMessage";
 
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
+import { TextLink,
   Button,
   Input,
   Select,
@@ -29,7 +29,7 @@ import {
   SelectList,
   SelectContent,
   SelectItem,
-} from "raft-ui";
+} from "@botiverse/raft-ui";
 import {
   createBuildAsset,
   deleteBuildAsset,
@@ -402,15 +402,13 @@ export function PendingFileRow({
           {detectedSummary}
         </span>
         {canEdit && (
-          <Button
-            variant="link"
-            size="sm"
+          <TextLink
             type="button"
             className="text-[11px]"
             onClick={() => setEditing((v) => !v)}
           >
             {editing ? t("Done", "完成") : t("Edit metadata", "编辑元数据")}
-          </Button>
+          </TextLink>
         )}
         {pending.status === "error" && (
           <span className="text-danger text-[10px] truncate max-w-[20ch]">

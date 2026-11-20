@@ -1,4 +1,4 @@
-import { SegmentedControl, SegmentedControlItem, SegmentedControlLabel } from "raft-ui";
+import { SegmentedControl, SegmentedControlItem, SegmentedControlLabel } from "@botiverse/raft-ui";
 import type { FeedbackBuildScope } from "../lib/api";
 import { useText } from "../lib/locale";
 

@@ -16,7 +16,7 @@
  */
 
 import { createContext, useCallback, useContext, useMemo, useRef } from "react";
-import { ToastProvider as RaftToastProvider, useToastManager } from "raft-ui";
+import { ToastProvider as RaftToastProvider, useToastManager } from "@botiverse/raft-ui";
 
 export type ToastKind = "loading" | "success" | "error" | "info";
 

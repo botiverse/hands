@@ -51,8 +51,8 @@ import {
   EmptyStateIcon,
   EmptyStateTitle,
   Skeleton,
-} from "raft-ui";
-import type { BadgeProps } from "raft-ui";
+} from "@botiverse/raft-ui";
+import type { BadgeProps } from "@botiverse/raft-ui";
 
 export function Builds({ appId }: { appId: string }) {
   const t = useText();

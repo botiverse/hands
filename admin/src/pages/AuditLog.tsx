@@ -1,6 +1,6 @@
 import { errorMessage } from "../lib/errorMessage";
 import { useQuery } from "@tanstack/react-query";
-import { Avatar, AvatarImage, AvatarFallback, Badge } from "raft-ui";
+import { Avatar, AvatarImage, AvatarFallback, Badge } from "@botiverse/raft-ui";
 import { listAuditLogs, type AuditLogEntry } from "../lib/api";
 import { collidingPrincipalLabels, needsServerBadge } from "../lib/principalIdentity";
 import { useLocale, useText } from "../lib/locale";
@@ -65,7 +65,7 @@ function AuditEntry({
     <section className="border-t border-line-hairline pt-5">
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <Badge variant="information">{entry.action}</Badge>
+          <Badge appearance="outline">{entry.action}</Badge>
           <ActorBadge
             displayName={actorName}
             username={entry.actor_username}
