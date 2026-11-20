@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), apps: vi.fn(), grant: vi.fn(), ungrant: vi.fn(), generate: vi.fn(), toast: vi.fn(), keys: vi.fn(), upload: vi.fn(),
+  genIos: vi.fn(), requests: vi.fn(), createRequest: vi.fn(), complete: vi.fn(), cancel: vi.fn(),
 }));
 vi.mock("../components/Toast", () => ({ useToast: () => ({ show: mocks.toast }) }));
 vi.mock("../lib/api", async (importOriginal) => ({
@@ -17,6 +18,11 @@ vi.mock("../lib/api", async (importOriginal) => ({
   generateAndroidSigningIdentity: mocks.generate,
   listSigningApiKeySources: mocks.keys,
   uploadSigningIdentity: mocks.upload,
+  generateAppleIosSigningIdentity: mocks.genIos,
+  listSigningCertificateRequests: mocks.requests,
+  createSigningCertificateRequest: mocks.createRequest,
+  completeSigningCertificateRequest: mocks.complete,
+  cancelSigningCertificateRequest: mocks.cancel,
 }));
 
 import { SigningTab } from "./SigningIdentities";
@@ -24,6 +30,7 @@ import { SigningTab } from "./SigningIdentities";
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 function renderTab(canManage = true) {
+  if (!mocks.requests.getMockImplementation()) mocks.requests.mockResolvedValue({ certificate_requests: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><SigningTab orgId="org" canManage={canManage} /></QueryClientProvider>);
 }
@@ -85,5 +92,69 @@ describe("SigningTab", () => {
     renderTab(false);
     expect(screen.getByText(/Only organization admins/)).toBeTruthy();
     expect(mocks.list).not.toHaveBeenCalled();
+  });
+
+  it("creates an iOS certificate in Hands through App Store Connect", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [] });
+    mocks.apps.mockResolvedValue({ apps: [] });
+    mocks.keys.mockResolvedValue({ api_keys: [{ app_id: "app-ios", slug: "raft-ios", name: "Raft", key_id: "TEAMKEY1", issuer_id: "ISS", updated_at: 1 }] });
+    mocks.genIos.mockResolvedValue({ signing_identity: {} });
+    mocks.createRequest.mockResolvedValue({ certificate_request: {} });
+    renderTab();
+    fireEvent.click(await screen.findByText("New Apple Distribution certificate (iOS)"));
+    expect(screen.getByText("The private key is created inside Hands and never leaves it.")).toBeTruthy();
+    // iOS always needs a key: there is no "no key" choice here.
+    expect(screen.queryByText(/No key: I upload/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Botiverse, Inc. iOS" } });
+    fireEvent.click(await screen.findByLabelText("Use the key of raft-ios (Key ID TEAMKEY1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.genIos).toHaveBeenCalledWith("org", { name: "Botiverse, Inc. iOS", asc: { from_app: "app-ios" } }));
+    expect(mocks.createRequest).not.toHaveBeenCalled();
+
+    // Without an Admin key: a request file instead.
+    fireEvent.click(await screen.findByText("New Apple Distribution certificate (iOS)"));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck iOS" } });
+    fireEvent.click(screen.getByLabelText(/I take a request file/));
+    fireEvent.click(await screen.findByLabelText("Use the key of raft-ios (Key ID TEAMKEY1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.createRequest).toHaveBeenCalledWith("org", { kind: "apple_ios_distribution", name: "Deck iOS", asc: { from_app: "app-ios" } }));
+  });
+
+  it("makes a Developer ID request, offers it for download and takes the .cer back", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [] });
+    mocks.apps.mockResolvedValue({ apps: [] });
+    mocks.keys.mockResolvedValue({ api_keys: [] });
+    mocks.createRequest.mockResolvedValue({ certificate_request: {} });
+    mocks.requests.mockResolvedValue({ certificate_requests: [{
+      id: "req-1", kind: "apple_developer_id", name: "Deck Mac", csr_pem: "-----BEGIN CERTIFICATE REQUEST-----", metadata: {},
+      identity_id: null, created_by_actor: "x", created_at: 1, completed_at: null, cancelled_at: null,
+    }] });
+    mocks.complete.mockResolvedValue({ signing_identity: {} });
+    renderTab();
+    fireEvent.click(await screen.findByText("New Developer ID certificate (macOS)"));
+    expect(screen.getByText(/only the Account Holder/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Deck Mac" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.createRequest).toHaveBeenCalledWith("org", { kind: "apple_developer_id", name: "Deck Mac", notary: null }));
+
+    const pending = await screen.findByRole("form", { name: "Deck Mac" });
+    expect(pending.textContent).toContain("Download the request (.certSigningRequest)");
+    const add = screen.getByRole("button", { name: "Add certificate" }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Upload the .cer here:"), { target: { files: [new File(["CER"], "developerID_application.cer")] } });
+    expect(add.disabled).toBe(false);
+    fireEvent.click(add);
+    await waitFor(() => expect(mocks.complete).toHaveBeenCalledWith("org", "req-1", btoa("CER")));
+  });
+
+  it("flags a certificate that expires within 30 days", async () => {
+    mocks.list.mockResolvedValue({ signing_identities: [{
+      id: "si-2", org_id: "org", kind: "apple_developer_id", name: "Old Dev ID", origin: "uploaded",
+      metadata: { not_after: new Date(Date.now() + 5 * 86400_000).toUTCString() },
+      backup_exported_at: null, created_by_actor: "x", created_at: 1, revoked_at: null, apps: [],
+    }] });
+    mocks.apps.mockResolvedValue({ apps: [] });
+    renderTab();
+    expect(await screen.findByText(/expires soon/)).toBeTruthy();
   });
 });

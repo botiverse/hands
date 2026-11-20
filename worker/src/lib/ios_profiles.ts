@@ -134,3 +134,38 @@ export async function appStoreProfile(
     created: true,
   };
 }
+
+/**
+ * Ask Apple for an Apple Distribution certificate for a request made in
+ * Hands. Needs an API key with the Admin role; Apple also caps how many
+ * Distribution certificates a team may hold.
+ */
+export async function createDistributionCertificate(creds: AscApiCredentials, csrPem: string): Promise<{ id: string; certificate_b64: string }> {
+  let created: { data: Resource<CertificateAttributes> };
+  try {
+    created = await ascRequest<{ data: Resource<CertificateAttributes> }>(creds, "POST", "/v1/certificates", {
+      data: { type: "certificates", attributes: { certificateType: "DISTRIBUTION", csrContent: csrPem } },
+    }, AbortSignal.timeout(20_000));
+  } catch (error) {
+    if (error instanceof AscApiError && (error.status === 401 || error.status === 403)) {
+      throw new SigningError(400, "asc_key_refused",
+        "App Store Connect refused to create the certificate: the API key needs the Admin role (App Manager cannot create certificates)");
+    }
+    if (error instanceof AscApiError && error.status === 409) {
+      throw new SigningError(409, "apple_certificate_limit",
+        `Apple refused a new Distribution certificate, usually because the team already has the most it may hold; revoke an unused one on the Apple Developer site (Certificates) and try again${error.detail ? `. Apple said: ${error.detail}` : ""}`.slice(0, 500));
+    }
+    if (error instanceof AscApiError) {
+      throw new SigningError(502, "asc_unavailable", `App Store Connect POST /v1/certificates failed (${error.status}) ${error.message}${error.detail ? `: ${error.detail}` : ""}`.slice(0, 500));
+    }
+    throw new SigningError(502, "asc_unavailable", `App Store Connect did not answer: ${error instanceof Error ? error.name : "error"}`);
+  }
+  const content = created.data?.attributes?.certificateContent;
+  if (!content) throw new SigningError(502, "asc_unavailable", "App Store Connect returned a certificate without content");
+  return { id: created.data.id, certificate_b64: content };
+}
+
+/** Revoke a certificate Hands requested (used when it could not be stored). */
+export async function revokeDistributionCertificate(creds: AscApiCredentials, certificateId: string): Promise<void> {
+  await ascRequest<unknown>(creds, "DELETE", `/v1/certificates/${encodeURIComponent(certificateId)}`, undefined, AbortSignal.timeout(20_000));
+}

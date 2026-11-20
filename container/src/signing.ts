@@ -10,6 +10,13 @@
  *                                                                       -> { output_size, output_sha256, notary_submission_id? }
  *   POST /signing/staple            { input_url, output_url }           -> { output_size, output_sha256 }
  *   POST /signing/ipa-info          { input_url, expected_input_sha256 } -> { bundle_id, version, build, extensions }
+ *   POST /signing/apple-csr         { common_name }                    -> { key_pem, csr_pem }
+ *   POST /signing/apple-p12         { kind, key_pem, certificate_b64, notary? } -> { secret, metadata }
+ *
+ * `apple-csr` and `apple-p12` let Hands make the Apple key itself: the key and
+ * its certificate request are generated here, Apple issues the certificate
+ * (through the App Store Connect API, or a person on the Apple Developer
+ * site), and the issued certificate is joined with the key into a p12.
  *
  * An `ipa` is re-signed with an Apple Distribution identity and an App Store
  * provisioning profile: `provisioning_profile_b64` (one the Worker got from
@@ -496,6 +503,50 @@ async function signIos(
 
 // ---------- Routes ----------
 
+
+// ---------- Apple keys made in Hands ----------
+
+function certificateDer(b64OrPem: string): Buffer {
+  const text = b64OrPem.trim();
+  const pem = text.match(/-----BEGIN CERTIFICATE-----([\s\S]+?)-----END CERTIFICATE-----/);
+  const body = pem ? pem[1]!.replace(/\s+/g, "") : text.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(body)) throw new SignError(400, "signing_identity_invalid", "certificate must be a .cer file (DER or PEM)");
+  return Buffer.from(body, "base64");
+}
+
+async function appleCsr(dir: string, commonName: string) {
+  const key = join(dir, "key.pem");
+  const csr = join(dir, "request.csr");
+  // Apple issues signing certificates for RSA 2048 requests.
+  await run("openssl", [
+    "req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", `/CN=${commonName}/C=US`,
+  ], { failCode: "signing_generate_failed", failMessage: "openssl could not generate the key" });
+  return { key_pem: await readFile(key, "utf8"), csr_pem: await readFile(csr, "utf8") };
+}
+
+/** Join a key made here with the certificate Apple issued for it. */
+async function appleP12(dir: string, kind: AppleSecret["kind"], keyPem: string, certificate: string) {
+  const key = await writeSecretFile(dir, "key.pem", keyPem);
+  const der = join(dir, "cert.cer");
+  await writeFile(der, certificateDer(certificate));
+  const cert = join(dir, "cert.pem");
+  await run("openssl", ["x509", "-inform", "DER", "-in", der, "-out", cert], {
+    failCode: "signing_identity_invalid", failMessage: "certificate could not be read; download the .cer file from the Apple Developer site",
+  });
+  const certKey = (await run("openssl", ["x509", "-in", cert, "-noout", "-pubkey"], { failCode: "signing_identity_invalid", failMessage: "certificate has no public key" })).stdout;
+  const ownKey = (await run("openssl", ["pkey", "-in", key, "-pubout"], { failCode: "signing_internal", failMessage: "stored key could not be read" })).stdout;
+  if (certKey.trim() !== ownKey.trim()) {
+    throw new SignError(400, "signing_certificate_mismatch", "this certificate was issued for a different request; upload the certificate made from this request's .certSigningRequest file");
+  }
+  const password = randomPassword();
+  const pass = await writeSecretFile(dir, "p12.pass", password);
+  const p12 = join(dir, "id.p12");
+  await run("openssl", ["pkcs12", "-export", "-inkey", key, "-in", cert, "-passout", `file:${pass}`, "-out", p12], {
+    failCode: "signing_generate_failed", failMessage: "openssl could not write the p12",
+  });
+  return { kind, p12_b64: (await readFile(p12)).toString("base64"), p12_password: password };
+}
+
 function respondError(c: { json: (body: unknown, status: number) => Response }, error: unknown) {
   if (error instanceof SignError) return c.json({ error: error.message, code: error.code }, error.status);
   // Name and message only: never the request body, which carries key material.
@@ -619,6 +670,34 @@ export function registerSigningRoutes(app: Hono) {
         await download(body.input_url, input);
         await staple(dir, input, output);
         return upload(body.output_url, output);
+      });
+      return c.json(result);
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/apple-csr", async (c) => {
+    try {
+      const body = await c.req.json() as { common_name?: unknown };
+      const name = typeof body.common_name === "string" && /^[\p{L}\p{N} ,.&_()-]{1,64}$/u.test(body.common_name) ? body.common_name : "Hands";
+      return c.json(await withWorkdir((dir) => appleCsr(dir, name)));
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/apple-p12", async (c) => {
+    try {
+      const body = await c.req.json() as { kind?: unknown; key_pem?: unknown; certificate_b64?: unknown; notary?: AppleSecret["notary"] };
+      const kind = body.kind === "apple_developer_id" || body.kind === "apple_ios_distribution" ? body.kind : null;
+      if (!kind || typeof body.key_pem !== "string" || typeof body.certificate_b64 !== "string") {
+        throw new SignError(400, "invalid_request", "kind, key_pem and certificate_b64 are required");
+      }
+      const result = await withWorkdir(async (dir) => {
+        const identity = await appleP12(dir, kind, body.key_pem as string, body.certificate_b64 as string);
+        const metadata = await inspectApple(dir, { ...identity, notary: body.notary ?? null });
+        return { secret: identity, metadata: { ...metadata, key_algorithm: "RSA 2048" } };
       });
       return c.json(result);
     } catch (error) {

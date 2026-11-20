@@ -349,6 +349,62 @@ export function registerSigningCommands(program: Command): void {
       console.log(`Uploaded ${res.signing_identity.name} (${res.signing_identity.id}): ${res.signing_identity.metadata.subject}.`);
     });
 
+  identities.command("generate-apple-ios <name>")
+    .description(
+      "Create an Apple Distribution certificate for iOS inside Hands: the key is made in Hands and App Store Connect issues " +
+      "the certificate. Needs an API key with the Admin role; Hands also uses it for provisioning profiles.",
+    )
+    .option("--asc-key-id <id>", "App Store Connect API key id.")
+    .option("--asc-issuer-id <id>", "App Store Connect issuer id.")
+    .option("--asc-key <p8>", "Path to the AuthKey_<id>.p8 file.")
+    .option("--asc-from-app <appIdOrSlug>", "Use the App Store Connect API key that this app already holds for TestFlight.")
+    .option("--org <orgId>", "Organization (default: your current org).")
+    .action(async (name: string, opts: { ascKeyId?: string; ascIssuerId?: string; ascKey?: string; ascFromApp?: string; org?: string }) => {
+      const orgId = await orgOf(opts.org);
+      const asc = await apiKeyOption(opts.ascFromApp, opts.ascKeyId, opts.ascIssuerId, opts.ascKey);
+      if (!asc) throw new Error("give an App Store Connect API key: --asc-from-app, or --asc-key-id, --asc-issuer-id and --asc-key");
+      const res = await apiRequest<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities/generate-apple-ios`, {
+        method: "POST", body: { name, asc }, retryOnUnauthorized: false,
+      });
+      console.log(`Created ${res.signing_identity.name} (${res.signing_identity.id}): ${res.signing_identity.metadata.subject}.`);
+    });
+
+  identities.command("request-apple <name> <outFile>")
+    .description(
+      "Make an Apple key inside Hands and write its certificate request (.certSigningRequest). Create the certificate from it " +
+      "on the Apple Developer site, then run `complete-request` with the .cer. Developer ID certificates can only be made this way.",
+    )
+    .requiredOption("--kind <kind>", "developer-id (macOS) or distribution (iOS).")
+    .option("--notary-from-app <appIdOrSlug>", "macOS: notarize with the API key this app already holds.")
+    .option("--asc-from-app <appIdOrSlug>", "iOS: manage provisioning profiles with the API key this app already holds.")
+    .option("--org <orgId>", "Organization (default: your current org).")
+    .action(async (name: string, outFile: string, opts: { kind: string; notaryFromApp?: string; ascFromApp?: string; org?: string }) => {
+      const kind = opts.kind === "developer-id" ? "apple_developer_id" : opts.kind === "distribution" ? "apple_ios_distribution" : null;
+      if (!kind) throw new Error("--kind must be developer-id or distribution");
+      const orgId = await orgOf(opts.org);
+      const key = kind === "apple_developer_id"
+        ? { notary: await apiKeyOption(opts.notaryFromApp, undefined, undefined, undefined) }
+        : { asc: await apiKeyOption(opts.ascFromApp, undefined, undefined, undefined) };
+      const res = await apiRequest<{ certificate_request: { id: string; csr_pem: string } }>(`/api/orgs/${orgId}/signing-certificate-requests`, {
+        method: "POST", body: { kind, name, ...key }, retryOnUnauthorized: false,
+      });
+      await writeFile(outFile, res.certificate_request.csr_pem);
+      console.log(`Wrote ${outFile}. Request id ${res.certificate_request.id}: upload the file at https://developer.apple.com/account/resources/certificates/add, then run`);
+      console.log(`  hands signing identities complete-request ${res.certificate_request.id} <downloaded .cer>`);
+    });
+
+  identities.command("complete-request <requestId> <cerFile>")
+    .description("Add the certificate Apple issued for a request made with `request-apple`; it becomes a signing identity.")
+    .option("--org <orgId>", "Organization (default: your current org).")
+    .action(async (requestId: string, cerFile: string, opts: { org?: string }) => {
+      const orgId = await orgOf(opts.org);
+      const res = await apiRequest<{ signing_identity: SigningIdentity }>(
+        `/api/orgs/${orgId}/signing-certificate-requests/${encodeURIComponent(requestId)}/complete`,
+        { method: "POST", body: { certificate_b64: (await readFile(cerFile)).toString("base64") }, retryOnUnauthorized: false },
+      );
+      console.log(`Created ${res.signing_identity.name} (${res.signing_identity.id}): ${res.signing_identity.metadata.subject}.`);
+    });
+
   identities.command("grant <identityId> <appIdOrSlug>")
     .description("Let an app sign with this identity.")
     .option("--org <orgId>", "Organization (default: your current org).")

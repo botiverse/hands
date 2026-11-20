@@ -1719,6 +1719,7 @@ export interface SigningIdentity {
     asc_key_id?: string | null;
     api_key_from_app?: string | null;
     provisioning_profile_count?: number;
+    apple_certificate_id?: string;
   };
   backup_exported_at: number | null;
   created_by_actor: string;
@@ -1752,6 +1753,42 @@ export const generateAndroidSigningIdentity = (orgId: string, input: { name: str
   request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities/generate-android`, {
     method: "POST", admin: true, body: JSON.stringify(input),
   });
+
+/** iOS: Hands makes the key and App Store Connect issues the certificate (Admin API key). */
+export const generateAppleIosSigningIdentity = (orgId: string, input: { name: string; asc: Record<string, unknown> }) =>
+  request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-identities/generate-apple-ios`, {
+    method: "POST", admin: true, body: JSON.stringify(input),
+  });
+
+/** A key made in Hands waiting for the certificate Apple issues for its request. */
+export interface SigningCertificateRequest {
+  id: string;
+  kind: "apple_developer_id" | "apple_ios_distribution";
+  name: string;
+  csr_pem: string;
+  metadata: SigningIdentity["metadata"];
+  identity_id: string | null;
+  created_by_actor: string;
+  created_at: number;
+  completed_at: number | null;
+  cancelled_at: number | null;
+}
+
+export const listSigningCertificateRequests = (orgId: string) =>
+  request<{ certificate_requests: SigningCertificateRequest[] }>(`/api/orgs/${orgId}/signing-certificate-requests`, { admin: true });
+
+export const createSigningCertificateRequest = (orgId: string, input: Record<string, unknown>) =>
+  request<{ certificate_request: SigningCertificateRequest }>(`/api/orgs/${orgId}/signing-certificate-requests`, {
+    method: "POST", admin: true, body: JSON.stringify(input),
+  });
+
+export const completeSigningCertificateRequest = (orgId: string, requestId: string, certificateB64: string) =>
+  request<{ signing_identity: SigningIdentity }>(`/api/orgs/${orgId}/signing-certificate-requests/${encodeURIComponent(requestId)}/complete`, {
+    method: "POST", admin: true, body: JSON.stringify({ certificate_b64: certificateB64 }),
+  });
+
+export const cancelSigningCertificateRequest = (orgId: string, requestId: string) =>
+  request<{ cancelled: boolean }>(`/api/orgs/${orgId}/signing-certificate-requests/${encodeURIComponent(requestId)}`, { method: "DELETE", admin: true });
 
 export const exportSigningIdentityBackup = (orgId: string, identityId: string) =>
   request<{ keystore_b64: string; store_password: string; key_alias: string; key_password: string }>(

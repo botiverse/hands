@@ -36,6 +36,9 @@ export type SigningSecret =
     asc?: NotaryKey | null;
   };
 
+/** A key made in Hands that waits for Apple to issue its certificate. */
+export type PendingKeySecret = { kind: "pending_apple_key"; key_pem: string; api_key: NotaryKey | null };
+
 /** Public facts reported by the container; never key material. */
 export type SigningMetadata = {
   subject?: string;
@@ -52,6 +55,8 @@ export type SigningMetadata = {
   /** Where the API key came from when it was copied from an app's TestFlight credentials. */
   api_key_from_app?: string | null;
   provisioning_profile_count?: number;
+  /** Apple's id for a certificate Hands requested through App Store Connect. */
+  apple_certificate_id?: string;
 };
 
 function b64Encode(bytes: Uint8Array): string {
@@ -79,24 +84,24 @@ async function signingKey(master: string | undefined): Promise<CryptoKey> {
   );
 }
 
-export async function encryptSigningSecret(secret: SigningSecret, master: string | undefined) {
+export async function encryptSigningSecret(secret: SigningSecret | PendingKeySecret, master: string | undefined) {
   const key = await signingKey(master);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(secret)));
   return { secret_ciphertext_b64: b64Encode(new Uint8Array(ciphertext)), secret_iv_b64: b64Encode(iv) };
 }
 
-export async function decryptSigningSecret(
+export async function decryptSigningSecret<T = SigningSecret>(
   row: { secret_ciphertext_b64: string; secret_iv_b64: string },
   master: string | undefined,
-): Promise<SigningSecret> {
+): Promise<T> {
   const key = await signingKey(master);
   const plaintext = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: b64Decode(row.secret_iv_b64) },
     key,
     b64Decode(row.secret_ciphertext_b64),
   );
-  return JSON.parse(new TextDecoder().decode(plaintext)) as SigningSecret;
+  return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
 export class SigningError extends Error {
