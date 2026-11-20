@@ -2,13 +2,20 @@ import { errorMessage } from "../lib/errorMessage";
 import { useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
+  Badge,
   Button,
   Input,
   Dialog,
   DialogContent,
   DialogBody,
+  DialogDescription,
   DialogFooter,
   DialogClose,
+  DialogHeader,
+  DialogTitle,
+  Field,
+  FieldDescription,
+  FieldLabel,
   Select,
   SelectContent,
   SelectList,
@@ -16,7 +23,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Label,
+  Text,
+  TextLink,
   Textarea,
 } from "@botiverse/raft-ui";
 import { createApp } from "../lib/api";
@@ -24,19 +32,15 @@ import { useText } from "../lib/locale";
 import { useToast } from "./Toast";
 
 /**
- * App creation wizard — 3 steps:
- *   1. Basics: name / slug / description
- *   2. Product types: review parser/product families that will be seeded
- *   3. Channels: review seeded distribution lanes
+ * New app — one form dialog (design: patterns/forms "Forms in a dialog"):
+ * name, slug, platform and an optional description, then Cancel and Create.
  *
- * On save, the backend `POST /api/apps` handler now seeds default
+ * On save, the backend `POST /api/apps` handler seeds the default
  * product_types / channels via a single batch insert
- * (see worker/src/routes/apps.ts handleCreateApp). The wizard just
- * collects the basics — the seeding is automatic.
- *
- * The wizard is currently "informational" — it shows what's being created
- * so the user understands the consequences. It should not expose checkboxes
- * for values that the backend does not yet accept.
+ * (see worker/src/routes/apps.ts handleCreateApp). The dialog only collects
+ * the basics and says, under the fields, which channels and product types
+ * are set up. It should not expose checkboxes for values that the backend
+ * does not yet accept.
  */
 
 const DEFAULT_PRODUCT_TYPES: Array<{
@@ -153,20 +157,24 @@ export function AppCreationWizard({
   onCreated: () => void;
 }) {
   const t = useText();
-  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugAuto, setSlugAuto] = useState(true);
   const [description, setDescription] = useState("");
   const [platform, setPlatform] = useState<AppPlatform>("android");
+  const [showSeeded, setShowSeeded] = useState(false);
   const createToastId = useRef<string | null>(null);
 
   const toast = useToast();
+  const finalSlug = slug.trim() || slugify(name);
+  const platformLabels: Record<AppPlatform, string> = {
+    android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页"),
+  };
 
   const create = useMutation({
     mutationFn: () =>
       createApp({
-        slug: slug || slugify(name),
+        slug: finalSlug,
         name,
         platform,
         description: description.trim() || undefined,
@@ -181,8 +189,8 @@ export function AppCreationWizard({
     onSuccess: () => {
       const patch = {
         kind: "success",
-        title: t(`App '${slug || slugify(name)}' created`, `应用“${slug || slugify(name)}”已创建`),
-        description: t(`Seeded ${DEFAULT_PRODUCT_TYPES.length} product types and ${DEFAULT_CHANNELS.length} channels`, `已创建 ${DEFAULT_PRODUCT_TYPES.length} 种产品类型和 ${DEFAULT_CHANNELS.length} 个渠道`),
+        title: t(`App '${finalSlug}' created`, `应用“${finalSlug}”已创建`),
+        description: t(`Set up ${DEFAULT_CHANNELS.length} channels and ${DEFAULT_PRODUCT_TYPES.length} product types`, `已创建 ${DEFAULT_CHANNELS.length} 个渠道和 ${DEFAULT_PRODUCT_TYPES.length} 种产品类型`),
       } as const;
       if (createToastId.current !== null) toast.update(createToastId.current, patch);
       else toast.show(patch);
@@ -201,193 +209,149 @@ export function AppCreationWizard({
     },
   });
 
-  const canAdvance =
-    (step === 1 && name.trim().length > 0 && (slug.trim().length > 0 || slugify(name).length > 0)) ||
-    step === 2 ||
-    step === 3;
+  const canCreate = name.trim().length > 0 && finalSlug.length > 0 && !create.isPending;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-2xl">
-        <DialogClose className="absolute top-3 right-3 z-10" />
-        <DialogBody>
-
-        {/* Step indicator */}
-        <div className="flex items-center gap-2 mb-6 text-xs text-foreground-muted">
-          {[1, 2, 3].map((n) => (
-            <div key={n} className="flex items-center gap-2">
-              <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center font-medium ${
-                  n === step
-                    ? "bg-accent text-foreground-inverse"
-                    : n < step
-                      ? "bg-accent-soft text-accent-strong"
-                      : "bg-fill-muted text-foreground-muted"
-                }`}
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{t("New app", "新建应用")}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <form
+          className="contents"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (canCreate) create.mutate();
+          }}
+        >
+          <DialogBody className="grid gap-5">
+            <Field>
+              <FieldLabel htmlFor="new-app-name">{t("Name", "名称")}</FieldLabel>
+              <Input
+                id="new-app-name"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (slugAuto) setSlug(slugify(e.target.value));
+                }}
+                placeholder={t("My App", "我的应用")}
+                aria-required
+                autoFocus
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-app-slug">{t("Slug", "标识")}</FieldLabel>
+              <Input
+                id="new-app-slug"
+                className="font-mono"
+                value={slug}
+                onChange={(e) => {
+                  setSlug(e.target.value);
+                  setSlugAuto(false);
+                }}
+                placeholder="my-app"
+                aria-required
+              />
+              <FieldDescription>
+                {t("Used in URLs and the CLI. Lowercase letters, numbers and dashes.", "用于链接和命令行，只能包含小写字母、数字和连字符。")}
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel nativeLabel={false} render={<div />}>{t("Platform", "平台")}</FieldLabel>
+              <Select
+                items={platformLabels}
+                value={platform}
+                onValueChange={(value) => setPlatform(value as AppPlatform)}
               >
-                {n < step ? "✓" : n}
-              </div>
-              <span className={n === step ? "font-medium text-foreground-strong" : ""}>
-                {n === 1 ? t("Basics", "基本信息") : n === 2 ? t("Product types", "产品类型") : t("Channels", "渠道")}
-              </span>
-              {n < 3 && <span className="text-foreground-hint mx-2">→</span>}
-            </div>
-          ))}
-        </div>
-
-        {step === 1 && (
-          <div>
-            <h2 className="text-lg font-bold mb-4">{t("Create app — Basics", "创建应用 — 基本信息")}</h2>
-            <div className="space-y-3">
-              <div>
-                <Label>{t("Name *", "名称 *")}</Label>
-                <Input
-                  value={name}
-                  onChange={(e) => {
-                    setName(e.target.value);
-                    if (slugAuto) setSlug(slugify(e.target.value));
-                  }}
-                  placeholder={t("My App", "我的应用")}
-                  autoFocus
-                />
-              </div>
-              <div>
-                <Label>{t("Slug (kebab-case, auto-generated from name)", "标识（小写字母和连字符，根据名称自动生成）")}</Label>
-                <Input
-                  className="font-mono text-xs"
-                  value={slug}
-                  onChange={(e) => {
-                    setSlug(e.target.value);
-                    setSlugAuto(false);
-                  }}
-                  placeholder="my-app"
-                />
-              </div>
-              <div>
-                <Label>{t("Platform *", "平台 *")}</Label>
-                <Select
-                  items={{ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") }}
-                  value={platform}
-                  onValueChange={(value) => setPlatform(value as AppPlatform)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                    <SelectIcon />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectList>
+                <SelectTrigger aria-label={t("Platform", "平台")}>
+                  <SelectValue />
+                  <SelectIcon />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectList>
                     {APP_PLATFORMS.map((value) => (
                       <SelectItem key={value} value={value}>
-                        {({ android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页") })[value]}
+                        {platformLabels[value]}
                       </SelectItem>
                     ))}
                   </SelectList>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>{t("Description (optional)", "描述（可选）")}</Label>
-                <Textarea
-                  className="min-h-[60px]"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder={t("What does this app do?", "这个应用有什么用途？")}
-                />
-              </div>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="new-app-description">{t("Description (optional)", "描述（可选）")}</FieldLabel>
+              <Textarea
+                id="new-app-description"
+                className="min-h-[60px]"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder={t("What does this app do?", "这个应用有什么用途？")}
+              />
+            </Field>
+            <div className="grid gap-2">
+              <DialogDescription>
+                {t(
+                  "Hands sets up three channels, main, preview and nightly, and a product type for each build format it ships.",
+                  "Hands 会创建 main、preview 和 nightly 三个渠道，并为每种可发布的构建格式创建产品类型。",
+                )}{" "}
+                <TextLink
+                  type="button"
+                  aria-expanded={showSeeded}
+                  onClick={() => setShowSeeded(!showSeeded)}
+                >
+                  {showSeeded ? t("Hide details", "收起详情") : t("Show details", "查看详情")}
+                </TextLink>
+              </DialogDescription>
+              {showSeeded && <SeededDefaults />}
             </div>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div>
-            <h2 className="text-lg font-bold mb-4">{t("Create app — Product types", "创建应用 — 产品类型")}</h2>
-            <p className="text-sm text-foreground-muted mb-4">
-              {t("These product families will be seeded for the app. They define parsers and release flows; concrete platform artifacts are picked later when you upload assets for a release.", "将为此应用创建以下产品类型，用于确定解析方式和发布流程；上传版本文件时再选择具体的平台文件。")}
-            </p>
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {DEFAULT_PRODUCT_TYPES.map((pt) => (
-                <div key={pt.name} className="border border-line-muted rounded-lg p-3">
-                  <div className="flex items-start gap-3">
-                    <div className="mt-0.5 h-5 w-5 rounded-full bg-accent-soft text-accent-strong flex items-center justify-center text-xs font-medium">
-                      ✓
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium">{t(pt.display_name, pt.display_name_zh)}</div>
-                      <div className="text-xs font-mono text-foreground-muted">{pt.name}</div>
-                      <div className="text-xs text-foreground mt-1">{t(pt.description, pt.description_zh)}</div>
-                      <div className="text-xs text-foreground-muted mt-2">
-                        {t(pt.artifact_note, pt.artifact_note_zh)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div>
-            <h2 className="text-lg font-bold mb-4">{t("Create app — Channels", "创建应用 — 渠道")}</h2>
-            <p className="text-sm text-foreground-muted mb-4">
-              {t("Channels are the delivery lanes clients use to fetch updates. Hands keeps maturity simple: publish to main for stable users, preview for validation, and nightly for fast internal iteration.", "客户端通过渠道获取更新。可以发布到 main 供稳定用户使用，发布到 preview 进行验证，或发布到 nightly 供内部快速迭代。")}
-            </p>
-
-            <div className="pt-1">
-              <div className="text-xs font-medium text-foreground-strong mb-2">
-                {t("Default distribution channels (will be seeded):", "将创建以下默认分发渠道：")}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {DEFAULT_CHANNELS.map((c) => (
-                  <div
-                    key={c.slug}
-                    className="border border-line-muted rounded-md p-2 bg-layer-canvas-muted"
-                  >
-                    <div className="font-medium text-sm">{c.name}</div>
-                    <div className="text-xs font-mono text-foreground-muted">{c.slug}</div>
-                    <div className="text-xs text-foreground mt-1">
-                      {t(c.description, c.description_zh)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        </DialogBody>
-        <DialogFooter className="justify-between">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => (step === 1 ? onClose() : setStep((step - 1) as 1 | 2 | 3))}
-          >
-            {step === 1 ? t("Cancel", "取消") : t("← Back", "← 返回")}
-          </Button>
-          {step < 3 ? (
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button type="button" variant="ghost" size="lg" />}>{t("Cancel", "取消")}</DialogClose>
             <Button
-              type="button"
+              type="submit"
               variant="primary"
-              onClick={() => setStep((step + 1) as 1 | 2 | 3)}
-              disabled={!canAdvance}
+              size="lg"
+              disabled={!canCreate}
+              loading={create.isPending}
+              loadingLabel={t("Creating app", "正在创建应用")}
             >
-              {t("Next →", "下一步 →")}
+              {t("Create app", "创建应用")}
             </Button>
-          ) : (
-            <Button
-              type="button"
-              variant="primary"
-              onClick={() => create.mutate()}
-              disabled={
-                create.isPending ||
-                !name.trim()
-              }
-            >
-              {create.isPending ? t("Creating…", "创建中…") : t("Create app + seed defaults", "创建应用和默认配置")}
-            </Button>
-          )}
-        </DialogFooter>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** What creating an app sets up: the default channels and product types. */
+function SeededDefaults() {
+  const t = useText();
+  return (
+    <div className="grid gap-3 rounded-container border border-line-hairline p-3">
+      <div className="grid gap-1.5">
+        <Text.Sans size="caption" variant="muted">{t("Channels", "渠道")}</Text.Sans>
+        <ul className="grid gap-1">
+          {DEFAULT_CHANNELS.map((c) => (
+            <li key={c.slug} className="flex items-baseline gap-2">
+              <Badge appearance="outline" className="shrink-0">{c.slug}</Badge>
+              <Text.Sans size="small" variant="muted">{t(c.description, c.description_zh)}</Text.Sans>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="grid gap-1.5">
+        <Text.Sans size="caption" variant="muted">{t("Product types", "产品类型")}</Text.Sans>
+        <ul className="grid gap-1">
+          {DEFAULT_PRODUCT_TYPES.map((pt) => (
+            <li key={pt.name} className="flex items-baseline gap-2">
+              <Badge appearance="outline" className="shrink-0">{pt.name}</Badge>
+              <Text.Sans size="small" variant="muted">{t(pt.description, pt.description_zh)}</Text.Sans>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
