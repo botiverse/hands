@@ -87,6 +87,48 @@ version. If the user returns without accepting the system installer, the state
 remains installable; `reopenPendingInstaller()` reopens the same APK without a
 duplicate download.
 
+### Progress, install permission and offline install
+
+`checker.statusUpdates()` is a `Flow<HandsUpdateStatus>` for an update page.
+It starts with the reconciled status, then follows every change made by any
+`UpdateChecker` for the same app and channel. While a full APK downloads
+(`downloading`) or a patch downloads (`patching`) it re-reads the status every
+500 ms, so `status.progress` advances: `downloadedBytes`, `totalBytes` (null
+when unknown), `percent`, and `paused` with a `pauseReason` such as
+`waiting_for_network`. `status.targetVersionName` names the version being
+installed.
+
+```kotlin
+lifecycleScope.launch {
+    repeatOnLifecycle(Lifecycle.State.STARTED) {
+        checker.statusUpdates().collect { status ->
+            when {
+                status.errorCode == INSTALL_PERMISSION_REQUIRED -> showAllowInstallsPrompt()
+                status.progress != null -> showProgress(status.progress)
+                else -> render(status)
+            }
+        }
+    }
+}
+```
+
+When Android does not let the app install packages ("Install unknown apps"
+is off), a verified download stays `ready_to_install` with `errorCode =
+install_permission_required` instead of opening an installer that would be
+blocked. Explain to the person that Android may restart the app after the
+setting changes, start `checker.installPermissionSettingsIntent()`, and call
+`checker.reopenPendingInstaller()` when the app is back in the foreground.
+`checker.canInstallUpdates()` reports the current permission.
+
+If the update check fails (offline, Hands unreachable) while a verified APK
+is ready, `install()` reopens that APK instead of doing nothing.
+
+The download notification is titled with the app's label and version. The
+first `status()` call in a process removes finished SDK downloads whose
+version is already installed, which also clears the system's lingering
+"downloaded" notification. The completion receiver is registered on the
+application context whichever context the checker was given.
+
 The SDK persists a package/origin/app/channel/product/platform/architecture
 bound transaction containing target/build/asset identity, DownloadManager id,
 and the expected app-scoped file. It deliberately does not persist signed

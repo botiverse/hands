@@ -76,6 +76,30 @@ val status = checker.install()
 
 在更新页面或生命周期恢复时调用 `checker.status()`，根据稳定的小写状态更新界面：`idle`、`checking`、`patching`、`downloading`、`ready_to_install`、`installer_opened`、`failed`、`stale` 和 `installed`。只有 PackageManager 观察到完全匹配的目标版本后才进入 `installed`。如果用户返回时未接受系统安装器，状态仍可安装；`reopenPendingInstaller()` 会重新打开同一 APK，不会重复下载。
 
+### 进度、安装权限与离线安装
+
+`checker.statusUpdates()` 返回供更新页面使用的 `Flow<HandsUpdateStatus>`。它先给出核对后的状态，之后跟随同一应用和渠道下任何 `UpdateChecker` 产生的变化。下载完整 APK（`downloading`）或增量补丁（`patching`）期间每 500 毫秒重新读取一次，`status.progress` 随之更新：`downloadedBytes`、`totalBytes`（未知时为 null）、`percent`，以及 `paused` 和 `pauseReason`（如 `waiting_for_network`）。`status.targetVersionName` 是正在安装的版本名。
+
+```kotlin
+lifecycleScope.launch {
+    repeatOnLifecycle(Lifecycle.State.STARTED) {
+        checker.statusUpdates().collect { status ->
+            when {
+                status.errorCode == INSTALL_PERMISSION_REQUIRED -> showAllowInstallsPrompt()
+                status.progress != null -> showProgress(status.progress)
+                else -> render(status)
+            }
+        }
+    }
+}
+```
+
+当 Android 不允许应用安装软件包（"安装未知应用"未开启）时，已验证的下载保持 `ready_to_install`，`errorCode` 为 `install_permission_required`，不会打开注定被拦截的安装器。先向用户说明更改该设置后 Android 可能重启应用，再启动 `checker.installPermissionSettingsIntent()`，应用回到前台时调用 `checker.reopenPendingInstaller()`。`checker.canInstallUpdates()` 返回当前权限状态。
+
+如果在已有验证过的 APK 时检查更新失败（离线、无法连接 Hands），`install()` 会重新打开该 APK，而不是什么都不做。
+
+下载通知以应用名称和版本为标题。进程内第一次调用 `status()` 时，会移除版本已安装的 SDK 下载记录，同时清掉系统残留的"已下载"通知。无论传入哪个 context，下载完成监听都注册在 Application context 上。
+
 SDK 会持久化一个绑定了包、来源、应用、渠道、产品、平台和架构的事务，包含目标、构建和文件身份、DownloadManager ID 及预期的应用专属文件。它有意不保存签名下载 URL 或认证材料。恢复核对会检查已安装版本、DownloadManager、路径归属、文件大小、提供时的 SHA-256、精确 APK 包和目标版本，以及签名证书。输入缺失、变化或不安全时以 `stale` / `failed` 拒绝，并返回稳定的 `errorCode`。
 
 `HandsUpdateEventListener` 接收结构化事件，覆盖检查、增量下载与应用、验证和回退、完整下载、内容 URI、安装器、恢复核对、失败与清理，可纳入宿主的反馈诊断；Logcat 并不是唯一遥测途径。显式提供的有效 BCP-47 `languageTag` 会通过 `X-Hands-Lang` 和 `Accept-Language` 发送。缺失或格式错误时两个请求头都不发送；不受支持的语言保留服务端英语回退。事件和状态包含请求及解析后的语言标签。

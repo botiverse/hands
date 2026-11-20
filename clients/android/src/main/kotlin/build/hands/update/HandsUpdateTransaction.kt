@@ -57,6 +57,10 @@ data class HandsUpdateStatus(
     val requestedLanguageTag: String? = null,
     val resolvedLanguageTag: String? = null,
     val updatedAt: Long? = null,
+    /** Version name of [targetVersionCode], for display ("1.28.0"). */
+    val targetVersionName: String? = null,
+    /** Bytes so far while [state] is DOWNLOADING or PATCHING; null otherwise. */
+    val progress: HandsUpdateProgress? = null,
 )
 
 /** Structured update events that hosts can include in their own diagnostics. */
@@ -276,6 +280,7 @@ internal data class UpdateTransactionRecord(
     val installedVersionCodeAtStart: Long? = null,
     val targetVersionCode: Long? = null,
     val targetBuildId: String? = null,
+    val targetVersionName: String? = null,
     val assetSizeBytes: Long? = null,
     val assetSha256: String? = null,
     val filetype: String? = null,
@@ -300,6 +305,7 @@ internal data class UpdateTransactionRecord(
         requestedLanguageTag = requestedLanguageTag,
         resolvedLanguageTag = resolvedLanguageTag,
         updatedAt = updatedAt,
+        targetVersionName = targetVersionName,
     )
 }
 
@@ -378,9 +384,14 @@ internal class UpdateTransactionStore(
     }
 }
 
+/**
+ * A BCP 47 tag, or null. Accepts POSIX-style `zh_CN` and drops locale values
+ * that name no language (`system`, `C`, `POSIX`).
+ */
 internal fun normalizedLanguageTag(languageTag: String?): String? {
-    val value = languageTag?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val value = languageTag?.trim()?.replace('_', '-')?.takeIf { it.isNotEmpty() } ?: return null
     if (value.length > 64) return null
+    if (value.substringBefore('-').lowercase() in NON_LANGUAGE_LOCALES) return null
     if (!value.matches(Regex("^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"))) return null
     return value
 }
@@ -400,6 +411,8 @@ internal fun resolveLanguageTag(
     return entries.firstOrNull { it.lowercase().substringBefore('-') == "en" }
         ?: entries.first()
 }
+
+private val NON_LANGUAGE_LOCALES = setOf("system", "c", "posix")
 
 private const val TRANSACTION_SCHEMA_VERSION = 1
 private const val TRANSACTION_PREFERENCES = "hands_update_transactions_v1"

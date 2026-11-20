@@ -3,6 +3,7 @@ package build.hands.update
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -18,12 +19,19 @@ import build.hands.update.models.UpdateCheckResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val DOWNLOAD_COMPLETED_SENDER_PERMISSION =
     "android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS"
@@ -140,12 +148,87 @@ class UpdateChecker(
             eventSink = { name, errorCode ->
                 emit(name, HandsUpdateState.PATCHING, errorCode = errorCode)
             },
+            progressSink = { downloaded, total ->
+                PatchProgressRegistry.set(
+                    authorityKey,
+                    HandsUpdateProgress(downloadedBytes = downloaded, totalBytes = total),
+                )
+            },
         )
+    }
+    private val authorityKey = authority.storageKey()
+    private val publishedStatus =
+        publishedStatuses.computeIfAbsent(authorityKey) { MutableStateFlow(null) }
+
+    /** False while Android blocks this app from installing updates (API 26+). */
+    fun canInstallUpdates(): Boolean = installer.canRequestPackageInstalls()
+
+    /**
+     * The system screen where a person allows this app to install updates.
+     * Show it when a status carries [INSTALL_PERMISSION_REQUIRED], then call
+     * [reopenPendingInstaller] when the app is back in the foreground.
+     */
+    fun installPermissionSettingsIntent(): Intent = installer.installPermissionSettingsIntent()
+
+    /**
+     * Live update status for a UI: the reconciled status first, then every
+     * change made by any [UpdateChecker] for this app and channel. While a
+     * download or patch runs it is re-read every [pollIntervalMillis], so
+     * [HandsUpdateStatus.progress] advances. Collect it from a lifecycle-bound
+     * scope; it never completes on its own.
+     */
+    fun statusUpdates(pollIntervalMillis: Long = DEFAULT_POLL_INTERVAL_MS): Flow<HandsUpdateStatus> = flow {
+        require(pollIntervalMillis > 0) { "pollIntervalMillis must be positive" }
+        var current = liveStatus()
+        var seen = publishedStatus.value?.revision ?: 0L
+        emit(current)
+        while (true) {
+            if (isActiveUpdateState(current.state)) {
+                delay(pollIntervalMillis)
+                current = liveStatus()
+                seen = publishedStatus.value?.revision ?: seen
+            } else {
+                val next = publishedStatus.first { it != null && it.revision > seen }!!
+                seen = next.revision
+                current = next.status
+            }
+            emit(current)
+        }
+    }.distinctUntilChanged(::sameStatusForObservers)
+
+    /** A status read that never waits behind a running patch. */
+    private suspend fun liveStatus(): HandsUpdateStatus {
+        val record = withContext(Dispatchers.IO) { transactionStore.read() }
+        if (record?.state == HandsUpdateState.PATCHING) {
+            return record.status(withContext(Dispatchers.IO) { installedVersionCodeNow() })
+                .copy(progress = PatchProgressRegistry.get(authorityKey))
+        }
+        return status()
+    }
+
+    /** Every transaction write goes through here so observers see it. */
+    private fun persist(record: UpdateTransactionRecord) {
+        transactionStore.write(record)
+        val progress = if (record.state == HandsUpdateState.PATCHING) PatchProgressRegistry.get(authorityKey) else null
+        publish(record.status(installedVersionCodeNow()).copy(progress = progress))
+    }
+
+    private fun publish(status: HandsUpdateStatus) {
+        synchronized(publishedStatus) {
+            val revision = (publishedStatus.value?.revision ?: 0L) + 1L
+            publishedStatus.value = PublishedStatus(revision, status)
+        }
     }
 
     /** Reconcile the persisted transaction with PackageManager, DownloadManager and disk. */
     suspend fun status(): HandsUpdateStatus = commandGate.run {
-        withContext(Dispatchers.IO) { reconcileTransaction() }
+        withContext(Dispatchers.IO) {
+            reconcileTransaction().also {
+                if (staleDownloadSweepDone.compareAndSet(false, true)) {
+                    removeStaleSdkDownloads(keepId = transactionStore.read()?.downloadId)
+                }
+            }
+        }
     }
 
     /**
@@ -165,12 +248,28 @@ class UpdateChecker(
                 -> current
 
                 else -> {
+                    var failed = false
                     try {
                         checkAndInstallUnlocked(languageTag)
                     } catch (_: Exception) {
                         // The command records the precise failure boundary.
+                        failed = true
                     }
-                    withContext(Dispatchers.IO) { reconcileTransaction() }
+                    val after = withContext(Dispatchers.IO) { reconcileTransaction() }
+                    if (failed && shouldReopenAfterFailedCheck(current.state, after.state)) {
+                        // Offline or Hands unreachable: the verified APK on
+                        // disk is still the newest target this app knows of.
+                        emit(
+                            "offline_reopen",
+                            after.state,
+                            after.targetVersionCode,
+                            requestedLanguageTag = after.requestedLanguageTag,
+                            resolvedLanguageTag = after.resolvedLanguageTag,
+                        )
+                        withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
+                    } else {
+                        after
+                    }
                 }
             }
         }
@@ -200,6 +299,9 @@ class UpdateChecker(
                 retryable = true,
                 installed = installedVersionCodeNow(),
             )
+        }
+        if (!installer.canRequestPackageInstalls()) {
+            return requireInstallPermission(record)
         }
         try {
             installer.installDownloadedApk(requireNotNull(file))
@@ -243,6 +345,27 @@ class UpdateChecker(
         }
     }
 
+    private fun requireInstallPermission(record: UpdateTransactionRecord): HandsUpdateStatus {
+        if (record.state == HandsUpdateState.READY_TO_INSTALL &&
+            record.errorCode == INSTALL_PERMISSION_REQUIRED) {
+            return record.status(installedVersionCodeNow())
+        }
+        emit(
+            INSTALL_PERMISSION_REQUIRED,
+            HandsUpdateState.READY_TO_INSTALL,
+            record.targetVersionCode,
+            errorCode = INSTALL_PERMISSION_REQUIRED,
+            requestedLanguageTag = record.requestedLanguageTag,
+            resolvedLanguageTag = record.resolvedLanguageTag,
+        )
+        return transition(
+            record,
+            HandsUpdateState.READY_TO_INSTALL,
+            errorCode = INSTALL_PERMISSION_REQUIRED,
+            retryable = true,
+        ).status(installedVersionCodeNow())
+    }
+
     /**
      * Check for an update; if newer, download and trigger install.
      *
@@ -281,7 +404,7 @@ class UpdateChecker(
             )
         }
         if (prior == null || prior.state in RESTARTABLE_STATES) {
-            transactionStore.write(
+            persist(
                 newRecord(
                     state = HandsUpdateState.CHECKING,
                     requestedLanguageTag = requestedLanguage,
@@ -456,7 +579,12 @@ class UpdateChecker(
         // fall through to the unchanged full-APK download below.
         val patch = response.patch
         if (patch != null) {
-            transactionStore.write(baseRecord.copy(state = HandsUpdateState.PATCHING))
+            val patching = baseRecord.copy(state = HandsUpdateState.PATCHING)
+            PatchProgressRegistry.set(
+                authorityKey,
+                HandsUpdateProgress(downloadedBytes = 0L, totalBytes = patch.size_bytes.takeIf { it > 0L }),
+            )
+            persist(patching)
             emit(
                 "patch_started",
                 HandsUpdateState.PATCHING,
@@ -465,7 +593,8 @@ class UpdateChecker(
                 resolvedLanguageTag = resolvedLanguageTag,
             )
             var durableReady: UpdateTransactionRecord? = null
-            val applied = withContext(Dispatchers.IO) {
+            val applied = try {
+                withContext(Dispatchers.IO) {
                 effectiveDeltaUpdater.tryApplyAndInstall(
                     patch,
                     asset,
@@ -478,7 +607,7 @@ class UpdateChecker(
                             localFilePath = apk.absolutePath,
                             updatedAt = System.currentTimeMillis(),
                         )
-                        transactionStore.write(ready)
+                        persist(ready)
                         durableReady = ready
                         emit(
                             "state_changed",
@@ -495,8 +624,17 @@ class UpdateChecker(
                         )
                     },
                 )
+                }
+            } finally {
+                PatchProgressRegistry.clear(authorityKey)
             }
-            if (applied) return
+            if (applied) {
+                durableReady?.takeIf {
+                    transactionStore.read()?.state == HandsUpdateState.READY_TO_INSTALL &&
+                        !installer.canRequestPackageInstalls()
+                }?.let { ready -> withContext(Dispatchers.IO) { requireInstallPermission(ready) } }
+                return
+            }
             emit(
                 "full_download_fallback",
                 HandsUpdateState.DOWNLOADING,
@@ -515,11 +653,11 @@ class UpdateChecker(
             localFilePath = plannedDestination.absolutePath,
             updatedAt = System.currentTimeMillis(),
         )
-        transactionStore.write(prepared)
+        persist(prepared)
         val enqueued = installer.enqueueDownload(
             downloadUrl = asset.download_url,
             fileName = fileName,
-            title = "${response.app.slug} v${latest.version}",
+            title = downloadTitle(response.app.slug, latest.version),
         )
         val downloading = prepared.copy(
             state = HandsUpdateState.DOWNLOADING,
@@ -527,12 +665,12 @@ class UpdateChecker(
             updatedAt = System.currentTimeMillis(),
         )
         try {
-            transactionStore.write(downloading)
+            persist(downloading)
         } catch (exception: Exception) {
             val cleanup = cleanup(downloading)
             if (!cleanup.succeeded) {
                 try {
-                    transactionStore.write(
+                    persist(
                         downloading.copy(
                             state = HandsUpdateState.FAILED,
                             errorCode = CLEANUP_FAILED,
@@ -554,7 +692,14 @@ class UpdateChecker(
             requestedLanguageTag = requestedLanguageTag,
             resolvedLanguageTag = resolvedLanguageTag,
         )
-        val receiver = installer.createDownloadCompletionReceiver(enqueued.id) {
+        val appContext = context.applicationContext ?: context
+        lateinit var receiver: BroadcastReceiver
+        receiver = installer.createDownloadCompletionReceiver(enqueued.id) {
+            try {
+                appContext.unregisterReceiver(receiver)
+            } catch (_: Exception) {
+                // Already unregistered.
+            }
             scope.launch {
                 commandGate.run {
                     val completed = withContext(Dispatchers.IO) { reconcileTransaction() }
@@ -564,13 +709,12 @@ class UpdateChecker(
                 }
             }
         }
-        // Register on Application context so the receiver survives Activity death.
-        if (context is android.app.Application) {
-            context.registerDownloadReceiver(
-                receiver,
-                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-            )
-        }
+        // Register on the Application context so the receiver survives
+        // Activity death, whichever context the host passed in.
+        appContext.registerDownloadReceiver(
+            receiver,
+            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+        )
     }
 
     private fun reconcileTransaction(): HandsUpdateStatus {
@@ -627,7 +771,7 @@ class UpdateChecker(
                         installed = installed,
                     )
                 } else {
-                    record.status(installed)
+                    record.status(installed).copy(progress = PatchProgressRegistry.get(authorityKey))
                 }
             }
 
@@ -664,10 +808,13 @@ class UpdateChecker(
             retryable = true,
             installed = installed,
         )
-        return when (installer.queryDownload(downloadId).state) {
+        val download = installer.queryDownload(downloadId)
+        return when (download.state) {
             DownloadState.PENDING,
             DownloadState.RUNNING,
             DownloadState.PAUSED,
+            -> record.status(installed).copy(progress = downloadProgress(download))
+
             DownloadState.READ_UNAVAILABLE,
             DownloadState.UNKNOWN,
             -> record.status(installed)
@@ -739,7 +886,7 @@ class UpdateChecker(
                     retryable = false,
                     updatedAt = System.currentTimeMillis(),
                 )
-                transactionStore.write(recovered)
+                persist(recovered)
                 emit(
                     "download_authority_recovered",
                     recovered.state,
@@ -759,7 +906,7 @@ class UpdateChecker(
                     errorCode = error,
                     retryable = true,
                     updatedAt = System.currentTimeMillis(),
-                ).also(transactionStore::write)
+                ).also(::persist)
                 uncertain.status(installed)
             }
         }
@@ -776,6 +923,7 @@ class UpdateChecker(
         installedVersionCodeAtStart = installedVersionCodeNow() ?: installedVersionCode,
         targetVersionCode = latest.version_code,
         targetBuildId = latest.build_id,
+        targetVersionName = latest.version,
         assetSizeBytes = asset.size_bytes,
         assetSha256 = asset.sha256 ?: patch?.target_sha256,
         filetype = asset.filetype,
@@ -796,6 +944,7 @@ class UpdateChecker(
         installedVersionCodeAtStart: Long? = null,
         targetVersionCode: Long? = null,
         targetBuildId: String? = null,
+        targetVersionName: String? = null,
         assetSizeBytes: Long? = null,
         assetSha256: String? = null,
         filetype: String? = null,
@@ -813,6 +962,7 @@ class UpdateChecker(
         installedVersionCodeAtStart = installedVersionCodeAtStart,
         targetVersionCode = targetVersionCode,
         targetBuildId = targetBuildId,
+        targetVersionName = targetVersionName,
         assetSizeBytes = assetSizeBytes,
         assetSha256 = assetSha256,
         filetype = filetype,
@@ -836,7 +986,7 @@ class UpdateChecker(
             retryable = retryable,
             updatedAt = System.currentTimeMillis(),
         )
-        transactionStore.write(next)
+        persist(next)
         if (record.state != next.state || record.errorCode != next.errorCode) {
             emit(
                 "state_changed",
@@ -1033,6 +1183,40 @@ class UpdateChecker(
         return difference == 0
     }
 
+    private fun downloadTitle(slug: String, version: String): String {
+        val label = try {
+            context.applicationInfo.loadLabel(context.packageManager).toString().trim()
+        } catch (_: Exception) {
+            ""
+        }
+        return "${label.ifEmpty { slug }} $version".trim()
+    }
+
+    /** Once per process: drop finished SDK downloads that are no longer needed. */
+    private fun removeStaleSdkDownloads(keepId: Long?) {
+        val rows = installer.scanSdkDownloads(::isSdkDownloadFileName) ?: return
+        val installed = installedVersionCodeNow()
+        val stale = staleSdkDownloadIds(rows, keepId, installed, ::archiveVersionCode)
+        var removed = 0
+        stale.forEach { if (installer.removeDownload(it)) removed++ }
+        if (stale.isNotEmpty()) {
+            emit(
+                "stale_downloads_removed",
+                HandsUpdateState.IDLE,
+                errorCode = if (removed == stale.size) null else CLEANUP_FAILED,
+            )
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun archiveVersionCode(path: String): Long? = try {
+        context.packageManager.getPackageArchiveInfo(path, 0)?.let { info ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     private fun emit(
         name: String,
         state: HandsUpdateState,
@@ -1057,8 +1241,13 @@ class UpdateChecker(
         }
     }
 
+    private data class PublishedStatus(val revision: Long, val status: HandsUpdateStatus)
+
     private companion object {
         val commandMutexes = ConcurrentHashMap<String, Mutex>()
+        val publishedStatuses = ConcurrentHashMap<String, MutableStateFlow<PublishedStatus?>>()
+        val staleDownloadSweepDone = AtomicBoolean(false)
+        const val DEFAULT_POLL_INTERVAL_MS = 500L
         val RESTARTABLE_STATES = setOf(
             HandsUpdateState.IDLE,
             HandsUpdateState.FAILED,

@@ -19,6 +19,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.function.BiFunction
 import java.util.zip.GZIPInputStream
@@ -55,6 +56,8 @@ class DeltaUpdater(
     private val installer: ApkInstaller,
     private val deltaApplyEnabled: Boolean = true,
     private val eventSink: (name: String, errorCode: String?) -> Unit = { _, _ -> },
+    /** Patch bytes downloaded so far and the expected total (null if unknown). */
+    private val progressSink: (downloadedBytes: Long, totalBytes: Long?) -> Unit = { _, _ -> },
 ) {
 
     /**
@@ -101,7 +104,7 @@ class DeltaUpdater(
             // 1. Download the patch bytes into a private temp file.
             try {
                 emit("patch_download_started")
-                downloadTo(patch.download_url, patchFile)
+                downloadTo(patch.download_url, patchFile, patch.size_bytes.takeIf { it > 0L })
                 emit("patch_download_completed")
             } catch (e: Throwable) {
                 emit("patch_fallback", "patch_download_failed")
@@ -158,6 +161,20 @@ class DeltaUpdater(
             // 5. Persist exact file authority before opening the external
             // installer. If the post-launch OPENED commit fails, READY remains
             // durable and the host can safely reopen the same verified APK.
+            // Without the "install unknown apps" permission the installer
+            // cannot open. Keep the verified APK as READY: the host sends the
+            // person to the permission screen and reopens it from there.
+            if (!installer.canRequestPackageInstalls()) {
+                try {
+                    persistReadyToInstall(reconstructed, actualSha)
+                } catch (_: Throwable) {
+                    emit("transaction_persist_failed", "ready_persist_failed")
+                    return false
+                }
+                installed = true
+                emit("install_permission_required", "install_permission_required")
+                return true
+            }
             when (launchWithDurableInstallerAuthority(
                 persistReady = { persistReadyToInstall(reconstructed, actualSha) },
                 launchInstaller = { installer.installLocalApk(reconstructed) },
@@ -217,7 +234,7 @@ class DeltaUpdater(
         return true
     }
 
-    private fun downloadTo(url: String, dest: File) {
+    private fun downloadTo(url: String, dest: File, expectedBytes: Long?) {
         val request = Request.Builder()
             .url(url)
             .header("accept", "application/octet-stream")
@@ -227,8 +244,11 @@ class DeltaUpdater(
                 throw IOException("HTTP ${response.code}")
             }
             val body = response.body ?: throw IOException("empty response body")
+            val total = body.contentLength().takeIf { it > 0L } ?: expectedBytes
             dest.outputStream().use { out ->
-                body.byteStream().use { input -> input.copyTo(out) }
+                body.byteStream().use { input ->
+                    copyWithProgress(input, out) { done -> reportProgress(done, total) }
+                }
             }
         }
     }
@@ -330,6 +350,14 @@ class DeltaUpdater(
         Log.i(TAG, message)
     }
 
+    private fun reportProgress(downloadedBytes: Long, totalBytes: Long?) {
+        try {
+            progressSink(downloadedBytes, totalBytes)
+        } catch (_: Throwable) {
+            // Progress is advisory; it must never break update delivery.
+        }
+    }
+
     private fun emit(name: String, errorCode: String? = null) {
         try {
             eventSink(name, errorCode)
@@ -339,6 +367,31 @@ class DeltaUpdater(
     }
 
     companion object {
+        /** Reports at most once per [reportEveryBytes] copied, plus once at the end. */
+        internal fun copyWithProgress(
+            input: InputStream,
+            output: OutputStream,
+            reportEveryBytes: Long = 64L * 1024L,
+            onProgress: (copiedBytes: Long) -> Unit,
+        ): Long {
+            val buffer = ByteArray(8192)
+            var copied = 0L
+            var lastReported = 0L
+            onProgress(0L)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                output.write(buffer, 0, count)
+                copied += count
+                if (copied - lastReported >= reportEveryBytes) {
+                    lastReported = copied
+                    onProgress(copied)
+                }
+            }
+            if (copied != lastReported) onProgress(copied)
+            return copied
+        }
+
         private const val TAG = "HandsDelta"
 
         private val HEX = "0123456789abcdef".toCharArray()
