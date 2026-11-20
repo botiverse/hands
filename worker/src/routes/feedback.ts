@@ -1173,55 +1173,32 @@ async function emitCrashAlert(
   // Non-fatal crashes are grouped and announced once, but never counted as a spike.
   if (nonFatal) return;
   // The hour up to this ticket, so a decision made late (by the sweep) counts
-  // what had arrived by then, not what arrived since. Devices are counted too:
-  // one device crash-looping is not a spike. A ticket with no device id counts
-  // as its own device.
+  // what had arrived by then, not what arrived since. A spike is about reports:
+  // one device crash-looping still alerts. The device count is shown so the
+  // reader can tell. A ticket with no device id counts as its own device.
   const recent = await env.DB.prepare(
-    `SELECT COUNT(*) AS n,
-            COUNT(DISTINCT COALESCE(device_id, 'ticket:' || id)) AS devices,
-            COUNT(DISTINCT CASE WHEN id != ?5 THEN COALESCE(device_id, 'ticket:' || id) END) AS devices_before
+    `SELECT COUNT(*) AS n, COUNT(DISTINCT COALESCE(device_id, 'ticket:' || id)) AS devices
      FROM feedback_tickets t
      WHERE app_id = ?1 AND signature = ?2 AND created_at >= ?3 AND created_at <= ?4
        AND NOT (kind = 'crash' AND ${NON_FATAL_CRASH_SQL})
        AND ${feedbackBuildScopeClause("standard")}`,
   )
-    .bind(appId, signature, createdAt - 60 * 60 * 1000, createdAt, ticketId)
-    .first<{ n: number; devices: number; devices_before: number }>();
+    .bind(appId, signature, createdAt - 60 * 60 * 1000, createdAt)
+    .first<{ n: number; devices: number }>();
   const hourCount = recent?.n ?? 0;
-  const devices = recent?.devices ?? 0;
-  const threshold = spikeThresholdCrossed(hourCount, devices, recent?.devices_before ?? 0);
-  if (threshold !== null) {
+  if (hourCount === 10 || hourCount === 50 || hourCount === 100) {
     await emitWebhookEvent(env, {
       orgId,
       appId,
       event: `${eventPrefix}:spike`,
-      // Fires on the ticket that makes the hour meet a threshold (reports and
-      // devices), so a later hour meeting it again is a genuine second
-      // outbreak. Without the hour bucket that one collides with the earlier
-      // key and is silently dropped.
-      eventId: `${eventPrefix}:spike:${appId}:${signature}:${Math.floor(createdAt / 3_600_000)}:${threshold}`,
-      body: { ...base, count_last_hour: hourCount, devices_last_hour: devices },
+      // The threshold alone is not enough: this fires only when the hourly
+      // count is exactly 10/50/100, so a later hour returning to 10 is a
+      // genuine second outbreak. Without the hour bucket that one collides
+      // with the earlier key and is silently dropped.
+      eventId: `${eventPrefix}:spike:${appId}:${signature}:${Math.floor(createdAt / 3_600_000)}:${hourCount}`,
+      body: { ...base, count_last_hour: hourCount, devices_last_hour: recent?.devices ?? 0 },
     });
   }
-}
-
-/** Hourly report counts that raise a spike alert. */
-const SPIKE_REPORT_THRESHOLDS = [100, 50, 10] as const;
-/** Distinct devices a spike needs in the same hour; fewer is a crash loop. */
-export const SPIKE_MIN_DEVICES = 3;
-
-/**
- * The report threshold this ticket makes the hour meet, or null. A threshold
- * is met when the hour has at least that many reports from at least
- * SPIKE_MIN_DEVICES devices; it is crossed by the ticket that turns it from
- * unmet to met (one more report, possibly from a new device).
- */
-export function spikeThresholdCrossed(count: number, devices: number, devicesBefore: number): number | null {
-  const met = (n: number, d: number, t: number) => n >= t && d >= SPIKE_MIN_DEVICES;
-  for (const t of SPIKE_REPORT_THRESHOLDS) {
-    if (met(count, devices, t) && !met(count - 1, devicesBefore, t)) return t;
-  }
-  return null;
 }
 
 /** A pending alert older than this lost its in-request run (which ends within 30 s). */
