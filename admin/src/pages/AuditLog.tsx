@@ -65,7 +65,7 @@ export function actionArea(action: string) {
   return action.split(/[.:]/)[0] ?? action;
 }
 
-function parsePayload(raw: string): unknown {
+export function parsePayload(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
@@ -87,7 +87,7 @@ export function payloadSummary(payload: unknown): string {
   return parts.join(" · ");
 }
 
-function principal(entry: AuditLogEntry) {
+export function principal(entry: AuditLogEntry) {
   return {
     account_id: entry.actor_id ?? undefined,
     display_name: entry.actor_display_name ?? null,
@@ -96,7 +96,7 @@ function principal(entry: AuditLogEntry) {
   };
 }
 
-function actorName(entry: AuditLogEntry) {
+export function actorName(entry: AuditLogEntry) {
   return entry.actor_display_name || (entry.actor_username ? `@${entry.actor_username}` : null) || entry.actor;
 }
 
@@ -271,7 +271,7 @@ export function AuditLog({ appId }: { appId: string }) {
   );
 }
 
-function FilterSelect({
+export function FilterSelect({
   label,
   items,
   value,
@@ -299,16 +299,19 @@ function FilterSelect({
   );
 }
 
-function AuditEntryRow({
+export function AuditEntryRow({
   entry,
   open,
   onToggle,
   serverSlug,
+  showApp = false,
 }: {
   entry: AuditLogEntry;
   open: boolean;
   onToggle: () => void;
   serverSlug: string | null;
+  /** On the organization's log: the entry's app beside its action. */
+  showApp?: boolean;
 }) {
   const t = useText();
   const { locale } = useLocale();
@@ -322,8 +325,11 @@ function AuditEntryRow({
       <ListRow cell aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={onToggle}>
         <ListRowBody>
           <ListRowTop>
-            <span className="flex min-w-0 flex-1 items-center">
+            <span className="flex min-w-0 flex-1 items-center gap-2">
               <Badge appearance="outline" className="min-w-0 truncate font-mono">{entry.action}</Badge>
+              {showApp && (entry.app_slug || entry.app_id) && (
+                <span className="min-w-0 shrink truncate font-mono text-footnote text-foreground-muted">{entry.app_slug ?? entry.app_id.slice(0, 8)}</span>
+              )}
             </span>
             <ListRowMeta className="shrink-0" title={when}>{timeAgo(entry.created_at, locale)}</ListRowMeta>
           </ListRowTop>
