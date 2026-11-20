@@ -1852,6 +1852,42 @@ export function registerBuildCommands(program: Command): void {
     );
 
   builds
+    .command("testflight-upload <appIdOrSlug> <buildId>")
+    .description(
+      "Upload the build's signed .ipa (already stored in Hands by publish-ios) to App Store Connect. " +
+      "Hands streams it to Apple with the app's App Store Connect key; follow processing with testflight-status.",
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, buildId: string, opts: { bundleId?: string; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const res = await apiRequest<{
+        operation_id: string;
+        ok: boolean;
+        asc_app_id?: string;
+        build_upload_id?: string;
+        parts_uploaded?: number;
+        state?: { state?: string | null } | string | null;
+        error?: string;
+      }>(`/api/apps/${appId}/builds/${encodeURIComponent(buildId)}/testflight-upload`, {
+        method: "POST",
+        retryOnUnauthorized: false,
+        body: opts.bundleId ? { bundle_id: opts.bundleId } : {},
+      });
+      if (shouldOutputJson(program, jsonRequested(program, opts.json))) {
+        console.log(JSON.stringify(res, null, 2));
+        if (!res.ok) process.exitCode = 1;
+        return;
+      }
+      if (!res.ok) throw new Error(`TestFlight upload failed: ${res.error ?? "Apple refused the upload"}`);
+      const state = typeof res.state === "string" ? res.state : res.state?.state ?? "unknown";
+      console.log(`Uploaded to App Store Connect (build upload ${res.build_upload_id}, ${res.parts_uploaded} parts, state ${state}). Next: hands builds testflight-status ${appIdOrSlug} ${buildId}`);
+    });
+
+  builds
     .command("testflight-status <appIdOrSlug> <buildId>")
     .description(
       "Refresh live TestFlight processing, group assignment, beta review, auto-notify, and expiry state.",

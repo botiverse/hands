@@ -29,7 +29,8 @@ import {
   handleAppleAppId,
 } from "../src/routes/signing";
 import { setSigningContainerForTests } from "../src/lib/signing";
-import { storeAscCredentials } from "../src/lib/asc_credentials";
+import { getAscCredentials, storeAscCredentials } from "../src/lib/asc_credentials";
+import { handleSetAscCredentials } from "../src/routes/asc_credentials";
 
 const MIGRATION_DIR = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const ORG = "org";
@@ -652,5 +653,42 @@ describe("Apple App IDs", () => {
     expect((await call(handleAppleAppId, env, { appId: "app-ios" }, { bundle_id: "build.raft.deck", entitlements: DECK, entitlements_b64: "x" })).body.code).toBe("invalid_request");
     // An app with no Distribution identity granted cannot use one.
     expect((await call(handleAppleAppId, env, { appId: APP }, { bundle_id: "build.raft.deck" })).body.code).toBe("signing_identity_not_granted");
+  });
+});
+
+describe("App Store Connect key copied from another app", () => {
+  const as = (actor: string) => async (env: Env, appId: string, body: unknown) => {
+    const c = {
+      env,
+      req: { param: (n: string) => (n === "appId" ? appId : ""), json: async () => body, query: () => undefined, header: () => undefined },
+      json: (data: unknown, s = 200) => new Response(JSON.stringify(data), { status: s }),
+      get: (key: string) => (key === "admin_actor" ? actor : undefined),
+    } as any;
+    const response = await handleSetAscCredentials(c);
+    return { status: response.status, body: await response.json() as any };
+  };
+
+  it("copies the key within the organization and never across one", async () => {
+    const { env, sqlite } = environment();
+    sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES ('app-raft-ios', ?, 'raft-ios', 'Raft', 'ios', 'ck5', 3)`).run(ORG);
+    sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, client_key, created_at) VALUES ('app-deck-ios', ?, 'raft-deck-ios', 'Deck iOS', 'ios', 'ck6', 4)`).run(ORG);
+    await storeAscCredentials(env.DB, env.ASC_CRED_ENC_KEY!, { app_id: "app-raft-ios", key_id: "KEY1", issuer_id: "ISS", p8: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", actor: "t" });
+    await storeAscCredentials(env.DB, env.ASC_CRED_ENC_KEY!, { app_id: "app-foreign", key_id: "FOREIGN", issuer_id: "ISS2", p8: "-----BEGIN PRIVATE KEY-----\nzzz\n-----END PRIVATE KEY-----", actor: "t" });
+    const admin = as("dev-token");
+
+    const copied = await admin(env, "app-deck-ios", { from_app: "raft-ios" });
+    expect(copied.status).toBe(200);
+    expect(copied.body.asc_credentials).toMatchObject({ key_id: "KEY1", issuer_id: "ISS" });
+    expect(JSON.stringify(copied.body)).not.toContain("PRIVATE KEY");
+    expect((await getAscCredentials(env.DB, env.ASC_CRED_ENC_KEY!, "app-deck-ios"))?.p8).toContain("abc");
+    const audit = sqlite.prepare("SELECT payload FROM audit_logs WHERE action = 'asc_credentials.set' AND app_id = 'app-deck-ios'").get() as any;
+    expect(JSON.parse(audit.payload)).toEqual({ key_id: "KEY1", issuer_id: "ISS", from_app: "raft-ios" });
+
+    // Another organization's app is not found; an app without a key is refused.
+    expect((await admin(env, "app-deck-ios", { from_app: "other" })).status).toBe(404);
+    expect((await admin(env, "app-deck-ios", { from_app: "raft-deck-android" })).status).toBe(409);
+    // A caller without a role on the source app cannot copy its key.
+    const stranger = await as("nobody")(env, "app-deck-ios", { from_app: "raft-ios" });
+    expect(stranger.status).toBe(401);
   });
 });

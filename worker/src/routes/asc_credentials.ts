@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { insertAuditLog } from "../lib/permissions";
+import { ensureAppRole, getAppOrgId, insertAuditLog } from "../lib/permissions";
 import {
   storeAscCredentials,
   getAscCredentialsMeta,
@@ -36,7 +36,9 @@ export async function handleSetAscCredentials(c: AdminContext) {
     key_id?: unknown;
     issuer_id?: unknown;
     p8?: unknown;
+    from_app?: unknown;
   };
+  if (body.from_app !== undefined) return copyAscCredentials(c, appId, encKey, body.from_app);
   const key_id = typeof body.key_id === "string" ? body.key_id.trim() : "";
   const issuer_id =
     typeof body.issuer_id === "string" ? body.issuer_id.trim() : "";
@@ -68,6 +70,40 @@ export async function handleSetAscCredentials(c: AdminContext) {
     created_at: meta.updated_at,
   });
 
+  return c.json({ asc_credentials: meta });
+}
+
+/**
+ * `{ from_app }`: copy the key another app of the same organization holds, so
+ * a team key is entered once. The caller must be admin of both apps.
+ */
+async function copyAscCredentials(c: AdminContext, appId: string, encKey: string, fromApp: unknown) {
+  const ref = typeof fromApp === "string" ? fromApp.trim() : "";
+  if (!ref || ref.length > 128) return c.json({ error: "from_app must name an app (id or slug)" }, 400);
+  const orgId = await getAppOrgId(c.env.DB, appId);
+  const source = orgId
+    ? await c.env.DB.prepare("SELECT id, slug FROM apps WHERE org_id = ?1 AND (id = ?2 OR slug = ?2)")
+      .bind(orgId, ref).first<{ id: string; slug: string }>()
+    : null;
+  if (!source) return c.json({ error: "from_app: app not found in this organization", code: "app_not_in_org" }, 404);
+  if (source.id === appId) return c.json({ error: "from_app is this app" }, 400);
+  const allowed = await ensureAppRole(c, source.id, "admin");
+  if (!allowed.ok) return allowed.response;
+  const creds = await getAscCredentials(c.env.DB, encKey, source.id);
+  if (!creds) return c.json({ error: `${source.slug} has no App Store Connect API key`, code: "asc_credentials_missing" }, 409);
+  const meta = await storeAscCredentials(c.env.DB, encKey, {
+    app_id: appId,
+    key_id: creds.key_id,
+    issuer_id: creds.issuer_id,
+    p8: creds.p8,
+    actor: currentActor(c),
+  });
+  await insertAuditLog(c.env.DB, c, {
+    app_id: appId,
+    action: "asc_credentials.set",
+    payload: { key_id: creds.key_id, issuer_id: creds.issuer_id, from_app: source.slug },
+    created_at: meta.updated_at,
+  });
   return c.json({ asc_credentials: meta });
 }
 
