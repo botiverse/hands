@@ -222,6 +222,38 @@ List builds for an app:
 hands builds list raft-android
 ```
 
+### Build contents and version diff
+
+See what a build's APK or IPA contains: size by category, known SDKs,
+libraries (Java/Kotlin packages with estimated sizes, native libraries per ABI,
+iOS frameworks with versions), permissions and components:
+
+```bash
+hands builds inventory raft-android <build-id>
+hands builds inventory raft-android <build-id> --libraries 50   # list more libraries
+hands builds inventory raft-android <build-id> --json
+```
+
+Compare a build with the previous build of the same product type (the next
+lower version code), or with a given build: total and per-category size change,
+SDKs and libraries added, removed or resized (by size impact), added or removed
+permissions, services, receivers, providers, activities, background modes and
+entitlements, and the files that grew most:
+
+```bash
+hands builds diff raft-android <build-id>
+hands builds diff raft-android <build-id> --against <other-build-id>
+hands builds diff raft-android <build-id> --json
+```
+
+Inventories are computed when an APK or IPA is uploaded. For older builds,
+`--refresh` computes it from the stored package (requires publisher); `diff`
+prints this command when one side has no inventory yet:
+
+```bash
+hands builds inventory raft-android <build-id> --refresh
+```
+
 ## Register External Node / CLI Bytes
 
 For an app created with platform `node`, `builds publish-version` records one

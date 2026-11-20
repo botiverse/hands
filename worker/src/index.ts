@@ -269,6 +269,11 @@ import {
   handleUpdateBuild,
 } from "./routes/builds";
 import {
+  handleBuildInventoryDiff,
+  handleGetBuildInventory,
+  handleRefreshBuildInventory,
+} from "./routes/build_inventory";
+import {
   handleCompleteAndroidReleaseArtifact,
   handleCreateAndroidReleaseArtifacts,
   handleGetAndroidReleaseArtifacts,
@@ -1100,6 +1105,9 @@ bindAdmin("get", "/api/apps/:appId/builds/:buildId", requireAppRole("viewer"), h
 bindAdmin("patch", "/api/apps/:appId/builds/:buildId", requireAppRole("publisher"), handleUpdateBuild);
 bindAdmin("delete", "/api/apps/:appId/builds/:buildId", requireAppRole("admin"), handleDeleteBuild);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/assets", requireAppRole("viewer"), handleListBuildAssets);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/inventory", requireAppRole("viewer"), handleGetBuildInventory);
+bindAdmin("get", "/api/apps/:appId/builds/:buildId/inventory/diff", requireAppRole("viewer"), handleBuildInventoryDiff);
+bindAdmin("post", "/api/apps/:appId/builds/:buildId/inventory", requireAppRole("publisher"), handleRefreshBuildInventory);
 bindAdmin("get", "/api/apps/:appId/builds/:buildId/external-targets",
   requireAppRole("viewer"),
   handleListExternalBuildTargets,

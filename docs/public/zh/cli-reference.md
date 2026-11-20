@@ -207,6 +207,30 @@ hands apps asc-key raft-deck-ios   # 查看当前 key id
 hands builds list raft-android
 ```
 
+### 构建内容与版本差异
+
+查看构建的 APK 或 IPA 包含什么：按类别的大小、已识别的 SDK、库（带估算大小的 Java/Kotlin 包、按 ABI 的原生库、带版本的 iOS 框架）、权限和组件：
+
+```bash
+hands builds inventory raft-android <build-id>
+hands builds inventory raft-android <build-id> --libraries 50   # 列出更多库
+hands builds inventory raft-android <build-id> --json
+```
+
+将构建与同一产品类型的上一个构建（版本号 version code 紧邻的较小者）或指定构建比较：总大小和各类别的变化、新增/移除/大小变化的 SDK 和库（按大小影响排序）、新增或移除的权限、服务、广播接收器、内容提供者、Activity、后台模式和权利，以及增长最多的文件：
+
+```bash
+hands builds diff raft-android <build-id>
+hands builds diff raft-android <build-id> --against <other-build-id>
+hands builds diff raft-android <build-id> --json
+```
+
+上传 APK 或 IPA 时会自动计算内容清单。更早的构建可用 `--refresh` 根据已存储的安装包计算（需要发布者角色）；当一侧还没有清单时，`diff` 会提示这条命令：
+
+```bash
+hands builds inventory raft-android <build-id> --refresh
+```
+
 ## 注册外部 Node / CLI 文件
 
 对于平台为 `node` 的应用，`builds publish-version` 记录一个外部托管目标，不会将文件复制到 Hands 存储：

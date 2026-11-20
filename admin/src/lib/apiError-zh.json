@@ -518,5 +518,11 @@
   "Google Play is not connected and verified for this app": "这个应用还没有连接并验证 Google Play",
   "from_app is this app": "from_app 不能是这个应用本身",
   "from_app must name an app (id or slug)": "from_app 必须指定一个应用（ID 或 slug）",
-  "from_app: app not found in this organization": "from_app：在这个组织里找不到该应用"
+  "from_app: app not found in this organization": "from_app：在这个组织里找不到该应用",
+  "comparison build not found": "未找到用于比较的构建",
+  "no earlier build of this product type to compare with": "没有同一产品类型的更早构建可供比较",
+  "the build's package file is not in storage": "存储中没有该构建的安装包文件",
+  "the two builds are for different platforms": "两个构建属于不同平台",
+  "this build has no APK or IPA to read": "该构建没有可读取的 APK 或 IPA",
+  "this build has no content inventory yet; POST to this URL to compute it from the build's APK or IPA": "该构建还没有内容清单；向此 URL 发送 POST 可根据构建的 APK 或 IPA 计算"
 }

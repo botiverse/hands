@@ -4,6 +4,8 @@ import { presignR2DownloadUrl } from "../lib/r2_presign";
 import { generateSignedR2Url } from "./public_v2";
 import { requestOrigin } from "../lib/origin";
 import { appOwningOrgId, emitWebhookEvent } from "./webhooks";
+import { storeBuildInventory } from "./build_inventory";
+import { inventoryR2Key } from "../lib/build_inventory";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -1177,7 +1179,12 @@ export async function autoParseInstallableAsset(
       icon_base64?: string | null;
       icon_content_type?: string | null;
     };
-    const { icon_base64, icon_content_type, ...parsed } = metadata;
+    // The content inventory is stored on its own (R2 + build_inventories),
+    // never inside parsed_metadata_json.
+    const { icon_base64, icon_content_type, inventory, inventory_error, ...parsed } = metadata as typeof metadata & {
+      inventory?: unknown;
+      inventory_error?: string;
+    };
     const now = Date.now();
     const statements = [env.DB.prepare(
       "UPDATE builds SET parsed_metadata_json = ?1, updated_at = ?2 WHERE id = ?3",
@@ -1221,6 +1228,30 @@ export async function autoParseInstallableAsset(
       ));
     }
     await env.DB.batch(statements);
+
+    // Best effort: an inventory failure never affects parsing.
+    if (inventory) {
+      try {
+        const source = await env.DB.prepare(
+          `SELECT id, file_hash FROM build_assets
+           WHERE build_id = ?1 AND r2_key = ?2 AND artifact_kind = 'installable'
+           LIMIT 1`,
+        ).bind(buildId, r2Key).first<{ id: string; file_hash: string }>();
+        await storeBuildInventory(env, {
+          appId,
+          buildId,
+          inventory,
+          sourceAssetId: source?.id ?? null,
+          sourceFileHash: source?.file_hash ?? null,
+        });
+      } catch (err) {
+        console.error(
+          `[auto-parse] inventory not stored for build ${buildId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    } else if (inventory_error) {
+      console.error(`[auto-parse] inventory failed for build ${buildId}: ${inventory_error}`);
+    }
 
     if (icon_base64) {
       const iconBytes = Uint8Array.from(atob(icon_base64), (ch) => ch.charCodeAt(0));
@@ -1697,6 +1728,13 @@ export async function handleDeleteBuild(c: Context<{ Bindings: Env }>) {
   await c.env.DB.prepare("DELETE FROM builds WHERE id = ?1 AND app_id = ?2")
     .bind(buildId, appId)
     .run();
+  // build_inventories rows cascade; the R2 object goes best-effort (app
+  // purge also sweeps the apps/<app>/ prefix).
+  try {
+    await c.env.APK_BUCKET?.delete(inventoryR2Key(appId, buildId));
+  } catch {
+    // orphaned inventory JSON is harmless; purge sweeps it
+  }
   await insertAuditLog(c.env.DB, appId, "build.delete", currentActor(c), { buildId });
   return c.json({ ok: true });
 }

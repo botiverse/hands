@@ -3,8 +3,10 @@ import { errorMessage } from "../lib/errorMessage";
  * Builds — a page of a list: one row per build, newest first, with its
  * version and code, product type, channel, how many files it has and their
  * size, and its state. Opening a build shows it beside the list: Prepare
- * release, its files with downloads, TestFlight or AppGallery testing for
- * builds that go there, its release notes and details.
+ * release, its files with downloads, the contents of its APK or IPA (size
+ * breakdown, SDKs, libraries, components, comparison with the previous
+ * build), TestFlight or AppGallery testing for builds that go there, its
+ * release notes and details.
  */
 
 import { useState } from "react";
@@ -32,6 +34,7 @@ import { useToast } from "../components/Toast";
 import { useLocale, useText } from "../lib/locale";
 import { buildAssetFilename, formatBuildAssetSize } from "../lib/buildAssetDisplay";
 import { DetailColumn, DetailSection, ListPage } from "../components/ListPage";
+import { BuildContents } from "../components/BuildContents";
 import { timeAgo } from "./Operations";
 import {
   Badge,
@@ -299,6 +302,11 @@ function BuildDetail({
   const t = useText();
   const { locale } = useLocale();
   const scheduled = b.availability_at && b.availability_at > Date.now() ? b.availability_at : null;
+  // Contents are read from an APK or IPA; other builds have nothing to show.
+  const assets = useBuildAssets(appId, b.id);
+  const hasMobilePackage = (assets.data?.assets ?? []).some(
+    (a) => a.artifact_kind === "installable" && ((a.platform === "android" && a.filetype === "apk") || (a.platform === "ios" && a.filetype === "ipa")),
+  );
   return (
     <DetailColumn
       label={`${b.version_name} (${b.version_code})`}
@@ -325,6 +333,12 @@ function BuildDetail({
       <DetailSection title={t("Files", "文件")}>
         <BuildAssetList appId={appId} buildId={b.id} />
       </DetailSection>
+
+      {hasMobilePackage && (
+        <DetailSection title={t("Contents", "内容")}>
+          <BuildContents appId={appId} buildId={b.id} />
+        </DetailSection>
+      )}
 
       {b.product_type === "ios-ipa" && (
         <DetailSection title="TestFlight">
