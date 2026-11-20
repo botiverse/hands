@@ -46,19 +46,16 @@ beforeEach(() => {
 });
 
 describe("AppGalleryConnector", () => {
-  it("keeps the unconnected state on one row and opens the file form on Configure", async () => {
+  it("shows the file form when no credential is saved", async () => {
     mocks.getAgc.mockResolvedValue({ agc_credentials: null });
     renderConnector();
-    const configure = await screen.findByRole("button", { name: "Configure" });
-    await waitFor(() => expect(configure.hasAttribute("disabled")).toBe(false));
-    expect(screen.queryByText("AGC Service Account private JSON")).toBeNull();
-    fireEvent.click(configure);
     expect(await screen.findByText("AGC Service Account private JSON")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Choose JSON file/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save credential" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Remove credential" })).toBeNull();
   });
 
-  it("shows credential metadata on the configured row and expands to actions", async () => {
+  it("shows credential metadata with its actions and opens the form on Replace", async () => {
     mocks.getAgc.mockResolvedValue({
       agc_credentials: {
         credential_kind: "service_account",
@@ -73,7 +70,7 @@ describe("AppGalleryConnector", () => {
     renderConnector();
     expect(await screen.findByText("Configured")).toBeTruthy();
     expect(screen.getByText(/Sub-account agc@project.iam/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+    expect(screen.queryByText("AGC Service Account private JSON")).toBeNull();
     expect(await screen.findByRole("button", { name: "Test connection" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Replace credential" }));
     expect(await screen.findByText("AGC Service Account private JSON")).toBeTruthy();
@@ -93,8 +90,7 @@ describe("AppGalleryConnector", () => {
       },
     });
     renderConnector();
-    fireEvent.click(await screen.findByRole("button", { name: "Expand" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove credential" }));
     await waitFor(() => expect(mocks.deleteAgc).toHaveBeenCalledWith("app-a"));
   });
 });
