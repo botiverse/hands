@@ -628,6 +628,59 @@ export function registerBuildRoutes(): RouteConfigList {
   });
 
   routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/inventory",
+    tags: ["Builds"],
+    summary: "Get build content inventory",
+    description:
+      "What the build's APK or IPA contains: size by category (compressed and uncompressed), the largest files, libraries (dex packages with estimated sizes, native .so files per ABI, iOS frameworks and extensions with versions), known SDKs, and components (permissions, services, receivers, providers, activities, background modes, URL schemes, entitlements). Computed when the package is uploaded; 404 INVENTORY_MISSING for older builds until POST computes it.",
+    security: auth,
+    request: { params: AppBuildParams },
+    responses: {
+      200: success("Build content inventory.", z.object({ build: GenericObject, computed_at: z.number(), inventory: GenericObject }).passthrough()),
+      403: error("App viewer role is required."),
+      404: error("Build or inventory was not found."),
+    },
+  });
+
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/builds/{buildId}/inventory",
+    tags: ["Builds"],
+    summary: "Compute build content inventory",
+    description: "Recomputes the inventory from the build's stored APK or IPA and replaces any stored one. Use it to backfill builds uploaded before inventories existed.",
+    security: auth,
+    request: { params: AppBuildParams },
+    responses: {
+      200: success("Computed inventory.", z.object({ build: GenericObject, computed_at: z.number(), inventory: GenericObject }).passthrough()),
+      403: error("App publisher role is required."),
+      404: error("Build was not found."),
+      409: error("The build has no stored APK or IPA."),
+      502: error("Extraction failed."),
+    },
+  });
+
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/builds/{buildId}/inventory/diff",
+    tags: ["Builds"],
+    summary: "Compare build contents with another build",
+    description:
+      "Size deltas (total and per category), added and removed permissions, components, background modes and entitlements, added, removed and resized libraries and SDKs sorted by size impact, and the files that grew most. `against=previous` (default) is the build of the same app and product type with the next lower version code.",
+    security: auth,
+    request: {
+      params: AppBuildParams,
+      query: z.object({ against: z.string().optional().openapi({ description: "A build id, or `previous`." }) }),
+    },
+    responses: {
+      200: success("Inventory diff.", z.object({ base: GenericObject, head: GenericObject, diff: GenericObject })),
+      403: error("App viewer role is required."),
+      404: error("A build, the previous build, or an inventory was not found."),
+      409: error("The builds are for different platforms."),
+    },
+  });
+
+  routes.push({
     method: "post",
     path: "/api/apps/{appId}/builds/{buildId}/assets",
     tags: ["Builds"],
