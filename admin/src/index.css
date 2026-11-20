@@ -21,25 +21,6 @@
   --chart-error: #e05252;
 }
 
-/* Sidebar navigation scroller: subtle themed scrollbar, present only on real
-   overflow (short viewports). */
-.sidebar-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklch, var(--ink) 24%, transparent) transparent;
-}
-.sidebar-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-.sidebar-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.sidebar-scroll::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 8px;
-  background-clip: padding-box;
-  background-color: color-mix(in oklch, var(--ink) 24%, transparent);
-}
-
 @theme {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;

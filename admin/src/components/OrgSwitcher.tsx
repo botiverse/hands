@@ -27,10 +27,13 @@ export function OrgSwitcher({
   currentOrgId,
   buttonLabel,
   onSwitch,
+  showSettingsLink = true,
 }: {
   currentOrgId: string | null;
   buttonLabel: string;
   onSwitch?: (org: Org) => void;
+  /** Off where the caller already offers the organization's page. */
+  showSettingsLink?: boolean;
 }) {
   const t = useText();
   const orgs = useQuery({ queryKey: ["orgs"], queryFn: () => listOrgs() });
@@ -73,7 +76,7 @@ export function OrgSwitcher({
         <Plus className="h-4 w-4" aria-hidden="true" />
         {t("Add Raft server", "添加 Raft 服务器")}
       </DropdownMenuItem>
-      {currentOrgId && (
+      {showSettingsLink && currentOrgId && (
           <DropdownMenuItem render={<Link to={`/orgs/${currentOrgId}`} />}>
             <Settings className="h-4 w-4" aria-hidden="true" />
             {t("Organization settings", "组织设置")}

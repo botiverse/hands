@@ -14,9 +14,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   Bug,
+  Building2,
   Check,
-  ChevronDown,
-  ChevronsUpDown,
   Gauge,
   Globe,
   LayoutGrid,
@@ -56,9 +55,28 @@ import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
+  AppShellMainSlot,
+  AppShellRoot,
+  AppShellSidebarSlot,
+  PanelAction,
+  SidebarBody,
+  SidebarContent,
   SidebarGroupLabel,
+  SidebarHeader,
+  SidebarHeaderTitle,
   SidebarItem,
+  SidebarItemContent,
+  SidebarItemIcon,
+  SidebarItemTitle,
+  SidebarList,
   SidebarRoot,
+  SidebarSection,
+  Tabs,
+  TabsLabel,
+  TabsList,
+  TabsTab,
+  WorkspaceButton,
+  WorkspaceButtonName,
   useTheme,
 } from "@botiverse/raft-ui";
 import { appRouteMessage } from "./lib/appRouteMessages";
@@ -149,38 +167,52 @@ function QuiverMark({ className = "" }: { className?: string }) {
 
 const SIDEBAR_COLLAPSED_KEY = "hands:sidebar-collapsed";
 
-/** One sidebar navigation row. RUI `SidebarItem` owns the per-theme geometry
- *  (brutal: hard 2px black borders + offset shadow on hover/active; elegant:
- *  soft rounded rows), so the row only supplies structure and content. */
+/** One sidebar navigation row, built from raft-ui's Sidebar parts. The parts
+ *  own the geometry (inset shape, glyph and text axes) and the yellow "you
+ *  are here" sticker; the row only supplies the link, icon and label. When
+ *  the sidebar is collapsed the row is icon-only and names itself in a
+ *  tooltip to its right. */
 function SidebarNavItem({
   to,
-  end,
+  end = false,
+  active,
   collapsed,
   label,
   icon: Icon,
-  ...rest
 }: {
   to: string;
-  end: boolean;
+  end?: boolean;
+  /** Overrides route matching, e.g. a row that stands for a whole subtree. */
+  active?: boolean;
   collapsed: boolean;
   label: string;
   icon: LucideIcon;
-} & React.HTMLAttributes<HTMLElement>) {
+}) {
   const match = useMatch({ path: to, end });
-  return (
+  const isActive = active ?? match !== null;
+  const row = (
     <SidebarItem
-      active={match !== null}
-      render={<NavLink to={to} end={end} aria-label={label} />}
-      className={
-        collapsed
-          ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
-          : undefined
-      }
-      {...rest}
+      active={isActive}
+      aria-current={isActive ? "page" : undefined}
+      aria-label={collapsed ? label : undefined}
+      render={<Link to={to} />}
     >
-      <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
-      {!collapsed && <span className="hidden md:inline">{label}</span>}
+      <SidebarItemIcon aria-hidden>
+        <Icon />
+      </SidebarItemIcon>
+      {!collapsed && (
+        <SidebarItemContent>
+          <SidebarItemTitle>{label}</SidebarItemTitle>
+        </SidebarItemContent>
+      )}
     </SidebarItem>
+  );
+  if (!collapsed) return row;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={row} />
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -192,19 +224,114 @@ const APPEARANCE_OPTIONS: Array<{ id: "light" | "dark" | "system"; label: [strin
   { id: "system", label: ["System", "跟随系统"] },
 ];
 
-function Header({ account }: { account: AuthAccount }) {
+/** The current app's id when the route is under `/apps/:appId`. */
+function useRouteAppId() {
+  const location = useLocation();
+  return location.pathname.startsWith("/apps/")
+    ? location.pathname.split("/")[2] ?? null
+    : null;
+}
+
+/** Rows of the app switcher menu: the other apps, then New app / All apps.
+ *  Shared by the desktop sidebar header and the phone top bar. */
+function AppSwitcherMenuItems({ appId }: { appId: string }) {
   const t = useText();
-  const { mode, setMode } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
+  const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
+  const otherApps = (apps.data?.apps ?? []).filter(
+    (app) => app.id !== appId && !app.archived,
+  );
+  return (
+    <>
+      {otherApps.map((app) => (
+        <DropdownMenuItem
+          key={app.id}
+          onClick={() => {
+            const section = location.pathname.split("/")[3] ?? "";
+            navigate(section ? `/apps/${app.id}/${section}` : `/apps/${app.id}`);
+          }}
+        >
+          <span className="truncate">{app.name}</span>
+          <Badge variant="information" className="ml-auto">{app.platform}</Badge>
+        </DropdownMenuItem>
+      ))}
+      {otherApps.length === 0 && (
+        <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
+      )}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem render={<Link to="/apps?new=1" />}>
+        <Plus aria-hidden="true" /> {t("New app", "新建应用")}
+      </DropdownMenuItem>
+      <DropdownMenuItem render={<Link to="/apps?all=1" />}>
+        <LayoutGrid aria-hidden="true" /> {t("All apps", "所有应用")}
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+/** The account header and the rows every account menu shares (language,
+ *  settings, logout). */
+function AccountMenuLabel({ account }: { account: AuthAccount }) {
+  const t = useText();
+  return (
+    <DropdownMenuLabel>
+      <div className="flex items-center gap-1 font-medium text-foreground-strong">
+        {account.display_name}
+        {account.principal_type === "agent" && (
+          <Badge variant="accent" title={t("Raft agent principal", "Raft 智能体身份")}>{t("agent", "智能体")}</Badge>
+        )}
+      </div>
+      <div className="text-xs text-foreground-muted">
+        {account.server_slug || account.server_id}
+      </div>
+      <div className="mt-1 text-xs text-foreground-muted">
+        {account.principal_type === "agent" ? t("Raft agent", "Raft 智能体") : t("Raft user", "Raft 用户")}
+      </div>
+    </DropdownMenuLabel>
+  );
+}
+
+function AccountMenuFooter() {
+  const t = useText();
   const onLogout = async () => {
     await logout();
     clearActiveOrgId();
     window.location.assign("/");
   };
+  return (
+    <>
+      <div className="px-3 py-2"><LanguagePicker /></div>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem render={<Link to="/settings" />}>
+        {t("Settings", "设置")}
+      </DropdownMenuItem>
+      <DropdownMenuItem className="text-danger" onClick={onLogout}>
+        <span>{t("Logout", "退出登录")}</span>
+        <span aria-hidden="true">↗</span>
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+function AccountAvatar({ account, size }: { account: AuthAccount; size: "xs" | "sm" }) {
+  return (
+    <Avatar size={size} type={account.principal_type === "agent" ? "agent" : "human"}>
+      {account.avatar_url ? <AvatarImage src={account.avatar_url} alt="" /> : null}
+      <AvatarFallback>{account.display_name.slice(0, 1).toUpperCase()}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+/** The desktop sidebar (hidden below `md`, where `MobileTopNav` takes over):
+ *  the app switcher in the header, the current app's sections, then the
+ *  organization and the account at the bottom. It collapses to an
+ *  icon-only column whose rows name themselves in tooltips. */
+export function Header({ account }: { account: AuthAccount }) {
+  const t = useText();
+  const { mode, setMode } = useTheme();
   const location = useLocation();
-  const appId = location.pathname.startsWith("/apps/")
-    ? location.pathname.split("/")[2] ?? null
-    : null;
+  const appId = useRouteAppId();
   const orgs = useQuery({
     queryKey: ["orgs"],
     queryFn: () => listOrgs(),
@@ -219,11 +346,11 @@ function Header({ account }: { account: AuthAccount }) {
       return false;
     }
   });
-  const currentOrg = orgs.data?.orgs.find((org) => org.id === account.org_id);
+  const orgId = account.org_id ?? null;
+  const currentOrg = orgs.data?.orgs.find((org) => org.id === orgId);
+  const orgName = currentOrg?.name ?? account.server_slug ?? t("Organization", "组织");
   const currentApp = apps.data?.apps.find((app) => app.id === appId);
-  const otherApps = (apps.data?.apps ?? []).filter(
-    (app) => app.id !== appId && !app.archived,
-  );
+  const appName = currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable");
   const appBase = appId ? `/apps/${appId}` : null;
 
   useEffect(() => {
@@ -234,266 +361,205 @@ function Header({ account }: { account: AuthAccount }) {
     }
   }, [collapsed]);
 
+  const collapseLabel = t("Collapse sidebar", "收起侧边栏");
+  const expandLabel = t("Expand sidebar", "展开侧边栏");
+  const appAvatar = (
+    <Avatar type="server" size="sm">
+      <AvatarFallback>{(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}</AvatarFallback>
+    </Avatar>
+  );
+
   return (
     <SidebarRoot
-      className={`sticky top-0 z-30 hidden h-screen flex-none flex-col border-r border-line-muted pt-2 pb-1.5 transition-[width] duration-150 md:flex ${
-        collapsed ? "w-16 items-center" : "w-16 items-stretch md:w-60"
-      }`}
+      render={<nav aria-label="Hands" />}
+      className={`flex h-full flex-col ${collapsed ? "w-12 pointer-coarse:w-14" : "w-60"}`}
     >
-      <div className={`mb-2 flex h-9 items-center ${collapsed ? "justify-center" : "justify-between px-3"}`}>
-        <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
-          <QuiverMark className="h-9 w-9 flex-none" />
-          {!collapsed && <span className="hidden truncate text-sm font-semibold text-foreground-strong md:inline">Hands</span>}
-        </Link>
-        {!collapsed && (
-          <button
-            type="button"
-            className="relative z-10 hidden h-10 w-10 flex-none touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
-            onClick={() => setCollapsed(true)}
-            aria-label={t("Collapse sidebar", "收起侧边栏")}
-            title={t("Collapse sidebar", "收起侧边栏")}
-          >
-            <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
-          </button>
+      <SidebarHeader className={collapsed ? "justify-center px-0" : "justify-between"}>
+        {appId && appBase ? (
+          <DropdownMenu>
+            {collapsed ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <DropdownMenuTrigger
+                      render={<PanelAction aria-label={`${t("Switch app", "切换应用")}: ${appName}`} />}
+                    >
+                      {appAvatar}
+                    </DropdownMenuTrigger>
+                  }
+                />
+                <TooltipContent side="right">{appName}</TooltipContent>
+              </Tooltip>
+            ) : (
+              <DropdownMenuTrigger
+                render={<WorkspaceButton aria-label={`${t("Switch app", "切换应用")}: ${appName}`} />}
+              >
+                {appAvatar}
+                <WorkspaceButtonName>{appName}</WorkspaceButtonName>
+              </DropdownMenuTrigger>
+            )}
+            <DropdownMenuContent side="bottom" align="start" className="w-64">
+              <AppSwitcherMenuItems appId={appId} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Link to="/" aria-label="Hands" className="flex min-w-0 items-center gap-2">
+            <QuiverMark className="size-6 flex-none" />
+            {!collapsed && <SidebarHeaderTitle>Hands</SidebarHeaderTitle>}
+          </Link>
         )}
-      </div>
-      <nav className="flex min-h-0 w-full flex-1 flex-col items-stretch gap-1 px-3">
-        {appId && appBase && (
+        {!collapsed && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <PanelAction aria-label={collapseLabel} onClick={() => setCollapsed(true)}>
+                  <PanelLeftClose aria-hidden="true" />
+                </PanelAction>
+              }
+            />
+            <TooltipContent side="bottom">{collapseLabel}</TooltipContent>
+          </Tooltip>
+        )}
+      </SidebarHeader>
+
+      <SidebarBody className="min-h-0 flex-1">
+        <SidebarContent className="min-h-0">
+          {appId && appBase && APP_NAV_SECTIONS.map((section) => (
+            <SidebarSection key={section.label}>
+              {!collapsed && (
+                <SidebarGroupLabel>{t(section.label, section.labelZh)}</SidebarGroupLabel>
+              )}
+              <SidebarList>
+                {section.items
+                  .filter((item) => !item.platform || item.platform === currentApp?.platform)
+                  .map((item) => (
+                    <SidebarNavItem
+                      key={item.label}
+                      to={item.to ? `${appBase}/${item.to}` : appBase}
+                      end={item.end ?? false}
+                      collapsed={collapsed}
+                      label={t(item.label, item.labelZh)}
+                      icon={item.icon}
+                    />
+                  ))}
+              </SidebarList>
+            </SidebarSection>
+          ))}
+        </SidebarContent>
+      </SidebarBody>
+
+      <div className="shrink-0 pt-2">
+        {collapsed && (
+          <SidebarSection>
+            <SidebarList>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <SidebarItem aria-label={expandLabel} onClick={() => setCollapsed(false)}>
+                      <SidebarItemIcon aria-hidden>
+                        <PanelLeftOpen />
+                      </SidebarItemIcon>
+                    </SidebarItem>
+                  }
+                />
+                <TooltipContent side="right">{expandLabel}</TooltipContent>
+              </Tooltip>
+            </SidebarList>
+          </SidebarSection>
+        )}
+        {orgId && (
           <>
-            <div className="relative w-full border-t border-line-hairline pt-2">
+            {!collapsed && <SidebarGroupLabel>{t("Organization", "组织")}</SidebarGroupLabel>}
+            <SidebarSection>
+              <SidebarList>
+                <SidebarNavItem
+                  to={`/orgs/${orgId}/general`}
+                  active={location.pathname.startsWith("/orgs/")}
+                  collapsed={collapsed}
+                  label={orgName}
+                  icon={Building2}
+                />
+              </SidebarList>
+            </SidebarSection>
+          </>
+        )}
+        <div className="border-t border-line-hairline">
+          <SidebarSection>
+            <SidebarList>
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
                     <SidebarItem
-                      active={false}
-                      title={collapsed ? currentApp?.name ?? t("Switch app", "切换应用") : undefined}
-                      aria-label={t("Switch app", "切换应用")}
-                      render={<button type="button" />}
-                      className={
-                        collapsed
-                          ? "flex-col gap-0.5 px-1 py-1 text-[11px] leading-none"
-                          : undefined
-                      }
-                    >
-                      <Avatar size="sm" type="human" className="border border-line-muted">
-                        <AvatarFallback>
-                          {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      {!collapsed && (
-                        <>
-                          <span className="hidden min-w-0 flex-1 text-left md:block">
-                            <span className="block truncate font-medium text-foreground-strong">
-                              {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
-                            </span>
-                            <span className="block truncate text-xs font-mono text-foreground-hint">
-                              {currentApp?.slug}
-                            </span>
-                          </span>
-                          <ChevronsUpDown className="hidden h-4 w-4 text-foreground-hint md:block" aria-hidden="true" />
-                        </>
-                      )}
-                    </SidebarItem>
+                      title={`${account.display_name} · ${account.server_slug || account.server_id}`}
+                      aria-label={account.display_name}
+                    />
                   }
-                />
-                <DropdownMenuContent side="bottom" align="start" className="w-64">
-                  {otherApps.map((app) => (
-                    <DropdownMenuItem
-                      key={app.id}
-                      onClick={() => {
-                        const section = location.pathname.split("/")[3] ?? "";
-                        navigate(section ? `/apps/${app.id}/${section}` : `/apps/${app.id}`);
-                      }}
-                    >
-                      <span className="truncate">{app.name}</span>
-                      <Badge variant="information" className="ml-auto">{app.platform}</Badge>
-                    </DropdownMenuItem>
-                  ))}
-                  {otherApps.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
+                >
+                  <AccountAvatar account={account} size="xs" />
+                  {!collapsed && (
+                    <SidebarItemContent>
+                      <SidebarItemTitle>{account.display_name}</SidebarItemTitle>
+                    </SidebarItemContent>
                   )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="right" align="end" className="w-64">
+                  <AccountMenuLabel account={account} />
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem render={<Link to="/apps?new=1" />}>
-                    <Plus className="h-3.5 w-3.5" aria-hidden="true" /> {t("New app", "新建应用")}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem render={<Link to="/apps?all=1" />}>
-                    <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> {t("All apps", "所有应用")}
-                  </DropdownMenuItem>
+                  <DropdownMenuSubmenu>
+                    <DropdownMenuSubmenuTrigger>{t("Switch organization", "切换组织")}</DropdownMenuSubmenuTrigger>
+                    <DropdownMenuContent side="right" align="start" className="w-72">
+                      <OrgSwitcher
+                        currentOrgId={orgId}
+                        buttonLabel={t("Switch organization", "切换组织")}
+                        onSwitch={(org) => {
+                          switchOrg(org);
+                          window.location.assign("/apps");
+                        }}
+                      />
+                    </DropdownMenuContent>
+                  </DropdownMenuSubmenu>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSubmenu>
+                    <DropdownMenuSubmenuTrigger>{t("Appearance", "外观")}</DropdownMenuSubmenuTrigger>
+                    <DropdownMenuContent side="right" align="start" className="w-44">
+                      {APPEARANCE_OPTIONS.map((option) => (
+                        <DropdownMenuItem
+                          key={option.id}
+                          closeOnClick={false}
+                          onClick={() => setMode(option.id)}
+                        >
+                          <Check
+                            className={mode === option.id ? "opacity-100" : "opacity-0"}
+                            aria-hidden="true"
+                          />
+                          <span>{t(...option.label)}</span>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenuSubmenu>
+                  <DropdownMenuSeparator />
+                  <AccountMenuFooter />
                 </DropdownMenuContent>
               </DropdownMenu>
-            </div>
-            <div className="mt-1 flex-1 overflow-y-auto overflow-x-hidden sidebar-scroll">
-              {APP_NAV_SECTIONS.map((section) => (
-                <div key={section.label} className="mb-1">
-                  {!collapsed && (
-                    <SidebarGroupLabel className="hidden md:block">
-                      {t(section.label, section.labelZh)}
-                    </SidebarGroupLabel>
-                  )}
-                  <div>
-                    {section.items
-                      .filter(
-                        (item) =>
-                          !item.platform || item.platform === currentApp?.platform,
-                      )
-                      .map((item) => {
-                      const link = (
-                        <SidebarNavItem
-                          key={item.label}
-                          to={item.to ? `${appBase}/${item.to}` : (appBase ?? "/apps")}
-                          end={item.end ?? false}
-                          collapsed={collapsed}
-                          label={t(item.label, item.labelZh)}
-                          icon={item.icon}
-                        />
-                      );
-                      return collapsed ? (
-                        <Tooltip key={item.label}>
-                          <TooltipTrigger render={link} />
-                          <TooltipContent side="right">{t(item.label, item.labelZh)}</TooltipContent>
-                        </Tooltip>
-                      ) : (
-                        link
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </nav>
-      <div className="relative mt-auto flex w-full flex-col px-3">
-        {collapsed && (
-          <button
-            type="button"
-            className="relative z-10 mb-2 hidden h-10 w-full touch-manipulation items-center justify-center rounded-md text-foreground-muted outline-hidden hover:bg-fill-muted hover:text-foreground-strong focus-visible:ring-2 focus-visible:ring-primary-400 md:flex"
-            onClick={() => setCollapsed(false)}
-            aria-label={t("Expand sidebar", "展开侧边栏")}
-            title={t("Expand sidebar", "展开侧边栏")}
-          >
-            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <SidebarItem
-                title={`${account.display_name} · ${account.server_slug || account.server_id}`}
-                aria-label={account.display_name}
-                render={<button type="button" />}
-                className={
-                  collapsed ? "justify-center px-1 py-1" : undefined
-                }
-              >
-                <Avatar
-                  size="sm"
-                  type={account.principal_type === "agent" ? "agent" : "human"}
-                  className="border border-line-muted"
-                >
-                  {account.avatar_url ? (
-                    <AvatarImage src={account.avatar_url} alt="" />
-                  ) : null}
-                  <AvatarFallback>
-                    {account.display_name.slice(0, 1).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                {!collapsed && (
-                  <span className="hidden min-w-0 flex-1 md:block">
-                    <span className="block truncate text-sm font-medium text-foreground-strong">
-                      {account.display_name}
-                    </span>
-                    <span className="block truncate text-xs text-foreground-hint">
-                      {account.server_slug || account.server_id}
-                    </span>
-                  </span>
-                )}
-                {!collapsed && (
-                  <ChevronsUpDown
-                    className="hidden h-4 w-4 text-foreground-hint md:block"
-                    aria-hidden="true"
-                  />
-                )}
-              </SidebarItem>
-            }
-          />
-          <DropdownMenuContent side="right" align="end" className="w-64">
-            <DropdownMenuLabel>
-              <div className="font-medium text-foreground-strong flex items-center gap-1">
-                {account.display_name}
-                {account.principal_type === "agent" && (
-                  <Badge variant="accent" title={t("Raft agent principal", "Raft 智能体身份")}>{t("agent", "智能体")}</Badge>
-                )}
-              </div>
-              <div className="text-xs text-foreground-muted">
-                {account.server_slug || account.server_id}
-              </div>
-              <div className="mt-1 text-xs text-foreground-muted">
-                {account.principal_type === "agent" ? t("Raft agent", "Raft 智能体") : t("Raft user", "Raft 用户")}
-              </div>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuSubmenu>
-              <DropdownMenuSubmenuTrigger>{t("Switch organization", "切换组织")}</DropdownMenuSubmenuTrigger>
-              <DropdownMenuContent side="right" align="start" className="w-72">
-                <OrgSwitcher
-                  currentOrgId={account.org_id ?? null}
-                  buttonLabel={t("Switch organization", "切换组织")}
-                  onSwitch={(org) => {
-                    switchOrg(org);
-                    window.location.assign("/apps");
-                  }}
-                />
-              </DropdownMenuContent>
-            </DropdownMenuSubmenu>
-            <DropdownMenuSeparator />
-            <DropdownMenuSubmenu>
-              <DropdownMenuSubmenuTrigger>{t("Appearance", "外观")}</DropdownMenuSubmenuTrigger>
-              <DropdownMenuContent side="right" align="start" className="w-44">
-                {APPEARANCE_OPTIONS.map((option) => (
-                  <DropdownMenuItem
-                    key={option.id}
-                    closeOnClick={false}
-                    onClick={() => setMode(option.id)}
-                  >
-                    <Check
-                      className={`size-3.5 ${mode === option.id ? "opacity-100" : "opacity-0"}`}
-                      aria-hidden="true"
-                    />
-                    <span>{t(...option.label)}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenuSubmenu>
-            <DropdownMenuSeparator />
-            <div className="px-3 py-2"><LanguagePicker /></div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem render={<Link to="/settings" />}>
-              {t("Settings", "设置")}
-            </DropdownMenuItem>
-            <DropdownMenuItem className="text-danger" onClick={onLogout}>
-              <span>{t("Logout", "退出登录")}</span>
-              <span aria-hidden="true">↗</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </SidebarList>
+          </SidebarSection>
+        </div>
       </div>
     </SidebarRoot>
   );
 }
 
-// Mobile-only top navigation. Below `md` the vertical sidebar (`Header`) is
-// hidden, so this horizontal bar provides the same navigation: org/app
-// switchers + account menu on one row, and the section links (sourced from the
-// SAME `APP_NAV_SECTIONS` const the desktop rail uses) as a horizontally
-// scrollable chip row. It is `md:hidden` and sticky at the top on mobile.
-function MobileTopNav({ account }: { account: AuthAccount }) {
+// Phone top navigation. Below `md` the sidebar (`Header`) is hidden, so this
+// bar carries the same navigation (patterns/page-structure.md#phone): a 56px
+// row on the yellow frame where the organization's WorkspaceButton takes the
+// page name's place, then, inside an app, the app's sections as a row of
+// sticker tabs on paper, from the SAME `APP_NAV_SECTIONS` the sidebar uses.
+// The organization's own page sits under the organization in its menu
+// (patterns/navigation.md#servers: what belongs to the server sits under it).
+export function MobileTopNav({ account }: { account: AuthAccount }) {
   const t = useText();
-  const navigate = useNavigate();
   const location = useLocation();
-  const appId = location.pathname.startsWith("/apps/")
-    ? location.pathname.split("/")[2] ?? null
-    : null;
+  const appId = useRouteAppId();
   const orgs = useQuery({
     queryKey: ["orgs"],
     queryFn: () => listOrgs(),
@@ -501,106 +567,70 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
   });
   const apps = useQuery({ queryKey: ["apps"], queryFn: listApps });
   const switchOrg = useClearOrgCache();
-  const currentOrg = orgs.data?.orgs.find((org) => org.id === account.org_id);
+  const orgId = account.org_id ?? null;
+  const currentOrg = orgs.data?.orgs.find((org) => org.id === orgId);
+  const orgName = currentOrg?.name ?? account.server_slug ?? t("Organization", "组织");
+  const onOrgPage = location.pathname.startsWith("/orgs/");
   const currentApp = apps.data?.apps.find((app) => app.id === appId);
-  const otherApps = (apps.data?.apps ?? []).filter(
-    (app) => app.id !== appId && !app.archived,
-  );
+  const appName = currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable");
   const appBase = appId ? `/apps/${appId}` : null;
-  const onLogout = async () => {
-    await logout();
-    clearActiveOrgId();
-    window.location.assign("/");
-  };
-
-  const chip = ({ isActive }: { isActive: boolean }) =>
-    `inline-flex flex-none items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm ${
-      isActive
-        ? "bg-fill-muted font-medium text-foreground-strong"
-        : "text-foreground-muted hover:bg-fill-muted hover:text-foreground-strong"
-    }`;
+  const appItems = APP_NAV_SECTIONS.flatMap((section) => section.items).filter(
+    (item) => !item.platform || item.platform === currentApp?.platform,
+  );
+  const section = location.pathname.split("/")[3] ?? "";
+  const activeItem = appItems.find((item) => item.to === section)?.to ?? "none";
 
   return (
-    <header className="sticky top-0 z-20 flex flex-col gap-2 border-b border-line-muted bg-layer-canvas-muted px-3 py-2 md:hidden">
-      <div className="flex items-center gap-2">
-        <Link to="/" aria-label="Hands" className="flex flex-none items-center">
-          <QuiverMark className="h-8 w-8" />
+    <header className="shrink-0 md:hidden">
+      <div className="flex h-14 items-center gap-1 border-b border-line-seam bg-layer-frame px-4 text-foreground-on-frame">
+        <Link to="/" aria-label="Hands" className="mr-1 flex flex-none items-center">
+          <QuiverMark className="size-7" />
         </Link>
         <DropdownMenu>
           <DropdownMenuTrigger
-            render={
-              <button
-                type="button"
-                className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
-                aria-label={`${t("Organization", "组织")} ${currentOrg?.name ?? account.server_slug ?? account.server_id}`}
-              >
-                <Avatar size="xs" type="human" className="border border-line-muted">
-                  <AvatarFallback>
-                    {(currentOrg?.name ?? account.server_slug ?? "O").slice(0, 1).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="truncate text-sm font-medium text-foreground-strong">
-                  {currentOrg?.name ?? account.server_slug ?? t("Organization", "组织")}
-                </span>
-                <ChevronDown className="h-4 w-4 flex-none text-foreground-hint" aria-hidden="true" />
-              </button>
-            }
-          />
+            render={<WorkspaceButton aria-label={`${t("Organization", "组织")} ${orgName}`} />}
+          >
+            <Avatar type="server" size="xs">
+              <AvatarFallback>{orgName.slice(0, 1).toUpperCase()}</AvatarFallback>
+            </Avatar>
+            <WorkspaceButtonName>{orgName}</WorkspaceButtonName>
+          </DropdownMenuTrigger>
           <DropdownMenuContent side="bottom" align="start" className="w-72">
             <OrgSwitcher
-              currentOrgId={account.org_id ?? null}
+              currentOrgId={orgId}
               buttonLabel={t("Switch organization", "切换组织")}
+              showSettingsLink={false}
               onSwitch={(org) => {
                 switchOrg(org);
                 window.location.assign("/apps");
               }}
             />
+            {orgId && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  aria-current={onOrgPage ? "page" : undefined}
+                  render={<Link to={`/orgs/${orgId}/general`} />}
+                >
+                  <Building2 aria-hidden="true" />
+                  {t("Organization", "组织")}
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {appId && appBase && (
           <DropdownMenu>
             <DropdownMenuTrigger
-              render={
-                <button
-                  type="button"
-                  className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left hover:bg-fill-muted"
-                  aria-label={t("Switch app", "切换应用")}
-                >
-                  <Avatar size="xs" type="human" className="border border-line-muted">
-                    <AvatarFallback>
-                      {(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="truncate text-sm font-medium text-foreground-strong">
-                    {currentApp?.name ?? appRouteMessage(apps.isPending ? "loading" : "unavailable")}
-                  </span>
-                  <ChevronsUpDown className="h-4 w-4 flex-none text-foreground-hint" aria-hidden="true" />
-                </button>
-              }
-            />
+              render={<WorkspaceButton aria-label={`${t("Switch app", "切换应用")}: ${appName}`} />}
+            >
+              <Avatar type="server" size="xs">
+                <AvatarFallback>{(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}</AvatarFallback>
+              </Avatar>
+              <WorkspaceButtonName>{appName}</WorkspaceButtonName>
+            </DropdownMenuTrigger>
             <DropdownMenuContent side="bottom" align="start" className="w-64">
-              {otherApps.map((app) => (
-                <DropdownMenuItem
-                  key={app.id}
-                  onClick={() => {
-                    const section = location.pathname.split("/")[3] ?? "";
-                    navigate(section ? `/apps/${app.id}/${section}` : `/apps/${app.id}`);
-                  }}
-                >
-                  <span className="truncate">{app.name}</span>
-                  <Badge variant="information" className="ml-auto">{app.platform}</Badge>
-                </DropdownMenuItem>
-              ))}
-              {otherApps.length === 0 && (
-                <div className="px-3 py-2 text-xs text-foreground-hint">{t("No other apps", "没有其他应用")}</div>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link to="/apps?new=1" />}>
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" /> {t("New app", "新建应用")}
-              </DropdownMenuItem>
-              <DropdownMenuItem render={<Link to="/apps?all=1" />}>
-                <LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" /> {t("All apps", "所有应用")}
-              </DropdownMenuItem>
+              <AppSwitcherMenuItems appId={appId} />
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -608,77 +638,43 @@ function MobileTopNav({ account }: { account: AuthAccount }) {
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
-                <button
-                  type="button"
-                  className="flex items-center rounded-md p-1 hover:bg-fill-muted"
+                <PanelAction
+                  aria-label={account.display_name}
                   title={`${account.display_name} · ${account.server_slug || account.server_id}`}
-                >
-                  <Avatar
-                    size="sm"
-                    type={account.principal_type === "agent" ? "agent" : "human"}
-                    className="border border-line-muted"
-                  >
-                    {account.avatar_url ? (
-                      <AvatarImage src={account.avatar_url} alt="" />
-                    ) : null}
-                    <AvatarFallback>
-                      {account.display_name.slice(0, 1).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                </button>
+                />
               }
-            />
+            >
+              <AccountAvatar account={account} size="xs" />
+            </DropdownMenuTrigger>
             <DropdownMenuContent side="bottom" align="end" className="w-64">
-              <DropdownMenuLabel>
-                <div className="font-medium text-foreground-strong flex items-center gap-1">
-                  {account.display_name}
-                  {account.principal_type === "agent" && (
-                    <Badge variant="accent" title={t("Raft agent principal", "Raft 智能体身份")}>{t("agent", "智能体")}</Badge>
-                  )}
-                </div>
-                <div className="text-xs text-foreground-muted">
-                  {account.server_slug || account.server_id}
-                </div>
-                <div className="mt-1 text-xs text-foreground-muted">
-                  {account.principal_type === "agent" ? t("Raft agent", "Raft 智能体") : t("Raft user", "Raft 用户")}
-                </div>
-              </DropdownMenuLabel>
+              <AccountMenuLabel account={account} />
               <DropdownMenuSeparator />
-              <div className="px-3 py-2"><LanguagePicker /></div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem render={<Link to="/settings" />}>
-                {t("Settings", "设置")}
-              </DropdownMenuItem>
-              <DropdownMenuItem className="text-danger" onClick={onLogout}>
-                <span>{t("Logout", "退出登录")}</span>
-                <span aria-hidden="true">↗</span>
-              </DropdownMenuItem>
+              <AccountMenuFooter />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
-      <nav className="flex gap-1 overflow-x-auto">
-        {appId && appBase ? (
-          APP_NAV_SECTIONS.flatMap((section) => section.items)
-            .filter(
-              (item) => !item.platform || item.platform === currentApp?.platform,
-            )
-            .map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.label}
-                to={item.to ? `${appBase}/${item.to}` : appBase}
-                end={item.end ?? false}
-                className={chip}
-              >
-                <Icon className="h-4 w-4 flex-none" aria-hidden="true" />
-                <span className="whitespace-nowrap">{t(item.label, item.labelZh)}</span>
-              </NavLink>
-            );
-          })
-        ) : null}
-      </nav>
+      {appId && appBase && (
+        <div className="overflow-x-auto border-b border-line-seam bg-layer-canvas px-4 py-2">
+          <Tabs value={activeItem}>
+            <TabsList aria-label={appName}>
+              {appItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <TabsTab
+                    key={item.label}
+                    value={item.to}
+                    render={<NavLink to={item.to ? `${appBase}/${item.to}` : appBase} end={item.end ?? false} />}
+                  >
+                    <Icon aria-hidden="true" />
+                    <TabsLabel>{t(item.label, item.labelZh)}</TabsLabel>
+                  </TabsTab>
+                );
+              })}
+            </TabsList>
+          </Tabs>
+        </div>
+      )}
     </header>
   );
 }
@@ -824,18 +820,16 @@ function SettingsPage() {
 }
 
 function OrgSettingsPage() {
-  return (
-    <StandardPageShell>
-      <OrgSettingsRoute />
-    </StandardPageShell>
-  );
+  // Full-bleed: OrgSettings draws its own panel header and tab row across
+  // the main area, and scrolls its content under them.
+  return <OrgSettingsRoute />;
 }
 
 function StandardPageShell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
+    <div className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
       {children}
-    </main>
+    </div>
   );
 }
 
@@ -1373,10 +1367,13 @@ function LandingIntegrationCard({
 function AuthenticatedApp({ account }: { account: AuthAccount }) {
   const t = useText();
   return (
-    <div className="min-h-screen flex">
-      <Header account={account} />
-      <div className="min-w-0 flex-1 flex flex-col">
+    <AppShellRoot className="h-dvh">
+      <AppShellSidebarSlot>
+        <Header account={account} />
+      </AppShellSidebarSlot>
+      <AppShellMainSlot>
       <MobileTopNav account={account} />
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <Routes>
         <Route path="/" element={<Navigate to="/apps" replace />} />
         <Route path="/apps" element={<AppsListWithNav />} />
@@ -1412,7 +1409,8 @@ function AuthenticatedApp({ account }: { account: AuthAccount }) {
         />
       </Routes>
       </div>
-    </div>
+      </AppShellMainSlot>
+    </AppShellRoot>
   );
 }
 
@@ -1514,7 +1512,7 @@ function AppShell() {
     <AppRouteBoundary appId={appId}>
     <div className="flex flex-1 min-h-0 items-stretch">
       <div className="min-w-0 flex-1">
-        <main className="w-full px-8 py-6">
+        <div className="w-full px-8 py-6">
         <Routes>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<LegacyPublishRedirect />} />
@@ -1533,7 +1531,7 @@ function AppShell() {
           <Route path="integrations" element={<IntegrationsRoute />} />
           <Route path="settings" element={<AppSettingsRoute />} />
         </Routes>
-        </main>
+        </div>
       </div>
     </div>
     </AppRouteBoundary>

@@ -17,6 +17,7 @@ import { errorMessage } from "../lib/errorMessage";
 import { SigningTab } from "./SigningIdentities";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
+import { Building2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createOrgInvite,
@@ -24,6 +25,7 @@ import {
   listOrgAuditLogs,
   listOrgInvites,
   listOrgMembers,
+  listOrgs,
   removeOrgMember,
   resendOrgInvite,
   revokeOrgInvite,
@@ -75,8 +77,16 @@ import { TextLink,
   EmptyState,
   EmptyStateTitle,
   Skeleton,
+  Panel,
+  PanelHeader,
+  PanelHeaderContent,
+  PanelHeaderIcon,
+  PanelHeading,
+  PanelMeta,
+  PanelTitle,
   Tabs,
   Textarea,
+  TabsLabel,
   TabsList,
   TabsTab,
 } from "@botiverse/raft-ui";
@@ -124,19 +134,48 @@ export function OrgSettings({
   const currentRole = account?.org_role ?? null;
   const isOwnerOrAdmin = currentRole === "owner" || currentRole === "admin";
   const isCurrentOrg = currentOrgId === orgId;
+  const orgs = useQuery({ queryKey: ["orgs"], queryFn: () => listOrgs() });
+
+  const orgName =
+    orgs.data?.orgs.find((org) => org.id === orgId)?.name ??
+    (isCurrentOrg ? account?.server_slug ?? account?.server_id : undefined) ??
+    orgId;
 
   return (
-    <div>
-      <div className="mb-6">
-        <div className="text-sm text-foreground-muted">{t("Organization", "组织")}</div>
-        <h1 className="text-2xl font-bold">
-          {account
-            ? t(`${account.server_slug ?? account.server_id} · Raft org`, `${account.server_slug ?? account.server_id} · Raft 组织`)
-            : t("Settings", "设置")}
-        </h1>
-        <div className="text-sm text-foreground-muted font-mono">{orgId}</div>
+    <Panel className="flex min-h-0 flex-1 flex-col" aria-label={orgName}>
+      <PanelHeader>
+        <PanelHeaderIcon>
+          <Building2 aria-hidden="true" />
+        </PanelHeaderIcon>
+        <PanelHeaderContent>
+          <PanelHeading>
+            <PanelTitle render={<h1 />}>{orgName}</PanelTitle>
+          </PanelHeading>
+          <PanelMeta>{t("Organization", "组织")}</PanelMeta>
+        </PanelHeaderContent>
+      </PanelHeader>
+
+      {/* Visual-only Tabs: navigation stays with NavLink; the controlled
+          `value` is the active tab (already resolved from the route by the
+          parent route component) so the sliding indicator tracks it. */}
+      <div className="shrink-0 overflow-x-auto border-b border-line-seam px-(--column-margin) py-2">
+        <Tabs value={tab}>
+          <TabsList aria-label={t("Organization", "组织")}>
+            {ORG_SETTINGS_TABS.map((item) => (
+              <TabsTab
+                key={item}
+                value={item}
+                render={<NavLink to={`/orgs/${orgId}/${item}`} end />}
+              >
+                <TabsLabel>{t(ORG_SETTINGS_TAB_LABELS[item], ORG_SETTINGS_TAB_LABELS_ZH[item])}</TabsLabel>
+              </TabsTab>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="w-full max-w-5xl px-(--column-margin) py-4">
       {me.isLoading && <p className="text-foreground-muted">{t("Loading…", "加载中…")}</p>}
 
       {!isCurrentOrg && currentOrgId && (
@@ -144,23 +183,6 @@ export function OrgSettings({
           {t(`⚠ The org in the URL (${orgId}) doesn't match your current org (${currentOrgId}). Multi-org support deferred to v2.`, `⚠ 链接中的组织（${orgId}）与当前组织（${currentOrgId}）不一致。多组织支持计划在 v2 提供。`)}
         </div>
       )}
-
-      {/* Visual-only Tabs: navigation stays with NavLink; the controlled
-          `value` is the active tab (already resolved from the route by the
-          parent route component) so the sliding indicator tracks it. */}
-      <Tabs value={tab} className="mb-4">
-        <TabsList>
-          {ORG_SETTINGS_TABS.map((item) => (
-            <TabsTab
-              key={item}
-              value={item}
-              render={<NavLink to={`/orgs/${orgId}/${item}`} end />}
-            >
-              {t(ORG_SETTINGS_TAB_LABELS[item], ORG_SETTINGS_TAB_LABELS_ZH[item])}
-            </TabsTab>
-          ))}
-        </TabsList>
-      </Tabs>
 
       {tab === "general" && (
         <div className="text-sm space-y-2">
@@ -222,7 +244,9 @@ export function OrgSettings({
       {tab === "signing" && (
         <SigningTab orgId={orgId} canManage={isOwnerOrAdmin} />
       )}
-    </div>
+      </div>
+      </div>
+    </Panel>
   );
 }
 
