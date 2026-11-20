@@ -852,11 +852,8 @@ function OrgSettingsRoute() {
 }
 
 function SettingsPage() {
-  return (
-    <StandardPageShell>
-      <Settings />
-    </StandardPageShell>
-  );
+  // Full-bleed: Settings draws its own panel header and scrolls under it.
+  return <Settings />;
 }
 
 function OrgSettingsPage() {
