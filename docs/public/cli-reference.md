@@ -254,6 +254,15 @@ prints this command when one side has no inventory yet:
 hands builds inventory raft-android <build-id> --refresh
 ```
 
+For R8-obfuscated Android builds, the inventory uses the build's R8 mapping
+(`mapping.txt`) to restore class names before grouping Java/Kotlin packages,
+and prints `(names restored with the R8 mapping: N classes mapped, M not in the
+mapping)`; `--json` has the same counts in `inventory.mapping`. A mapping
+attached after the APK (`hands builds attach-symbols <app> <build-id>
+mapping.txt`) recomputes the inventory. When the dex looks obfuscated and no
+mapping was applied, the output asks you to upload `mapping.txt`
+(`inventory.dex.obfuscated` is `true`).
+
 ## Register External Node / CLI Bytes
 
 For an app created with platform `node`, `builds publish-version` records one

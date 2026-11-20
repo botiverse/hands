@@ -107,6 +107,8 @@ Hands 会读取每个 APK 和 IPA 的内容，帮助你看清安装包为什么�
 
 上传 APK 或 IPA 时会自动读取内容。更早上传的构建可点击**读取内容**（比较视图中为**读取上一个构建**），需要发布者角色。命令行（`hands builds inventory`、`hands builds diff`）和 API（`GET /api/apps/{appId}/builds/{buildId}/inventory`、`.../inventory/diff`）提供同样的数据。
 
+经过 R8 混淆的 Android 构建：使用 `-repackageclasses` 时，R8 会把重命名后的类移到同一个包里，不加处理就只会显示一行很大的 `(default package)`。构建带有 R8 mapping（`mapping.txt`，用 `hands builds publish-android --mapping` 上传，或之后用 `hands builds attach-symbols` 附加）时，Hands 会先还原原始类名再按包分组，**库**区域会注明*已用 R8 mapping 还原名称*。mapping 中没有的类仍归在混淆后的包下。在 APK 之后附加 mapping 会自动重新读取内容。没有 mapping 的混淆构建会提示*上传它的 mapping.txt 即可看到库名*。
+
 ## 渠道
 
 渠道用于区分 `main`、`preview`、`nightly` 或 `debug` 等发布轨道。先将测试构建发布到非生产渠道，验证后再发布到生产渠道。
