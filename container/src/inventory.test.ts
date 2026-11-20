@@ -7,6 +7,10 @@ import { packageGroup, sdkForJavaPackage, sdkForNativeLib, sdkForFramework } fro
 import { buildAndroidInventory, classifyApkEntry, parseAaptXmlTree, summarizeManifest } from "./inventory/android.js";
 import { buildIosInventory, classifyIpaEntry, entitlementsFromExecutable } from "./inventory/ios.js";
 import { boundInventory } from "./inventory/common.js";
+import { looksMinified, mappingClassLine, readMappingClassMap, withRequestMapping } from "./inventory/mapping.js";
+import { createServer } from "node:http";
+import { existsSync } from "node:fs";
+import { Readable } from "node:stream";
 import { toXmlPlist, type PlistDict } from "./ios.js";
 
 // ---------- fixtures ----------
@@ -301,6 +305,126 @@ test("APK inventory without aapt output still has sizes and says why components 
   assert.deepEqual(inv.components, {});
   assert.ok(inv.notes.some((n) => n.includes("aapt missing")));
   assert.throws(() => buildAndroidInventory({ bytes: makeZip([{ name: "base/dex/classes.dex", data: "x" }]) }), /not an APK/);
+});
+
+// ---------- R8 mapping ----------
+
+const MAPPING = [
+  "# compiler: R8",
+  "# pg_map_id: 1234567",
+  "io.sentry.Sentry -> a:",
+  "    int count -> a",
+  "    1:5:void init():10:14 -> b",
+  "io.sentry.Hub -> b:",
+  "# {\"id\":\"sourceFile\",\"fileName\":\"Hub.java\"}",
+  "    void capture() -> a",
+  "androidx.compose.runtime.Composer -> c:\r",
+  "com.example.app.MainActivity -> com.example.app.MainActivity:",
+  "    void onCreate(android.os.Bundle) -> onCreate",
+].join("\n");
+
+test("mapping class lines are parsed and member/comment lines skipped", async () => {
+  assert.deepEqual(mappingClassLine("io.sentry.Sentry -> a:"), { original: "io.sentry.Sentry", obfuscated: "a" });
+  assert.equal(mappingClassLine("    void capture() -> a"), null);
+  assert.equal(mappingClassLine("# compiler: R8"), null);
+  // Split across chunks in the middle of a line, with CRLF.
+  const bytes = Buffer.from(MAPPING);
+  const chunks = [bytes.subarray(0, 17), bytes.subarray(17, 90), bytes.subarray(90)];
+  const map = await readMappingClassMap(Readable.from(chunks));
+  assert.deepEqual([...map.entries()], [
+    ["a", "io.sentry.Sentry"],
+    ["b", "io.sentry.Hub"],
+    ["c", "androidx.compose.runtime.Composer"],
+    ["com.example.app.MainActivity", "com.example.app.MainActivity"],
+  ]);
+});
+
+test("minified class names are recognized", () => {
+  for (const n of ["a", "bc", "e74", "a.b.c", "x$y"]) assert.ok(looksMinified(n), n);
+  for (const n of ["io.sentry.Sentry", "com.example.R", "dev.hands.App", "abcd"]) assert.ok(!looksMinified(n), n);
+});
+
+function obfuscatedApk() {
+  const classes = [
+    { descriptor: "La;", methods: [300] },
+    { descriptor: "Lb;", methods: [100] },
+    { descriptor: "Lc;", methods: [200] },
+    { descriptor: "Lcom/example/app/MainActivity;", methods: [100] },
+    // Not in the mapping: stays under its dex package.
+    { descriptor: "Lzz/q;", methods: [50] },
+    ...Array.from({ length: 55 }, (_, i) => ({ descriptor: `Lf${i};`, methods: [1] })),
+  ];
+  return makeZip([
+    { name: "AndroidManifest.xml", data: "x" },
+    { name: "classes.dex", data: makeDex(classes), deflate: true },
+  ]);
+}
+
+test("APK inventory restores package names from the R8 mapping", async () => {
+  const apk = obfuscatedApk();
+  const plain = buildAndroidInventory({ bytes: apk });
+  assert.equal(plain.dex!.obfuscated, true);
+  assert.equal(plain.mapping, undefined);
+  assert.ok(plain.libraries.some((l) => l.name === "(default package)"));
+
+  const classMap = await readMappingClassMap(Readable.from([MAPPING]));
+  const inv = buildAndroidInventory({ bytes: apk, classMap });
+  assert.deepEqual(inv.mapping, { used: true, classes_mapped: 4, classes_unmapped: 56 });
+  // Judged on the names in the dex, not the restored ones.
+  assert.equal(inv.dex!.obfuscated, true);
+  const lib = (name: string) => inv.libraries.find((l) => l.kind === "dex-package" && l.name === name);
+  assert.equal(lib("io.sentry")!.classes, 2);
+  assert.equal(lib("io.sentry")!.sdk, "Sentry");
+  assert.equal(lib("androidx.compose")!.classes, 1);
+  assert.equal(lib("com.example.app")!.classes, 1);
+  assert.equal(lib("zz")!.classes, 1);
+  // The 55 unmapped default-package classes stay where they were.
+  assert.equal(lib("(default package)")!.classes, 55);
+  // Same size estimate: sizes add up to the same total with or without the mapping.
+  const dexTotal = (i: typeof inv) => i.libraries.filter((l) => l.kind === "dex-package").reduce((s, l) => s + l.bytes, 0);
+  assert.ok(Math.abs(dexTotal(inv) - dexTotal(plain)) <= 6);
+  // The default package's former bytes now belong to Sentry and Compose (rounding aside).
+  const before = plain.libraries.find((l) => l.name === "(default package)")!.bytes;
+  assert.ok(Math.abs(before - lib("(default package)")!.bytes - lib("androidx.compose")!.bytes - lib("io.sentry")!.bytes) <= 2);
+  assert.ok(inv.sdks.some((s) => s.name === "Sentry"));
+  // Most classes are unmapped here, so the inventory says the mapping may be for another build.
+  assert.ok(inv.notes.some((n) => n.includes("matched only 4 of 60 classes")));
+});
+
+test("an unreadable mapping leaves names alone and says why", () => {
+  const inv = buildAndroidInventory({ bytes: obfuscatedApk(), mappingError: "mapping download returned 403" });
+  assert.equal(inv.mapping, undefined);
+  assert.ok(inv.notes.some((n) => n.includes("mapping download returned 403")));
+});
+
+test("the request mapping is downloaded to a temp file and removed afterwards", async () => {
+  const server = createServer((req, res) => {
+    if (req.url === "/mapping.txt?sig=secret") res.end(MAPPING);
+    else res.writeHead(403).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  try {
+    let seenPath = "";
+    const map = await withRequestMapping(`http://127.0.0.1:${port}/mapping.txt?sig=secret`, async (m) => {
+      assert.equal(m.mappingError, undefined);
+      seenPath = m.mappingPath!;
+      assert.ok(existsSync(seenPath));
+      const { createReadStream } = await import("node:fs");
+      return readMappingClassMap(createReadStream(seenPath));
+    });
+    assert.equal(map.get("a"), "io.sentry.Sentry");
+    assert.ok(!existsSync(seenPath));
+
+    const failed = await withRequestMapping(`http://127.0.0.1:${port}/other`, async (m) => m);
+    assert.equal(failed.mappingPath, undefined);
+    assert.match(failed.mappingError!, /403/);
+    assert.ok(!failed.mappingError!.includes("127.0.0.1"));
+    assert.deepEqual(await withRequestMapping(undefined, async (m) => m), {});
+    assert.ok((await withRequestMapping("file:///etc/passwd", async (m) => m)).mappingError);
+  } finally {
+    server.close();
+  }
 });
 
 test("inventories are bounded in size", () => {

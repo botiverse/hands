@@ -12,6 +12,9 @@
  *                        size_bytes, file_hash_sha256, raw }. APKs and IPAs
  *                        also carry `inventory` (or `inventory_error`).
  *   POST /inventory?platform=android|ios — content inventory only.
+ *   Both take an optional `X-Mapping-URL` header: a presigned URL of the
+ *   build's R8 mapping.txt, used to restore Android class names in the
+ *   inventory (never logged).
  *   POST /parse?parser_kind=... — same as above, but with the dispatch hint
  *                        baked into the URL.
  *
@@ -34,6 +37,7 @@ import {
   type ParserKind,
 } from "./parsers/index.js";
 import { computeInventory } from "./inventory/index.js";
+import { withRequestMapping } from "./inventory/mapping.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
 import { registerSigningRoutes } from "./signing.js";
 import { downloadMapping, filterMapping, indexMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
@@ -596,11 +600,11 @@ app.post("/parse", async (c) => {
     let inventoryFields: Record<string, unknown> = {};
     if (metadata.parser_kind === "apk-aapt" || metadata.parser_kind === "ipa-info") {
       try {
+        const platform = metadata.parser_kind === "ipa-info" ? "ios" : "android";
         inventoryFields = {
-          inventory: await computeInventory(
-            metadata.parser_kind === "ipa-info" ? "ios" : "android",
-            bytes,
-            tmpPath,
+          inventory: await withRequestMapping(
+            platform === "android" ? c.req.header("x-mapping-url") : undefined,
+            (mapping) => computeInventory(platform, bytes, tmpPath, mapping),
           ),
         };
       } catch (err) {
@@ -656,7 +660,11 @@ app.post("/inventory", async (c) => {
     return c.json({ error: "file too large (>1GiB)" }, 413);
   }
   try {
-    return c.json({ inventory: await computeInventory(platform, new Uint8Array(ab)) });
+    const inventory = await withRequestMapping(
+      platform === "android" ? c.req.header("x-mapping-url") : undefined,
+      (mapping) => computeInventory(platform, new Uint8Array(ab), null, mapping),
+    );
+    return c.json({ inventory });
   } catch (err) {
     console.error("inventory error:", err);
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 422);
