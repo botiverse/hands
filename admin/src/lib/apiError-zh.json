@@ -506,5 +506,17 @@
   "trusted publisher not found": "未找到可信发布者",
   "workflow_path must be .github/workflows/<file>.yml": "workflow_path 必须是 .github/workflows/<文件>.yml",
   "operation logs are records and cannot be deleted": "操作记录不能删除",
-  "certificate request not found": "未找到证书请求"
+  "certificate request not found": "未找到证书请求",
+  "a different result with the same sequence is already stored": "已存有同一序号的另一个结果",
+  "decision_id must be a non-empty string of at most 200 characters": "decision_id 必须是不超过 200 个字符的非空字符串",
+  "send sequenced checks to POST /api/apps/:appId/releases/:releaseId/checks/sequenced": "带序号的检查请发送到 POST /api/apps/:appId/releases/:releaseId/checks/sequenced",
+  "sequence must be a positive safe integer": "sequence 必须是正的安全整数",
+  "submission_id merge limit reached": "submission_id 合并次数已达上限",
+  "the stored check already has this decision_id; a new sequence needs a new decision": "已存的检查已使用这个 decision_id；新的序号需要新的 decision",
+  "this check is ordered by sequence; send sequence to replace it": "这个检查按序号排序；替换它需要提供 sequence",
+  "ticket changed during merge; retry": "合并期间工单发生了变化，请重试",
+  "Google Play is not connected and verified for this app": "这个应用还没有连接并验证 Google Play",
+  "from_app is this app": "from_app 不能是这个应用本身",
+  "from_app must name an app (id or slug)": "from_app 必须指定一个应用（ID 或 slug）",
+  "from_app: app not found in this organization": "from_app：在这个组织里找不到该应用"
 }

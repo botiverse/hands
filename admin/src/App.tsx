@@ -1515,13 +1515,13 @@ function AppsListWithNav() {
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
+  // Full-bleed: AppsList draws its own panel header and toolbar across the
+  // main area, and scrolls its rows under them.
   return (
-    <StandardPageShell>
-      <AppsList
-        onSelectApp={(appId) => navigate(`/apps/${appId}`)}
-        initialShowCreate={openNew || zeroApps}
-      />
-    </StandardPageShell>
+    <AppsList
+      onSelectApp={(appId) => navigate(`/apps/${appId}`)}
+      initialShowCreate={openNew || zeroApps}
+    />
   );
 }
 
@@ -1566,12 +1566,15 @@ const LAST_APP_KEY = "quiver:last-app-id";
 
 function AppShell() {
   const { appId } = useParams();
+  // The overview draws its own panel header across the main area and scrolls
+  // under it; the other app pages sit in the padded column.
+  const isOverview = useMatch({ path: "/apps/:appId", end: true }) !== null;
   if (!appId) return null;
   return (
     <AppRouteBoundary appId={appId}>
     <div className="flex flex-1 min-h-0 items-stretch">
-      <div className="min-w-0 flex-1">
-        <div className="w-full px-8 py-6">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className={isOverview ? "flex min-h-0 w-full flex-1 flex-col" : "w-full px-8 py-6"}>
         <Routes>
           <Route index element={<AppDetailRoute />} />
           <Route path="publish" element={<LegacyPublishRedirect />} />
