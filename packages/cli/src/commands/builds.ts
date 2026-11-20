@@ -20,6 +20,7 @@ import { assertActiveReleaseAllowed } from "../lib/release_preflight.js";
 import { createHash } from "node:crypto";
 import { jsonRequested } from "../lib/json_output.js";
 import { recoveryGuidance, type RecoveryPart } from "../lib/recovery_guidance.js";
+import { registerBuildInventoryCommands } from "./build_inventory.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -699,6 +700,8 @@ export function registerBuildCommands(program: Command): void {
         }
       },
     );
+
+  registerBuildInventoryCommands(builds, program, resolveAppId);
 
   builds
     .command("presign-asset <appIdOrSlug> <buildId> <assetId>")
