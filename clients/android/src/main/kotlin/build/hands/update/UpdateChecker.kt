@@ -220,6 +220,28 @@ class UpdateChecker(
         }
     }
 
+    /**
+     * Ask Hands whether an update is offered, without starting it. The offer
+     * carries release notes picked for [languageTag] and the download size
+     * this device would need; [HandsUpdateCheck.status] is the current
+     * transaction. Call [install] to start the update.
+     */
+    suspend fun check(languageTag: String? = this.languageTag): HandsUpdateCheck {
+        val requested = normalizedLanguageTag(languageTag)
+        val response = client.checkForUpdate(
+            slug = appSlug,
+            channel = channel,
+            currentVersionCode = installedVersionCode,
+            productType = productType,
+            platform = platform,
+            arch = arch,
+            deviceId = deviceId ?: withContext(Dispatchers.IO) { HandsDeviceId.get(context) },
+            languageTag = requested,
+        )
+        val offer = updateOffer(response, installedVersionCode, deltaApplyEnabled, requested)
+        return HandsUpdateCheck(updateAvailable = offer != null, offer = offer, status = status())
+    }
+
     /** Reconcile the persisted transaction with PackageManager, DownloadManager and disk. */
     suspend fun status(): HandsUpdateStatus = commandGate.run {
         withContext(Dispatchers.IO) {
@@ -569,6 +591,7 @@ class UpdateChecker(
             latest = latest,
             asset = asset,
             patch = response.patch,
+            releaseNotes = releaseNotesFor(response, requestedLanguageTag).first,
             requestedLanguageTag = requestedLanguageTag,
             resolvedLanguageTag = resolvedLanguageTag,
         )
@@ -916,6 +939,7 @@ class UpdateChecker(
         latest: LatestUpdate,
         asset: UpdateAsset,
         patch: Patch?,
+        releaseNotes: String?,
         requestedLanguageTag: String?,
         resolvedLanguageTag: String?,
     ): UpdateTransactionRecord = newRecord(
@@ -924,6 +948,7 @@ class UpdateChecker(
         targetVersionCode = latest.version_code,
         targetBuildId = latest.build_id,
         targetVersionName = latest.version,
+        releaseNotes = releaseNotes,
         assetSizeBytes = asset.size_bytes,
         assetSha256 = asset.sha256 ?: patch?.target_sha256,
         filetype = asset.filetype,
@@ -945,6 +970,7 @@ class UpdateChecker(
         targetVersionCode: Long? = null,
         targetBuildId: String? = null,
         targetVersionName: String? = null,
+        releaseNotes: String? = null,
         assetSizeBytes: Long? = null,
         assetSha256: String? = null,
         filetype: String? = null,
@@ -963,6 +989,7 @@ class UpdateChecker(
         targetVersionCode = targetVersionCode,
         targetBuildId = targetBuildId,
         targetVersionName = targetVersionName,
+        releaseNotes = releaseNotes,
         assetSizeBytes = assetSizeBytes,
         assetSha256 = assetSha256,
         filetype = filetype,
