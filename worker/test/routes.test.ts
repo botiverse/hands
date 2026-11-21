@@ -2746,6 +2746,63 @@ describe("auth origin handling", () => {
     }
   });
 
+  it("signs an account-mode login in to every server Raft lists", async () => {
+    const env = makeMockEnv();
+    env.RAFT_CLIENT_ID = "test-client";
+    const app = new Hono<{ Bindings: MockEnv }>();
+    app.get("/api/auth/login", handleAuthLogin);
+    app.get("/login/raft/callback", handleRaftCallback);
+    const originalFetch = globalThis.fetch;
+    try {
+      const login = await app.request("https://dashboard.example/api/auth/login?return=%2Fapps", {}, env as any);
+      const state = new URL(login.headers.get("location") ?? "").searchParams.get("state");
+      const proofCookie = browserProofCookie(login);
+      const calls: string[] = [];
+      globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        calls.push(new URL(url).pathname);
+        if (url.endsWith("/api/oauth/token")) {
+          return Response.json({ access_token: "raft-account-token", token_type: "Bearer", expires_in: 600, scope: "openid profile" });
+        }
+        if (url.endsWith("/api/oauth/userinfo")) {
+          // Account mode: no server_id, server_slug or server_role.
+          return Response.json({
+            sub: "human-acct", type: "human", scope: "openid profile", client_id: "test-client",
+            client_name: "Hands", preferred_username: "acct", name: "Account Person",
+          });
+        }
+        if (url.endsWith("/api/oauth/servers")) {
+          return Response.json({ servers: [
+            { id: "server-x", slug: "xray", name: "X-Ray", role: "owner" },
+            { id: "server-y", slug: "yankee", name: "Yankee", role: "member" },
+          ] });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?code=acct-code&state=${encodeURIComponent(state!)}`,
+        { headers: { cookie: proofCookie } },
+        env as any,
+      );
+      expect(callback.status).toBe(302);
+      expect(new URL(callback.headers.get("location") ?? "").hash).toContain("access_token=");
+      expect(calls).toEqual(["/api/oauth/token", "/api/oauth/userinfo", "/api/oauth/servers"]);
+      const rows = await env.DB.prepare(
+        `SELECT a.server_id, o.name, om.org_role FROM raft_accounts a
+         JOIN org_members om ON om.account_id = a.id
+         JOIN organizations o ON o.id = om.org_id
+         WHERE a.provider_subject = 'human-acct' ORDER BY a.server_id`,
+      ).all();
+      expect(rows.results).toEqual([
+        { server_id: "server-x", name: "X-Ray", org_role: "owner" },
+        { server_id: "server-y", name: "Yankee", org_role: "member" },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("keeps concurrent browser login return paths isolated in signed state", async () => {
     const env = makeMockEnv();
     const app = new Hono<{ Bindings: MockEnv }>();

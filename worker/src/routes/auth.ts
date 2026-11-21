@@ -53,8 +53,12 @@ export type RaftUserinfo = {
   scope: string;
   client_id: string;
   client_name: string;
-  server_id: string;
-  server_slug: string;
+  // Server-mode logins name the one Raft server the token is bound to. An
+  // account-mode login (RFC 079) leaves all three out: its token stands for
+  // the person on every server where Hands is installed, listed by
+  // /api/oauth/servers.
+  server_id?: string;
+  server_slug?: string;
   server_role?: string;
   preferred_username?: string | null;
   name?: string | null;
@@ -62,6 +66,22 @@ export type RaftUserinfo = {
   picture?: string | null;
   description?: string | null;
 };
+
+/** A Raft identity bound to one server: a server-mode userinfo, or an
+ *  account-mode userinfo paired with one entry of /api/oauth/servers. */
+export type RaftServerIdentity = RaftUserinfo & { server_id: string; server_slug: string };
+
+/** One server-bound identity of a login, with what the login said of it. */
+export type RaftLoginIdentity = {
+  identity: RaftServerIdentity;
+  // The server's display name (account mode only).
+  serverName: string | null;
+  // From an account-mode login, where the person picked no server.
+  accountMode: boolean;
+};
+
+/** One entry of GET /api/oauth/servers. */
+export type RaftServer = { id: string; slug: string; name: string; role: string };
 
 type LoginResult = {
   account: AdminAccount;
@@ -377,7 +397,7 @@ function slugifyOrgPart(value: string): string {
   );
 }
 
-export function isUserAllowed(env: Env, userinfo: RaftUserinfo): boolean {
+export function isUserAllowed(env: Env, userinfo: { server_id: string; server_slug: string }): boolean {
   const serverIds = (env.RAFT_ALLOWED_SERVER_IDS || "")
     .split(",")
     .map((v) => v.trim())
@@ -436,9 +456,90 @@ export async function fetchRaftUserinfo(
   return response.json() as Promise<RaftUserinfo>;
 }
 
+export async function fetchRaftServers(
+  apiOrigin: string,
+  accessToken: string,
+): Promise<RaftServer[]> {
+  const response = await fetch(`${apiOrigin}/api/oauth/servers`, {
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+    },
+  });
+  if (!response.ok) {
+    const text = safeJsonSlice(await response.text());
+    throw new Error(`Raft servers failed (${response.status}): ${text}`);
+  }
+  const body = (await response.json()) as { servers?: RaftServer[] };
+  return Array.isArray(body.servers) ? body.servers : [];
+}
+
+/**
+ * The server-bound identities one Login with Raft stands for.
+ *
+ * Server mode: the userinfo's own server. Account mode (no server_id in the
+ * userinfo): one identity per server /api/oauth/servers lists, carrying that
+ * server's slug and the person's live role there. Servers outside
+ * RAFT_ALLOWED_SERVER_IDS / _SLUGS are dropped either way.
+ */
+export async function raftLoginIdentities(
+  env: Env,
+  apiOrigin: string,
+  accessToken: string,
+  userinfo: RaftUserinfo,
+): Promise<RaftLoginIdentity[]> {
+  if (userinfo.server_id) {
+    const identity = { ...userinfo, server_id: userinfo.server_id, server_slug: userinfo.server_slug ?? "" };
+    return isUserAllowed(env, identity) ? [{ identity, serverName: null, accountMode: false }] : [];
+  }
+  const servers = await fetchRaftServers(apiOrigin, accessToken);
+  return servers
+    .filter((server) => typeof server.id === "string" && server.id !== "")
+    .map((server) => ({
+      identity: {
+        ...userinfo,
+        server_id: server.id,
+        server_slug: server.slug ?? "",
+        server_role: server.role,
+      },
+      serverName: server.name || null,
+      accountMode: true,
+    }))
+    .filter(({ identity }) => isUserAllowed(env, identity));
+}
+
+/**
+ * Upsert the Hands account and organization membership for every identity
+ * of one login and return the account the session starts in: the one the
+ * person signed in to most recently before, else the first. The others stay
+ * reachable through the organization switcher (x-hands-org-id), which links
+ * accounts of the same Raft subject.
+ */
+export async function signInRaftIdentities(
+  db: D1Database,
+  identities: RaftLoginIdentity[],
+): Promise<AdminAccount | null> {
+  let primary: { account: AdminAccount; lastLogin: number } | null = null;
+  for (const { identity, serverName, accountMode } of identities) {
+    const previous = await db
+      .prepare(
+        `SELECT last_login_at FROM raft_accounts
+         WHERE provider = 'raft' AND provider_subject = ?1 AND server_id = ?2`,
+      )
+      .bind(identity.sub, identity.server_id)
+      .first<{ last_login_at: number }>();
+    const account = await upsertRaftAccount(db, identity);
+    const membership = await upsertRaftOrgMembership(db, account, serverName, accountMode);
+    account.org_id = membership.org_id;
+    account.org_role = membership.org_role;
+    const lastLogin = previous?.last_login_at ?? -1;
+    if (!primary || lastLogin > primary.lastLogin) primary = { account, lastLogin };
+  }
+  return primary?.account ?? null;
+}
+
 export async function upsertRaftAccount(
   db: D1Database,
-  userinfo: RaftUserinfo,
+  userinfo: RaftServerIdentity,
 ): Promise<AdminAccount> {
   const timestamp = now();
   const displayName =
@@ -527,9 +628,15 @@ async function isFirstPrincipalInServer(db: D1Database, serverId: string, accoun
 async function defaultOrgRoleForAccount(
   db: D1Database,
   account: AdminAccount,
+  accountMode: boolean,
 ): Promise<"owner" | "admin" | "member" | "viewer"> {
   const raftRole = roleFromRaftServerRole(account.server_role);
   if (raftRole) return raftRole;
+  // An account-mode login joins every server Hands is installed on without
+  // the person picking one, so being the first to sign in is no claim to own
+  // that server's organization: a Raft member stays a member, and the
+  // server's Raft owners and admins get their roles when they sign in.
+  if (accountMode) return "member";
   if (account.principal_type === "human") {
     return (await isFirstHumanInServer(db, account.server_id, account.id))
       ? "owner"
@@ -543,13 +650,17 @@ async function defaultOrgRoleForAccount(
 export async function upsertRaftOrgMembership(
   db: D1Database,
   account: AdminAccount,
+  // The server's display name; only account-mode logins learn it
+  // (/api/oauth/servers). Server mode names the org after the slug.
+  serverName: string | null = null,
+  accountMode = false,
 ): Promise<{ org_id: string; org_role: "owner" | "admin" | "member" | "viewer" }> {
   const timestamp = now();
   const orgId = `raft_${account.server_id}`;
   const slugBase = slugifyOrgPart(account.server_slug || account.server_id);
   const slug = `${slugBase}-${account.server_id.slice(0, 8)}`;
-  const name = account.server_slug || `Raft server ${account.server_id.slice(0, 8)}`;
-  const orgRole = await defaultOrgRoleForAccount(db, account);
+  const name = serverName || account.server_slug || `Raft server ${account.server_id.slice(0, 8)}`;
+  const orgRole = await defaultOrgRoleForAccount(db, account, accountMode);
 
   await db.batch([
     db
@@ -633,14 +744,16 @@ async function finalizeRaftLogin(
     config.raftApiOrigin,
     token.access_token,
   );
-  if (!isUserAllowed(c.env, userinfo)) {
+  const identities = await raftLoginIdentities(
+    c.env,
+    config.raftApiOrigin,
+    token.access_token,
+    userinfo,
+  );
+  const account = await signInRaftIdentities(c.env.DB, identities);
+  if (!account) {
     return c.text("This Raft server is not allowed for this Hands admin.", 403);
   }
-
-  const account = await upsertRaftAccount(c.env.DB, userinfo);
-  const membership = await upsertRaftOrgMembership(c.env.DB, account);
-  account.org_id = membership.org_id;
-  account.org_role = membership.org_role;
   const authToken = await createAuthToken(c.env, account.id, token.access_token);
   return { account, authToken };
 }

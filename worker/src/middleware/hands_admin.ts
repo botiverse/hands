@@ -43,9 +43,41 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
   const allowedServers = (c.env.HANDS_ADMIN_ALLOWED_SERVER_IDS || "")
     .split(",").map((value) => value.trim()).filter(Boolean);
   const role = (account.server_role || "").toLowerCase();
-  if (!allowedServers.includes(account.server_id) || !["owner", "admin"].includes(role)) {
+  const sessionServerAdmits = allowedServers.includes(account.server_id) && ["owner", "admin"].includes(role);
+  if (!sessionServerAdmits && !(await sameLoginAdmits(c.env, account, allowedServers))) {
     return deny(c, 403, "HANDS_ADMIN_REQUIRED");
   }
 
   await next();
 };
+
+// An account-mode Login with Raft (RFC 079) refreshes one account per server
+// in the same sign-in (signInRaftIdentities) and starts the session in one of
+// them, which need not be the admin server. Those sibling accounts carry the
+// role Raft reported for their server in that same login, so they count as the
+// session identity's. "Same login" is their last_login_at within a minute of
+// the session account's; a sibling refreshed by an older, separate login (a
+// server-mode login to another server) does not count.
+const SAME_LOGIN_WINDOW_MS = 60_000;
+
+async function sameLoginAdmits(env: Env, account: AdminAccount, allowedServers: string[]): Promise<boolean> {
+  if (allowedServers.length === 0) return false;
+  const placeholders = allowedServers.map((_, index) => `?${index + 5}`).join(", ");
+  const row = await env.DB.prepare(
+    `SELECT id FROM raft_accounts
+     WHERE provider = ?1 AND provider_subject = ?2 AND principal_type = ?3
+       AND last_login_at >= ?4
+       AND lower(COALESCE(server_role, '')) IN ('owner', 'admin')
+       AND server_id IN (${placeholders})
+     LIMIT 1`,
+  )
+    .bind(
+      account.provider,
+      account.provider_subject,
+      account.principal_type,
+      account.last_login_at - SAME_LOGIN_WINDOW_MS,
+      ...allowedServers,
+    )
+    .first<{ id: string }>();
+  return !!row;
+}

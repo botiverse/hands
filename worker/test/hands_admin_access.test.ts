@@ -7,7 +7,10 @@ import { requireHandsAdmin } from "../src/middleware/hands_admin";
 // non-revoked, non-expired session. It must NOT gate on `admin_account`, which is that
 // identity re-resolved through the client-supplied `x-hands-org-id` header (org
 // switching). There is no per-request Raft re-check and no stored token any more — so
-// these tests need no DB, no secret, and no fetch.
+// these tests need no secret and no fetch. The DB is read only to deny-or-admit a
+// session whose own server does not admit it (accounts refreshed by the same
+// account-mode login, see account_mode_login.test.ts); here it finds none.
+let dbReads = 0;
 const baseAccount = {
   id: "account-1", provider: "raft" as const, provider_subject: "subject-1",
   server_id: "server-allowed", server_slug: "botiverse", principal_type: "human" as const,
@@ -31,9 +34,13 @@ async function request(
   });
   app.use("/admin/*", requireHandsAdmin);
   app.get("/admin/overview", (c) => c.json({ ok: true }));
-  // Intentionally NO DB / RAFT_API_ORIGIN / secret in env: a valid admin must still pass,
-  // proving the second (rotting-token) layer is gone.
-  const env = { HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-allowed" } as unknown as Env;
+  // Intentionally NO RAFT_API_ORIGIN / secret in env: a valid admin must still pass,
+  // proving the second (rotting-token) layer is gone. The DB finds no sibling account.
+  dbReads = 0;
+  const DB = {
+    prepare: () => ({ bind: () => ({ first: async () => { dbReads += 1; return null; } }) }),
+  };
+  const env = { DB, HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-allowed" } as unknown as Env;
   return app.request("https://app.hands.build/admin/overview", {}, env);
 }
 const withRole = (server_role: string | null, server_id = "server-allowed") =>
@@ -75,8 +82,10 @@ describe("requireHandsAdmin (unified — session identity's login-time role, no 
   it("allows on the session identity's admin role even if the org-switched admin_account looks like member (200)", async () =>
     expect((await request(withRole("admin"), withRole("member"))).status).toBe(200));
 
-  it("does not touch the DB, decrypt, or call Raft — a valid admin passes with none of them in env", async () =>
-    expect((await request(withRole("owner"))).status).toBe(200));
+  it("does not touch the DB, decrypt, or call Raft — a valid admin passes on its own session", async () => {
+    expect((await request(withRole("owner"))).status).toBe(200);
+    expect(dbReads).toBe(0);
+  });
 
   // Contract (artin 2026-08-20): admin access is NOT restricted by principal_type — an
   // owner/admin AGENT identity is admitted, same as a human. This test locks that
