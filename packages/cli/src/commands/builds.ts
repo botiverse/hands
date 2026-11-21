@@ -128,6 +128,17 @@ function collect(value: string, previous: string[] = []): string[] {
   return previous.concat(value);
 }
 
+/**
+ * The ABI an Android APK is registered under. `universal` (or `any`, or an empty
+ * string) means no ABI: Hands serves such an asset to a device of any ABI, after
+ * any exact-ABI asset of the same release.
+ */
+export function normalizeAndroidArch(value: string | undefined): string | null {
+  const trimmed = (value ?? "").trim();
+  if (trimmed === "" || trimmed === "universal" || trimmed === "any") return null;
+  return trimmed;
+}
+
 export const ANDROID_DELTA_PATCH_ALGORITHM = "archive-patcher-v1+gzip";
 const ANDROID_DELTA_PATCH_MAGIC = Buffer.from("GFbFv1_0", "ascii");
 
@@ -1262,7 +1273,11 @@ export function registerBuildCommands(program: Command): void {
     .requiredOption("--version-name <name>", "Android versionName.")
     .requiredOption("--version-code <code>", "Android versionCode.")
     .option("--channel <slug>", "Hands release channel slug.", "main")
-    .option("--arch <abi>", "APK ABI/arch metadata.", "arm64-v8a")
+    .option(
+      "--arch <abi>",
+      "APK ABI (e.g. arm64-v8a, x86_64). Use `universal` for an APK that carries every ABI: Hands then serves it to every device.",
+      "arm64-v8a",
+    )
     .option("--release-type <type>", "Release type metadata.", "stable")
     .option("--product-type <type>", "Product type metadata.", "android-apk")
     .option("--mapping <path>", "R8/ProGuard mapping.txt support artifact.")
@@ -1336,6 +1351,7 @@ export function registerBuildCommands(program: Command): void {
         if (!Number.isFinite(versionCode) || versionCode < 0) {
           throw new Error("--version-code must be a non-negative number");
         }
+        const androidArch = normalizeAndroidArch(opts.arch);
         for (const file of [opts.apk, opts.mapping, opts.symbols, opts.dsym, opts.metadata].filter(Boolean) as string[]) {
           if (!existsSync(file)) throw new Error(`missing file: ${file}`);
         }
@@ -1391,7 +1407,7 @@ export function registerBuildCommands(program: Command): void {
         const installable = await uploadAndRegisterAsset(appId, build.id, opts.apk, {
           artifact_kind: "installable",
           platform: "android",
-          arch: opts.arch,
+          arch: androidArch,
           filetype: "apk",
         });
         assets.push(installable);
@@ -1404,7 +1420,7 @@ export function registerBuildCommands(program: Command): void {
             await uploadAndRegisterAsset(appId, build.id, patchPath, {
               artifact_kind: "delta-patch",
               platform: "android",
-              arch: opts.arch,
+              arch: androidArch,
               filetype: "patch",
               metadata_json: androidDeltaPatchMetadata({
                 fromVersionCode,
@@ -1424,7 +1440,7 @@ export function registerBuildCommands(program: Command): void {
             appId,
             buildId: build.id,
             newApkPath: opts.apk,
-            arch: opts.arch,
+            arch: androidArch,
             toVersionCode: versionCode,
             targetSha256: installable.file_hash,
             newApkSize: installable.size_bytes,
@@ -2837,7 +2853,7 @@ async function generateAndUploadAndroidDeltas(args: {
   appId: string;
   buildId: string;
   newApkPath: string;
-  arch: string;
+  arch: string | null;
   toVersionCode: number;
   targetSha256: string;
   newApkSize: number;
@@ -2845,7 +2861,8 @@ async function generateAndUploadAndroidDeltas(args: {
 }): Promise<Array<{ id: string; artifact_kind: string; filetype: string; file_hash: string; size_bytes: number }>> {
   const { sources } = await apiRequest<{ sources: DeltaSource[] }>(
     `/api/apps/${args.appId}/delta-sources`,
-    { query: { arch: args.arch, before: args.toVersionCode, limit: args.versions } },
+    // No arch (a universal APK) is sent as no parameter, which the server reads as "no arch".
+    { query: { arch: args.arch ?? undefined, before: args.toVersionCode, limit: args.versions } },
   );
   if (!sources || sources.length === 0) {
     console.error(`[delta] no prior published versions to diff against; skipping.`);

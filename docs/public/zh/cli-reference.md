@@ -286,6 +286,10 @@ hands builds publish-android raft-android \
 
 服务端自动从 APK 提取包 ID、SDK 级别和启动图标，无需额外参数。
 
+`--arch` 是 APK 的 ABI，默认 `arm64-v8a`。设备会先要与自己 ABI 相同的 APK，没有时退回到不带 ABI 的 APK。如果 APK 是包含所有 ABI 原生代码的通用包，传 `--arch universal`，Hands 会把它发给所有设备，包括 x86_64 模拟器。差量包只在 arch 相同的构建之间生成，所以从 arm64-v8a 改成 universal 后的第一个构建会下发一次完整 APK。
+
+应用开启「智能体发布需真人审批」时，部署令牌或智能体会话运行 `hands releases publish` 不会直接发布：Hands 返回 HTTP 202，带 `"status": "pending_approval"` 和 `approval_request_id`，版本保持草稿，直到应用或组织管理员批准。请检查 `--json` 输出里的 `status`。
+
 有辅助文件时一并添加：
 
 ```bash

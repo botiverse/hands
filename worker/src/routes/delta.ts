@@ -333,7 +333,8 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
  */
 export async function handleDeltaSources(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
-  const arch = c.req.query("arch") ?? null;
+  // An empty arch is the same as none: a universal APK registered without an ABI.
+  const arch = c.req.query("arch")?.trim() || null;
   const before = Number(c.req.query("before"));
   if (!Number.isFinite(before)) {
     return c.json({ error: "before (version_code) must be a number" }, 400);

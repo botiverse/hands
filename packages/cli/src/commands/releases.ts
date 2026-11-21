@@ -500,7 +500,7 @@ export function registerReleaseCommands(program: Command): void {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
-      console.log(`Published release ${releaseId} with ${scopes.length} exact scope${scopes.length === 1 ? "" : "s"}.`);
+      console.log(publishResultText(releaseId, scopes.length, result));
     });
 
   releases
@@ -1067,4 +1067,17 @@ function parsePositiveNumber(value: string, flag: string): number {
     throw new Error(`${flag} must be a positive number`);
   }
   return Math.floor(parsed);
+}
+
+/**
+ * What `releases publish` prints. An app that requires human approval answers an
+ * agent's publish with 202 `pending_approval`: nothing was published yet.
+ */
+export function publishResultText(releaseId: string, scopeCount: number, result: Record<string, unknown>): string {
+  if (result.status === "pending_approval") {
+    const request = typeof result.approval_request_id === "string" ? ` (approval request ${result.approval_request_id})` : "";
+    const next = typeof result.next_action === "string" ? `\n${result.next_action}` : "";
+    return `Release ${releaseId} is not published yet: it is waiting for a human to approve it${request}.${next}`;
+  }
+  return `Published release ${releaseId} with ${scopeCount} exact scope${scopeCount === 1 ? "" : "s"}.`;
 }
