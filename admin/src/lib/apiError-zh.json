@@ -527,5 +527,9 @@
   "this build has no content inventory yet; POST to this URL to compute it from the build's APK or IPA": "该构建还没有内容清单；向此 URL 发送 POST 可根据构建的 APK 或 IPA 计算",
   "bundle_id must be an explicit bundle ID such as com.example.app (no wildcard)": "bundle_id 必须是完整的 bundle ID，例如 com.example.app（不能用通配符）",
   "this identity has no App Store Connect API key; add one to let Hands manage App IDs": "这个签名身份没有 App Store Connect API key；添加后 Hands 才能管理 App ID",
-  "entitlements_b64 is too large": "entitlements 文件太大"
+  "entitlements_b64 is too large": "entitlements 文件太大",
+  "a signed-in owner must transfer ownership": "必须由已登录的所有者转移所有权",
+  "name must be a string, or null to use the Raft server's name": "名称必须是字符串；传 null 则使用 Raft 服务器的名称",
+  "organization not found": "未找到组织",
+  "you already own this organization": "你已经是此组织的所有者"
 }

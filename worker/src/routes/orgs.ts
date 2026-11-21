@@ -93,7 +93,7 @@ export async function handleListOrgs(c: AdminContext) {
   if (!account) {
     if (c.get("admin_actor") === "dev-token") {
       const { results } = await c.env.DB.prepare(
-        `SELECT id, slug, name, external_provider, external_id, created_at, archived
+        `SELECT id, slug, name, raft_name, name_customized, external_provider, external_id, created_at, archived
          FROM organizations
          ORDER BY created_at DESC`,
       ).all();
@@ -102,7 +102,7 @@ export async function handleListOrgs(c: AdminContext) {
     return c.json({ error: "unauthorized" }, 401);
   }
   const { results } = await c.env.DB.prepare(
-    `SELECT o.id, o.slug, o.name, o.external_provider, o.external_id,
+    `SELECT o.id, o.slug, o.name, o.raft_name, o.name_customized, o.external_provider, o.external_id,
             o.created_at, o.archived,
             CASE MAX(CASE om.org_role
               WHEN 'owner' THEN 4
@@ -121,11 +121,76 @@ export async function handleListOrgs(c: AdminContext) {
      WHERE linked.provider = ?1
        AND linked.provider_subject = ?2
        AND linked.principal_type = ?3
-     GROUP BY o.id, o.slug, o.name, o.external_provider, o.external_id,
+     GROUP BY o.id, o.slug, o.name, o.raft_name, o.name_customized, o.external_provider, o.external_id,
               o.created_at, o.archived
      ORDER BY o.created_at DESC`,
   ).bind(account.provider, account.provider_subject, account.principal_type).all();
   return c.json({ orgs: results });
+}
+
+const ORG_NAME_MAX = 80;
+
+/**
+ * Rename the organization in Hands. The name otherwise follows the Raft
+ * server's and is refreshed at every sign-in; a name set here is kept until
+ * `name: null` hands it back to Raft. Admin or owner.
+ */
+export async function handleUpdateOrg(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const allowed = await ensureOrgRole(c, orgId, "admin");
+  if (!allowed.ok) return allowed.response;
+  const body = (await c.req.json().catch(() => ({}))) as { name?: unknown };
+  if (body.name === undefined) return c.json({ error: "nothing to update" }, 400);
+  if (body.name !== null && typeof body.name !== "string") {
+    return c.json({ error: "name must be a string, or null to use the Raft server's name" }, 400);
+  }
+  const name = typeof body.name === "string" ? body.name.trim() : null;
+  if (name !== null && (name.length === 0 || name.length > ORG_NAME_MAX)) {
+    return c.json({ error: `name must be 1-${ORG_NAME_MAX} characters` }, 400);
+  }
+  const result = name === null
+    ? await c.env.DB.prepare(
+        "UPDATE organizations SET name = COALESCE(raft_name, name), name_customized = 0 WHERE id = ?1",
+      ).bind(orgId).run()
+    : await c.env.DB.prepare(
+        "UPDATE organizations SET name = ?1, name_customized = 1 WHERE id = ?2",
+      ).bind(name, orgId).run();
+  if (!result.meta.changes) return c.json({ error: "organization not found" }, 404);
+  const org = await c.env.DB.prepare(
+    "SELECT id, name, raft_name, name_customized FROM organizations WHERE id = ?1",
+  ).bind(orgId).first<{ id: string; name: string; raft_name: string | null; name_customized: number }>();
+  return c.json({ ok: true, org });
+}
+
+/**
+ * Hand ownership to another member in one step: they become owner and the
+ * caller becomes admin. Owner only, and only through the caller's own
+ * membership (not a dev token), so the organization is never left ownerless.
+ */
+export async function handleTransferOrgOwnership(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  const account = currentAccount(c);
+  if (!account) return c.json({ error: "a signed-in owner must transfer ownership" }, 403);
+  const allowed = await ensureOrgRole(c, orgId, "owner");
+  if (!allowed.ok) return allowed.response;
+  const body = (await c.req.json().catch(() => ({}))) as { account_id?: unknown };
+  if (typeof body.account_id !== "string" || body.account_id.length === 0) {
+    return c.json({ error: "account_id required" }, 400);
+  }
+  if (body.account_id === account.id) return c.json({ error: "you already own this organization" }, 400);
+  const target = await c.env.DB.prepare(
+    "SELECT org_role FROM org_members WHERE org_id = ?1 AND account_id = ?2",
+  ).bind(orgId, body.account_id).first<{ org_role: OrgRole }>();
+  if (!target) return c.json({ error: "member not found" }, 404);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE org_members SET org_role = 'owner' WHERE org_id = ?1 AND account_id = ?2",
+    ).bind(orgId, body.account_id),
+    c.env.DB.prepare(
+      "UPDATE org_members SET org_role = 'admin' WHERE org_id = ?1 AND account_id = ?2 AND org_role = 'owner'",
+    ).bind(orgId, account.id),
+  ]);
+  return c.json({ ok: true, org_id: orgId, owner_account_id: body.account_id, previous_owner_role: "admin" });
 }
 
 export async function handleListOrgMembers(c: AdminContext) {

@@ -815,12 +815,18 @@ hands webhooks list my-app
 hands webhooks deliveries my-app <webhook-id>
 hands webhooks update my-app <webhook-id> --disable
 printf %s "$NEW_SECRET" | hands webhooks update my-app <webhook-id> --secret-stdin
+# 或由 Hands 生成新秘密（只显示一次）：
+hands webhooks rotate-secret my-app <webhook-id>
+# 立即发送一个签名的 `ping`（停用时也会发送）；接收端失败时退出码为 1：
+hands webhooks test my-app <webhook-id>
 hands webhooks delete my-app <webhook-id>
 ```
 
 `release:new` 载荷包含 `release_id`、`app_id`、`build_id`、`channel_id`，以及 `version_name`、`version_code`、`app_slug` 和 `channel`（slug）。使用方无需调用 API 即可链接到固定公开页面 `https://hands.build/apps/<app_slug>/v/<version_name>`。
 
-省略 `--events` 会订阅所有事件。投递包含 `X-Hands-Signature: sha256=<hex>`，即使用秘密对原始正文计算的 HMAC-SHA256。REST：`/api/apps/:appId/webhooks`（列出、创建）、`/api/apps/:appId/webhooks/:id`（PATCH / DELETE）、`/api/apps/:appId/webhooks/:id/deliveries`。
+省略 `--events` 会订阅所有事件。投递包含 `X-Hands-Signature: sha256=<hex>`，即使用秘密对原始正文计算的 HMAC-SHA256。REST：`/api/apps/:appId/webhooks`（列出、创建）、`/api/apps/:appId/webhooks/:id`（PATCH / DELETE）、`/api/apps/:appId/webhooks/:id/deliveries`、`POST /api/apps/:appId/webhooks/:id/rotate-secret` 和 `POST /api/apps/:appId/webhooks/:id/test`；组织级 Webhook 在 `/api/orgs/:orgId/webhooks/:id` 下有相同的路由（组织管理员）。
+
+新秘密立即用于此后的每次投递，包括尚未完成的重试，所以更换后请马上更新接收端。测试投递以 `ping` 事件记入该 Webhook 的投递记录，只尝试一次、不重试，载荷为 `{"webhook_id", "sent_by", "message"}`。
 
 ## 直接访问 API（`hands api`）
 

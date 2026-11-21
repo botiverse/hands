@@ -186,6 +186,18 @@ The CLI has the same: `hands signing ...`, `hands signing app-id`,
 signing job fails with `signing_app_id_missing`, register the App ID, then
 sign again.
 
+### Organization and webhooks
+
+| Action | Does | Role |
+|---|---|---|
+| `rename-org` | Rename the organization in Hands (`name: null` follows the Raft server again) | org admin |
+| `transfer-org-ownership` | Make a member owner; you become admin | org owner |
+| `rotate-webhook-secret`, `rotate-app-webhook-secret` | Replace a webhook's secret with one Hands generates, returned once | org admin / app admin |
+| `test-webhook`, `test-app-webhook` | Send one signed `ping` now and return what the endpoint answered | org admin / app admin |
+
+The CLI has `hands webhooks rotate-secret` and `hands webhooks test` for app
+webhooks.
+
 ### Ticket triage (feedback + crashes)
 
 ```bash

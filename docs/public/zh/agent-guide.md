@@ -115,6 +115,17 @@ hands releases shares <app> <releaseId>
 
 命令行对应：`hands signing ...`、`hands signing app-id`、`hands apps asc-key --from-app`、`hands builds testflight-upload`。签名任务因 `signing_app_id_missing` 失败时，先注册 App ID 再重新签名。
 
+### 组织和 Webhook
+
+| 动作 | 作用 | 角色 |
+|---|---|---|
+| `rename-org` | 在 Hands 中重命名组织（`name: null` 重新跟随 Raft 服务器名称） | 组织管理员 |
+| `transfer-org-ownership` | 让某位成员成为所有者，你变为管理员 | 组织所有者 |
+| `rotate-webhook-secret`、`rotate-app-webhook-secret` | 用 Hands 生成的新密钥替换 Webhook 密钥，只返回一次 | 组织管理员 / 应用管理员 |
+| `test-webhook`、`test-app-webhook` | 立即发送一个签名的 `ping`，返回接收端的响应 | 组织管理员 / 应用管理员 |
+
+命令行对应：应用 Webhook 用 `hands webhooks rotate-secret` 和 `hands webhooks test`。
+
 ### 工单处理（反馈与崩溃）
 
 ```bash

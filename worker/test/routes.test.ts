@@ -660,6 +660,8 @@ function makeMockDb() {
       external_id TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       archived INTEGER NOT NULL DEFAULT 0,
+      raft_name TEXT,
+      name_customized INTEGER NOT NULL DEFAULT 0,
       UNIQUE (external_provider, external_id)
     );
     CREATE TABLE org_members (

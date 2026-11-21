@@ -206,6 +206,121 @@ export async function handleUpdateWebhook(c: AdminContext) {
 }
 
 // ============================================================================
+// Secret rotation and test deliveries (org and app scope)
+// ============================================================================
+
+/** 32 random bytes as hex, prefixed so a leaked value is recognisable. */
+function generateWebhookSecret(): string {
+  const data = new Uint8Array(32);
+  crypto.getRandomValues(data);
+  return `whsec_${Array.from(data, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+type WebhookScope = { column: "org_id" | "app_id"; id: string };
+
+async function findLiveWebhook(db: D1Database, webhookId: string, scope: WebhookScope) {
+  return db.prepare(
+    `SELECT id, org_id, app_id, url, enabled FROM webhooks
+     WHERE id = ?1 AND ${scope.column} = ?2 AND archived_at IS NULL
+     LIMIT 1`,
+  ).bind(webhookId, scope.id).first<{ id: string; org_id: string; app_id: string | null; url: string; enabled: number }>();
+}
+
+/**
+ * Replace the webhook's secret with a new one Hands generates and return it
+ * once. Every delivery from now on, including retries still pending, is
+ * signed with it; the old secret stops working at once.
+ */
+async function rotateWebhookSecret(c: AdminContext, scope: WebhookScope) {
+  const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, scope.column, scope.id)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
+  const secret = generateWebhookSecret();
+  const result = await c.env.DB.prepare(
+    `UPDATE webhooks SET secret = ?1, updated_at = ?2
+     WHERE id = ?3 AND ${scope.column} = ?4 AND archived_at IS NULL`,
+  ).bind(secret, Date.now(), webhookId, scope.id).run();
+  if (!result.meta.changes) return c.json({ error: "webhook not found" }, 404);
+  return c.json({ id: webhookId, secret, secret_set: true });
+}
+
+/**
+ * Send one signed `ping` to the webhook now and report what its endpoint
+ * answered. It is recorded with the webhook's deliveries, is attempted once
+ * (no retries) and goes to a paused webhook too, so the endpoint can be
+ * checked before deliveries are switched on.
+ */
+async function sendTestDelivery(c: AdminContext, scope: WebhookScope) {
+  const webhookId = c.req.param("webhookId") ?? "";
+  if (await isInternalRaftWebhook(c.env.DB, webhookId, scope.column, scope.id)) {
+    return c.json({ error: "webhook not found" }, 404);
+  }
+  const webhook = await findLiveWebhook(c.env.DB, webhookId, scope);
+  if (!webhook) return c.json({ error: "webhook not found" }, 404);
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  const actor = currentActorInfo(c);
+  const payload = JSON.stringify({
+    event: "ping",
+    delivered_at: now,
+    org_id: webhook.org_id,
+    app_id: webhook.app_id,
+    payload: { webhook_id: webhook.id, sent_by: actor.display_name, message: "Test delivery from Hands" },
+  });
+  await c.env.DB.prepare(
+    `INSERT INTO webhook_deliveries
+     (id, webhook_id, event_type, payload_json, status,
+      attempts, max_attempts, last_attempt_at, next_attempt_at,
+      created_at, updated_at)
+     VALUES (?1, ?2, 'ping', ?3, 'pending', 0, 1, NULL, NULL, ?4, ?4)`,
+  ).bind(id, webhook.id, payload, now).run();
+  await attemptTestDelivery(c.env, id);
+  const delivery = await c.env.DB.prepare(
+    `SELECT id, webhook_id, event_type, status, attempts, max_attempts,
+            last_attempt_at, next_attempt_at, last_response_status,
+            last_response_body, last_error, created_at, completed_at
+     FROM webhook_deliveries WHERE id = ?1`,
+  ).bind(id).first();
+  return c.json({ delivery });
+}
+
+/** One attempt that ignores the pause switch; the regular path would refuse a paused webhook. */
+async function attemptTestDelivery(env: Pick<Env, "DB">, deliveryId: string) {
+  const d = await env.DB.prepare(
+    `SELECT d.id, d.payload_json, w.url, w.secret
+     FROM webhook_deliveries d JOIN webhooks w ON w.id = d.webhook_id
+     WHERE d.id = ?1`,
+  ).bind(deliveryId).first<{ id: string; payload_json: string; url: string; secret: string }>();
+  if (!d) return;
+  const result = await postOnce(d.url, d.secret, d.payload_json, d.id, null, (input, init) => fetch(input, init), DELIVERY_ATTEMPT_TIMEOUT_MS);
+  const now = Date.now();
+  await env.DB.prepare(
+    `UPDATE webhook_deliveries
+     SET status = ?1, attempts = 1, last_attempt_at = ?2, next_attempt_at = NULL,
+         last_response_status = ?3, last_response_body = ?4, last_error = ?5,
+         completed_at = ?2, updated_at = ?2
+     WHERE id = ?6 AND status = 'pending'`,
+  ).bind(
+    result.ok ? "succeeded" : "failed",
+    now,
+    result.status,
+    result.body ?? null,
+    result.ok ? null : (result.errorCode ?? "webhook_http_error"),
+    d.id,
+  ).run();
+}
+
+export const handleRotateWebhookSecret = (c: AdminContext) =>
+  rotateWebhookSecret(c, { column: "org_id", id: c.req.param("orgId") ?? "" });
+export const handleTestWebhook = (c: AdminContext) =>
+  sendTestDelivery(c, { column: "org_id", id: c.req.param("orgId") ?? "" });
+export const handleRotateAppWebhookSecret = (c: AdminContext) =>
+  rotateWebhookSecret(c, { column: "app_id", id: c.req.param("appId") ?? "" });
+export const handleTestAppWebhook = (c: AdminContext) =>
+  sendTestDelivery(c, { column: "app_id", id: c.req.param("appId") ?? "" });
+
+// ============================================================================
 // Deliveries (read-only history for UI)
 // ============================================================================
 

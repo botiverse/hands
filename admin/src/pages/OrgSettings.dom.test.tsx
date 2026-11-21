@@ -21,6 +21,10 @@ const mocks = vi.hoisted(() => ({
   updateWebhook: vi.fn(),
   deleteWebhook: vi.fn(),
   deliveries: vi.fn(),
+  rotateSecret: vi.fn(),
+  testWebhook: vi.fn(),
+  updateOrg: vi.fn(),
+  transferOwnership: vi.fn(),
   toast: vi.fn(),
 }));
 
@@ -42,6 +46,10 @@ vi.mock("../lib/api", async (importOriginal) => ({
   updateOrgWebhook: mocks.updateWebhook,
   deleteOrgWebhook: mocks.deleteWebhook,
   listWebhookDeliveries: mocks.deliveries,
+  rotateOrgWebhookSecret: mocks.rotateSecret,
+  testOrgWebhook: mocks.testWebhook,
+  updateOrg: mocks.updateOrg,
+  transferOrgOwnership: mocks.transferOwnership,
 }));
 
 import { OrgSettings, type OrgSettingsTab } from "./OrgSettings";
@@ -111,6 +119,29 @@ describe("Organization › General", () => {
     expect(screen.getByText("Owner")).toBeTruthy();
   });
 
+  it("renames the organization in a dialog and can hand the name back to Raft", async () => {
+    mocks.updateOrg.mockResolvedValue({ ok: true });
+    mocks.orgs.mockResolvedValue({ orgs: [{ id: "org-1", slug: "botiverse", name: "Botiverse", raft_name: "raft", name_customized: 1, external_provider: "raft", external_id: "srv", created_at: NOW - 400 * D, archived: 0, org_role: "owner" }] });
+    renderOrg("general");
+    expect(await screen.findByText("Set in Hands. The Raft server is called raft.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const dialog = await screen.findByRole("dialog", { name: "Rename organization" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "  Botiverse Inc  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mocks.updateOrg).toHaveBeenCalledWith("org-1", { name: "Botiverse Inc" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Use the Raft server's name" }));
+    await waitFor(() => expect(mocks.updateOrg).toHaveBeenLastCalledWith("org-1", { name: null }));
+  });
+
+  it("offers no rename to a member", async () => {
+    mocks.me.mockResolvedValue(account("member"));
+    mocks.orgs.mockResolvedValue({ orgs: [{ id: "org-1", slug: "botiverse", name: "Botiverse", external_provider: "raft", external_id: "srv", created_at: NOW - 400 * D, archived: 0, org_role: "member" }] });
+    renderOrg("general");
+    expect(await screen.findByText("Follows the Raft server's name.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+  });
+
   it("warns when the URL's organization is not the current one", async () => {
     mocks.me.mockResolvedValue({ ...account("owner"), account: { ...account("owner").account, org_id: "org-2" } });
     renderOrg("general");
@@ -150,6 +181,27 @@ describe("Organization › Members", () => {
     expect(within(dialog).getByText("Remove this member?")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(mocks.removeMember).toHaveBeenCalledWith("org-1", "acc-maya"));
+  });
+
+  it("lets an owner hand ownership to a member after a confirmation", async () => {
+    mocks.transferOwnership.mockResolvedValue({ ok: true });
+    renderOrg("members");
+    fireEvent.click(await screen.findByText("Maya"));
+    const column = screen.getByRole("region", { name: "Maya" });
+    fireEvent.click(within(column).getByText("Transfer ownership"));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Transfer ownership?")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Transfer ownership" }));
+    await waitFor(() => expect(mocks.transferOwnership).toHaveBeenCalledWith("org-1", "acc-maya"));
+  });
+
+  it("offers an admin no ownership transfer", async () => {
+    mocks.me.mockResolvedValue(account("admin"));
+    renderOrg("members");
+    fireEvent.click(await screen.findByText("Maya"));
+    const column = screen.getByRole("region", { name: "Maya" });
+    expect(within(column).getByText("Remove from organization")).toBeTruthy();
+    expect(within(column).queryByText("Transfer ownership")).toBeNull();
   });
 
   it("lets nobody change their own role or remove themselves", async () => {
@@ -293,6 +345,30 @@ describe("Organization › Webhooks", () => {
     const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive webhook" }));
     await waitFor(() => expect(mocks.deleteWebhook).toHaveBeenCalledWith("org-1", "w1"));
+  });
+
+  it("replaces the secret after a confirmation and shows the new one once", async () => {
+    mocks.rotateSecret.mockResolvedValue({ id: "w1", secret: "whsec_new" });
+    renderOrg("webhooks");
+    fireEvent.click(await screen.findByText("ci.example.com/hooks"));
+    const column = screen.getByRole("region", { name: "ci.example.com/hooks" });
+    fireEvent.click(within(column).getByRole("button", { name: "Replace" }));
+    const confirm = await screen.findByRole("alertdialog");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Replace secret" }));
+    await waitFor(() => expect(mocks.rotateSecret).toHaveBeenCalledWith("org-1", "w1"));
+    const shown = await screen.findByRole("dialog", { name: "New secret" });
+    expect(within(shown).getByText("whsec_new")).toBeTruthy();
+  });
+
+  it("sends a test delivery and reports what the endpoint answered", async () => {
+    mocks.testWebhook.mockResolvedValue({ delivery: { id: "d2", webhook_id: "w1", event_type: "ping", status: "failed", attempts: 1, max_attempts: 1, last_attempt_at: NOW, next_attempt_at: null, last_response_status: 500, last_response_body: "", last_error: "webhook_http_error", created_at: NOW, completed_at: NOW } });
+    renderOrg("webhooks");
+    fireEvent.click(await screen.findByText("ci.example.com/hooks"));
+    const column = screen.getByRole("region", { name: "ci.example.com/hooks" });
+    fireEvent.click(within(column).getByRole("button", { name: "Send test delivery" }));
+    await waitFor(() => expect(mocks.testWebhook).toHaveBeenCalledWith("org-1", "w1"));
+    await waitFor(() => expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({ kind: "error", title: "Test delivery failed", description: "HTTP 500" })));
+    await waitFor(() => expect(mocks.deliveries).toHaveBeenCalledTimes(2));
   });
 
   it("edits the URL in a dialog", async () => {

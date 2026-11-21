@@ -363,6 +363,10 @@ export interface Org {
   id: string;
   slug: string;
   name: string;
+  /** The Raft server's name; `name` differs from it only when renamed in Hands. */
+  raft_name?: string | null;
+  /** 1 when the name was set in Hands and no longer follows the Raft server. */
+  name_customized?: number;
   external_provider: string;
   external_id: string;
   created_at: number;
@@ -565,6 +569,16 @@ export const updateApp = (
 
 export const listOrgs = () =>
   request<{ orgs: Org[] }>(`/api/orgs`, { admin: true });
+
+/** Rename the organization in Hands; `null` follows the Raft server's name again. */
+export const updateOrg = (orgId: string, input: { name: string | null }) =>
+  request<{ ok: true }>(`/api/orgs/${orgId}`, { method: "PATCH", admin: true, body: JSON.stringify(input) });
+
+/** Make another member the owner; the caller becomes admin. Owner only. */
+export const transferOrgOwnership = (orgId: string, accountId: string) =>
+  request<{ ok: true }>(`/api/orgs/${orgId}/transfer-ownership`, {
+    method: "POST", admin: true, body: JSON.stringify({ account_id: accountId }),
+  });
 
 export const transferApp = (appId: string, input: { target_org_id: string; expected_source_org_id: string; idempotency_key: string }) =>
   request<{ ok: true; app_id: string; from_org_id: string; target_org_id: string }>(`/api/apps/${appId}/transfer`, {
@@ -1946,6 +1960,18 @@ export const deleteOrgWebhook = (orgId: string, webhookId: string) =>
   request<{ ok: true }>(`/api/orgs/${orgId}/webhooks/${webhookId}`, {
     method: "DELETE",
     admin: true,
+  });
+
+/** Replace the secret with one Hands generates; it is returned only here. */
+export const rotateOrgWebhookSecret = (orgId: string, webhookId: string) =>
+  request<{ id: string; secret: string }>(`/api/orgs/${orgId}/webhooks/${webhookId}/rotate-secret`, {
+    method: "POST", admin: true,
+  });
+
+/** Send one signed `ping` now (also to a paused webhook) and return how it went. */
+export const testOrgWebhook = (orgId: string, webhookId: string) =>
+  request<{ delivery: WebhookDelivery }>(`/api/orgs/${orgId}/webhooks/${webhookId}/test`, {
+    method: "POST", admin: true,
   });
 
 export const listWebhookDeliveries = (orgId: string, webhookId: string) =>

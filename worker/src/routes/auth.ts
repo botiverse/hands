@@ -540,7 +540,7 @@ async function defaultOrgRoleForAccount(
     : "member";
 }
 
-async function upsertRaftOrgMembership(
+export async function upsertRaftOrgMembership(
   db: D1Database,
   account: AdminAccount,
 ): Promise<{ org_id: string; org_role: "owner" | "admin" | "member" | "viewer" }> {
@@ -554,12 +554,15 @@ async function upsertRaftOrgMembership(
   await db.batch([
     db
       .prepare(
+        // A name set in Hands (name_customized) survives sign-in; raft_name
+        // always tracks the server so that name can be handed back.
         `INSERT INTO organizations
-         (id, slug, name, external_provider, external_id, created_at, archived)
-         VALUES (?1, ?2, ?3, 'raft', ?4, ?5, 0)
+         (id, slug, name, raft_name, external_provider, external_id, created_at, archived)
+         VALUES (?1, ?2, ?3, ?3, 'raft', ?4, ?5, 0)
          ON CONFLICT(external_provider, external_id) DO UPDATE SET
            slug = excluded.slug,
-           name = excluded.name`,
+           raft_name = excluded.raft_name,
+           name = CASE WHEN organizations.name_customized = 1 THEN organizations.name ELSE excluded.name END`,
       )
       .bind(orgId, slug, name, account.server_id, timestamp),
     db
@@ -2123,6 +2126,66 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         parameters: {
           org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
           webhook_id: { type: "string", in: "path", required: true, description: "Webhook id." },
+        },
+      },
+      {
+        name: "rotate-webhook-secret",
+        description:
+          "Replace an organization webhook's signing secret with one Hands generates and return it once. Every delivery from then on, pending retries included, is signed with it. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks/{webhook_id}/rotate-secret" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook id." },
+        },
+      },
+      {
+        name: "test-webhook",
+        description:
+          "Send one signed ping event to an organization webhook now, also while it is paused, and return the delivery with the endpoint's status. Attempted once, never retried. Requires org admin.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/webhooks/{webhook_id}/test" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook id." },
+        },
+      },
+      {
+        name: "rotate-app-webhook-secret",
+        description:
+          "Replace an app webhook's signing secret with one Hands generates and return it once. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/webhooks/{webhook_id}/rotate-secret" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook UUID owned by this app." },
+        },
+      },
+      {
+        name: "test-app-webhook",
+        description:
+          "Send one signed ping event to an app webhook now, also while it is disabled, and return the delivery with the endpoint's status. Requires app admin.",
+        endpoint: { method: "POST", path: "/api/apps/{app_id}/webhooks/{webhook_id}/test" },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Exact Hands app UUID." },
+          webhook_id: { type: "string", in: "path", required: true, description: "Webhook UUID owned by this app." },
+        },
+      },
+      {
+        name: "rename-org",
+        description:
+          "Rename an organization in Hands; the name then stays through sign-in. name=null follows the Raft server's name again. Requires org admin.",
+        endpoint: { method: "PATCH", path: "/api/orgs/{org_id}" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          name: { type: "string", in: "body", required: true, description: "New name, 1-80 characters; null to use the Raft server's name." },
+        },
+      },
+      {
+        name: "transfer-org-ownership",
+        description:
+          "Make another member of the organization its owner; the caller becomes admin in the same step. Requires org owner.",
+        endpoint: { method: "POST", path: "/api/orgs/{org_id}/transfer-ownership" },
+        parameters: {
+          org_id: { type: "string", in: "path", required: true, description: "Hands organization id." },
+          account_id: { type: "string", in: "body", required: true, description: "Hands account id of the member who becomes owner." },
         },
       },
       {
