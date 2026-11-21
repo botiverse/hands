@@ -1195,6 +1195,10 @@ hands webhooks list my-app
 hands webhooks deliveries my-app <webhook-id>
 hands webhooks update my-app <webhook-id> --disable
 printf %s "$NEW_SECRET" | hands webhooks update my-app <webhook-id> --secret-stdin
+# Or let Hands generate the new secret (printed once):
+hands webhooks rotate-secret my-app <webhook-id>
+# Send one signed `ping` now, also while disabled; exits 1 if the endpoint fails:
+hands webhooks test my-app <webhook-id>
 hands webhooks delete my-app <webhook-id>
 ```
 
@@ -1206,7 +1210,15 @@ without an API call.
 Omitting `--events` subscribes to all events. Deliveries carry
 `X-Hands-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body with the secret). REST:
 `/api/apps/:appId/webhooks` (list/create), `/api/apps/:appId/webhooks/:id`
-(PATCH/DELETE), `/api/apps/:appId/webhooks/:id/deliveries`.
+(PATCH/DELETE), `/api/apps/:appId/webhooks/:id/deliveries`,
+`POST /api/apps/:appId/webhooks/:id/rotate-secret` and
+`POST /api/apps/:appId/webhooks/:id/test`; org-wide webhooks have the same
+routes under `/api/orgs/:orgId/webhooks/:id` (org admin).
+
+A new secret applies at once to every delivery, retries still pending
+included, so update the endpoint right after rotating. A test delivery is
+recorded with the webhook's deliveries as event `ping`, is attempted once with
+no retries, and carries `{"webhook_id", "sent_by", "message"}` as its payload.
 
 ## Direct API Access (`hands api`)
 

@@ -2892,6 +2892,12 @@ describe("webhook commands", () => {
       if (req.url === "/api/apps/app-1/webhooks/wh-1" && (req.method === "PATCH" || req.method === "DELETE")) {
         return res.end(JSON.stringify({ ok: true }));
       }
+      if (req.url === "/api/apps/app-1/webhooks/wh-1/rotate-secret" && req.method === "POST") {
+        return res.end(JSON.stringify({ id: "wh-1", secret: "whsec_rotated" }));
+      }
+      if (req.url === "/api/apps/app-1/webhooks/wh-1/test" && req.method === "POST") {
+        return res.end(JSON.stringify({ delivery: { id: "d-1", event_type: "ping", status: "failed", attempts: 1, last_response_status: 503, last_error: "webhook_http_error", created_at: 1 } }));
+      }
       res.statusCode = 404;
       return res.end(JSON.stringify({ error: "not found" }));
     });
@@ -2935,6 +2941,15 @@ describe("webhook commands", () => {
 
       await run("delete", "bobo-release-test", "wh-1");
       expect(requests.some((r) => r.method === "DELETE" && r.url === "/api/apps/app-1/webhooks/wh-1")).toBe(true);
+
+      await run("rotate-secret", "bobo-release-test", "wh-1");
+      expect(logs.some((l) => l.includes("whsec_rotated"))).toBe(true);
+
+      const exitCode = process.exitCode;
+      await run("test", "bobo-release-test", "wh-1");
+      expect(logs.some((l) => l === "Test delivery failed (HTTP 503).")).toBe(true);
+      expect(process.exitCode).toBe(1);
+      process.exitCode = exitCode;
     } finally {
       logSpy.mockRestore();
       if (originalApi === undefined) delete process.env.HANDS_API;

@@ -349,6 +349,10 @@ import {
   handleWebhookQueue,
   reapWebhookDeliveries,
   handleUpdateWebhook,
+  handleRotateWebhookSecret,
+  handleTestWebhook,
+  handleRotateAppWebhookSecret,
+  handleTestAppWebhook,
 } from "./routes/webhooks";
 import {
   handleConnectRaftBot,
@@ -382,6 +386,8 @@ import {
   handleUpdateAppMember,
   handleUpdateAppServerGrant,
   handleUpdateOrgMember,
+  handleUpdateOrg,
+  handleTransferOrgOwnership,
 } from "./routes/orgs";
 import {
   requireAppRole,
@@ -1037,6 +1043,8 @@ bindAdmin("get", "/api/admin/container/build", requireHandsAdmin, async (c) => {
 });
 
 bindAdmin("get", "/api/orgs", handleListOrgs);
+bindAdmin("patch", "/api/orgs/:orgId", requireOrgRole("orgId", "admin"), handleUpdateOrg);
+bindAdmin("post", "/api/orgs/:orgId/transfer-ownership", requireOrgRole("orgId", "owner"), handleTransferOrgOwnership);
 bindAdmin("get", "/api/orgs/:orgId/members", requireOrgRole("orgId", "viewer"), handleListOrgMembers);
 bindAdmin("patch", "/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleUpdateOrgMember);
 bindAdmin("delete", "/api/orgs/:orgId/members/:accountId", requireOrgRole("orgId", "admin"), handleRemoveOrgMember);
@@ -1056,11 +1064,15 @@ bindAdmin("post", "/api/orgs/:orgId/webhooks", requireOrgRole("orgId", "admin"),
 bindAdmin("patch", "/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleUpdateWebhook);
 bindAdmin("delete", "/api/orgs/:orgId/webhooks/:webhookId", requireOrgRole("orgId", "admin"), handleDeleteWebhook);
 bindAdmin("get", "/api/orgs/:orgId/webhooks/:webhookId/deliveries", requireOrgRole("orgId", "admin"), handleListDeliveries);
+bindAdmin("post", "/api/orgs/:orgId/webhooks/:webhookId/rotate-secret", requireOrgRole("orgId", "admin"), handleRotateWebhookSecret);
+bindAdmin("post", "/api/orgs/:orgId/webhooks/:webhookId/test", requireOrgRole("orgId", "admin"), handleTestWebhook);
 bindAdmin("get", "/api/apps/:appId/webhooks", requireAppRole("admin"), handleListAppWebhooks);
 bindAdmin("post", "/api/apps/:appId/webhooks", requireAppRole("admin"), handleCreateAppWebhook);
 bindAdmin("patch", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleUpdateAppWebhook);
 bindAdmin("delete", "/api/apps/:appId/webhooks/:webhookId", requireAppRole("admin"), handleDeleteAppWebhook);
 bindAdmin("get", "/api/apps/:appId/webhooks/:webhookId/deliveries", requireAppRole("admin"), handleListAppWebhookDeliveries);
+bindAdmin("post", "/api/apps/:appId/webhooks/:webhookId/rotate-secret", requireAppRole("admin"), handleRotateAppWebhookSecret);
+bindAdmin("post", "/api/apps/:appId/webhooks/:webhookId/test", requireAppRole("admin"), handleTestAppWebhook);
 
 // Hands-managed Raft App Bot notification destinations.
 bindAdmin("get", "/api/apps/:appId/raft-notifications", requireAppRole("admin"), handleGetRaftNotifications);

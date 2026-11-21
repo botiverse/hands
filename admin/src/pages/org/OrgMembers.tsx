@@ -7,7 +7,7 @@
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Info, Search, UserMinus, Users, X } from "lucide-react";
+import { AlertTriangle, Info, Search, UserMinus, Users, X, Crown } from "lucide-react";
 import {
   Avatar,
   AvatarFallback,
@@ -49,7 +49,7 @@ import {
   Text,
 } from "@botiverse/raft-ui";
 import { ListRowSkeleton } from "@botiverse/raft-ui/wip";
-import { listOrgMembers, removeOrgMember, updateOrgMember, type OrgMember } from "../../lib/api";
+import { listOrgMembers, removeOrgMember, transferOrgOwnership, updateOrgMember, type OrgMember } from "../../lib/api";
 import { errorMessage } from "../../lib/errorMessage";
 import { collidingPrincipalLabels, needsServerBadge, principalServer } from "../../lib/principalIdentity";
 import { useLocale, useText } from "../../lib/locale";
@@ -289,10 +289,12 @@ function MemberColumn({
   const qc = useQueryClient();
   const toast = useToast();
   const [removing, setRemoving] = useState(false);
+  const [transferring, setTransferring] = useState(false);
   const isAdmin = currentRole === "admin" || currentRole === "owner";
   const you = m.account_id === currentAccountId;
   const editable = canChangeRole(m, currentAccountId, currentRole);
   const removable = isAdmin && !you;
+  const transferable = currentRole === "owner" && !you && m.org_role !== "owner";
   const roles = assignableRoles(currentRole);
 
   const update = useMutation({
@@ -302,6 +304,16 @@ function MemberColumn({
       void qc.invalidateQueries({ queryKey: ["org-members", orgId] });
     },
     onError: (e) => toast.show({ kind: "error", title: t("Update failed", "更新失败"), description: errorMessage(e) }),
+  });
+  const transfer = useMutation({
+    mutationFn: () => transferOrgOwnership(orgId, m.account_id),
+    onSuccess: () => {
+      toast.show({ kind: "success", title: t(`${m.display_name} now owns the organization`, `${m.display_name} 现在是组织所有者`) });
+      void qc.invalidateQueries({ queryKey: ["org-members", orgId] });
+      void qc.invalidateQueries({ queryKey: ["orgs"] });
+      void qc.invalidateQueries({ queryKey: ["auth-me"] });
+    },
+    onError: (e) => toast.show({ kind: "error", title: t("Transfer failed", "转移失败"), description: errorMessage(e) }),
   });
   const remove = useMutation({
     mutationFn: () => removeOrgMember(orgId, m.account_id),
@@ -397,6 +409,17 @@ function MemberColumn({
       {removable && (
         <DetailSection title={t("Danger zone", "危险操作")}>
           <ListRowGroup>
+            {transferable && (
+              <ListRow variant="plain" onClick={() => setTransferring(true)} disabled={transfer.isPending}>
+                <ListRowIcon><Crown /></ListRowIcon>
+                <ListRowBody>
+                  <ListRowTitle>{t("Transfer ownership", "转移所有权")}</ListRowTitle>
+                  <ListRowDescription wrap>
+                    {t("They become owner and you become admin.", "对方成为所有者，你变为管理员。")}
+                  </ListRowDescription>
+                </ListRowBody>
+              </ListRow>
+            )}
             <ListRow variant="plain" onClick={() => setRemoving(true)} disabled={remove.isPending}>
               <ListRowIcon><UserMinus /></ListRowIcon>
               <ListRowBody>
@@ -413,6 +436,21 @@ function MemberColumn({
         <Text.Sans size="small" variant="muted">{t("Owners and admins manage members.", "所有者和管理员可以管理成员。")}</Text.Sans>
       )}
 
+      <ConfirmActionDialog
+        open={transferring}
+        title={t("Transfer ownership?", "转移所有权？")}
+        objectLabel={m.display_name}
+        objectHint={handle(m)}
+        body={t(
+          "They become an owner of this organization and you become an admin. Only an owner can make you owner again.",
+          "对方成为此组织的所有者，你变为管理员。之后只有所有者能把你改回所有者。",
+        )}
+        confirmLabel={t("Transfer ownership", "转移所有权")}
+        confirmKind="warning"
+        pending={transfer.isPending}
+        onConfirm={() => transfer.mutate(undefined, { onSettled: () => setTransferring(false) })}
+        onCancel={() => setTransferring(false)}
+      />
       <ConfirmActionDialog
         open={removing}
         title={t("Remove this member?", "移除此成员？")}

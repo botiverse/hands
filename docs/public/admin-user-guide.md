@@ -352,6 +352,25 @@ Invites:
 - An app invite gives a role on that app only, not membership of the
   organization.
 
+Organization:
+
+- The organization's name follows its Raft server's and is refreshed when
+  people sign in. An admin or owner can **Rename** it on **Org → General**; that
+  name stays through sign-in until **Use the Raft server's name** hands it back.
+- An owner can open a member on **Org → Members** and choose **Transfer
+  ownership**: that member becomes owner and you become admin, in one step.
+- An organization is not archived in Hands: it exists as long as its Raft server,
+  and membership comes from that server.
+
+Webhooks (**Org → Webhooks**, org admins):
+
+- **Replace** next to the secret generates a new one and shows it once. Every
+  delivery from then on is signed with it, retries still pending included, so
+  update the endpoint right away.
+- **Send test delivery** posts one signed `ping` event now, also while the
+  webhook is paused, and shows what the endpoint answered. It is listed with the
+  recent deliveries and is not retried.
+
 Deploy tokens are app-scoped bearer tokens. Create them for automation instead of reusing a human browser session. Copy the token when it is created; Hands only shows the raw token once. Each token records who created it, and actions performed with it are attributed as `deploy-token:<name>@<app>` in audit logs and release provenance.
 
 Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](permissions.md) for the full role model and the endpoint→role matrix.

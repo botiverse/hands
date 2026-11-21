@@ -5,12 +5,14 @@
  * dialog), the secret's state, the recent deliveries, and archiving it,
  * which a dialog confirms.
  *
- * The secret is written once, when the webhook is added: Hands signs every
- * delivery with it and never shows it again. Adding offers to generate one.
+ * The secret is written when the webhook is added (adding offers to generate
+ * one) and can be replaced by one Hands generates; either way it is shown
+ * once and never again. "Send test delivery" posts a signed ping right away,
+ * also while paused, and the result lands in the recent deliveries.
  */
 import { useId, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Archive, Plus, Webhook as WebhookIcon } from "lucide-react";
+import { AlertTriangle, Archive, KeyRound, Plus, Send, Webhook as WebhookIcon } from "lucide-react";
 import {
   Badge,
   Banner,
@@ -19,6 +21,9 @@ import {
   BannerTitle,
   Button,
   Checkbox,
+  CopyableCode,
+  CopyableCodeAction,
+  CopyableCodeRoot,
   Dialog,
   DialogBody,
   DialogClose,
@@ -66,6 +71,8 @@ import {
   deleteOrgWebhook,
   listOrgWebhooks,
   listWebhookDeliveries,
+  rotateOrgWebhookSecret,
+  testOrgWebhook,
   updateOrgWebhook,
   WEBHOOK_EVENT_TYPES,
   type Webhook,
@@ -252,6 +259,8 @@ function WebhookColumn({ orgId, webhook: w, onClose }: { orgId: string; webhook:
   const id = useId();
   const [editing, setEditing] = useState<"url" | "events" | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [newSecret, setNewSecret] = useState<string | null>(null);
   const events = eventsOf(w);
   const refresh = () => qc.invalidateQueries({ queryKey: ["org-webhooks", orgId] });
 
@@ -267,6 +276,24 @@ function WebhookColumn({ orgId, webhook: w, onClose }: { orgId: string; webhook:
       void refresh();
     },
     onError: (e) => toast.show({ kind: "error", title: t("Archive failed", "归档失败"), description: errorMessage(e) }),
+  });
+  const rotate = useMutation({
+    mutationFn: () => rotateOrgWebhookSecret(orgId, w.id),
+    onSuccess: (r) => setNewSecret(r.secret),
+    onError: (e) => toast.show({ kind: "error", title: t("Secret not changed", "密钥未更换"), description: errorMessage(e) }),
+  });
+  const test = useMutation({
+    mutationFn: () => testOrgWebhook(orgId, w.id),
+    onSuccess: ({ delivery: d }) => {
+      void qc.invalidateQueries({ queryKey: ["webhook-deliveries", orgId, w.id] });
+      if (d.status === "succeeded") {
+        toast.show({ kind: "success", title: t("Test delivered", "测试投递成功"), ...(d.last_response_status != null ? { description: `HTTP ${d.last_response_status}` } : {}) });
+      } else {
+        const why = d.last_response_status ? `HTTP ${d.last_response_status}` : (d.last_error ?? "");
+        toast.show({ kind: "error", title: t("Test delivery failed", "测试投递失败"), description: why });
+      }
+    },
+    onError: (e) => toast.show({ kind: "error", title: t("Test delivery failed", "测试投递失败"), description: errorMessage(e) }),
   });
   const deliveries = useQuery({
     queryKey: ["webhook-deliveries", orgId, w.id],
@@ -329,16 +356,27 @@ function WebhookColumn({ orgId, webhook: w, onClose }: { orgId: string; webhook:
               <ListRowTitle>{t("Secret", "密钥")}</ListRowTitle>
               <ListRowDescription wrap>
                 {w.secret_set
-                  ? t("Set when the webhook was added. Hands signs with it and never shows it. To change it, add a new webhook and archive this one.", "添加 Webhook 时设置。Hands 用它签名，不会再显示。如需更换，请新建 Webhook 并归档此 Webhook。")
+                  ? t("Hands signs every delivery with it and never shows it again.", "Hands 用它为每次投递签名，不会再显示。")
                   : t("Not set", "未设置")}
               </ListRowDescription>
             </ListRowBody>
+            <Button variant="outline" onClick={() => setRotating(true)} disabled={rotate.isPending}>
+              <KeyRound />{t("Replace", "更换")}
+            </Button>
           </ListRow>
         </ListRowGroup>
         <Text.Sans size="small" variant="muted">{t(`Added ${dateTime(w.created_at, locale)}`, `添加于 ${dateTime(w.created_at, locale)}`)}</Text.Sans>
       </DetailSection>
 
       <DetailSection title={t("Recent deliveries", "最近投递")}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Text.Sans size="small" variant="muted">
+            {t("A test sends a signed ping event now, even while paused.", "测试会立即发送一个签名的 ping 事件，暂停时也会发送。")}
+          </Text.Sans>
+          <Button variant="outline" onClick={() => test.mutate()} disabled={test.isPending}>
+            <Send />{test.isPending ? t("Sending…", "发送中…") : t("Send test delivery", "发送测试投递")}
+          </Button>
+        </div>
         {deliveries.isLoading && <Skeleton className="h-16 w-full" />}
         {deliveries.error && <Text.Sans size="small" className="text-danger-strong">{errorMessage(deliveries.error)}</Text.Sans>}
         {deliveries.data && deliveries.data.deliveries.length === 0 && (
@@ -366,6 +404,21 @@ function WebhookColumn({ orgId, webhook: w, onClose }: { orgId: string; webhook:
       {editing === "url" && <EditUrlDialog orgId={orgId} webhook={w} onClose={() => setEditing(null)} />}
       {editing === "events" && <EditEventsDialog orgId={orgId} webhook={w} onClose={() => setEditing(null)} />}
       <ConfirmActionDialog
+        open={rotating}
+        title={t("Replace the secret?", "更换密钥？")}
+        objectLabel={endpoint(w.url)}
+        body={t(
+          "Hands generates a new secret and signs every delivery with it from now on, retries included. The old secret stops working at once, so update the endpoint right after.",
+          "Hands 会生成新密钥，此后每次投递（包括重试）都用新密钥签名。旧密钥立即失效，请随后马上更新接收端。",
+        )}
+        confirmLabel={t("Replace secret", "更换密钥")}
+        confirmKind="danger"
+        pending={rotate.isPending}
+        onConfirm={() => rotate.mutate(undefined, { onSettled: () => setRotating(false) })}
+        onCancel={() => setRotating(false)}
+      />
+      {newSecret && <NewSecretDialog secret={newSecret} onClose={() => setNewSecret(null)} />}
+      <ConfirmActionDialog
         open={archiving}
         title={t("Archive this webhook?", "归档此 Webhook？")}
         objectLabel={endpoint(w.url)}
@@ -380,6 +433,32 @@ function WebhookColumn({ orgId, webhook: w, onClose }: { orgId: string; webhook:
         onCancel={() => setArchiving(false)}
       />
     </DetailColumn>
+  );
+}
+
+function NewSecretDialog({ secret, onClose }: { secret: string; onClose: () => void }) {
+  const t = useText();
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{t("New secret", "新密钥")}</DialogTitle>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody className="flex flex-col gap-4">
+          <DialogDescription>
+            {t("Copy it into the endpoint now: Hands won't show it again.", "请现在复制到接收端：Hands 不会再显示它。")}
+          </DialogDescription>
+          <CopyableCodeRoot size="sm" className="w-full">
+            <CopyableCode className="[overflow-wrap:anywhere]">{secret}</CopyableCode>
+            <CopyableCodeAction aria-label={t("Copy secret", "复制密钥")} />
+          </CopyableCodeRoot>
+        </DialogBody>
+        <DialogFooter>
+          <Button onClick={onClose}>{t("Done", "完成")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

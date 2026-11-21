@@ -117,6 +117,36 @@ export function registerWebhookCommands(program: Command): void {
       console.log(`Deleted webhook ${webhookId}.`);
     });
 
+  webhooks.command("rotate-secret <appIdOrSlug> <webhookId>")
+    .description("Replace the signing secret with one Hands generates; printed once.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, webhookId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{ id: string; secret: string }>(
+        `/api/apps/${appId}/webhooks/${encodeURIComponent(webhookId)}/rotate-secret`,
+        { method: "POST" },
+      );
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
+      console.log(`Replaced the secret of webhook ${webhookId}; the old one no longer verifies.`);
+      console.log(`Signing secret (shown once, store it now): ${result.secret}`);
+    });
+
+  webhooks.command("test <appIdOrSlug> <webhookId>")
+    .description("Send one signed ping now (also while disabled) and print the endpoint's answer.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, webhookId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{ delivery: Delivery }>(
+        `/api/apps/${appId}/webhooks/${encodeURIComponent(webhookId)}/test`,
+        { method: "POST" },
+      );
+      if (jsonRequested(program, opts.json)) return console.log(JSON.stringify(result, null, 2));
+      const d = result.delivery;
+      const outcome = d.last_response_status != null ? `HTTP ${d.last_response_status}` : (d.last_error ?? "-");
+      console.log(`Test delivery ${d.status} (${outcome}).`);
+      if (d.status !== "succeeded") process.exitCode = 1;
+    });
+
   webhooks.command("deliveries <appIdOrSlug> <webhookId>").option("--json", "Output JSON.", false)
     .action(async (appIdOrSlug: string, webhookId: string, opts: { json?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
