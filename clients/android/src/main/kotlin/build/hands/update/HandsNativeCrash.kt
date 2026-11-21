@@ -67,8 +67,39 @@ object HandsNativeCrash {
             dir.mkdirs()
             System.loadLibrary("handscrash")
             nativeInstall(dir.absolutePath, processStartAt, processEventId)
+            // The native record is written by the signal handler and carries no
+            // build; record this process's build now so its crash ticket names
+            // the version that crashed, not the one that later uploads it.
+            runCatching { writeProcessBuild(dir, processEventId, HandsCrash.installedBuild(context)) }
             true
         }.getOrDefault(false)
+    }
+
+    /** Null unless [processEventId] is a submission-id UUID, so a record cannot name another path. */
+    private fun processBuildFile(dir: File, processEventId: String): File? =
+        processEventId.takeIf { HandsFeedback.SUBMISSION_ID_PATTERN.matches(it) }?.let { File(dir, "$it.build") }
+
+    /** Same encoding as the ANR build stamp; an unknown build writes no file. */
+    internal fun writeProcessBuild(dir: File, processEventId: String, build: HandsHistoricalBuild) {
+        val bytes = HandsAnrBuildStamp.encode(build) ?: return
+        val file = processBuildFile(dir, processEventId) ?: return
+        val tmp = File(dir, "${file.name}.tmp")
+        tmp.writeBytes(bytes)
+        if (!tmp.renameTo(file)) tmp.delete()
+    }
+
+    /** The build of the process that left a record; unknown (no fields) when it wrote none. */
+    internal fun readProcessBuild(dir: File, processEventId: String?): HandsHistoricalBuild {
+        val file = processEventId?.let { processBuildFile(dir, it) }?.takeIf { it.isFile && it.length() <= HandsAnrBuildStamp.MAX_BYTES }
+        return HandsAnrBuildStamp.decode(file?.let { runCatching { it.readBytes() }.getOrNull() })
+    }
+
+    /** Build files of processes that left no record and are not this one. */
+    internal fun pruneProcessBuilds(dir: File, keep: Set<String>) {
+        dir.listFiles { f -> f.name.endsWith(".build") || f.name.endsWith(".build.tmp") }?.forEach { file ->
+            val id = file.name.substringBefore(".build")
+            if (id != processEventId && id !in keep) file.delete()
+        }
     }
 
     /** Parse + upload pending records; call off the launch critical path. */
@@ -104,6 +135,7 @@ object HandsNativeCrash {
                 PendingRecord(record, parsed)
             }
         }
+        pruneProcessBuilds(dir, pending.mapNotNull { it.parsed.processEventId }.toSet())
         if (pending.isEmpty()) return results
 
         // Reuse only a sidecar whose recorded QNC coordinates still match.
@@ -133,8 +165,8 @@ object HandsNativeCrash {
             }
         }
 
-        // A QNC record has no crash-time version. Leave the ticket build empty
-        // instead of stamping versionName/versionCode from the uploading install.
+        // A QNC record has no crash-time version; the build comes from the
+        // process's .build file (written at install), never from the uploading install.
         val feedback = HandsFeedback(
             context = context,
             baseUrl = baseUrl,
@@ -154,6 +186,7 @@ object HandsNativeCrash {
                 if (trace != null) add(trace)
             }
             val top = parsed.frames.firstOrNull()
+            val build = readProcessBuild(dir, parsed.processEventId)
             val result = runCatching {
                 feedback.submitReport(
                     message = buildString {
@@ -169,6 +202,7 @@ object HandsNativeCrash {
                         put("crash_top_frame", top?.let { "${it.soname}+0x${it.offset.toString(16)}" } ?: "")
                         put("crash_reason", "native_signal")
                         put("crash_at", parsed.crashAt.toString())
+                        putAll(HandsHistoricalBuildPolicy.versionExtras(build))
                         put("crash_native_format", parsed.format)
                         put("crash_native_frames", framesJson(parsed.frames))
                         put("crash_native_images", imagesJson(parsed.modules))
@@ -209,6 +243,8 @@ object HandsNativeCrash {
             if (outcome != NativeCrashUpload.Outcome.FAILED_WILL_RETRY) {
                 record.delete()
                 deleteExitSidecars(record)
+                parsed.processEventId?.takeIf { it != processEventId }
+                    ?.let { processBuildFile(dir, it)?.delete() }
             }
             results += NativeCrashUpload(
                 outcome = outcome,

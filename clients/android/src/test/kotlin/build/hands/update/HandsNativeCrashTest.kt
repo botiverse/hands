@@ -2,9 +2,12 @@ package build.hands.update
 
 import android.app.ApplicationExitInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 
 class HandsNativeCrashTest {
 
@@ -258,5 +261,44 @@ class HandsNativeCrashTest {
     fun submissionIdPatternMatchesTheServer() {
         assertTrue(HandsFeedback.SUBMISSION_ID_PATTERN.matches(java.util.UUID.randomUUID().toString()))
         assertTrue(!HandsFeedback.SUBMISSION_ID_PATTERN.matches("3f2b9c1e8d4a4b6e9c1f2a7d5e8b0c34"))
+    }
+
+    @Test
+    fun processBuildRoundTripsAndUnknownWritesNothing() {
+        val dir = Files.createTempDirectory("qnc-build").toFile()
+        val crashed = "53fdf0b8-23bb-4d17-962c-f700012c6e78"
+        val build = HandsHistoricalBuild("1.0.0-alpha+53e35e9f28", 10_000_243L)
+        HandsNativeCrash.writeProcessBuild(dir, crashed, build)
+        assertEquals(build, HandsNativeCrash.readProcessBuild(dir, crashed))
+        assertEquals(
+            mapOf("version_name" to "1.0.0-alpha+53e35e9f28", "version_code" to 10_000_243L),
+            HandsHistoricalBuildPolicy.versionExtras(HandsNativeCrash.readProcessBuild(dir, crashed)),
+        )
+
+        val unknownProcess = "00000000-0000-4000-8000-000000000001"
+        HandsNativeCrash.writeProcessBuild(dir, unknownProcess, HandsHistoricalBuild(null, null))
+        assertFalse(File(dir, "$unknownProcess.build").exists())
+        // No file (or no id): the ticket build stays empty rather than the uploader's.
+        assertEquals(emptyMap<String, Any>(), HandsHistoricalBuildPolicy.versionExtras(HandsNativeCrash.readProcessBuild(dir, unknownProcess)))
+        assertEquals(HandsHistoricalBuild(null, null), HandsNativeCrash.readProcessBuild(dir, null))
+    }
+
+    @Test
+    fun processBuildRejectsNonUuidIdsAndPrunesOrphans() {
+        val dir = Files.createTempDirectory("qnc-build").toFile()
+        val build = HandsHistoricalBuild("1.2.3", 42L)
+        HandsNativeCrash.writeProcessBuild(dir, "../escape", build)
+        assertEquals(0, dir.listFiles()!!.size)
+
+        val pending = "11111111-1111-4111-8111-111111111111"
+        val orphan = "22222222-2222-4222-8222-222222222222"
+        HandsNativeCrash.writeProcessBuild(dir, pending, build)
+        HandsNativeCrash.writeProcessBuild(dir, orphan, build)
+        HandsNativeCrash.writeProcessBuild(dir, HandsNativeCrash.processEventId, build)
+        HandsNativeCrash.pruneProcessBuilds(dir, setOf(pending))
+        assertTrue(File(dir, "$pending.build").exists())
+        assertFalse(File(dir, "$orphan.build").exists())
+        // This process's own build file survives: it may still crash.
+        assertTrue(File(dir, "${HandsNativeCrash.processEventId}.build").exists())
     }
 }
