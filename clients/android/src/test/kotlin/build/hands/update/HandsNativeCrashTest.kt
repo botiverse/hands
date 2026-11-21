@@ -291,14 +291,44 @@ class HandsNativeCrashTest {
         assertEquals(0, dir.listFiles()!!.size)
 
         val pending = "11111111-1111-4111-8111-111111111111"
-        val orphan = "22222222-2222-4222-8222-222222222222"
         HandsNativeCrash.writeProcessBuild(dir, pending, build)
-        HandsNativeCrash.writeProcessBuild(dir, orphan, build)
         HandsNativeCrash.writeProcessBuild(dir, HandsNativeCrash.processEventId, build)
+        File(dir, "$pending.build").setLastModified(1_000L)
+        File(dir, "${HandsNativeCrash.processEventId}.build").setLastModified(1_000L)
+        // Twelve orphans, oldest first: only the eight newest survive.
+        val orphans = (0 until 12).map { i -> "22222222-2222-4222-8222-%012d".format(i) }
+        orphans.forEachIndexed { i, id ->
+            HandsNativeCrash.writeProcessBuild(dir, id, build)
+            File(dir, "$id.build").setLastModified(10_000L + i * 1_000L)
+        }
         HandsNativeCrash.pruneProcessBuilds(dir, setOf(pending))
         assertTrue(File(dir, "$pending.build").exists())
-        assertFalse(File(dir, "$orphan.build").exists())
         // This process's own build file survives: it may still crash.
         assertTrue(File(dir, "${HandsNativeCrash.processEventId}.build").exists())
+        assertEquals(orphans.drop(4).map { "$it.build" }.toSet(),
+            dir.listFiles()!!.map { it.name }.filter { it.startsWith("22222222") }.toSet())
+    }
+
+    @Test
+    fun repeatedLaunchesWithoutRecordsStayBounded() {
+        val dir = Files.createTempDirectory("qnc-build").toFile()
+        val build = HandsHistoricalBuild("1.2.3", 42L)
+        repeat(50) { i ->
+            val id = "33333333-3333-4333-8333-%012d".format(i)
+            HandsNativeCrash.writeProcessBuild(dir, id, build)
+            File(dir, "$id.build").setLastModified(10_000L + i * 1_000L)
+            HandsNativeCrash.pruneProcessBuilds(dir, HandsNativeCrash.recordProcessEventIds(dir))
+        }
+        assertEquals(8, dir.listFiles()!!.size)
+    }
+
+    @Test
+    fun recordProcessEventIdsReadsTheHeaderOnly() {
+        val dir = Files.createTempDirectory("qnc-build").toFile()
+        val id = "44444444-4444-4444-8444-444444444444"
+        File(dir, "a.qnc").writeText("QNC2\nsignal 11\nprocess_event_id ${id.uppercase()}\nregisters\npc 0x1\n")
+        File(dir, "b.qnc").writeText("QNC2\nsignal 11\nmaps\nprocess_event_id 55555555-5555-4555-8555-555555555555\n")
+        File(dir, "c.qnc").writeText("QNC2\nprocess_event_id ../escape\n")
+        assertEquals(setOf(id), HandsNativeCrash.recordProcessEventIds(dir))
     }
 }
