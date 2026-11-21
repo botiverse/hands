@@ -111,6 +111,8 @@ object HandsNativeCrash {
     internal fun pruneProcessBuilds(dir: File, keep: Set<String>) {
         (dir.listFiles { f -> f.name.endsWith(".build") || f.name.endsWith(".build.tmp") } ?: return)
             .filter { file -> file.name.substringBefore(".build").let { it != processEventId && it !in keep } }
+            .sortedByDescending { it.lastModified() }
+            .drop(KEPT_ORPHAN_BUILDS)
             .forEach { it.delete() }
     }
 
