@@ -344,6 +344,19 @@ hands builds publish-android raft-android \
 Package id, SDK levels, and the launcher icon are extracted from the APK
 automatically on the server — no extra flags needed.
 
+`--arch` names the APK's ABI and defaults to `arm64-v8a`. A device asks for the
+APK of its own ABI and falls back to an APK registered without one. For a
+universal APK that carries native code for every ABI, pass `--arch universal`:
+Hands then serves it to every device, including x86_64 emulators. Delta patches
+pair builds of the same arch, so the first universal build after arm64-v8a
+builds ships full APKs once.
+
+When the app requires human approval for agent releases, `hands releases
+publish` from a deploy token or agent session does not publish: Hands answers
+HTTP 202 with `"status": "pending_approval"` and an `approval_request_id`, and
+the release stays a draft until an app or org admin approves it. Check `status`
+in the `--json` output.
+
 Add support artifacts when available:
 
 ```bash
