@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "@botiverse/raft-ui";
@@ -72,20 +72,25 @@ describe("app sidebar", () => {
     expect(within(nav).getByRole("button", { name: "Switch app: Deck" })).toBeTruthy();
   });
 
-  it("shows the organization entry, linking to the org page", () => {
+  it("heads the sidebar with the organization, which switches organizations in one click", async () => {
     renderSidebar(`/apps/${APP_ID}/releases`);
-    expect(screen.getByText("Organization")).toBeTruthy();
-    const org = screen.getByRole("link", { name: "Raft HQ" });
-    expect(org.getAttribute("href")).toBe("/orgs/org-1/general");
-    expect(org.hasAttribute("data-active")).toBe(false);
-    expect(org.getAttribute("aria-current")).toBeNull();
+    const nav = screen.getByRole("navigation", { name: "Hands" });
+    const org = within(nav).getByRole("button", { name: "Switch organization: Raft HQ" });
+    // The organization comes before the app switcher.
+    const app = within(nav).getByRole("button", { name: "Switch app: Deck" });
+    expect(org.compareDocumentPosition(app) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(org);
+    expect(await screen.findByRole("menuitem", { name: /Raft HQ/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Organization settings" }).getAttribute("href")).toBe("/orgs/org-1");
+    // Switching no longer hides in the account menu at the bottom.
+    expect(screen.queryByText("Organization")).toBeNull();
   });
 
   it("lists the organization's own pages on an org route", () => {
     renderSidebar("/orgs/org-1/signing");
     const nav = screen.getByRole("navigation", { name: "Hands" });
     // The org's pages replace the app nav, under a group named after the org.
-    expect(within(nav).getByText("Raft HQ")).toBeTruthy();
+    expect(within(nav).getAllByText("Raft HQ").length).toBeGreaterThan(0);
     expect(within(nav).queryByRole("link", { name: "Releases" })).toBeNull();
     const tabs = ["general", "members", "invites", "audit", "webhooks", "signing"];
     const names = ["General", "Members", "Invites", "Audit", "Webhooks", "Signing"];
@@ -96,9 +101,7 @@ describe("app sidebar", () => {
       expect(link.hasAttribute("data-active")).toBe(current);
       expect(link.getAttribute("aria-current")).toBe(current ? "page" : null);
     });
-    // One way to the org: the bottom Organization entry steps aside here.
-    expect(within(nav).queryByRole("link", { name: "Raft HQ" })).toBeNull();
-    // The header still leads back to the apps.
+    // The first row still leads back to the apps.
     expect(within(nav).getByRole("button", { name: "Open an app" })).toBeTruthy();
   });
 
@@ -108,19 +111,14 @@ describe("app sidebar", () => {
     expect(general.getAttribute("aria-current")).toBe("page");
   });
 
-  it("hides the organization entry without an org", () => {
-    renderSidebar(`/apps/${APP_ID}`, { ...account, org_id: null });
-    expect(screen.queryByText("Organization")).toBeNull();
-    expect(screen.queryByRole("link", { name: "Raft HQ" })).toBeNull();
-  });
-
   it("collapses to icon-only rows that keep their names", () => {
     localStorage.setItem("hands:sidebar-collapsed", "1");
     renderSidebar(`/apps/${APP_ID}/releases`);
     expect(screen.queryByText("Distribute")).toBeNull();
     expect(screen.queryByText("Organization")).toBeNull();
     expect(screen.getByRole("link", { name: "Releases" }).getAttribute("aria-current")).toBe("page");
-    expect(screen.getByRole("link", { name: "Raft HQ" }).getAttribute("href")).toBe("/orgs/org-1/general");
+    expect(screen.getByRole("button", { name: "Switch organization: Raft HQ" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch app: Deck" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
   });
 });
