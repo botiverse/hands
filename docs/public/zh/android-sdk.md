@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.13.4")
+    implementation("com.github.botiverse:hands:android-sdk-v0.14.2")
 }
 ```
 
@@ -40,7 +40,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.13.4")
+    implementation("build.hands:hands-android-sdk:0.14.2")
 }
 ```
 
@@ -200,7 +200,7 @@ HandsFeedback(context, baseUrl, appSlug, clientKey = key).submitReport(
 
 后到的一方会合并进第一张票：崩溃类型和分组签名以原生记录为准，退出票的字段一并保留，两边不一致的值记在票元数据的 `crash_merge` 里。若这张票原先被当作"后台被系统结束"自动关闭，原生记录证明是真崩溃后会重新打开。
 
-从 `0.13.4` 起，`HandsNativeCrash.install(context)` 还会记下当前进程的版本名和版本号，所以即使上传时已经装了更新的版本，原生崩溃工单也会标出真正崩溃的那个版本。用更早 SDK 的进程留下的记录没有版本信息，工单的版本保持为空；App 自己的退出报告合并进来时，Hands 会用它补上。
+从 `0.14.2` 起，`HandsNativeCrash.install(context)` 还会记下当前进程的版本名和版本号，所以即使上传时已经装了更新的版本，原生崩溃工单也会标出真正崩溃的那个版本。用更早 SDK 的进程留下的记录没有版本信息，工单的版本保持为空；App 自己的退出报告合并进来时，Hands 会用它补上。
 
 `HandsNativeCrash.uploadPending(...)` 为每条记录返回一个 `NativeCrashUpload`：`UPLOADED`（带 `ticketId`）、`MERGED`（匿名客户端拿不到 `ticketId`）、`FAILED_WILL_RETRY`（记录保留，下次重试）或 `DISCARDED`（记录损坏或超出保留上限）。每条都带 `pid`、`processStartAt`、`processEventId`、`crashAt` 和匹配到的 `exitTimestamp`；0.13.2 之前写下的记录没有进程 ID 和启动时间。
 
@@ -255,7 +255,7 @@ Hands.install(
 
 ```kotlin
 HandsCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
-HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.4+，suspend
+HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.3+，suspend
 HandsNativeCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey) // suspend
 HandsAnalytics.reportDevice(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)    // suspend
 ```

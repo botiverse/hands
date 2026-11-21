@@ -26,7 +26,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.13.4")
+    implementation("com.github.botiverse:hands:android-sdk-v0.14.2")
 }
 ```
 
@@ -44,7 +44,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.13.4")
+    implementation("build.hands:hands-android-sdk:0.14.2")
 }
 ```
 
@@ -294,7 +294,7 @@ are kept alongside, and values that disagree are preserved under the ticket's
 `crash_merge` metadata. A ticket auto-closed as a background system kill
 reopens when the native record shows it was a real crash.
 
-Since `0.13.4`, `HandsNativeCrash.install(context)` also records the
+Since `0.14.2`, `HandsNativeCrash.install(context)` also records the
 process's version name and code, so a native crash ticket names the build that
 crashed even when a newer install uploads it. Records left by a process that
 ran an older SDK have no build; their ticket's version stays empty (Hands fills
@@ -405,7 +405,7 @@ arguments:
 
 ```kotlin
 HandsCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)
-HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.4+, suspend
+HandsAnr.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)      // 0.13.3+, suspend
 HandsNativeCrash.uploadPending(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey) // suspend
 HandsAnalytics.reportDevice(context, baseUrl, appSlug, versionName, versionCode, channel, clientKey)    // suspend
 ```
