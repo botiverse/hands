@@ -33,6 +33,7 @@ import {
   Share2,
   Store,
   type LucideIcon,
+  ChevronsUpDown,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -382,8 +383,13 @@ export function Header({ account }: { account: AuthAccount }) {
   const collapseLabel = t("Collapse sidebar", "收起侧边栏");
   const expandLabel = t("Expand sidebar", "展开侧边栏");
   const appAvatar = (
-    <Avatar type="server" size="sm">
+    <Avatar type="server" size="xs">
       <AvatarFallback>{(currentApp?.name ?? "A").slice(0, 1).toUpperCase()}</AvatarFallback>
+    </Avatar>
+  );
+  const orgAvatar = (
+    <Avatar type="server" size="sm">
+      <AvatarFallback>{orgName.slice(0, 1).toUpperCase()}</AvatarFallback>
     </Avatar>
   );
 
@@ -392,60 +398,42 @@ export function Header({ account }: { account: AuthAccount }) {
       render={<nav aria-label="Hands" />}
       className={`flex h-full flex-col ${collapsed ? "w-12 pointer-coarse:w-14" : "w-60"}`}
     >
+      {/* The organization is the outermost scope, so it heads the sidebar and
+          switches in one click; the app switcher is the first row under it. */}
       <SidebarHeader className={collapsed ? "justify-center px-0" : "justify-between"}>
-        {appId && appBase ? (
-          <DropdownMenu>
-            {collapsed ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <DropdownMenuTrigger
-                      render={<PanelAction aria-label={`${t("Switch app", "切换应用")}: ${appName}`} />}
-                    >
-                      {appAvatar}
-                    </DropdownMenuTrigger>
-                  }
-                />
-                <TooltipContent side="right">{appName}</TooltipContent>
-              </Tooltip>
-            ) : (
-              <DropdownMenuTrigger
-                render={<WorkspaceButton aria-label={`${t("Switch app", "切换应用")}: ${appName}`} />}
-              >
-                {appAvatar}
-                <WorkspaceButtonName>{appName}</WorkspaceButtonName>
-              </DropdownMenuTrigger>
-            )}
-            <DropdownMenuContent side="bottom" align="start" className="w-64">
-              <AppSwitcherMenuItems appId={appId} />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          // Outside an app the workspace button still opens the app list, so
-          // every page has its way back to the apps.
-          <DropdownMenu>
-            {collapsed ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <DropdownMenuTrigger render={<PanelAction aria-label={t("Open an app", "打开应用")} />}>
-                      <QuiverMark className="size-6 flex-none" />
-                    </DropdownMenuTrigger>
-                  }
-                />
-                <TooltipContent side="right">{t("Open an app", "打开应用")}</TooltipContent>
-              </Tooltip>
-            ) : (
-              <DropdownMenuTrigger render={<WorkspaceButton aria-label={t("Open an app", "打开应用")} />}>
-                <QuiverMark className="size-6 flex-none" />
-                <WorkspaceButtonName>Hands</WorkspaceButtonName>
-              </DropdownMenuTrigger>
-            )}
-            <DropdownMenuContent side="bottom" align="start" className="w-64">
-              <AppSwitcherMenuItems appId={null} />
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        <DropdownMenu>
+          {collapsed ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <DropdownMenuTrigger
+                    render={<PanelAction aria-label={`${t("Switch organization", "切换组织")}: ${orgName}`} />}
+                  >
+                    {orgAvatar}
+                  </DropdownMenuTrigger>
+                }
+              />
+              <TooltipContent side="right">{orgName}</TooltipContent>
+            </Tooltip>
+          ) : (
+            <DropdownMenuTrigger
+              render={<WorkspaceButton aria-label={`${t("Switch organization", "切换组织")}: ${orgName}`} />}
+            >
+              {orgAvatar}
+              <WorkspaceButtonName>{orgName}</WorkspaceButtonName>
+            </DropdownMenuTrigger>
+          )}
+          <DropdownMenuContent side="bottom" align="start" className="w-72">
+            <OrgSwitcher
+              currentOrgId={orgId}
+              buttonLabel={t("Switch organization", "切换组织")}
+              onSwitch={(org) => {
+                switchOrg(org);
+                window.location.assign("/apps");
+              }}
+            />
+          </DropdownMenuContent>
+        </DropdownMenu>
         {!collapsed && (
           <Tooltip>
             <TooltipTrigger
@@ -462,6 +450,35 @@ export function Header({ account }: { account: AuthAccount }) {
 
       <SidebarBody className="min-h-0 flex-1">
         <SidebarContent className="min-h-0">
+          <SidebarSection>
+            <SidebarList>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <SidebarItem
+                      aria-label={appId ? `${t("Switch app", "切换应用")}: ${appName}` : t("Open an app", "打开应用")}
+                      title={collapsed ? (appId ? appName : t("Open an app", "打开应用")) : undefined}
+                    />
+                  }
+                >
+                  {appId ? appAvatar : (
+                    <SidebarItemIcon aria-hidden>
+                      <LayoutGrid />
+                    </SidebarItemIcon>
+                  )}
+                  {!collapsed && (
+                    <SidebarItemContent>
+                      <SidebarItemTitle>{appId ? appName : t("Apps", "应用")}</SidebarItemTitle>
+                    </SidebarItemContent>
+                  )}
+                  {!collapsed && <ChevronsUpDown aria-hidden="true" className="ml-auto size-4 text-foreground-hint" />}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="bottom" align="start" className="w-64">
+                  <AppSwitcherMenuItems appId={appId} />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </SidebarList>
+          </SidebarSection>
           {appId && appBase && APP_NAV_SECTIONS.map((section) => (
             <SidebarSection key={section.label}>
               {!collapsed && (
@@ -522,24 +539,6 @@ export function Header({ account }: { account: AuthAccount }) {
             </SidebarList>
           </SidebarSection>
         )}
-        {/* On an org page the organization's pages are the sidebar's list,
-            so a second way to the same place would only compete with it. */}
-        {orgId && !routeOrgId && (
-          <>
-            {!collapsed && <SidebarGroupLabel>{t("Organization", "组织")}</SidebarGroupLabel>}
-            <SidebarSection>
-              <SidebarList>
-                <SidebarNavItem
-                  to={`/orgs/${orgId}/general`}
-                  active={false}
-                  collapsed={collapsed}
-                  label={orgName}
-                  icon={Building2}
-                />
-              </SidebarList>
-            </SidebarSection>
-          </>
-        )}
         <div className="border-t border-line-hairline">
           <SidebarSection>
             <SidebarList>
@@ -561,20 +560,6 @@ export function Header({ account }: { account: AuthAccount }) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="right" align="end" className="w-64">
                   <AccountMenuLabel account={account} />
-                  <DropdownMenuSeparator />
-                  <DropdownMenuSubmenu>
-                    <DropdownMenuSubmenuTrigger>{t("Switch organization", "切换组织")}</DropdownMenuSubmenuTrigger>
-                    <DropdownMenuContent side="right" align="start" className="w-72">
-                      <OrgSwitcher
-                        currentOrgId={orgId}
-                        buttonLabel={t("Switch organization", "切换组织")}
-                        onSwitch={(org) => {
-                          switchOrg(org);
-                          window.location.assign("/apps");
-                        }}
-                      />
-                    </DropdownMenuContent>
-                  </DropdownMenuSubmenu>
                   <DropdownMenuSeparator />
                   <DropdownMenuSubmenu>
                     <DropdownMenuSubmenuTrigger>{t("Appearance", "外观")}</DropdownMenuSubmenuTrigger>
