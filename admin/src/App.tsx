@@ -613,8 +613,9 @@ export function Header({ account }: { account: AuthAccount }) {
 // sticker tabs on paper, from the SAME `APP_NAV_SECTIONS` the sidebar uses.
 // The organization's own page sits under the organization in its menu
 // (patterns/navigation.md#servers: what belongs to the server sits under it).
-export function MobileTopNav({ account }: { account: AuthAccount }) {
+export function MobileTopNav({ account, persistent = false }: { account: AuthAccount; persistent?: boolean }) {
   const t = useText();
+  const { mode, setMode } = useTheme();
   const location = useLocation();
   const appId = useRouteAppId();
   const orgs = useQuery({
@@ -638,7 +639,7 @@ export function MobileTopNav({ account }: { account: AuthAccount }) {
   const activeItem = appItems.find((item) => item.to === section)?.to ?? "none";
 
   return (
-    <header className="shrink-0 md:hidden">
+    <header className={persistent ? "shrink-0" : "shrink-0 md:hidden"}>
       <div className="flex h-14 items-center gap-1 border-b border-line-seam bg-layer-frame px-4 text-foreground-on-frame">
         <Link to="/" aria-label="Hands" className="mr-1 flex flex-none items-center">
           <QuiverMark className="size-7" />
@@ -705,6 +706,25 @@ export function MobileTopNav({ account }: { account: AuthAccount }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent side="bottom" align="end" className="w-64">
               <AccountMenuLabel account={account} />
+              <DropdownMenuSeparator />
+              <DropdownMenuSubmenu>
+                <DropdownMenuSubmenuTrigger>{t("Appearance", "外观")}</DropdownMenuSubmenuTrigger>
+                <DropdownMenuContent side="left" align="start" className="w-44">
+                  {APPEARANCE_OPTIONS.map((option) => (
+                    <DropdownMenuItem
+                      key={option.id}
+                      closeOnClick={false}
+                      onClick={() => setMode(option.id)}
+                    >
+                      <Check
+                        className={mode === option.id ? "opacity-100" : "opacity-0"}
+                        aria-hidden="true"
+                      />
+                      <span>{t(...option.label)}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenuSubmenu>
               <DropdownMenuSeparator />
               <AccountMenuFooter />
             </DropdownMenuContent>
@@ -1401,15 +1421,34 @@ function LandingIntegrationCard({
   );
 }
 
+/** Pages that belong to no app and no organization (the app list, account
+ *  settings, Hands admin, an invite). The sidebar would only hold the logo,
+ *  the organization link and the account there, so these pages drop it and
+ *  carry the top bar at every width instead. */
+export function isWorkspacePage(pathname: string): boolean {
+  return (
+    pathname === "/" ||
+    pathname === "/apps" ||
+    pathname === "/apps/" ||
+    pathname === "/settings" ||
+    pathname === "/admin" ||
+    pathname.startsWith("/invites/")
+  );
+}
+
 function AuthenticatedApp({ account }: { account: AuthAccount }) {
   const t = useText();
+  const location = useLocation();
+  const workspacePage = isWorkspacePage(location.pathname);
   return (
     <AppShellRoot className="h-dvh">
-      <AppShellSidebarSlot>
-        <Header account={account} />
-      </AppShellSidebarSlot>
+      {!workspacePage && (
+        <AppShellSidebarSlot>
+          <Header account={account} />
+        </AppShellSidebarSlot>
+      )}
       <AppShellMainSlot>
-      <MobileTopNav account={account} />
+      <MobileTopNav account={account} persistent={workspacePage} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <Routes>
         <Route path="/" element={<Navigate to="/apps" replace />} />
@@ -1493,13 +1532,16 @@ function AppsListWithNav() {
     }
   }
   const zeroApps = apps.data ? apps.data.apps.filter((a) => !a.archived).length === 0 : false;
-  // Full-bleed: AppsList draws its own panel header and toolbar across the
-  // main area, and scrolls its rows under them.
+  // No sidebar on this page (isWorkspacePage), so the list sits in a centred
+  // column instead of stretching across the whole window; it still draws its
+  // own header and toolbar and scrolls its rows under them.
   return (
-    <AppsList
-      onSelectApp={(appId) => navigate(`/apps/${appId}`)}
-      initialShowCreate={openNew || zeroApps}
-    />
+    <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col">
+      <AppsList
+        onSelectApp={(appId) => navigate(`/apps/${appId}`)}
+        initialShowCreate={openNew || zeroApps}
+      />
+    </div>
   );
 }
 

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "@botiverse/raft-ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Header } from "./App";
+import { Header, MobileTopNav, isWorkspacePage } from "./App";
 import { LocaleProvider, LOCALE_STORAGE } from "./lib/locale";
 import type { AuthAccount } from "./lib/api";
 
@@ -122,5 +122,50 @@ describe("app sidebar", () => {
     expect(screen.getByRole("link", { name: "Releases" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByRole("link", { name: "Raft HQ" }).getAttribute("href")).toBe("/orgs/org-1/general");
     expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
+  });
+});
+
+describe("workspace pages", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }) });
+    localStorage.setItem(LOCALE_STORAGE, "en");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({}));
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("drops the sidebar only off apps and organizations", () => {
+    for (const path of ["/", "/apps", "/settings", "/admin", "/invites/abc"]) {
+      expect(isWorkspacePage(path)).toBe(true);
+    }
+    for (const path of [`/apps/${APP_ID}`, `/apps/${APP_ID}/releases`, "/orgs/org-1/general"]) {
+      expect(isWorkspacePage(path)).toBe(false);
+    }
+  });
+
+  it("shows the top bar at every width when persistent", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["orgs"], { orgs: [{ id: "org-1", slug: "raft", name: "Raft HQ", external_provider: "raft", external_id: "srv", created_at: 1 }] });
+    client.setQueryData(["apps"], { apps: [] });
+    const view = (persistent: boolean) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/apps?all=1"]}>
+          <ThemeProvider>
+            <LocaleProvider>
+              <MobileTopNav account={account} persistent={persistent} />
+            </LocaleProvider>
+          </ThemeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { container, rerender } = render(view(true));
+    const header = container.querySelector("header")!;
+    expect(header.className).not.toContain("md:hidden");
+    expect(within(header).getByRole("button", { name: "Organization Raft HQ" })).toBeTruthy();
+    expect(within(header).getByRole("button", { name: "artin" })).toBeTruthy();
+    rerender(view(false));
+    expect(container.querySelector("header")!.className).toContain("md:hidden");
   });
 });
