@@ -33,6 +33,8 @@ object HandsNativeCrash {
     // delay without admitting unrelated exits from the same crash loop.
     private const val EXIT_MATCH_WINDOW_MS = 5_000L
     private const val MAX_EXIT_TRACE_BYTES = 2 * 1024 * 1024L
+    private const val KEPT_ORPHAN_BUILDS = 8
+    private val RECORD_SECTIONS = setOf("registers", "frames", "modules", "maps")
 
     @JvmStatic
     private external fun nativeInstall(crashDir: String, processStartAt: Long, processEventId: String)
@@ -68,9 +70,16 @@ object HandsNativeCrash {
             System.loadLibrary("handscrash")
             nativeInstall(dir.absolutePath, processStartAt, processEventId)
             // The native record is written by the signal handler and carries no
-            // build; record this process's build now so its crash ticket names
-            // the version that crashed, not the one that later uploads it.
-            runCatching { writeProcessBuild(dir, processEventId, HandsCrash.installedBuild(context)) }
+            // build; record this process's build so its crash ticket names the
+            // version that crashed, not the one that later uploads it. Off the
+            // caller's thread: a crash before the file lands just leaves the
+            // ticket's build empty. Pruning here too keeps the directory bounded
+            // in apps that never call uploadPending.
+            val appContext = context.applicationContext ?: context
+            Thread({
+                runCatching { writeProcessBuild(dir, processEventId, HandsCrash.installedBuild(appContext)) }
+                runCatching { pruneProcessBuilds(dir, recordProcessEventIds(dir)) }
+            }, "hands-native-crash-build").apply { isDaemon = true }.start()
             true
         }.getOrDefault(false)
     }
@@ -94,13 +103,30 @@ object HandsNativeCrash {
         return HandsAnrBuildStamp.decode(file?.let { runCatching { it.readBytes() }.getOrNull() })
     }
 
-    /** Build files of processes that left no record and are not this one. */
+    /**
+     * Delete build files of processes that left no record and are not this one,
+     * except the [KEPT_ORPHAN_BUILDS] newest: another process of the same app
+     * (a `:remote` service) may be running and still needs its file.
+     */
     internal fun pruneProcessBuilds(dir: File, keep: Set<String>) {
-        dir.listFiles { f -> f.name.endsWith(".build") || f.name.endsWith(".build.tmp") }?.forEach { file ->
-            val id = file.name.substringBefore(".build")
-            if (id != processEventId && id !in keep) file.delete()
-        }
+        (dir.listFiles { f -> f.name.endsWith(".build") || f.name.endsWith(".build.tmp") } ?: return)
+            .filter { file -> file.name.substringBefore(".build").let { it != processEventId && it !in keep } }
+            .forEach { it.delete() }
     }
+
+    /** Process ids named by the records in [dir]; reads only each record's header. */
+    internal fun recordProcessEventIds(dir: File): Set<String> =
+        (dir.listFiles { f -> f.name.endsWith(".qnc") } ?: emptyArray()).mapNotNullTo(mutableSetOf()) { record ->
+            runCatching {
+                record.bufferedReader().useLines { lines ->
+                    lines.drop(1).map { it.trim() }
+                        .takeWhile { it !in RECORD_SECTIONS }
+                        .firstOrNull { it.startsWith("process_event_id ") }
+                        ?.removePrefix("process_event_id ")?.trim()?.lowercase()
+                        ?.takeIf { HandsFeedback.SUBMISSION_ID_PATTERN.matches(it) }
+                }
+            }.getOrNull()
+        }
 
     /** Parse + upload pending records; call off the launch critical path. */
     suspend fun uploadPending(
@@ -116,7 +142,10 @@ object HandsNativeCrash {
         val dir = crashDir(context)
         val records = (dir.listFiles { f -> f.name.endsWith(".qnc") } ?: emptyArray())
             .sortedBy { it.name }
-        if (records.isEmpty()) return results
+        if (records.isEmpty()) {
+            runCatching { pruneProcessBuilds(dir, emptySet()) }
+            return results
+        }
         // Retention: newest survive, same policy as HandsCrash.
         records.dropLast(MAX_STORED).forEach {
             it.delete()
