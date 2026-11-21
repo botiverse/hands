@@ -3122,3 +3122,14 @@ describe("builds publish-ios direct upload", () => {
     expect(requests.some((r) => r.method === "PATCH")).toBe(false);
   });
 });
+
+describe("publish-android --arch", () => {
+  it("registers universal, any, or an empty arch as no ABI", async () => {
+    const { normalizeAndroidArch } = await import("../src/commands/builds.js");
+    expect(normalizeAndroidArch("universal")).toBeNull();
+    expect(normalizeAndroidArch("any")).toBeNull();
+    expect(normalizeAndroidArch("")).toBeNull();
+    expect(normalizeAndroidArch(" arm64-v8a ")).toBe("arm64-v8a");
+    expect(normalizeAndroidArch("x86_64")).toBe("x86_64");
+  });
+});

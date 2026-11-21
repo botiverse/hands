@@ -61,3 +61,18 @@ describe("hands releases cancel/restore reach the manifest endpoints", () => {
     expect(calls).toContainEqual(EXPECTED.restore);
   });
 });
+
+describe("releases publish text output", () => {
+  it("does not claim a release held for human approval was published", async () => {
+    const { publishResultText } = await import("./releases.js");
+    const text = publishResultText("rel-1", 1, {
+      status: "pending_approval",
+      approval_request_id: "req-9",
+      release_id: "rel-1",
+      next_action: "An app admin or org admin must approve it from the admin console.",
+    });
+    expect(text).not.toContain("Published");
+    expect(text).toContain("waiting for a human to approve it (approval request req-9)");
+    expect(publishResultText("rel-1", 2, { status: "active" })).toBe("Published release rel-1 with 2 exact scopes.");
+  });
+});
