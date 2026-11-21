@@ -1299,7 +1299,7 @@ const MAX_MERGE_CONFLICT_BYTES = 8 * 1024;
 const NATIVE_MERGE_ATTACHMENT_RESERVE = 2;
 
 /** The build a report names, read as a submission reads it (version_name, then fallback_version_name). */
-function metadataVersion(metadata: Record<string, unknown>): { versionName: string | null; versionCode: number | null } {
+export function metadataVersion(metadata: Record<string, unknown>): { versionName: string | null; versionCode: number | null } {
   const text = (key: string): string | null => {
     const value = metadata[key];
     if (value === undefined || value === null) return null;
