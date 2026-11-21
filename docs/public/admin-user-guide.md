@@ -13,6 +13,8 @@ Hands is a release and update distribution console for apps that need controlled
 
 Open the Hands site and use Login with Raft. After sign-in, Hands drops you into your first app (or the app creation wizard if none exist). The left rail navigates between Apps, Org, and your account menu (Settings, Logout).
 
+Each organization in Hands is a Raft server. When Raft asks you to pick a server at sign-in, you join that server's organization; switch organization from the account menu (signing in to another server adds it). When Raft signs you in without asking for a server, one sign-in joins you to every Raft server where Hands is installed and you are a member (not a guest), and the switcher lists them all. When you join an organization this way, your role comes from your Raft role there: Raft owners and admins become owners and admins, members become members. Organization admins change roles afterwards under Members.
+
 If you can sign in but do not see an expected app, ask an organization admin to grant you app access or make the app visible to your Raft server.
 
 ## Apps

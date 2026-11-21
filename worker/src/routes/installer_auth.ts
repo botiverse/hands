@@ -16,10 +16,10 @@ import {
 import {
   exchangeRaftCode,
   fetchRaftUserinfo,
-  isUserAllowed,
+  raftLoginIdentities,
+  signInRaftIdentities,
   raftAuthorizeUrl,
   requireRaftConfig,
-  upsertRaftAccount,
 } from "./auth";
 
 function installerCallbackUrl(c: Context<{ Bindings: Env }>): string {
@@ -103,10 +103,15 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
       config.raftApiOrigin, config.clientId, config.clientSecret, raftCode, installerCallbackUrl(c),
     );
     const userinfo = await fetchRaftUserinfo(config.raftApiOrigin, token.access_token);
-    if (userinfo.type !== "human" || !isUserAllowed(c.env, userinfo)) {
+    const account = userinfo.type === "human"
+      ? await signInRaftIdentities(
+        c.env.DB,
+        await raftLoginIdentities(c.env, config.raftApiOrigin, token.access_token, userinfo),
+      )
+      : null;
+    if (!account) {
       return c.text("Hands Installer login is available to allowed human accounts only.", 403);
     }
-    const account = await upsertRaftAccount(c.env.DB, userinfo);
     const authorizationCode = randomOpaqueToken();
     const codeHash = await sha256Hex(authorizationCode);
     const results = await c.env.DB.batch([
