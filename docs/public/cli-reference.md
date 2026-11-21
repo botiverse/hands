@@ -1437,6 +1437,12 @@ so existing CI keeps working unchanged.
 | `HANDS_API` | No | Hands business API base URL. Defaults to `https://hands.build`. `HANDS_CLI_API` takes precedence if set. |
 | `HANDS_BEARER_TOKEN` | Yes | App-scoped deploy token for CI. |
 | `HANDS_AUTH_TOKEN` | No | Alias for `HANDS_BEARER_TOKEN` (tried first). |
+| `HANDS_NO_UPDATE_CHECK` | No | Set to any value to turn off the new-version notice. |
+
+Outside CI, the CLI checks npm for a newer version at most once a day and, when
+one exists, prints one line to stderr with the upgrade command
+(`npm i -g @botiverse/hands-cli@latest`). The lookup never delays a command by
+more than a second and never changes stdout. It is off when `CI` is set.
 
 Legacy equivalents `QUIVER_API`, `QUIVER_BEARER_TOKEN`, `QUIVER_AUTH_TOKEN` are
 still accepted.

@@ -952,6 +952,9 @@ hands api POST /api/apps/<appId>/stats/google-play/ingest
 | `HANDS_API` | 否 | Hands 业务 API 基础 URL，默认为 `https://hands.build`。如果设置了 `HANDS_CLI_API`，后者优先。 |
 | `HANDS_BEARER_TOKEN` | 是 | 限定于应用的 CI 部署令牌。 |
 | `HANDS_AUTH_TOKEN` | 否 | `HANDS_BEARER_TOKEN` 的别名，优先尝试。 |
+| `HANDS_NO_UPDATE_CHECK` | 否 | 设置任意值即关闭新版本提示。 |
+
+不在 CI 中时，命令行每天最多向 npm 查询一次是否有新版本；有新版本时向 stderr 输出一行升级命令（`npm i -g @botiverse/hands-cli@latest`）。查询最多让命令多等一秒，不会改变 stdout。设置了 `CI` 时不查询。
 
 旧版对应变量 `QUIVER_API`、`QUIVER_BEARER_TOKEN` 和 `QUIVER_AUTH_TOKEN` 仍可使用。
 
