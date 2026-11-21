@@ -1298,6 +1298,24 @@ const MAX_MERGE_CONFLICT_BYTES = 8 * 1024;
 /** Room past MAX_ATTACHMENTS kept for a native record and its tombstone. */
 const NATIVE_MERGE_ATTACHMENT_RESERVE = 2;
 
+/** The build a report names, read as a submission reads it (version_name, then fallback_version_name). */
+function metadataVersion(metadata: Record<string, unknown>): { versionName: string | null; versionCode: number | null } {
+  const text = (key: string): string | null => {
+    const value = metadata[key];
+    if (value === undefined || value === null) return null;
+    return String(value).slice(0, 200) || null;
+  };
+  const code = (raw: unknown): number | null => {
+    if (typeof raw === "number" && Number.isFinite(raw)) return Math.trunc(raw);
+    if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return Math.trunc(Number(raw.trim()));
+    return null;
+  };
+  return {
+    versionName: text("version_name") ?? text("fallback_version_name"),
+    versionCode: code(metadata["version_code"]) ?? code(metadata["fallback_version_code"]),
+  };
+}
+
 function isNativeCrashMetadata(metadata: Record<string, unknown>): boolean {
   return metadata["crash_reason"] === "native_signal" && metadata["crash_native_frames"] !== undefined;
 }
@@ -1477,12 +1495,18 @@ async function mergeCrashSubmission(
   const reopen = wasBackgroundKill && !backgroundKill
     && current.status === "closed" && current.closure_reason === "not_planned";
 
+  // The build comes from whichever side reported it: an SDK native record has
+  // no crash-time version, the app's exit report does. Fill an empty build;
+  // never replace one already on the ticket.
+  const mergedVersion = metadataVersion(finalMetadata);
   if (changed) {
     const updated = await c.env.DB.prepare(
       `UPDATE feedback_tickets
        SET metadata_json = ?1, signature = ?2, updated_at = ?3,
            status = CASE WHEN ?4 THEN 'open' ELSE status END,
-           closure_reason = CASE WHEN ?4 THEN NULL ELSE closure_reason END
+           closure_reason = CASE WHEN ?4 THEN NULL ELSE closure_reason END,
+           version_name = COALESCE(version_name, ?8),
+           version_code = COALESCE(version_code, ?9)
        WHERE app_id = ?5 AND id = ?6 AND metadata_json IS ?7
        RETURNING id`,
     ).bind(
@@ -1493,6 +1517,8 @@ async function mergeCrashSubmission(
       app.id,
       existing.id,
       current.metadata_json,
+      mergedVersion.versionName,
+      mergedVersion.versionCode,
     ).first<{ id: string }>();
     if (!updated) {
       // A concurrent merge rewrote the ticket first; the client retries and
@@ -1511,7 +1537,7 @@ async function mergeCrashSubmission(
         c.env,
         { id: app.id, platform: app.platform },
         existing.id,
-        existing.version_code,
+        current.version_code ?? mergedVersion.versionCode,
         finalMetadata,
         first?.r2_key ?? null,
       );
@@ -1558,8 +1584,8 @@ async function mergeCrashSubmission(
         app_slug: app.slug,
         kind,
         message: current.message.slice(0, 500),
-        version_name: current.version_name,
-        version_code: current.version_code,
+        version_name: current.version_name ?? mergedVersion.versionName,
+        version_code: current.version_code ?? mergedVersion.versionCode,
         attachments: added.length,
         reporter_id: null,
         reporter_integration_id: null,
