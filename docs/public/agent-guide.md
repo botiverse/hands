@@ -162,6 +162,30 @@ mutations; pass `--commit` only after reviewing the exact plan. TestFlight is a
 separate state machine from Hands releases and App Store production
 publishing, and the `.p8` stays encrypted in Hands.
 
+### Signing and Apple identifiers
+
+Signing keys and Apple identifiers are Agent Login actions, so an agent with
+the right role can set up signing without a person in the console. Key
+material never goes through an action: App Store Connect keys are referenced
+as `{from_app: <app id or slug>}`, the key an app in the organization already
+holds.
+
+| Action | Does | Role |
+|---|---|---|
+| `list-signing-identities`, `list-signing-api-key-sources` | List identities (metadata, expiry, granted apps) and reusable App Store Connect keys | org admin |
+| `create-apple-distribution-certificate` | Make an Apple Distribution certificate; the key stays in Hands | org admin |
+| `create-apple-certificate-request`, `list-apple-certificate-requests`, `complete-apple-certificate-request`, `cancel-apple-certificate-request` | Certificates Apple issues to a person (Developer ID): get the request, bring the `.cer` back | org admin |
+| `generate-android-signing-key` | Make an Android release key (its one-time backup is for a person, not the action) | org admin |
+| `grant-signing-identity`, `ungrant-signing-identity`, `revoke-signing-identity` | Choose which apps sign with an identity; revoke it in Hands | org admin |
+| `register-apple-app-id` | Register an iOS App ID and turn on the capabilities from the entitlements; `apply=false` (default) only plans | app admin |
+| `copy-app-asc-key` | Give an app the App Store Connect key another app already holds | admin of both apps |
+| `upload-testflight-build` | Upload a signed iOS build to TestFlight | publisher |
+
+The CLI has the same: `hands signing ...`, `hands signing app-id`,
+`hands apps asc-key --from-app`, `hands builds testflight-upload`. When a
+signing job fails with `signing_app_id_missing`, register the App ID, then
+sign again.
+
 ### Ticket triage (feedback + crashes)
 
 ```bash

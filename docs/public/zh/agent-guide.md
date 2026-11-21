@@ -98,6 +98,23 @@ hands releases shares <app> <releaseId>
 
 使用 `hands testflight --help` 查看上传、处理状态、测试组和分发命令。商店元数据变更默认只预演；只有审核了具体方案后才传 `--commit`。TestFlight 与 Hands 版本及 App Store 正式发布是独立的状态机，`.p8` 凭据始终在 Hands 中加密保存。
 
+### 签名和 Apple 标识符
+
+签名密钥和 Apple 标识符都是 Agent Login 动作，具备相应角色的智能体不需要人到控制台就能配置签名。密钥内容从不经过动作：App Store Connect key 用 `{from_app: <应用 id 或 slug>}` 引用组织里某个应用已有的 key。
+
+| 动作 | 作用 | 角色 |
+|---|---|---|
+| `list-signing-identities`、`list-signing-api-key-sources` | 列出签名身份（元数据、到期时间、已授权的应用）和可复用的 App Store Connect key | 组织管理员 |
+| `create-apple-distribution-certificate` | 生成 Apple Distribution 证书，密钥留在 Hands | 组织管理员 |
+| `create-apple-certificate-request`、`list-apple-certificate-requests`、`complete-apple-certificate-request`、`cancel-apple-certificate-request` | 由 Apple 签发给个人的证书（Developer ID）：拿到请求文件，再把 `.cer` 传回 | 组织管理员 |
+| `generate-android-signing-key` | 生成 Android 发布密钥（一次性备份由人下载，不经过动作） | 组织管理员 |
+| `grant-signing-identity`、`ungrant-signing-identity`、`revoke-signing-identity` | 选择哪些应用用这个身份签名；在 Hands 中撤销它 | 组织管理员 |
+| `register-apple-app-id` | 注册 iOS App ID，并按 entitlements 打开能力；`apply=false`（默认）只给出方案 | 应用管理员 |
+| `copy-app-asc-key` | 把另一个应用已有的 App Store Connect key 给这个应用 | 两个应用的管理员 |
+| `upload-testflight-build` | 把签好名的 iOS 构建上传到 TestFlight | 发布者 |
+
+命令行对应：`hands signing ...`、`hands signing app-id`、`hands apps asc-key --from-app`、`hands builds testflight-upload`。签名任务因 `signing_app_id_missing` 失败时，先注册 App ID 再重新签名。
+
 ### 工单处理（反馈与崩溃）
 
 ```bash

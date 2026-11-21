@@ -173,6 +173,18 @@ Raft 服务器可见性会把另一 Raft 服务器设为应用的共同所有者
 
 角色包括 `viewer`（读取）、`member`（协作，例如处理反馈）、`publisher`（发布构建和版本）和 `admin`（配置、管理成员、持有秘密）。完整角色模型及接口与角色的对应关系见[权限参考](permissions.md)。
 
+## 签名
+
+**组织 → 签名**保存 Hands 用来给构建签名的密钥和证书：iOS 的 Apple Distribution 证书、macOS 的 Developer ID 证书，以及 Android 发布密钥。只有组织管理员和所有者可以管理，其他成员只会看到提示。
+
+- **添加**：在 Hands 中生成密钥（推荐），或上传已有的。iOS 选择一个具有 Admin 角色的 App Store Connect key 后，由 App Store Connect 直接签发 Distribution 证书；可以复用组织里某个应用已有的 key。Developer ID 证书只能由账号持有人签发，所以 Hands 保管密钥并给出证书请求：把它带到 Apple Developer 网站，再在待处理那一行点**继续**，把 `.cer` 传回来。
+- **应用**：打开一个签名身份，打开要用它签名的应用。开关立即生效。
+- **App ID**（带 App Store Connect key 的 iOS 证书）：选择应用，填写 bundle ID，可选上传 `.entitlements` 文件，然后点**检查**。检查只读取 App Store Connect，显示会创建或打开什么。点**在 Apple 注册**会在需要时创建 App ID 并打开能力；Hands 之前为它生成的 App Store 描述文件会被删除，下次签名时生成带新能力的。需要其他 Apple 对象的能力（App Group、iCloud 容器、Merchant ID、Pass Type ID）会列成需要到 Apple Developer 网站完成的步骤。命令行对应 `hands signing app-id`。
+- **备份**：在 Hands 中生成的 Android 密钥可以下载一次备份，首次下载后 10 分钟内可重试。之后只有 Hands 持有它。
+- **撤销**：之后任何应用都不能再用它签名。不会在 Apple 撤销证书。
+
+所有改动都记录在审计日志中。签名构建通过命令行或 CI 完成，见命令行参考中的[签名](cli-reference.md)。
+
 ## 常见问题
 
 ### 找不到更新

@@ -356,6 +356,39 @@ Deploy tokens are app-scoped bearer tokens. Create them for automation instead o
 
 Roles range from `viewer` (read) through `member` (collaborate — e.g. triage feedback), `publisher` (ship builds/releases), to `admin` (configure, manage members, hold secrets). See the [permissions reference](permissions.md) for the full role model and the endpoint→role matrix.
 
+## Signing
+
+**Organization → Signing** holds the keys and certificates Hands signs builds
+with: Apple Distribution certificates for iOS, Developer ID certificates for
+macOS, and Android release keys. Only organization admins and owners manage
+it; other members see a notice.
+
+- **Add**: create the key in Hands (recommended) or upload an existing one.
+  For iOS, App Store Connect issues the Distribution certificate directly when
+  you choose an App Store Connect key with the Admin role; you can reuse the
+  key an app in the organization already holds. Developer ID certificates can
+  only be issued by the Account Holder, so Hands keeps the key and gives you a
+  certificate request: take it to the Apple Developer site, then bring the
+  `.cer` back with **Continue** on the pending row.
+- **Apps**: open an identity and turn on the apps that sign with it. The
+  switches apply at once.
+- **App IDs** (iOS certificates with an App Store Connect key): choose an app,
+  enter its bundle ID and optionally its `.entitlements` file, and select
+  **Check**. Checking only reads App Store Connect and shows what would be
+  created or turned on. **Register with Apple** creates the App ID if needed
+  and turns on the capabilities; App Store profiles Hands made for it are
+  removed so the next signing gets one with the new capabilities.
+  Capabilities that need another Apple object (App Groups, iCloud containers,
+  Merchant IDs, Pass Type IDs) are listed as steps for the Apple Developer
+  site. The same thing is `hands signing app-id` in the CLI.
+- **Backup**: an Android key made in Hands can be downloaded once, within 10
+  minutes of the first download. After that Hands is its only holder.
+- **Revoke**: no app can sign with the identity afterwards. It does not revoke
+  the certificate at Apple.
+
+Every change is in the audit log. Signing builds is done from the CLI or CI;
+see [Signing](cli-reference.md#signing-android-macos-ios) in the CLI reference.
+
 ## Common Issues
 
 ### No update is found
