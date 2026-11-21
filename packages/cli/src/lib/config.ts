@@ -35,7 +35,7 @@ export interface CliConfig {
 
 const DEFAULT_API_BASE = "https://hands.build";
 
-function configDir(): string {
+export function configDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
   return xdg && xdg.length > 0 ? xdg : join(homedir(), ".config");
 }

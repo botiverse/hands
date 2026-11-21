@@ -46,6 +46,7 @@ import { readEnv } from "./lib/env.js";
 import { setApiBase, AgentEnvironmentError } from "./lib/api.js";
 import { recordCliEvent } from "./lib/logging.js";
 import { createRequire } from "node:module";
+import { startUpdateCheck } from "./lib/update_check.js";
 import { DeviceIdError } from "@botiverse/hands-node";
 
 // Single source of truth for the CLI version: read it from package.json at runtime so
@@ -167,7 +168,10 @@ program
     console.log(program.version());
   });
 
-program.parseAsync(process.argv).catch((err) => {
+const updateCheck = startUpdateCheck(CLI_VERSION);
+
+program.parseAsync(process.argv).then(() => updateCheck.finish(), async (err) => {
+  await updateCheck.finish();
   recordCliEvent("error", "command_error", "CLI command failed", {
     command: program.args[0] ?? "unknown",
     error_name: err instanceof Error ? err.name : "unknown",
