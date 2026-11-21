@@ -95,4 +95,4 @@ hands builds publish-electron my-desktop-app \
 
 ## 如何发送到 Hands
 
-SDK 将 Electron 的 `crashReporter.submitURL` 指向 `POST /public/v2/apps/<slug>/minidump?client_key=<key>`。Crashpad 以 `upload_file_minidump` 上传 minidump，并将注释放在表单字段中；Hands 将转储存为崩溃工单附件，并执行符号化。崩溃报告不需要接入更新检查或反馈功能。
+SDK 将 Electron 的 `crashReporter.submitURL` 指向 `POST /public/v2/apps/<slug>/minidump?client_key=<key>`。Crashpad 以 `upload_file_minidump` 上传 minidump，并将注释放在表单字段中；Hands 将转储存为崩溃工单附件，并执行符号化。SDK 开启了 Crashpad 的 `compress`，请求体以 gzip 压缩（`Content-Encoding: gzip`）上传，Hands 会先解压。保存成功时返回 HTTP 200，响应体是纯文本的工单 ID，Crashpad 会把它记为报告 ID（带 `Accept: application/json` 则返回 `{ id, status }`）。崩溃报告不需要接入更新检查或反馈功能。

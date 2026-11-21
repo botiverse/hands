@@ -12627,9 +12627,10 @@ describe("quiver public API v2 — scope resolution", () => {
       },
       json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
     } as any);
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/plain");
     await Promise.all(waited).catch(() => {});
-    const body = await responseJson<any>(res);
+    const body = { id: await res.text() };
 
     const ticket = (await env.DB.prepare(
       "SELECT kind, version_name, version_code, channel, device_id, metadata_json FROM feedback_tickets WHERE id = ?1",
@@ -12650,6 +12651,105 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(att.filename).toBe("minidump.dmp");
     expect(att.content_type).toBe("application/x-minidump");
     expect(att.size_bytes).toBe(4);
+  });
+
+  describe("handlePublicMinidumpSubmit with Crashpad's compressed uploads", () => {
+    const setup = () => {
+      const env = makeEnv();
+      const store = new Map<string, Uint8Array>();
+      env.APK_BUCKET = {
+        put: async (key: string, body: ArrayBuffer) => { store.set(key, new Uint8Array(body)); },
+        get: async () => null,
+        head: async () => null,
+      } as any;
+      return { env, store };
+    };
+    const multipart = async () => {
+      const form = new FormData();
+      form.set(
+        "upload_file_minidump",
+        new File([new Uint8Array([77, 68, 77, 80, 9, 9])], "crash.dmp", { type: "application/x-minidump" }),
+      );
+      form.set("version", "1.33.1");
+      form.set("process_type", "renderer");
+      const req = new Request("https://hands.test/", { method: "POST", body: form });
+      return {
+        contentType: req.headers.get("Content-Type")!,
+        bytes: new Uint8Array(await req.arrayBuffer()),
+      };
+    };
+    const gzip = async (bytes: Uint8Array) =>
+      new Uint8Array(
+        await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer(),
+      );
+    const submit = async (
+      env: any,
+      body: Uint8Array,
+      headers: Record<string, string>,
+    ) => {
+      const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
+      const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+      const raw = new Request("https://hands.test/", { method: "POST", body, headers });
+      Object.defineProperty(raw, "cf", { value: { clientIp: "203.0.113.9" } });
+      const waited: Promise<unknown>[] = [];
+      const res = await handlePublicMinidumpSubmit({
+        env,
+        executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
+        req: {
+          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : lower[n.toLowerCase()]),
+          query: () => undefined,
+          formData: () => raw.clone().formData(),
+          raw,
+        },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+      await Promise.all(waited).catch(() => {});
+      return res;
+    };
+
+    it("inflates a gzip-encoded multipart body and answers 200 with the ticket id", async () => {
+      const { env, store } = setup();
+      const { contentType, bytes } = await multipart();
+      const res = await submit(env, await gzip(bytes), {
+        "Content-Type": contentType,
+        "Content-Encoding": "gzip",
+      });
+      expect(res.status).toBe(200);
+      const id = await res.text();
+      const ticket = (await env.DB.prepare(
+        "SELECT kind, version_name FROM feedback_tickets WHERE id = ?1",
+      ).bind(id).first()) as any;
+      expect(ticket).toEqual({ kind: "crash", version_name: "1.33.1" });
+      expect([...store.values()][0]).toEqual(new Uint8Array([77, 68, 77, 80, 9, 9]));
+    });
+
+    it("still accepts an uncompressed body, and answers JSON to a JSON caller", async () => {
+      const { env } = setup();
+      const { contentType, bytes } = await multipart();
+      const res = await submit(env, bytes, { "Content-Type": contentType, Accept: "application/json" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { id: string; status: string };
+      expect(body.status).toBe("open");
+      expect(await env.DB.prepare("SELECT id FROM feedback_tickets WHERE id = ?1").bind(body.id).first()).toBeTruthy();
+    });
+
+    it("refuses a compressed body that inflates past the size cap", async () => {
+      const { env } = setup();
+      const huge = new Uint8Array(66 * 1024 * 1024);
+      const res = await submit(env, await gzip(huge), {
+        "Content-Type": "multipart/form-data; boundary=x",
+        "Content-Encoding": "gzip",
+      });
+      expect(res.status).toBe(413);
+    });
+
+    it("refuses an encoding it cannot inflate", async () => {
+      const { env } = setup();
+      const { contentType, bytes } = await multipart();
+      const res = await submit(env, bytes, { "Content-Type": contentType, "Content-Encoding": "br" });
+      expect(res.status).toBe(400);
+    });
   });
 
   it("handlePublicMinidumpSubmit derives the product from a closed set", async () => {
@@ -12686,7 +12786,7 @@ describe("quiver public API v2 — scope resolution", () => {
         json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
       } as any);
       await Promise.all(waited).catch(() => {});
-      const body = await responseJson<any>(res);
+      const body = { id: await res.text() };
       const row = (await env.DB.prepare(
         "SELECT message, metadata_json FROM feedback_tickets WHERE id = ?1",
       ).bind(body.id).first()) as any;

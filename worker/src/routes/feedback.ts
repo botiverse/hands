@@ -1764,8 +1764,11 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
 
   let form: FormData;
   try {
-    form = await c.req.formData();
-  } catch {
+    form = await readMinidumpForm(c);
+  } catch (err) {
+    if (err instanceof MinidumpBodyTooLarge) {
+      return c.json({ error: `minidump too large (max ${MINIDUMP_MAX_BYTES} bytes)` }, 413);
+    }
     return c.json({ error: "multipart/form-data body required" }, 400);
   }
 
@@ -1899,8 +1902,64 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
     }).catch(() => {});
   }
 
-  // Crashpad only checks for a 2xx; a short id body is conventional.
-  return c.json({ id: ticketId, status: "open" }, 201);
+  return minidumpAccepted(c, ticketId);
+}
+
+/**
+ * Crashpad counts an upload as done only on HTTP 200, and records the response
+ * body as the report id. Anything else (201 included) is logged as a failed
+ * upload and never retried. Callers that ask for JSON get the same id as JSON.
+ */
+function minidumpAccepted(c: Context<{ Bindings: Env }>, ticketId: string): Response {
+  if ((c.req.header("Accept") ?? "").includes("application/json")) {
+    return c.json({ id: ticketId, status: "open" }, 200);
+  }
+  return new Response(ticketId, { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+}
+
+class MinidumpBodyTooLarge extends Error {}
+
+/** Upper bound on a decompressed upload: the dump plus its annotation fields. */
+const MINIDUMP_FORM_MAX_BYTES = MINIDUMP_MAX_BYTES + 1024 * 1024;
+
+/**
+ * Parse the multipart upload. Electron's crashReporter defaults to
+ * `compress: true`, which makes Crashpad gzip the whole multipart body and send
+ * `Content-Encoding: gzip`; Workers hands it over still compressed. Inflate it
+ * first, capped so a small compressed body cannot expand without bound.
+ */
+async function readMinidumpForm(c: Context<{ Bindings: Env }>): Promise<FormData> {
+  const encoding = (c.req.header("Content-Encoding") ?? "").trim().toLowerCase();
+  if (encoding === "" || encoding === "identity") return c.req.formData();
+  if (encoding !== "gzip" && encoding !== "x-gzip" && encoding !== "deflate") {
+    throw new Error(`unsupported Content-Encoding: ${encoding}`);
+  }
+  const body = c.req.raw.body;
+  if (!body) throw new Error("empty body");
+  let total = 0;
+  const capped = body
+    .pipeThrough(new DecompressionStream(encoding === "deflate" ? "deflate" : "gzip"))
+    .pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          total += chunk.byteLength;
+          if (total > MINIDUMP_FORM_MAX_BYTES) {
+            controller.error(new MinidumpBodyTooLarge());
+            return;
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+  let inflated: ArrayBuffer;
+  try {
+    inflated = await new Response(capped).arrayBuffer();
+  } catch (err) {
+    if (err instanceof MinidumpBodyTooLarge || total > MINIDUMP_FORM_MAX_BYTES) throw new MinidumpBodyTooLarge();
+    throw err;
+  }
+  const contentType = c.req.header("Content-Type") ?? "";
+  return new Response(inflated, { headers: { "Content-Type": contentType } }).formData();
 }
 
 async function reporterAuthorActor(
