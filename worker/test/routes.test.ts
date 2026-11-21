@@ -13684,7 +13684,7 @@ describe("quiver public API v2 — scope resolution", () => {
         ).all();
         return (results as any[]).map((r) => JSON.parse(r.payload_json)).map((b: any) => `${b.event}:${b.payload.signature ?? ""}`);
       };
-      return { submit, ticket, events, putCalls };
+      return { submit, ticket, events, putCalls, env };
     };
 
     const expectNativeWins = (t: any) => {
@@ -13770,6 +13770,25 @@ describe("quiver public API v2 — scope resolution", () => {
       const planted = await submit({ ...nativeRecord, metadata: { ...nativeRecord.metadata, crash_merge: "x" } });
       expect(await responseJson(planted)).toMatchObject({ merged: true, idempotent_replay: true });
       expect((await ticket()).metadata.crash_merge).toHaveLength(1);
+    });
+
+    it("a merge fills an empty build from the other side and never replaces one", async () => {
+      const { submit, env } = await setup();
+      const build = async () => await env.DB.prepare(
+        "SELECT version_name, version_code FROM feedback_tickets WHERE app_id = 'app-scope'",
+      ).first() as { version_name: string | null; version_code: number | null } | null;
+      const withBuild = (report: typeof appExit | typeof nativeRecord, name: string, code: number) =>
+        ({ ...report, metadata: { ...report.metadata, version_name: name, version_code: code } });
+
+      // The SDK's native record has no crash-time build; the app's exit report does.
+      expect((await submit(nativeRecord)).status).toBe(201);
+      expect(await build()).toEqual({ version_name: null, version_code: null });
+      expect((await submit(withBuild(appExit, "1.0.0-alpha+53e3", 10000243))).status).toBe(200);
+      expect(await build()).toEqual({ version_name: "1.0.0-alpha+53e3", version_code: 10000243 });
+
+      // A later side naming another build does not replace it.
+      expect((await submit(withBuild(nativeRecord, "9.9.9", 99))).status).toBe(200);
+      expect(await build()).toEqual({ version_name: "1.0.0-alpha+53e3", version_code: 10000243 });
     });
 
     it("pairs that are not one event seen from two sides are still rejected", async () => {
