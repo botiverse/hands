@@ -9,6 +9,7 @@ import { useState } from "react";
 import {
   getAuthMe,
   listApps,
+  listOrgs,
   listProductTypes,
   listChannels,
   type App,
@@ -83,6 +84,9 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
   const activeCount = apps.filter((a) => !a.archived).length;
   const archivedCount = apps.length - activeCount;
   const visible = apps.filter((a) => (scope === "archived" ? !!a.archived : !a.archived));
+  const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
+  const orgs = useQuery({ queryKey: ["orgs"], queryFn: () => listOrgs() });
+  const groups = groupAppsByOrg(visible, me.data?.account.org_id ?? null, orgs.data?.orgs ?? []);
 
   return (
     <Panel className="flex min-h-0 flex-1 flex-col" aria-label={t("Apps", "应用")}>
@@ -161,8 +165,17 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
           </EmptyState>
         )}
 
-        {visible.map((app) => (
-          <AppRow key={app.id} app={app} onSelect={() => onSelectApp(app.id)} />
+        {groups.map((group) => (
+          <section key={group.key} aria-label={groups.length > 1 ? group.label ?? t("Other organization", "其他组织") : undefined}>
+            {groups.length > 1 && (
+              <h2 className="px-(--column-margin) pt-3 pb-1 text-xs font-medium text-foreground-muted">
+                {group.label ?? t("Other organization", "其他组织")}
+              </h2>
+            )}
+            {group.apps.map((app) => (
+              <AppRow key={app.id} app={app} orgBadge={groups.length === 1} onSelect={() => onSelectApp(app.id)} />
+            ))}
+          </section>
         ))}
       </PanelScrollViewport>
 
@@ -179,7 +192,32 @@ export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id:
   );
 }
 
-function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
+/** The list's sections: the current organization's apps first, then one
+ *  section per other organization (apps shared with the caller through an
+ *  app role), named from the caller's organizations when they belong to it. */
+export function groupAppsByOrg(
+  apps: App[],
+  currentOrgId: string | null,
+  orgs: Array<{ id: string; name: string }>,
+): Array<{ key: string; label: string | null; apps: App[] }> {
+  const byOrg = new Map<string, App[]>();
+  for (const app of apps) {
+    const key = app.org_id ?? "";
+    byOrg.set(key, [...(byOrg.get(key) ?? []), app]);
+  }
+  const keys = [...byOrg.keys()].sort((a, b) => {
+    if (a === (currentOrgId ?? "")) return -1;
+    if (b === (currentOrgId ?? "")) return 1;
+    return 0;
+  });
+  return keys.map((key) => ({
+    key,
+    label: orgs.find((org) => org.id === key)?.name ?? null,
+    apps: byOrg.get(key) ?? [],
+  }));
+}
+
+function AppRow({ app, orgBadge, onSelect }: { app: App; orgBadge: boolean; onSelect: () => void }) {
   const t = useText();
   const isArchived = !!app.archived;
 
@@ -193,7 +231,8 @@ function AppRow({ app, onSelect }: { app: App; onSelect: () => void }) {
     queryFn: () => listChannels(app.id),
   });
   const me = useQuery({ queryKey: ["auth-me"], queryFn: () => getAuthMe() });
-  const otherOrg = !!app.org_id && !!me.data && app.org_id !== me.data.account.org_id;
+  // With more than one section the section heading already names the organization.
+  const otherOrg = orgBadge && !!app.org_id && !!me.data && app.org_id !== me.data.account.org_id;
 
   const ptCount = productTypes.data?.product_types.length;
   const chCount = channels.data?.channels.length;

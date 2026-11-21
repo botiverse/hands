@@ -2,12 +2,13 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   listApps: vi.fn(),
   getAuthMe: vi.fn(),
+  listOrgs: vi.fn(),
   listChannels: vi.fn(),
   listProductTypes: vi.fn(),
   createApp: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/api")>(),
   listApps: mocks.listApps,
   getAuthMe: mocks.getAuthMe,
+  listOrgs: mocks.listOrgs,
   listChannels: mocks.listChannels,
   listProductTypes: mocks.listProductTypes,
   createApp: mocks.createApp,
@@ -60,6 +62,7 @@ describe("AppsList", () => {
       ],
     });
     mocks.getAuthMe.mockResolvedValue({ authenticated: true, account: { org_id: "org-1" } });
+    mocks.listOrgs.mockResolvedValue({ orgs: [{ id: "org-1", name: "Raft HQ" }] });
     mocks.listChannels.mockResolvedValue({ channels: [{ id: "c1" }, { id: "c2" }] });
     mocks.listProductTypes.mockResolvedValue({ product_types: [{ id: "p1" }] });
     mocks.createApp.mockResolvedValue({ id: "a3" });
@@ -109,5 +112,29 @@ describe("AppsList", () => {
     renderList({ initialShowCreate: true });
     expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create app" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("groups apps by organization, the current one first", async () => {
+    mocks.listApps.mockResolvedValue({
+      apps: [
+        app("b1", "Partner App", { org_id: "org-2" }),
+        app("a1", "Raft Deck"),
+        app("c1", "Stranger App", { org_id: "org-3" }),
+      ],
+    });
+    mocks.listOrgs.mockResolvedValue({ orgs: [{ id: "org-1", name: "Raft HQ" }, { id: "org-2", name: "Partner Co" }] });
+    renderList();
+    const headings = await screen.findAllByRole("heading", { level: 2 });
+    expect(headings.map((h) => h.textContent)).toEqual(["Raft HQ", "Partner Co", "Other organization"]);
+    const partner = screen.getByRole("region", { name: "Partner Co" });
+    expect(within(partner).getByText("Partner App")).toBeTruthy();
+    // The section heading names the organization, so rows drop the badge.
+    expect(within(partner).queryByText("Other organization")).toBeNull();
+  });
+
+  it("keeps a single section unheaded", async () => {
+    renderList();
+    await screen.findByText("Raft Deck");
+    expect(screen.queryAllByRole("heading", { level: 2 })).toHaveLength(0);
   });
 });
