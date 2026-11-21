@@ -217,8 +217,8 @@ describe("feedback material delta production routes", () => {
       },
       json: (data: unknown, status = 200) => Response.json(data, { status }),
     } as any);
-    expect(minidumpResponse.status).toBe(201);
-    const minidumpId = String((await minidumpResponse.json() as { id: string }).id);
+    expect(minidumpResponse.status).toBe(200);
+    const minidumpId = await minidumpResponse.text();
     expect(material(sqlite, minidumpId)).toBe(2);
     await Promise.allSettled(pending);
     expect(material(sqlite, minidumpId)).toBe(2);
@@ -883,7 +883,7 @@ describe("feedback material delta production routes", () => {
           query: () => undefined, formData: async () => form },
         json: (data: unknown, status = 200) => Response.json(data, { status }),
       } as any);
-      expect(response.status).toBe(201);
+      expect(response.status).toBe(200);
     }
     await Promise.allSettled(pending);
     expect(sqlite.prepare("SELECT count(*) AS n FROM feedback_tickets WHERE app_id='app-a'").get()).toEqual({ n: 2 });

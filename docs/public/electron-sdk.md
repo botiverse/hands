@@ -116,4 +116,8 @@ The SDK points Electron's `crashReporter.submitURL` at
 `POST /public/v2/apps/<slug>/minidump?client_key=<key>`. Crashpad POSTs the
 minidump as `upload_file_minidump` with the annotations as form fields; Hands
 stores the dump as a crash-ticket attachment and runs the symbolication lane.
+The SDK turns on Crashpad's `compress`, so the body arrives gzip-compressed
+(`Content-Encoding: gzip`); Hands inflates it first. A stored upload answers
+HTTP 200 with the ticket id as plain text, which Crashpad records as the
+report id (send `Accept: application/json` to get `{ id, status }` instead).
 No update-check or feedback wiring is required for crash reporting.
