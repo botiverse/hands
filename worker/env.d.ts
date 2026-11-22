@@ -109,6 +109,9 @@ interface GooglePlayAdapterService {
   listReleaseStates(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<GooglePlayAdapterResult<Array<{
     releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string;
   }>>>;
+  readTrackContents?(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<GooglePlayAdapterResult<Array<{
+    name: string | null; status: "draft" | "inProgress" | "halted" | "completed"; version_codes: number[]; user_fraction?: number;
+  }>>>;
   readTrackMaximum(input: GooglePlayBindingInput & { handsTrack: keyof GooglePlayTracks }): Promise<
     GooglePlayAdapterResult<{ max_version_code: number }>
   >;

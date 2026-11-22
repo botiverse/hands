@@ -25,6 +25,7 @@ import type {
   PromotionSymbolsRequest,
   SendForReviewRequest,
   SendForReviewResult,
+  TrackContentRelease,
   TrackRelease,
   TrackResource,
   ReleaseSummary,
@@ -505,6 +506,39 @@ export class GooglePlayClient {
     }
     await this.deleteEdit(packageName, editId);
     return value;
+  }
+
+  /**
+   * What a track holds right now, read through an edit (the API family promotions
+   * use) instead of tracks.releases.list. Gives each release's status and
+   * versionCodes but no review state; the edit is opened and deleted, nothing is
+   * committed. Used when the release-state read is refused.
+   */
+  async readTrackContents(packageName: string, track: string): Promise<TrackContentRelease[]> {
+    const editId = await this.createEdit(packageName);
+    let resource: TrackResource;
+    try {
+      resource = await this.getTrack(packageName, editId, track);
+    } catch (error) {
+      await this.cleanupOrThrow(packageName, editId, error);
+      throw error;
+    }
+    await this.deleteEdit(packageName, editId);
+    const out: TrackContentRelease[] = [];
+    for (const release of (resource.releases ?? []).slice(0, 20)) {
+      const status = release.status;
+      if (status !== "draft" && status !== "inProgress" && status !== "halted" && status !== "completed") continue;
+      const versionCodes = (release.versionCodes ?? []).map(exactVersionCode)
+        .filter((value): value is number => value !== null).sort((a, b) => b - a);
+      out.push({
+        name: typeof release.name === "string" && release.name ? release.name.slice(0, 100) : null,
+        status,
+        version_codes: versionCodes,
+        ...(typeof release.userFraction === "number" && (status === "inProgress" || status === "halted")
+          ? { user_fraction: release.userFraction } : {}),
+      });
+    }
+    return out;
   }
 
   async verifyBinding(packageName: string, tracks: string[]): Promise<void> {

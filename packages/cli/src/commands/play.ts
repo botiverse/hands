@@ -257,6 +257,7 @@ type PlayReviewStatus = {
     source: "live" | "stored" | "unavailable";
     error_code?: string;
     releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
+    track_contents?: Array<{ release_name: string | null; status: string; version_codes: number[]; user_fraction?: number }>;
   }>;
   in_review: Array<{ hands_track: string; play_track: string; version_codes: number[]; release_name: string | null; source: string }>;
   production_version_code: number | null;
@@ -275,13 +276,21 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
     const head = `${track.hands_track} (${track.play_track})`;
     if (track.source === "unavailable") {
       lines.push(`${head}: Play refused the read (${track.error_code}) and Hands has no stored state`);
-      continue;
+    } else {
+      lines.push(track.source === "live" ? `${head}: live` : `${head}: Play refused the read (${track.error_code}); last states the poll observed`);
+      if (track.releases.length === 0) lines.push("  (no releases)");
+      for (const r of track.releases) {
+        const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";
+        lines.push(`  ${shortState(r.state).padEnd(24)} ${r.version_codes.join(", ")}${r.release_name ? `  ${r.release_name}` : ""}${when}`);
+      }
     }
-    lines.push(track.source === "live" ? `${head}: live` : `${head}: Play refused the read (${track.error_code}); last states the poll observed`);
-    if (track.releases.length === 0) lines.push("  (no releases)");
-    for (const r of track.releases) {
-      const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";
-      lines.push(`  ${shortState(r.state).padEnd(24)} ${r.version_codes.join(", ")}${r.release_name ? `  ${r.release_name}` : ""}${when}`);
+    if (track.track_contents) {
+      lines.push("  On the track now (release status only, no review state):");
+      if (track.track_contents.length === 0) lines.push("    (no releases)");
+      for (const r of track.track_contents) {
+        const rollout = r.user_fraction !== undefined ? ` ${Math.round(r.user_fraction * 1000) / 10}%` : "";
+        lines.push(`    ${(r.status + rollout).padEnd(22)} ${r.version_codes.join(", ")}${r.release_name ? `  ${r.release_name}` : ""}`);
+      }
     }
   }
   if (res.publishing_access) {

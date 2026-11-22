@@ -3281,4 +3281,29 @@ describe("app-wide Play review status", () => {
     h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
     expect((await h.request("/api/apps/app/distributions/play/review-status")).status).toBe(409);
   });
+
+  it("adds the track's current contents from an edit read when the release-state read is refused", async () => {
+    const h = await readyRelease();
+    const contentCalls: string[] = [];
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({
+      listReleaseStates: async (input: any) => input.handsTrack === "internal"
+        ? { ok: true, value: [] }
+        : { ok: false, error: { status: 403, code: "play_api_rejected", message: "refused" } },
+      readTrackContents: async (input: any) => {
+        contentCalls.push(input.handsTrack);
+        if (input.handsTrack === "closed") return { ok: false, error: { status: 403, code: "play_api_rejected", message: "refused too" } };
+        return { ok: true, value: [{ name: "1.28.0", status: "inProgress", version_codes: [12800012], user_fraction: 0.2 }] };
+      },
+    } as any);
+    const body = await (await h.request("/api/apps/app/distributions/play/review-status")).json() as any;
+    const byTrack = (name: string) => body.tracks.find((t: any) => t.hands_track === name);
+    // Live tracks never trigger the fallback; a refused fallback adds nothing.
+    expect(contentCalls).not.toContain("internal");
+    expect(byTrack("internal").track_contents).toBeUndefined();
+    expect(byTrack("closed").track_contents).toBeUndefined();
+    expect(byTrack("production")).toMatchObject({ source: "unavailable", error_code: "play_api_rejected",
+      track_contents: [{ release_name: "1.28.0", status: "inProgress", version_codes: [12800012], user_fraction: 0.2 }] });
+    // Edit contents carry no review state, so nothing is claimed to be in review.
+    expect(body.in_review).toEqual([]);
+  });
 });

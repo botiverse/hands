@@ -330,6 +330,15 @@ export interface PromotionRequest {
 }
 
 /** Read-only release summaries; lifecycle is distinct from edits.tracks status. */
+/** One release of a track as an edit sees it: no review state, only Play's release status. */
+export interface TrackContentRelease {
+  name: string | null;
+  status: "draft" | "inProgress" | "halted" | "completed";
+  version_codes: number[];
+  /** Rollout fraction (0-1) for inProgress/halted; absent otherwise. */
+  user_fraction?: number;
+}
+
 export interface ReleaseSummary {
   releaseName: string;
   track: string;
