@@ -144,7 +144,8 @@ function standardFields(payload: Payload, build: Payload): string[] {
   if (version || versionName) lines.push(`version: ${version ?? versionName}`);
   if (version && versionName && version !== versionName) lines.push(`version name: ${versionName}`);
   if (buildNumber) lines.push(`build: ${buildNumber}`);
-  if (versionCode && versionCode !== buildNumber) lines.push(`version code: ${versionCode}`);
+  // Never "code" next to a number: iOS offers such text as a one-time code.
+  if (versionCode && versionCode !== buildNumber) lines.push(`version number: ${versionCode}`);
   const seen = new Set<string>();
   for (const [label, key] of SAFE_PAYLOAD_FIELDS) {
     if (seen.has(label)) continue;
@@ -156,7 +157,7 @@ function standardFields(payload: Payload, build: Payload): string[] {
   for (const [label, value] of [
     ["description", payload.state_label],
     ["version transition", payload.version_transition],
-    ["version code transition", payload.version_code_transition],
+    ["build transition", payload.version_code_transition],
     ["groups", payload.groups_display],
   ] as const) {
     const text = safePreview(value, MAX_FIELD_LENGTH);
@@ -348,12 +349,13 @@ function marketMessage(event: string, payload: Payload, build: Payload, app: str
   const versionCode = safePreview(safeValue(payload.version_code) ?? safeValue(build.version_code), 160);
   const code = isPlay ? (versionCode ?? buildNumber) : (buildNumber ?? versionCode);
   const track = isPlay ? safePreview(safeValue(payload.track), 160) : null;
-  const identity = [version, code && code !== version ? `${isPlay ? "version code" : "build"} ${code}` : null,
+  // "build", never "version code": iOS offers "code" next to a number as a one-time code.
+  const identity = [version, code && code !== version ? `build ${code}` : null,
     track ? `track: ${track}` : null].filter(Boolean);
   if (identity.length) lines.push(identity.join(" · "));
   if (version && versionName && version !== versionName) lines.push(`Version name: ${versionName}`);
   if (buildNumber && versionCode && buildNumber !== versionCode) {
-    lines.push(isPlay ? `Build: ${buildNumber}` : `Version code: ${versionCode}`);
+    lines.push(isPlay ? `Build number: ${buildNumber}` : `Version number: ${versionCode}`);
   }
   const packageName = isPlay ? safePreview(safeValue(payload.package_name), 160) : null;
   if (packageName) lines.push(`Package: ${packageName}`);
@@ -421,7 +423,7 @@ function releaseBuildMessage(event: string, payload: Payload, build: Payload, ap
   if (identity) lines.push(event === "release:rolled_back" ? `Restored: ${identity}`
     : event === "release:channel_emptied" || event === "release:cancelled" ? `Cancelled: ${identity}` : identity);
   if (version && versionName && version !== versionName) lines.push(`Version name: ${versionName}`);
-  if (buildNumber && versionCode && buildNumber !== versionCode) lines.push(`Version code: ${versionCode}`);
+  if (buildNumber && versionCode && buildNumber !== versionCode) lines.push(`Version number: ${versionCode}`);
   const previousVersion = value("previous_version");
   const previousCode = value("previous_version_code");
   const previous = previousVersion && previousCode && previousVersion !== previousCode
@@ -609,7 +611,7 @@ function feedbackMessage(
     const code = buildNumber ?? versionCode;
     if (version || code) lines.push(`Version: ${version ?? code}${version && code && code !== version ? ` (${code})` : ""}`);
     if (version && versionName && version !== versionName) lines.push(`Version name: ${versionName}`);
-    if (buildNumber && versionCode && buildNumber !== versionCode) lines.push(`Version code: ${versionCode}`);
+    if (buildNumber && versionCode && buildNumber !== versionCode) lines.push(`Version number: ${versionCode}`);
   }
   const status = safePreview(safeValue(payload.status), 160);
   const previous = safePreview(safeValue(payload.previous_status), 160);

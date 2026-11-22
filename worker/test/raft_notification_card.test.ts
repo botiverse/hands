@@ -199,7 +199,7 @@ describe("Raft release notification cards", () => {
       text: "Google Play has changes in review. Wait for review to finish before submitting again.", tone: "warning",
     } });
     expect(card.elements.fields).toEqual({ type: "Fields", props: { items: [
-      { label: "Version code", value: "12000003", mono: true },
+      { label: "Build", value: "12000003", mono: true },
       { label: "Package", value: "build.raft.app", mono: true },
       { label: "Reason code", value: "play_api_error", mono: true },
       { label: "Play reason code", value: "CHANGES_ALREADY_IN_REVIEW", mono: true },
