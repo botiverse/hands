@@ -43,13 +43,14 @@ export async function observePlayRelease(db: D1Database, appId: string, packageN
 
 /**
  * Google rations tracks.releases.list per app ("Listing releases quota
- * exceeded.", observed at roughly a dozen calls an hour), so each app is read
- * once per POLL_INTERVAL_MS, leaving the rest of the hour for interactive reads
- * (review-status, the in-review gate before a promotion). The cron still ticks
+ * exceeded."): measured on 2026-11-22 at 12 calls an hour, resetting hourly.
+ * A full read is one call per track (four), so the poll reads each app once an
+ * hour and leaves two full reads an hour for interactive use (review-status,
+ * the in-review gate before a promotion). The cron still ticks
  * every five minutes; at most four apps are claimed per tick. Persisted
  * scheduling rotates through tenants; outages never become state.
  */
-export const POLL_INTERVAL_MS = 30 * 60_000;
+export const POLL_INTERVAL_MS = 60 * 60_000;
 
 export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
   if (!env.PLAY_RELEASE_SERVICE) return;
