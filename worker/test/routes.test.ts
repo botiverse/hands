@@ -3144,6 +3144,25 @@ describe("auth origin handling", () => {
       expect(callback.headers.get("location")).toBeNull();
     });
 
+    it("shows a browser a Raft Design page when login cannot finish, and other clients plain text", async () => {
+      const env = makeMockEnv();
+      env.RAFT_CLIENT_ID = "test-client";
+      const app = new Hono<{ Bindings: MockEnv }>();
+      app.get("/login/raft/callback", handleRaftCallback);
+      const url = "https://business.example/login/raft/callback?state=forged.state&code=x";
+      const browser = await app.request(url, { headers: { accept: "text/html", "accept-language": "zh-CN" } }, env as any);
+      expect(browser.status).toBe(400);
+      expect(browser.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      const html = await browser.text();
+      expect(html).toContain("<h1>登录没有完成</h1>");
+      expect(html).toContain("这次登录已过期，请重新登录。");
+      expect(html).toContain('href="/">返回 Hands</a>');
+      expect(html).toContain("family=Space+Grotesk");
+      const cli = await app.request(url, {}, env as any);
+      expect(cli.status).toBe(400);
+      expect(await cli.text()).toBe("Invalid or expired local login state. Start again from /api/auth/login.");
+    });
+
     it("keeps a signed-out person signed out when Raft opens Hands again", async () => {
       const env = makeMockEnv();
       const app = new Hono<{ Bindings: MockEnv }>();
@@ -9225,13 +9244,18 @@ describe("quiver public API v2 — scope resolution", () => {
     for (const handler of [handlePublicAppHistory, handlePublicLatestReleaseLanding, handlePublicVersionLanding, handlePublicReleaseNotes]) {
       const res = await handler(ctx("missing-app", "zh-CN"));
       expect(res.status).toBe(404);
-      expect(await res.text()).toBe("未找到");
+      const html = await res.text();
+      expect(html).toContain("<h1>页面不存在</h1>");
+      expect(html).toContain("family=Space+Grotesk");
+      expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
       expect(res.headers.get("cache-control")).toBe("private, no-store");
       expect(res.headers.get("vary")).toBe("*");
     }
-    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "zh-CN"))).text()).toBe("没有可用的发布版本");
-    expect(await (await handlePublicVersionLanding(ctx("scope-app", "zh-CN"))).text()).toBe("未找到此版本");
-    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "en"))).text()).toBe("No active release");
+    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "zh-CN"))).text()).toContain("<h1>还没有可用的版本</h1>");
+    const version = await (await handlePublicVersionLanding(ctx("scope-app", "zh-CN"))).text();
+    expect(version).toContain("<h1>找不到这个版本</h1>");
+    expect(version).toContain('href="/apps/scope-app/latest?lang=zh-CN">查看最新版本</a>');
+    expect(await (await handlePublicLatestReleaseLanding(ctx("scope-app", "en"))).text()).toContain("<h1>No release yet</h1>");
     expect(await (await handlePublicReleaseNotesJson(ctx("missing-app", "zh-CN"))).json()).toEqual({ error: "not found" });
   });
 

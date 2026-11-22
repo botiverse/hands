@@ -86,3 +86,55 @@ export const RAFT_PAGE_BASE_CSS = `
     .notes code { font-family: var(--mono); font-size: 0.86em; background: var(--fill-muted); border-radius: 4px; padding: 1px 4px; }
     .notes a { color: inherit; }
 `;
+
+function escapeNoticeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+export type RaftNoticePage = {
+  /** The page's `lang` attribute. */
+  lang: string;
+  title: string;
+  message?: string;
+  /** One emoji shown in a muted tile above the title. */
+  icon: string;
+  action?: { href: string; label: string } | undefined;
+  /** Pre-rendered language switch (publicLanguageMenu), or "" for none. */
+  languageMenu?: string;
+};
+
+/**
+ * A centred, single-message page in Raft Design: errors and dead ends on
+ * public links and login, so a person sees what happened instead of a line of
+ * plain text. Title, message and action are escaped here.
+ */
+export function renderRaftNoticePage(page: RaftNoticePage): string {
+  const action = page.action
+    ? `<a class="button" href="${escapeNoticeHtml(page.action.href)}">${escapeNoticeHtml(page.action.label)}</a>`
+    : "";
+  return `<!doctype html>
+<html lang="${escapeNoticeHtml(page.lang)}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeNoticeHtml(page.title)}</title>
+  ${RAFT_PAGE_FONTS}
+  <style>${RAFT_PAGE_BASE_CSS}
+    body { display: grid; place-items: center; }
+    main { width: min(360px, calc(100vw - 32px)); padding: 32px 0; text-align: center; }
+    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); font-size: 22px; }
+    p { margin: 6px 0 0; color: var(--fg-muted); font-size: 15px; line-height: 22px; }
+    main > a.button { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <main>
+    ${page.languageMenu ?? ""}
+    <div class="icon" aria-hidden="true">${escapeNoticeHtml(page.icon)}</div>
+    <h1>${escapeNoticeHtml(page.title)}</h1>
+    ${page.message ? `<p>${escapeNoticeHtml(page.message)}</p>` : ""}
+    ${action}
+  </main>
+</body>
+</html>`;
+}

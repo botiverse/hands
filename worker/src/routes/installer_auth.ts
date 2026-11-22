@@ -21,6 +21,7 @@ import {
   raftAuthorizeUrl,
   requireRaftConfig,
 } from "./auth";
+import { loginErrorResponse } from "../lib/login_error_page";
 
 function installerCallbackUrl(c: Context<{ Bindings: Env }>): string {
   return `${businessOrigin(c.env, () => requestOrigin(c))}/login/raft/installer/callback`;
@@ -88,7 +89,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
   if (!config.ok) return config.response;
   const raftCode = c.req.query("code") || "";
   const requestId = getCookie(c, LOGIN_COOKIE) || "";
-  if (!raftCode || !requestId) return c.text("Installer login state is missing or expired.", 400);
+  if (!raftCode || !requestId) return loginErrorResponse(c, 400, "Installer login state is missing or expired.", { en: "This sign-in has expired. Start again from Hands Installer.", zh: "这次登录已过期，请回到 Hands Installer 重新登录。" }, { backToConsole: false });
   const timestamp = Date.now();
   const pending = await c.env.DB.prepare(
     `SELECT id, client_id, redirect_uri, state, code_challenge
@@ -96,7 +97,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
   ).bind(requestId, timestamp).first<{
     id: string; client_id: string; redirect_uri: string; state: string; code_challenge: string;
   }>();
-  if (!pending) return c.text("Installer login state is missing or expired.", 400);
+  if (!pending) return loginErrorResponse(c, 400, "Installer login state is missing or expired.", { en: "This sign-in has expired. Start again from Hands Installer.", zh: "这次登录已过期，请回到 Hands Installer 重新登录。" }, { backToConsole: false });
 
   try {
     const token = await exchangeRaftCode(
@@ -110,7 +111,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
       )
       : null;
     if (!account) {
-      return c.text("Hands Installer login is available to allowed human accounts only.", 403);
+      return loginErrorResponse(c, 403, "Hands Installer login is available to allowed human accounts only.", { en: "Hands Installer is only available to people with access to Hands.", zh: "Hands Installer 只对有 Hands 访问权限的成员开放。" }, { backToConsole: false });
     }
     const authorizationCode = randomOpaqueToken();
     const codeHash = await sha256Hex(authorizationCode);
@@ -127,7 +128,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
       c.env.DB.prepare("DELETE FROM installer_login_requests WHERE id=?1").bind(pending.id),
     ]);
     if (results.some((result) => result.meta.changes !== 1)) {
-      return c.text("Installer login state is missing or expired.", 400);
+      return loginErrorResponse(c, 400, "Installer login state is missing or expired.", { en: "This sign-in has expired. Start again from Hands Installer.", zh: "这次登录已过期，请回到 Hands Installer 重新登录。" }, { backToConsole: false });
     }
     deleteCookie(c, LOGIN_COOKIE, { path: "/login/raft/installer/callback" });
     const destination = new URL(pending.redirect_uri);
@@ -137,7 +138,7 @@ export async function handleInstallerRaftCallback(c: Context<{ Bindings: Env }>)
     return c.redirect(destination.toString(), 302);
   } catch (error) {
     console.error(`[installer-auth] callback failed: ${error instanceof Error ? error.message : String(error)}`);
-    return c.text("Hands Installer login failed.", 502);
+    return loginErrorResponse(c, 502, "Hands Installer login failed.", { en: "Something went wrong while signing in. Start again from Hands Installer.", zh: "登录时出了问题，请回到 Hands Installer 重试。" }, { backToConsole: false });
   }
 }
 

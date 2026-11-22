@@ -407,6 +407,7 @@ import {
 import { openApiDocument } from "./openapi";
 import { localizeOpenApi } from "./openapi_locale";
 import { publicPageLanguage, publicLanguageMenu } from "./lib/public_locale";
+import { RAFT_PAGE_FONTS } from "./lib/raft_page_style";
 import { scalarChineseLabels } from "./lib/scalar_locale";
 import { feedbackRoutes } from "./openapi/feedback";
 import { registerAppRoutes } from "./openapi/apps";
@@ -731,8 +732,10 @@ bindApp("get", "/api-docs", (c) => {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    ${RAFT_PAGE_FONTS}
     <style>
-      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      /* Raft Design type and header; colours follow Scalar's own light/dark mode. */
+      body { margin: 0; font-family: "Space Grotesk", Arial, "PingFang SC", "Noto Sans SC", system-ui, sans-serif; }
       .quiver-api-header {
         min-height: 56px;
         display: flex;
@@ -740,20 +743,24 @@ bindApp("get", "/api-docs", (c) => {
         justify-content: space-between;
         gap: 10px;
         padding: 0 18px;
-        border-bottom: 1px solid #e2e8f0;
-        background: #ffffff;
+        border-bottom: 1px solid var(--scalar-border-color, oklch(0.1813 0.005 17.62 / 0.149));
+        background: var(--scalar-background-1, #fff);
+        color: var(--scalar-color-1, oklch(0.1813 0.005 17.62));
       }
       .quiver-api-header > a {
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        color: #0f172a;
+        color: inherit;
         font-size: 18px;
-        font-weight: 500;
+        font-weight: 700;
+        letter-spacing: -0.01em;
         text-decoration: none;
       }
       .quiver-api-header img { width: 32px; height: 32px; border-radius: 8px; }
-      .quiver-api-header .hands-language { margin: 0 !important; white-space: nowrap; }
+      .quiver-api-header .hands-language { display: inline-flex; gap: 2px; padding: 2px; margin: 0 !important; white-space: nowrap; border: 1px solid var(--scalar-border-color, oklch(0.1813 0.005 17.62 / 0.149)); border-radius: 8px; font-size: 0 !important; }
+      .quiver-api-header .hands-language a { color: var(--scalar-color-2, oklch(0.1813 0.005 17.62 / 0.678)) !important; text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 13px; line-height: 18px; font-weight: 500; }
+      .quiver-api-header .hands-language a[aria-current="page"] { color: var(--scalar-color-1, oklch(0.1813 0.005 17.62)) !important; background: var(--scalar-background-2, oklch(0.9642 0 0)); }
       #app { min-height: calc(100vh - 57px); }
     </style>
   </head>
@@ -774,7 +781,7 @@ bindApp("get", "/api-docs", (c) => {
         localization: { locale: '${zh ? "zh-CN" : "en"}' },
         ${zh ? "modelsSectionLabel: '模型'," : ""}
         theme: 'default',
-        customCss: '#references { min-height: calc(100vh - 57px); }'
+        customCss: '#references { min-height: calc(100vh - 57px); } .scalar-app, .light-mode, .dark-mode { --scalar-font: "Space Grotesk", Arial, "PingFang SC", "Noto Sans SC", system-ui, sans-serif; --scalar-font-code: "Space Mono", ui-monospace, "SF Mono", Menlo, monospace; }'
       })
     </script>
   </body>
