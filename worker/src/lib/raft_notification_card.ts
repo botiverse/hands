@@ -69,8 +69,11 @@ type StateTag = { tone: TagTone; text?: string };
 // the title and in the unchanged text fallback. Unknown states stay neutral.
 const STORE_TAGS: Readonly<Record<string, Readonly<Record<string, StateTag>>>> = {
   "app_store:version_state_changed": {
-    PREPARE_FOR_SUBMISSION: { tone: "neutral" },
+    PREPARE_FOR_SUBMISSION: { tone: "neutral" }, READY_FOR_REVIEW: { tone: "neutral", text: "Ready to submit" },
+    WAITING_FOR_EXPORT_COMPLIANCE: { tone: "warning", text: "Export compliance" },
     WAITING_FOR_REVIEW: { tone: "info" }, IN_REVIEW: { tone: "info" },
+    ACCEPTED: { tone: "success" }, PROCESSING_FOR_DISTRIBUTION: { tone: "info", text: "Processing" },
+    REPLACED_WITH_NEW_VERSION: { tone: "neutral", text: "Replaced" },
     PENDING_DEVELOPER_RELEASE: { tone: "success", text: "Approved; not released" },
     PENDING_APPLE_RELEASE: { tone: "success", text: "Apple release pending" },
     READY_FOR_SALE: { tone: "success" }, READY_FOR_DISTRIBUTION: { tone: "success", text: "Ready for distribution" },

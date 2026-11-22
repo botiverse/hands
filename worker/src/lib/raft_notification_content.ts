@@ -259,11 +259,16 @@ const TESTFLIGHT_STATES: Readonly<Record<string, string>> = {
 };
 const APP_STORE_STATES: Readonly<Record<string, string>> = {
   PREPARE_FOR_SUBMISSION: "Preparing for submission",
+  READY_FOR_REVIEW: "Ready to submit for review",
+  WAITING_FOR_EXPORT_COMPLIANCE: "Waiting for export compliance",
   WAITING_FOR_REVIEW: "Waiting for review",
   IN_REVIEW: "In review",
   PENDING_DEVELOPER_RELEASE: "Approved; waiting for developer release",
   PENDING_APPLE_RELEASE: "Waiting for Apple release",
+  ACCEPTED: "Accepted",
+  PROCESSING_FOR_DISTRIBUTION: "Processing for distribution",
   READY_FOR_SALE: "Ready for distribution",
+  REPLACED_WITH_NEW_VERSION: "Replaced with a new version",
   REJECTED: "Review rejected",
   METADATA_REJECTED: "Metadata rejected",
   DEVELOPER_REJECTED: "Withdrawn by developer",
