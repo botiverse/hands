@@ -17,7 +17,18 @@ const NO_AUTH_HELP =
   "  • Raft agents: run `hands login` — it auto-detects the managed agent and completes\n" +
   "      the agent-login handshake via your Raft integration session (no URL to open).";
 
+interface MeDeployToken {
+  id: string;
+  name: string;
+  app_id: string;
+  app_slug: string;
+  role: string | null;
+  permissions: string[];
+  expires_at: number | null;
+}
+
 interface MeResponse {
+  deploy_token?: MeDeployToken;
   account?: {
     id: string;
     provider: string;
@@ -47,6 +58,20 @@ export function registerWhoamiCommand(program: Command): void {
       }
       try {
         const me = await apiRequest<MeResponse>("/api/auth/me");
+        if (!me.account && me.deploy_token) {
+          if (jsonRequested(command, opts)) {
+            console.log(JSON.stringify(me, null, 2));
+            return;
+          }
+          const t = me.deploy_token;
+          console.log(`${t.name}  (deploy token)`);
+          console.log(`  app:     ${t.app_slug} (${t.app_id})`);
+          console.log(`  role:    ${t.role ?? "(scoped)"}`);
+          console.log(`  permissions: ${t.permissions.join(", ") || "(none)"}`);
+          console.log(`  expires: ${t.expires_at ? new Date(t.expires_at).toISOString() : "never"}`);
+          console.log(`  api:     ${getApiBase()}`);
+          return;
+        }
         if (!me.account) {
           console.error("Server returned no account info.");
           process.exit(1);

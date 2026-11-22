@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError } from "../lib/api.js";
+import { resolveAuthToken } from "../lib/config.js";
 import { readEnv } from "../lib/env.js";
 import { jsonRequested } from "../lib/json_output.js";
 
@@ -1052,6 +1053,9 @@ async function resolveAppId(slugOrId: string): Promise<string> {
   if (slugOrId.length === 36 && slugOrId.split("-").length === 5) {
     return slugOrId;
   }
+  // A deploy token names its own app; a scoped one may not list apps at all.
+  const tokenAppId = await deployTokenAppId(slugOrId);
+  if (tokenAppId) return tokenAppId;
   const res = await apiRequest<{ apps: AppRow[] }>("/api/apps");
   const match = res.apps.find((a) => a.slug === slugOrId);
   if (!match) {
@@ -1059,6 +1063,17 @@ async function resolveAppId(slugOrId: string): Promise<string> {
     process.exit(1);
   }
   return match.id;
+}
+
+async function deployTokenAppId(slug: string): Promise<string | null> {
+  const token = resolveAuthToken();
+  if (!token?.startsWith("qvdt_")) return null;
+  try {
+    const me = await apiRequest<{ deploy_token?: { app_id: string; app_slug: string } }>("/api/auth/me");
+    return me.deploy_token?.app_slug === slug ? me.deploy_token.app_id : null;
+  } catch {
+    return null;
+  }
 }
 
 function parsePositiveNumber(value: string, flag: string): number {

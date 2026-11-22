@@ -403,3 +403,44 @@ describe("I-14: GET /api/users/:accountId/audit", () => {
     expect(((await outsider.json()) as { logs: unknown[] }).logs).toEqual([]);
   });
 });
+
+describe("/api/auth/me with a deploy token", () => {
+  it("names the token and its app instead of answering 401", async () => {
+    const { handleAuthMe } = await import("../src/routes/auth");
+    const sqlite = migratedDb();
+    sqlite.prepare(
+      `INSERT INTO organizations (id, slug, name, external_provider, external_id, created_at)
+       VALUES ('home', 'home', 'Home', 'raft', 'srv-home', 1)`,
+    ).run();
+    sqlite.prepare(
+      "INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app-home', 'home', 'raft-desktop', 'Desktop', 'electron', 1)",
+    ).run();
+    const deploy = generateDeployToken();
+    sqlite.prepare(
+      `INSERT INTO app_deploy_tokens
+         (id, app_id, name, token_prefix, token_hash, app_role, scopes_json, created_by_actor, created_at)
+       VALUES ('dt', 'app-home', 'desktop-publish', ?, ?, 'publisher', NULL, 'test', 1)`,
+    ).run(deploy.token_prefix, await hashDeployToken(deploy.token));
+    const app = new Hono<{ Bindings: Env }>();
+    app.get("/api/auth/me", handleAuthMe as any);
+    const call = (token: string) => app.request(
+      "https://hands.test/api/auth/me",
+      { headers: { authorization: `Bearer ${token}` } },
+      { DB: d1(sqlite) } as unknown as Env,
+    );
+
+    const ok = await call(deploy.token);
+    expect(ok.status).toBe(200);
+    const body = await ok.json() as any;
+    expect(body).toMatchObject({
+      authenticated: true,
+      account: null,
+      deploy_token: { id: "dt", name: "desktop-publish", app_id: "app-home", app_slug: "raft-desktop", role: "publisher" },
+    });
+    expect(body.deploy_token.permissions.length).toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toContain(deploy.token);
+
+    sqlite.prepare("UPDATE app_deploy_tokens SET revoked_at = 2 WHERE id = 'dt'").run();
+    expect((await call(deploy.token)).status).toBe(401);
+  });
+});

@@ -24,6 +24,7 @@ import {
   sharedCookieDomain,
 } from "../lib/origin";
 import { encryptAdminRaftToken } from "../lib/admin_raft_token";
+import { loadDeployToken, resolveDeployTokenPermissions } from "../lib/deploy_tokens";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -809,6 +810,24 @@ export async function handleAuthMe(c: Context<{ Bindings: Env }>) {
     bearerToken ?? getCookie(c, SESSION_COOKIE),
   );
   if (!sessionAccount) {
+    // A deploy token (CI) has no account. Say which token it is and what it
+    // may do, so a pipeline can check its credential before acting with it.
+    const deployToken = bearerToken ? await loadDeployToken(c.env, bearerToken) : null;
+    if (deployToken) {
+      return c.json({
+        authenticated: true,
+        account: null,
+        deploy_token: {
+          id: deployToken.id,
+          name: deployToken.name,
+          app_id: deployToken.app_id,
+          app_slug: deployToken.app_slug,
+          role: deployToken.app_role,
+          permissions: [...resolveDeployTokenPermissions(deployToken)].sort(),
+          expires_at: deployToken.expires_at,
+        },
+      });
+    }
     return c.json(
       {
         authenticated: false,
