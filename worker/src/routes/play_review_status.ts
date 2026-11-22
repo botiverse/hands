@@ -7,7 +7,9 @@ import { HANDS_PLAY_TRACKS, type HandsPlayTrack } from "../lib/play_tracks";
  * Read live from Play (tracks.releases.list, read-only, the same call the
  * five-minute poll makes). A track Play refuses to list falls back to the
  * last states the poll stored, marked as such with when they were observed,
- * so a caller can tell a live answer from a remembered one.
+ * so a caller can tell a live answer from a remembered one. It also gets the
+ * track's current contents read through an edit (`track_contents`): release
+ * status and versionCodes as Play holds them now, without review state.
  */
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
@@ -20,12 +22,15 @@ type HandsTrack = HandsPlayTrack;
 const HANDS_TRACKS: readonly HandsTrack[] = HANDS_PLAY_TRACKS;
 
 type ReleaseRow = { release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number };
+type TrackContent = { release_name: string | null; status: string; version_codes: number[]; user_fraction?: number };
 type TrackStatus = {
   hands_track: HandsTrack;
   play_track: string;
   source: "live" | "stored" | "unavailable";
   releases: ReleaseRow[];
   error_code?: string;
+  /** Only when the release-state read was refused and the edit read worked. */
+  track_contents?: TrackContent[];
 };
 
 /** PUBLISHED, not APPROVED_NOT_PUBLISHED. */
@@ -74,6 +79,17 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
     // that one and anything newer.
     const newestPublished = observed.find((r) => isPublished(r.state))?.version_code ?? 0;
     const results = observed.filter((r) => r.version_code >= newestPublished);
+    let trackContents: TrackContent[] | undefined;
+    if (service?.readTrackContents) {
+      const contents = await service.readTrackContents({ credential: binding.credential, packageName, tracks: binding.tracks, handsTrack })
+        .catch(() => null);
+      if (contents?.ok) {
+        trackContents = contents.value.map((r) => ({
+          release_name: r.name, status: r.status, version_codes: r.version_codes,
+          ...(r.user_fraction !== undefined ? { user_fraction: r.user_fraction } : {}),
+        }));
+      }
+    }
     tracks.push({
       hands_track: handsTrack,
       play_track: playTrack,
@@ -82,6 +98,7 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
       releases: results.map((r) => ({
         release_name: null, state: r.state, state_label: playStateLabel(r.state), version_codes: [r.version_code], observed_at: r.observed_at,
       })),
+      ...(trackContents ? { track_contents: trackContents } : {}),
     });
   }
   const inReview = tracks.flatMap((t) => t.releases.filter((r) => r.state.endsWith("IN_REVIEW"))

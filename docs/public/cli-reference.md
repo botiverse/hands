@@ -453,7 +453,12 @@ versionCode, and each track's releases with their state: `IN_REVIEW`,
 `APPROVED_NOT_PUBLISHED`, `NOT_APPROVED`, `PUBLISHED`, `DRAFT`. States are read
 live from Play. If Play refuses to list a track, the command shows the last
 states Hands' five-minute poll observed for it, with the time of each
-observation, and says so. `--json` gives the same as JSON. Viewer role is
+observation, and says so. It then also reads what the track holds right now
+through a Play edit (the same API promotions use, nothing is changed) and
+shows each release's status (`draft`, `inProgress` with its rollout
+percentage, `halted`, `completed`) and versionCodes under "On the track now".
+That read carries no review state: `completed` does not mean approved or
+published. `--json` gives the same as JSON (`track_contents`). Viewer role is
 enough.
 
 ## Google Play: when a Play write gets no response

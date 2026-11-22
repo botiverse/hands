@@ -73,3 +73,42 @@ describe("read-only Google release lifecycle", () => {
     await expect(fixture({ error: { message: "permission denied" } }, 403).client.listReleaseStates("build.raft.app", track)).rejects.toMatchObject({ code: "play_api_rejected" });
   });
 });
+
+describe("track contents through an edit (fallback when release states are refused)", () => {
+  it("opens an edit, reads the track, deletes the edit, and keeps only status and versionCodes", async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init: RequestInit = {}) => {
+      const method = init.method ?? "GET";
+      requests.push({ url: String(url), method });
+      if (method === "POST") return Response.json({ id: "edit-1" });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      return Response.json({ track: "beta", releases: [
+        { name: "1.29.0", versionCodes: ["12900001"], status: "inProgress", userFraction: 0.2, releaseNotes: [{ language: "en-US", text: "notes" }] },
+        { versionCodes: ["12800012", "not-a-number"], status: "completed", userFraction: 0.5 },
+        { name: "odd", versionCodes: ["1"], status: "statusUnspecified" },
+      ] });
+    });
+    const client = new GooglePlayClient("test-token", fetchImpl as typeof fetch, 1024);
+    expect(await client.readTrackContents("build.raft.app", "beta")).toEqual([
+      { name: "1.29.0", status: "inProgress", version_codes: [12900001], user_fraction: 0.2 },
+      { name: null, status: "completed", version_codes: [12800012] },
+    ]);
+    expect(requests.map((r) => r.method)).toEqual(["POST", "GET", "DELETE"]);
+    expect(requests.some((r) => r.url.includes(":commit"))).toBe(false);
+  });
+
+  it("deletes the edit when the track read fails", async () => {
+    const methods: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init: RequestInit = {}) => {
+      const method = init.method ?? "GET";
+      methods.push(method);
+      if (method === "POST") return Response.json({ id: "edit-1" });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      return Response.json({ error: { code: 403, status: "PERMISSION_DENIED", message: "denied" } }, { status: 403 });
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = new GooglePlayClient("test-token", fetchImpl as typeof fetch, 1024);
+    await expect(client.readTrackContents("build.raft.app", "beta")).rejects.toMatchObject({ code: "play_api_rejected" });
+    expect(methods).toEqual(["POST", "GET", "DELETE"]);
+  });
+});
