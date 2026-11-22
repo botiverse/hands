@@ -9100,6 +9100,9 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(ja).toContain('<html lang="ja">');
     expect(ja).toContain("の新機能");
     expect(ja).toContain("日本語のリリースノート");
+    // The page itself carries the Raft Design styles (not the old greys).
+    expect(ja).toContain("family=Space+Grotesk");
+    expect(ja).not.toContain("#f5f5f2");
     const menu = ja.slice(ja.indexOf('<nav class="hands-language"'), ja.indexOf("</nav>"));
     // Ordered en, zh-CN, ja regardless of how the changelog stored them.
     expect([...menu.matchAll(/>([^<>]+)<\/a>/g)].map((m) => m[1])).toEqual(["English", "简体中文", "日本語"]);
