@@ -1,3 +1,5 @@
+import { OPEN_TESTING_PLAY_TRACK } from "./play_tracks";
+
 export type GoogleServiceAccountCredential = {
   type: "service_account";
   project_id?: string;
@@ -58,9 +60,16 @@ export type GooglePlayBindingMeta = {
   updated_at: number;
 };
 
+/** A binding's Play track for each Hands track; open testing is always Play's `beta`. */
+export type GooglePlayTrackMap = GooglePlayTracks & { open: string };
+
+export function withOpenTestingTrack(tracks: GooglePlayTracks): GooglePlayTrackMap {
+  return { ...tracks, open: OPEN_TESTING_PLAY_TRACK };
+}
+
 export type GooglePlayBinding = GooglePlayBindingMeta & {
   credential: GooglePlayCredential;
-  tracks: GooglePlayTracks | null;
+  tracks: GooglePlayTrackMap | null;
 };
 
 const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -265,7 +274,7 @@ export async function getGooglePlayBinding(
     ...row,
     credential,
     tracks: row.internal_track && row.closed_track && row.production_track
-      ? { internal: row.internal_track, closed: row.closed_track, production: row.production_track } : null,
+      ? withOpenTestingTrack({ internal: row.internal_track, closed: row.closed_track, production: row.production_track }) : null,
   };
 }
 
@@ -431,6 +440,6 @@ export async function deleteGooglePlayReportsGrant(db: D1Database, appId: string
   return Number(result.meta?.changes ?? 0) > 0;
 }
 
-export function hasGooglePlayConfiguration(binding: GooglePlayBinding): binding is GooglePlayBinding & { package_name: string; tracks: GooglePlayTracks } {
+export function hasGooglePlayConfiguration(binding: GooglePlayBinding): binding is GooglePlayBinding & { package_name: string; tracks: GooglePlayTrackMap } {
   return typeof binding.package_name === "string" && binding.package_name.length > 0 && binding.tracks !== null;
 }

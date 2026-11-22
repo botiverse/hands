@@ -1,5 +1,5 @@
 import type { PlayErrorCause } from "./errors";
-export type HandsTrack = "internal" | "closed" | "production";
+export type HandsTrack = "internal" | "closed" | "open" | "production";
 
 export interface PlayAdapterEnv {
   /** Maximum streamed AAB size accepted from Hands. */

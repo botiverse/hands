@@ -1,3 +1,4 @@
+import { HANDS_PLAY_TRACKS, type HandsPlayTrack } from "../lib/play_tracks";
 /**
  * App-wide Google Play release states: for every track bound to the app, each
  * release Play holds with its lifecycle state (DRAFT, IN_REVIEW,
@@ -15,8 +16,8 @@ import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
 import { playStateLabel } from "../lib/play_notifications";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
-type HandsTrack = "internal" | "closed" | "production";
-const HANDS_TRACKS: HandsTrack[] = ["internal", "closed", "production"];
+type HandsTrack = HandsPlayTrack;
+const HANDS_TRACKS: readonly HandsTrack[] = HANDS_PLAY_TRACKS;
 
 type ReleaseRow = { release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number };
 type TrackStatus = {

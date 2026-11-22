@@ -15,6 +15,7 @@ import {
   setGooglePlayBindingVerification,
   storeGooglePlayBinding,
   type GooglePlayBinding,
+  withOpenTestingTrack,
 } from "../lib/google_play_bindings";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -155,7 +156,7 @@ export async function handlePutGooglePlayBinding(c: AdminContext) {
       code: "PLAY_CREDENTIAL_STORAGE_UNAVAILABLE",
     }, 500);
   }
-  const verified = await verifyBinding(c, { credential, package_name: packageName, tracks });
+  const verified = await verifyBinding(c, { credential, package_name: packageName, tracks: withOpenTestingTrack(tracks) });
   if (!verified.ok) return c.json({ error: verified.error, code: verified.code }, verified.status);
   const role = await ensureAppRole(c, appId, "admin");
   if (!role.ok) return role.response;

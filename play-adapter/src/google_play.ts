@@ -137,8 +137,8 @@ function requestedRelease(request: PromotionRequest): TrackRelease {
     ? { releaseNotes: request.releaseNotes.map((note) => ({ language: note.language, text: note.text })) }
     : {};
   if (request.rolloutPercent < 100) {
-    if (request.handsTrack !== "production") {
-      throw new PlayAdapterError(400, "rollout_track_invalid", "Partial rollout is supported only on the production track");
+    if (request.handsTrack !== "production" && request.handsTrack !== "open") {
+      throw new PlayAdapterError(400, "rollout_track_invalid", "Partial rollout is supported only on the production and open testing tracks");
     }
     return {
       versionCodes: [String(request.versionCode)],

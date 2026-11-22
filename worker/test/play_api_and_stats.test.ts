@@ -266,6 +266,6 @@ describe("GET /api/apps/:appId/stats", () => {
     expect(body.direct.by_version[0]?.version_name).toBe("1.23.0");
     expect(body.stores.google_play?.configured).toBe(true);
     expect(body.stores.google_play?.package_name).toBe("build.raft.app");
-    expect(body.stores.google_play?.live_tracks).toHaveLength(3);
+    expect(body.stores.google_play?.live_tracks).toHaveLength(4); // production, open testing (beta), closed, internal
   });
 });

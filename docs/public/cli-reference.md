@@ -380,6 +380,15 @@ Public update checks only use the installable artifact. Mapping files, native sy
 
 To add symbols to an existing build, use `hands builds attach-symbols <app> <build-id> <file> --kind <kind>`. Kinds are `proguard-mapping`, `native-symbols`, and `dsym`; the command also infers the kind from the filename. A native-symbol archive uses the build's Android, HarmonyOS, or iOS product type to select its platform and requires an explicit `--platform` if the product type is unknown. Attachments are add-only and do not replace an existing asset in the same slot.
 
+## Google Play tracks
+
+`--track` takes Google Play's own track ids: `internal` (internal testing), `alpha` (closed testing, or the closed track configured for the app), `beta` (open testing) and `production`. The earlier names `closed` and `open` are still accepted. A staged rollout (`--rollout-percent` below 100) works on `production` and `beta`:
+
+```bash
+hands releases play-promote raft-android <release> --track beta \
+  --rollout-percent 20 --note "1.28.0 preview to open testing"
+```
+
 ## Google Play: upload now, send for review later
 
 Google Play reviews one set of changes at a time. While another release of the

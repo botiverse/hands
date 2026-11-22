@@ -85,6 +85,8 @@ function bindingInput(input: PlayBindingInput): PlayBindingInput {
     internal: typeof source?.internal === "string" ? source.internal.trim() : "",
     closed: typeof source?.closed === "string" ? source.closed.trim() : "",
     production: typeof source?.production === "string" ? source.production.trim() : "",
+    // Open testing is Play's fixed `beta` track; older callers do not send it.
+    open: typeof source?.open === "string" && source.open.trim() ? source.open.trim() : "beta",
   };
   if (Object.values(tracks).some((track) => !TRACK_NAME.test(track))) {
     throw new PlayAdapterError(400, "track_name_invalid", "Google Play track name is invalid");
@@ -95,7 +97,7 @@ function bindingInput(input: PlayBindingInput): PlayBindingInput {
 function trackInput(input: TrackMaximumRpcInput) {
   const binding = bindingInput(input);
   const handsTrack = input?.handsTrack;
-  if (handsTrack !== "internal" && handsTrack !== "closed" && handsTrack !== "production") {
+  if (handsTrack !== "internal" && handsTrack !== "closed" && handsTrack !== "open" && handsTrack !== "production") {
     throw new PlayAdapterError(400, "hands_track_invalid", "Hands track is invalid");
   }
   return { ...binding, handsTrack, playTrack: binding.tracks[handsTrack] };
@@ -183,8 +185,8 @@ function promotionInput(
   ) {
     throw new PlayAdapterError(400, "promotion_request_invalid", "Hands promotion request is invalid");
   }
-  if (track.handsTrack !== "production" && rolloutPercent !== 100) {
-    throw new PlayAdapterError(400, "rollout_track_invalid", "Partial rollout is supported only on the production track");
+  if (track.handsTrack !== "production" && track.handsTrack !== "open" && rolloutPercent !== 100) {
+    throw new PlayAdapterError(400, "rollout_track_invalid", "Partial rollout is supported only on the production and open testing tracks");
   }
   if (expectedSize > maxAabSize(env)) {
     throw new PlayAdapterError(413, "aab_too_large", "AAB exceeds the configured maximum size");
@@ -598,7 +600,9 @@ export function createPlayAdapterService(options: AdapterOptions = {}) {
     }>> {
       try {
         const resolved = await client(input, env);
-        await resolved.client.verifyBinding(resolved.binding.packageName, Object.values(resolved.binding.tracks));
+        // Only the tracks an admin configured; open testing (Play's fixed `beta`) is not part of a binding.
+        const { open: _open, ...configured } = resolved.binding.tracks;
+        await resolved.client.verifyBinding(resolved.binding.packageName, Object.values(configured));
         return {
           ok: true,
           value: {

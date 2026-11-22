@@ -1,3 +1,4 @@
+import { HANDS_PLAY_TRACKS, PLAY_TRACK_CHOICES, normalizeHandsPlayTrack, supportsPartialRollout, type HandsPlayTrack } from "../lib/play_tracks";
 import { enqueueDueDeliveries } from "./webhooks";
 import { playDeliveryStatement } from "../lib/play_notifications";
 import type { Context } from "hono";
@@ -11,7 +12,7 @@ import { playFailureNotificationFields } from "../lib/play_failure_notification"
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
-type PlayTrack = "internal" | "closed" | "production";
+type PlayTrack = HandsPlayTrack;
 
 export interface PlayPromotionInput {
   track: PlayTrack;
@@ -102,9 +103,8 @@ function positiveRevision(value: unknown): number | null {
 
 export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayPromotionInput {
   if (!input || typeof input !== "object") throw new Error("request body required");
-  if (input.track !== "internal" && input.track !== "closed" && input.track !== "production") {
-    throw new Error("track must be internal, closed, or production");
-  }
+  const track = normalizeHandsPlayTrack(input.track);
+  if (!track) throw new Error(`track must be ${PLAY_TRACK_CHOICES}`);
   const expectedRevision = positiveRevision(input.expected_revision);
   if (expectedRevision === null) throw new Error("expected_revision must be a non-negative integer");
   const note = typeof input.approval?.note === "string" ? input.approval.note.trim() : "";
@@ -113,8 +113,8 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
   if (rollout !== undefined && (!Number.isInteger(rollout) || rollout < 1 || rollout > 100)) {
     throw new Error("rollout_percent must be an integer from 1 to 100");
   }
-  if (input.track !== "production" && rollout !== undefined && rollout !== 100) {
-    throw new Error("partial rollout is supported only for production");
+  if (!supportsPartialRollout(track) && rollout !== undefined && rollout !== 100) {
+    throw new Error("partial rollout is supported only for production and open testing (beta)");
   }
   const notSent = input.changes_not_sent_for_review;
   if (notSent !== undefined && typeof notSent !== "boolean") {
@@ -131,7 +131,7 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
     cancelCodes = [...new Set(cancel)].sort((a, b) => a - b);
   }
   return {
-    track: input.track,
+    track,
     expected_revision: expectedRevision,
     approval: { note },
     ...(rollout === undefined ? {} : { rollout_percent: rollout }),
@@ -152,13 +152,13 @@ export type InReviewRead =
  */
 export async function readInReviewReleases(
   service: Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listReleaseStates">,
-  binding: { credential: unknown; package_name: string; tracks: Record<"internal" | "closed" | "production", string> },
+  binding: { credential: unknown; package_name: string; tracks: Record<HandsPlayTrack, string> },
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<InReviewRead> {
   const releases: Array<{ track: string; release_name: string; version_codes: number[] }> = [];
   const failed: string[] = [];
   const seen = new Set<string>();
-  for (const handsTrack of ["internal", "closed", "production"] as const) {
+  for (const handsTrack of HANDS_PLAY_TRACKS) {
     const playTrack = binding.tracks[handsTrack];
     if (seen.has(playTrack)) continue;
     seen.add(playTrack);
@@ -193,14 +193,13 @@ export async function readInReviewReleases(
 
 export function normalizePlaySendForReviewInput(input: PlaySendForReviewInput): PlaySendForReviewInput {
   if (!input || typeof input !== "object") throw new Error("request body required");
-  if (input.track !== "internal" && input.track !== "closed" && input.track !== "production") {
-    throw new Error("track must be internal, closed, or production");
-  }
+  const track = normalizeHandsPlayTrack(input.track);
+  if (!track) throw new Error(`track must be ${PLAY_TRACK_CHOICES}`);
   const expectedRevision = positiveRevision(input.expected_revision);
   if (expectedRevision === null) throw new Error("expected_revision must be a non-negative integer");
   const note = typeof input.approval?.note === "string" ? input.approval.note.trim() : "";
   if (!note) throw new Error("approval.note required");
-  return { track: input.track, expected_revision: expectedRevision, approval: { note } };
+  return { track, expected_revision: expectedRevision, approval: { note } };
 }
 
 /**

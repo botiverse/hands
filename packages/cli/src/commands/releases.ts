@@ -86,12 +86,14 @@ interface ReleaseReceipt {
   created_at?: number | null;
 }
 
-const PLAY_TRACKS = new Set(["internal", "closed", "production"]);
+/** Play's own track ids, plus the earlier Hands names `closed` and `open`. */
+const PLAY_TRACKS = new Set(["internal", "alpha", "beta", "production", "closed", "open"]);
+const PLAY_TRACK_HELP = "internal, alpha (closed testing), beta (open testing) or production";
 
 function parsePlayTrack(value: string): string {
-  const track = value.trim();
+  const track = value.trim().toLowerCase();
   if (!PLAY_TRACKS.has(track)) {
-    throw new Error("--track must be one of: internal, closed, production");
+    throw new Error(`--track must be one of: ${PLAY_TRACK_HELP}`);
   }
   return track;
 }
@@ -809,8 +811,8 @@ export function registerReleaseCommands(program: Command): void {
   releases
     .command("play-promote <appIdOrSlug> <releaseId>")
     .description("Promote the release's accepted AAB to a Google Play track (publisher role; fail-closed gates, no auto-retry).")
-    .requiredOption("--track <track>", "Play track: internal, closed, or production.")
-    .option("--rollout-percent <percent>", "Staged rollout percentage (0-100).")
+    .requiredOption("--track <track>", `Play track: ${PLAY_TRACK_HELP}.`)
+    .option("--rollout-percent <percent>", "Staged rollout percentage (0-100); production and beta only.")
     .requiredOption("--note <note>", "Approval note written into the promotion receipt's approvals (required, non-empty).")
     .option(
       "--changes-not-sent-for-review",
@@ -890,7 +892,7 @@ export function registerReleaseCommands(program: Command): void {
   releases
     .command("play-send-for-review <appIdOrSlug> <releaseId>")
     .description("Send a release uploaded with --changes-not-sent-for-review to Google Play review (publisher role; ERROR_IF_IN_REVIEW, never cancels a review in progress; no auto-retry).")
-    .option("--track <track>", "Play track the release was promoted to: internal, closed, or production.", "production")
+    .option("--track <track>", `Play track the release was promoted to: ${PLAY_TRACK_HELP}.`, "production")
     .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
     .option("--json", "Output JSON.", false)
     .action(async (
@@ -930,7 +932,7 @@ export function registerReleaseCommands(program: Command): void {
   releases
     .command("play-release-notes <appIdOrSlug> <releaseId>")
     .description("Replace the Google Play release notes (What's new) of a release already promoted to a track, from the release's changelog (write it first with `hands releases update --changelog-file zh=… --changelog-file en=…`). Never changes the track, versionCode, or rollout; Google reviews the change (publisher role; ERROR_IF_IN_REVIEW, never cancels a review in progress; no auto-retry).")
-    .option("--track <track>", "Play track the release was promoted to: internal, closed, or production.", "production")
+    .option("--track <track>", `Play track the release was promoted to: ${PLAY_TRACK_HELP}.`, "production")
     .requiredOption("--note <note>", "Approval note written into the receipt's approvals (required, non-empty).")
     .option("--json", "Output JSON.", false)
     .action(async (
