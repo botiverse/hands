@@ -25,6 +25,7 @@ import {
 } from "../lib/origin";
 import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 import { loadDeployToken, resolveDeployTokenPermissions } from "../lib/deploy_tokens";
+import { SIGNED_IN_HINT_COOKIE, oauthErrorCode, raftHostAutoSignIn } from "../lib/raft_host_sign_in";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -926,6 +927,9 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   const config = requireRaftConfig(c);
   if (!config.ok) return config.response;
 
+  const oauthError = oauthErrorCode(c.req.query("error"));
+  if (oauthError) return handleRaftCallbackError(c, config.clientSecret, oauthError);
+
   const code = c.req.query("code") || "";
   if (!code) return c.text("Missing Raft callback code", 400);
 
@@ -987,6 +991,18 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
         path: "/login/raft/callback",
       });
     }
+    // Let the server-rendered console know a login finished (no credential in
+    // this cookie), and drop the Raft-Host auto sign-in guard so a later
+    // logout -> open-from-Raft cycle starts clean.
+    setCookie(c, SIGNED_IN_HINT_COOKIE, "1", {
+      httpOnly: true,
+      secure: secureCookie(c),
+      sameSite: "Lax",
+      ...sharedCookieDomainOption(c),
+      path: "/",
+      expires: new Date(result.authToken.expiresAt),
+    });
+    c.header("set-cookie", raftHostAutoSignIn.clearGuardCookie({ secure: secureCookie(c) }), { append: true });
     const destination = new URL(browserReturnUrl(c, browserReturnPath), requestOrigin(c));
     destination.hash = new URLSearchParams({
       access_token: result.authToken.token,
@@ -1019,7 +1035,38 @@ export async function handleAuthLogout(c: Context<{ Bindings: Env }>) {
     ...sharedCookieDomainOption(c),
     path: "/",
   });
+  deleteCookie(c, SIGNED_IN_HINT_COOKIE, {
+    ...sharedCookieDomainOption(c),
+    path: "/",
+  });
+  // Signing out stays signed out: opening Hands from Raft again shows the
+  // sign-in screen instead of logging straight back in.
+  c.header("set-cookie", raftHostAutoSignIn.logoutCookie({ secure: secureCookie(c) }), { append: true });
   return c.json({ ok: true });
+}
+
+/**
+ * Raft returns `error=` (e.g. `access_denied` when the person cancels the
+ * consent sheet). For a browser login whose state still verifies, go back to
+ * the page the login started from with `?error=` so the console shows its
+ * normal sign-in screen and Raft-Host auto sign-in does not retry.
+ */
+async function handleRaftCallbackError(
+  c: Context<{ Bindings: Env }>,
+  clientSecret: string,
+  error: string,
+) {
+  const state = c.req.query("state");
+  const verifiedState = state ? await verifyBrowserLoginState(clientSecret, state) : null;
+  if (!verifiedState) return c.text(`Login with Raft was not completed (${error}).`, 400);
+  deleteCookie(c, browserLoginProofCookieName(verifiedState.nonce), {
+    ...sharedCookieDomainOption(c),
+    path: "/login/raft/callback",
+  });
+  const destination = new URL(browserReturnUrl(c, verifiedState.return_path), requestOrigin(c));
+  destination.searchParams.set("error", error);
+  c.header("cache-control", "no-store");
+  return c.redirect(destination.toString(), 302);
 }
 
 /**
