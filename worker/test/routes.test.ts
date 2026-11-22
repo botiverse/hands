@@ -9220,8 +9220,8 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(ja).toContain("family=Space+Grotesk");
     expect(ja).not.toContain("#f5f5f2");
     const menu = ja.slice(ja.indexOf('<nav class="hands-language"'), ja.indexOf("</nav>"));
-    // Ordered en, zh-CN, ja regardless of how the changelog stored them.
-    expect([...menu.matchAll(/>([^<>]+)<\/a>/g)].map((m) => m[1])).toEqual(["English", "简体中文", "日本語"]);
+    // The current language first, then en, zh-CN, ja regardless of how the changelog stored them.
+    expect([...menu.matchAll(/>([^<>]+)<\/a>/g)].map((m) => m[1])).toEqual(["日本語", "English", "简体中文"]);
     expect(menu).toMatch(/lang=ja" data-hands-locale="ja" lang="ja" aria-current="page"/);
 
     // A language with no notes shows English and marks English as current.
@@ -9230,6 +9230,49 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(ko).toMatch(/data-hands-locale="en" lang="en" aria-current="page"/);
     // Only console languages are remembered as the shared Hands preference.
     expect(ko).toContain('["en","zh-CN"].indexOf(locale) < 0');
+  });
+
+  it("lets the browser language pick the release notes language when the request gives no hint", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    await seedRelease(env, "rel-nav", "build-nav", [["full", "all"]], { versionCode: 128, versionName: "1.28.0" });
+    await env.DB.prepare("UPDATE releases SET changelog = ? WHERE id = ?")
+      .bind(JSON.stringify({ en: "English release note", "zh-cn": "中文更新说明", ja: "日本語" }), "rel-nav").run();
+    const { handlePublicReleaseNotes } = await import("../src/routes/history");
+    const ctx = (headers: Record<string, string>, lang?: string) => ({
+      env,
+      req: {
+        url: "https://hands.build/notes/scope-app",
+        param: (name: string) => name === "slug" ? "scope-app" : "",
+        query: (name: string) => ({ lang, version_code: "128" } as Record<string, string | undefined>)[name],
+        header: (name: string) => headers[name.toLowerCase()],
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+    // Runs the page's script against a fake browser and returns where it navigated, if anywhere.
+    const navigateFrom = (html: string, languages: string[]) => {
+      const script = html.slice(html.indexOf("<script>") + 8, html.indexOf("document.querySelectorAll"));
+      let target: string | null = null;
+      new Function("navigator", "location", script)({ languages, language: languages[0] }, { replace: (url: string) => { target = url; } });
+      return target;
+    };
+
+    // A native app that downloads the page itself sends no hint: the WebView's language decides.
+    const bare = await (await handlePublicReleaseNotes(ctx({}))).text();
+    expect(bare).toContain('<html lang="en">');
+    expect(navigateFrom(bare, ["zh-CN", "en"])).toBe("/notes/scope-app?version_code=128&lang=zh-CN");
+    expect(navigateFrom(bare, ["ja-JP"])).toBe("/notes/scope-app?version_code=128&lang=ja");
+    expect(navigateFrom(bare, ["en-US"])).toBeNull();
+    expect(navigateFrom(bare, ["fr-FR"])).toBeNull();
+
+    // Any hint from the request is final: no browser re-pick.
+    for (const hinted of [
+      await handlePublicReleaseNotes(ctx({}, "en")),
+      await handlePublicReleaseNotes(ctx({ "accept-language": "en-US,en;q=0.9" })),
+      await handlePublicReleaseNotes(ctx({ cookie: "hands_locale=en" })),
+    ]) {
+      expect(await hinted.text()).not.toContain("location.replace");
+    }
   });
 
   it("localizes public page errors without changing machine-readable notes errors", async () => {
