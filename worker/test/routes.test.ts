@@ -9246,6 +9246,7 @@ describe("quiver public API v2 — scope resolution", () => {
       expect(res.status).toBe(404);
       const html = await res.text();
       expect(html).toContain("<h1>页面不存在</h1>");
+      expect(html).not.toContain('class="hands-language"');
       expect(html).toContain("family=Space+Grotesk");
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
       expect(res.headers.get("cache-control")).toBe("private, no-store");
@@ -11805,7 +11806,8 @@ describe("quiver public API v2 — scope resolution", () => {
     const chineseGateHtml = await chineseGate.text();
     expect(chineseGateHtml).toContain("需要密码");
     expect(chineseGateHtml).toContain(`/share/${token}/unlock?lang=zh-CN`);
-    expect(chineseGateHtml).toContain(`/share/${token}?lang=en`);
+    // A gate is not a content page: no language switch, the language is detected.
+    expect(chineseGateHtml).not.toContain('class="hands-language"');
 
     // Download without unlock bounces back to the page.
     const blocked = await handlePublicReleaseShareDownload(makeSharePublicContext(env, token));

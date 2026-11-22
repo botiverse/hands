@@ -157,7 +157,7 @@ function publicPageNotFound(c: Context<{ Bindings: Env }>, kind: PublicNotFound,
     ? { href: `/apps/${encodeURIComponent(latestSlug)}/latest?lang=${htmlLang}`, label: zh ? "查看最新版本" : "See the latest version" }
     : undefined;
   return new Response(
-    renderRaftNoticePage({ lang: htmlLang, title, message, icon: copy.icon, action, languageMenu: publicLanguageMenu(c, htmlLang) }),
+    renderRaftNoticePage({ lang: htmlLang, title, message, icon: copy.icon, action }),
     {
       status: 404,
       headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "vary": "*" },
