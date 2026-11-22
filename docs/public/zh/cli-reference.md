@@ -989,9 +989,9 @@ hands api POST /api/apps/<appId>/stats/google-play/ingest
 
 ## CI 示例
 
-[botiverse/hands-examples](https://github.com/botiverse/hands-examples) 提供基于这些命令、可直接复制的流水线：
+Hands 仓库的 [`examples/`](https://github.com/botiverse/hands/tree/main/examples) 提供基于这些命令、可直接复制的流水线：
 
-- 可复用 GitHub Action：`uses: botiverse/hands-examples/publish-android@v1`。
+- 可复用 GitHub Action：`uses: botiverse/hands/examples/publish-android@examples-v1`。
 - Android、iOS（发布及服务端 [TestFlight 上传](ios-testflight.md)）和 Electron（通用提供方按平台使用渠道）的完整 GitHub Actions 与 GitLab CI 工作流。
 - 适用于 Jenkins、Buildkite 或任何拥有 Bash 和 npm 的运行器的纯 Bash 脚本。
 

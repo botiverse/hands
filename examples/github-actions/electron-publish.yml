@@ -1,0 +1,85 @@
+# Publish Electron installers to Hands from GitHub Actions.
+#
+# Electron releases are per platform: each matrix leg publishes ONE draft to
+# its own platform channel (main-win32 / main-darwin / main-linux), so
+# activations never supersede another platform's release. Point each
+# platform's electron-updater generic-provider URL at its own channel.
+#
+# The CLI does not create channels: create the three platform channels in the
+# app first (Hands Console -> app -> Channels), or point the matrix at
+# channels that already exist.
+name: Publish Electron to Hands
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        required: true
+      version_code:
+        required: true
+      channel_prefix:
+        description: "Channel prefix; per-platform channel is <prefix>-<platform>"
+        required: true
+        default: "main"
+
+env:
+  HANDS_APP_SLUG: your-app-slug   # <-- your Hands app slug
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            metadata: dist/latest.yml
+            installer: dist/App Setup.exe
+            blockmap: dist/App Setup.exe.blockmap
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+            metadata: dist/latest-mac.yml
+            installer: dist/App.dmg
+            blockmap: dist/App.dmg.blockmap
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            metadata: dist/latest-linux.yml
+            installer: dist/App.AppImage
+            blockmap: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Replace with your own electron-builder step (signing included). ---
+      - name: Build installers
+        run: |
+          echo "e.g. npx electron-builder --publish never"
+          echo "requirement: installer + latest*.yml (+ .blockmap) in dist/"
+      # ----------------------------------------------------------------------
+
+      - name: Install Hands CLI
+        run: npm install -g @botiverse/hands-cli@0.5.1
+
+      - name: Publish platform draft release
+        shell: bash
+        env:
+          HANDS_BEARER_TOKEN: ${{ secrets.HANDS_BEARER_TOKEN }}
+        run: |
+          git log --no-merges --pretty='- %s' -15 > changelog.txt
+          ARGS=(
+            --channel "${{ inputs.channel_prefix }}-${{ matrix.platform }}"
+            --version-name "${{ inputs.version_name }}"
+            --version-code "${{ inputs.version_code }}"
+            --platform "${{ matrix.platform }}"
+            --arch "${{ matrix.arch }}"
+            --metadata "${{ matrix.metadata }}"
+            --installer "${{ matrix.installer }}"
+            --changelog-file ./changelog.txt
+            --draft
+          )
+          if [ -n "${{ matrix.blockmap }}" ]; then
+            ARGS+=(--blockmap "${{ matrix.blockmap }}")
+          fi
+          hands builds publish-electron "$HANDS_APP_SLUG" "${ARGS[@]}"

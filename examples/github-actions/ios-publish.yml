@@ -1,0 +1,59 @@
+# Publish a signed iOS IPA (+ dSYM) to Hands from GitHub Actions.
+#
+# Hands is the TestFlight delivery boundary: after this publish, trigger the
+# server-side upload from the Hands console (build row → TestFlight) or API —
+# the App Store Connect credential lives only in Hands. CI needs no ASC key.
+# Docs: https://hands.build/docs/ios-testflight/
+name: Publish iOS to Hands
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        required: true
+      version_code:
+        required: true
+      channel:
+        required: true
+        default: "main"
+
+env:
+  HANDS_APP_SLUG: your-app-slug   # <-- your Hands app slug
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Replace with your own archive + export (signing via your certs). --
+      - name: Archive and export IPA
+        run: |
+          echo "xcodebuild archive && xcodebuild -exportArchive here"
+          echo "requirement: a signed .ipa and a .dSYM.zip on disk"
+      # ----------------------------------------------------------------------
+
+      - name: Install Hands CLI
+        run: npm install -g @botiverse/hands-cli@0.5.1
+
+      - name: Publish draft release to Hands
+        env:
+          HANDS_BEARER_TOKEN: ${{ secrets.HANDS_BEARER_TOKEN }}
+        run: |
+          git log --no-merges --pretty='- %s' -15 > changelog.txt
+          hands builds publish-ios "$HANDS_APP_SLUG" \
+            --ipa ./build/App.ipa \
+            --dsym ./build/App.dSYM.zip \
+            --channel "${{ inputs.channel }}" \
+            --version-name "${{ inputs.version_name }}" \
+            --version-code "${{ inputs.version_code }}" \
+            --changelog-file ./changelog.txt \
+            --source-commit "$GITHUB_SHA" \
+            --ci-provider github-actions \
+            --ci-run-id "$GITHUB_RUN_ID" \
+            --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --export-method app-store \
+            --draft
+        # TestFlight: do NOT add altool/ASC keys here — after the draft is
+        # reviewed, Hands uploads to Apple server-side with its stored
+        # credential (console: build row → TestFlight).

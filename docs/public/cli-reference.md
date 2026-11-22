@@ -1501,9 +1501,9 @@ still accepted.
 ## CI Examples
 
 Copy-ready pipelines built on these commands live in
-[botiverse/hands-examples](https://github.com/botiverse/hands-examples):
+[`examples/`](https://github.com/botiverse/hands/tree/main/examples) in the Hands repository:
 
-- A reusable GitHub Action: `uses: botiverse/hands-examples/publish-android@v1`.
+- A reusable GitHub Action: `uses: botiverse/hands/examples/publish-android@examples-v1`.
 - Complete GitHub Actions and GitLab CI workflows for Android, iOS
   (publish + server-side [TestFlight upload](ios-testflight.md)), and
   Electron (per-platform channels for the generic provider).

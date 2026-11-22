@@ -54,9 +54,9 @@ server; it grants no org or app roles by itself.
 ## Publishing from CI
 
 Ready-to-copy CI examples live in
-[botiverse/hands-examples](https://github.com/botiverse/hands-examples):
+[`examples/`](https://github.com/botiverse/hands/tree/main/examples) in the Hands repository:
 a reusable GitHub Action for Android
-(`uses: botiverse/hands-examples/publish-android@v1`), complete GitHub
+(`uses: botiverse/hands/examples/publish-android@examples-v1`), complete GitHub
 Actions and GitLab CI workflows for Android, iOS (with server-side
 TestFlight), and Electron, plus plain-bash scripts for any other CI. All
 examples publish draft releases with an app-scoped `publisher` deploy token;
