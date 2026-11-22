@@ -93,6 +93,12 @@ import {
   handlePublicV2UpdateCheck,
 } from "./routes/public_v2";
 import { handleElectronGenericAsset } from "./routes/electron";
+import {
+  handleGetElectronMetadata,
+  handleListElectronMetadata,
+  handlePutElectronMetadata,
+  handleRevertElectronMetadata,
+} from "./routes/electron_metadata";
 import { handleExternalLatestDl, handleExternalReleaseDl } from "./routes/external_dl";
 import { handleCliInstaller, handleCliInstallerMetadata } from "./routes/cli_installer";
 import {
@@ -1185,6 +1191,10 @@ bindAdmin("post", "/api/apps/:appId/release-approvals/:requestId/approve", requi
 bindAdmin("post", "/api/apps/:appId/release-approvals/:requestId/reject", requireAppRole("admin"), handleRejectReleaseApproval);
 bindAdmin("delete", "/api/apps/:appId/releases/:releaseId", requireAppRole("publisher"), handleDeleteRelease);
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/rollback", requireAppRole("publisher"), handleRollbackRelease);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/electron-metadata", requireAppRole("viewer"), handleListElectronMetadata);
+bindAdmin("get", "/api/apps/:appId/releases/:releaseId/electron-metadata/:file", requireAppRole("viewer"), handleGetElectronMetadata);
+bindAdmin("put", "/api/apps/:appId/releases/:releaseId/electron-metadata/:file", requireAppRole("admin"), handlePutElectronMetadata);
+bindAdmin("post", "/api/apps/:appId/releases/:releaseId/electron-metadata/:file/revert", requireAppRole("admin"), handleRevertElectronMetadata);
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/bump-rollout", requireAppRole("publisher"), handleBumpRollout);
 bindAdmin("post", "/api/apps/:appId/releases/:releaseId/force-update", requireAppRole("publisher"), handleForceUpdate);
 bindAdmin("get", "/api/apps/:appId/releases/:releaseId/checks", requireAppRole("viewer"), handleListReleaseChecks);

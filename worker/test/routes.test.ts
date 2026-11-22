@@ -312,6 +312,13 @@ function makeMockDb() {
       UNIQUE (build_id, platform, arch, variant, filetype),
       FOREIGN KEY (build_id) REFERENCES builds(id) ON DELETE CASCADE
     );
+    -- Mirrors migrations/sql/0105_electron_metadata_overrides.sql.
+    CREATE TABLE electron_metadata_overrides (
+      id TEXT PRIMARY KEY, release_id TEXT NOT NULL, asset_id TEXT NOT NULL,
+      r2_key TEXT NOT NULL, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+      created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
+      reverted_at INTEGER, reverted_by TEXT
+    );
     CREATE TABLE build_asset_ingest_attempt (
       asset_id TEXT NOT NULL REFERENCES build_assets(id) ON DELETE CASCADE,
       attempt INTEGER NOT NULL,

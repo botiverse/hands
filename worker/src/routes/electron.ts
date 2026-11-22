@@ -2,8 +2,9 @@ import type { Context } from "hono";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
 import { readR2WithRetry } from "../lib/r2_read_retry";
+import { currentElectronMetadataOverride } from "../lib/electron_metadata_overrides";
 
-type ElectronAssetRow = {
+export type ElectronAssetRow = {
   id: string;
   artifact_kind: string;
   platform: string;
@@ -50,7 +51,7 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
   // the desktop rename and after it.
   const productNames = equivalentsOf(productType);
   const build = await c.env.DB.prepare(
-    `SELECT b.id AS build_id
+    `SELECT b.id AS build_id, r.id AS release_id
      FROM apps a
      JOIN channels ch ON ch.app_id = a.id
      JOIN releases r ON r.app_id = a.id AND r.channel_id = ch.id
@@ -63,7 +64,7 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
      LIMIT 1`,
   )
     .bind(slug, channel, ...productNames)
-    .first<{ build_id: string }>();
+    .first<{ build_id: string; release_id: string }>();
 
   if (!build) {
     return c.json(
@@ -101,6 +102,15 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
     );
   }
 
+  // Update metadata replaced after publishing is served instead of the build's
+  // own file; the installers it points at are unchanged.
+  const override = isElectronMetadataAsset(asset)
+    ? await currentElectronMetadataOverride(c.env.DB, build.release_id, asset.id)
+    : null;
+  if (override) {
+    asset.r2_key = override.r2_key;
+    asset.size_bytes = override.size_bytes;
+  }
   const object = await readR2WithRetry("get", () => c.env.APK_BUCKET.get(asset.r2_key));
   if (!object) return c.json({ error: "object not found" }, 404);
 
@@ -241,7 +251,7 @@ function electronMetadataTarget(file: string): { platform: string | null } | nul
   return { platform: "win32" };
 }
 
-function isElectronMetadataAsset(asset: ElectronAssetRow): boolean {
+export function isElectronMetadataAsset(asset: Pick<ElectronAssetRow, "artifact_kind" | "filetype">): boolean {
   return ELECTRON_METADATA_KINDS.has(asset.artifact_kind) ||
     asset.filetype === "yml" ||
     asset.filetype === "yaml";
@@ -259,7 +269,7 @@ function findByName(
   return pool.find((asset) => candidateNames(asset).has(requestedFile)) ?? null;
 }
 
-function candidateNames(asset: ElectronAssetRow): Set<string> {
+export function candidateNames(asset: Pick<ElectronAssetRow, "variant" | "r2_key" | "metadata_json">): Set<string> {
   const names = new Set<string>();
   if (asset.variant) names.add(asset.variant);
   const basename = asset.r2_key.split("/").pop();

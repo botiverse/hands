@@ -1071,6 +1071,29 @@ release, then a human or agent reviews release notes and explicitly publishes.
 macOS update artifacts must be signed before upload; `hands sign --notarize`
 (see Signing) signs and notarizes the `.app` before it is packaged.
 
+### Changing a published release's update metadata
+
+An app admin can replace the `latest*.yml` a draft or active Electron release
+serves, without re-publishing, for example to switch delta patches off or to
+stage a rollout:
+
+```bash
+hands releases electron-metadata list raft-desktop <releaseId>
+hands releases electron-metadata get raft-desktop <releaseId> latest-mac.yml > latest-mac.yml
+# edit, then:
+hands releases electron-metadata set raft-desktop <releaseId> latest-mac.yml --from latest-mac.yml
+hands releases electron-metadata revert raft-desktop <releaseId> latest-mac.yml
+```
+
+What clients install cannot change: `version`, every `files` entry and the
+top-level `path` and `sha512` must match the build's own file exactly, and each
+`patches` entry (a file name, or an object with `url`, `path` or `file`) must
+name a file in the same build. Other fields, such as a rollout percentage, may
+change. Each replacement is kept and recorded in the audit log; `revert` serves
+the previous replacement again, and after the last one the build's own file.
+`/electron/...` serves metadata with a 60-second cache, so a change is public
+within a minute.
+
 ## Review and Publish (draft flow)
 
 CI creates drafts; publishing is an explicit step after changelog review:
