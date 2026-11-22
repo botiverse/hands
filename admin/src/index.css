@@ -5,6 +5,21 @@
 @import '@botiverse/raft-ui/styles.css';
 @source '../node_modules/@botiverse/raft-ui/dist/**/*.{js,mjs}';
 
+/* Colour names the console used under raft-ui 0.5. The Raft Design System
+   dropped them, and a colour class without a --color-* definition compiles to
+   no utility at all: text fell back to the page colour (dark-on-dark landing terminal)
+   and backgrounds went transparent. Map each onto its design-system role;
+   src/theme-tokens.test.ts keeps new gaps from shipping. */
+@theme {
+  --color-layer-hud-foreground: var(--foreground-on-hud);
+  --color-layer-panel: var(--layer-card);
+  --color-layer-canvas-muted: var(--layer-sidebar);
+  --color-layer-inset: var(--fill-muted);
+  --color-foreground-strong: var(--foreground);
+  --color-line-muted: var(--line-hairline);
+  --color-line-control: var(--line-field);
+}
+
 /* Chart series tokens. Light surfaces use darkened amber/green so every
    series keeps >= 3:1 against the canvas; dark surfaces keep the brighter
    originals (validated 3.5-9.6:1). Blue/red pass on both. */

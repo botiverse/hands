@@ -531,5 +531,9 @@
   "a signed-in owner must transfer ownership": "必须由已登录的所有者转移所有权",
   "name must be a string, or null to use the Raft server's name": "名称必须是字符串；传 null 则使用 Raft 服务器的名称",
   "organization not found": "未找到组织",
-  "you already own this organization": "你已经是此组织的所有者"
+  "you already own this organization": "你已经是此组织的所有者",
+  "metadata file not found in this release": "此版本中找不到该元数据文件",
+  "metadata must be UTF-8 text": "元数据必须是 UTF-8 文本",
+  "the build's own metadata is already served": "当前已在提供构建自带的元数据",
+  "the build's own metadata is missing": "构建自带的元数据文件缺失"
 }
