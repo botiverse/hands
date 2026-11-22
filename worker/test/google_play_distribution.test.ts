@@ -3293,6 +3293,34 @@ describe("app-wide Play review status", () => {
     expect((await h.request("/api/apps/app/distributions/play/review-status")).status).toBe(409);
   });
 
+  it("serves the last answer Play gave from the snapshot, and reads live only when asked", async () => {
+    const h = await readyRelease();
+    let calls = 0; let refuse = false;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async (input: any) => {
+      calls++;
+      if (refuse) return { ok: false, error: { status: 503, code: "play_quota_exceeded", message: "quota" } };
+      const track = input.tracks[input.handsTrack];
+      return { ok: true, value: [{ releaseName: "1.28.0", track, activeArtifacts: [{ versionCode: 12800012 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" }] };
+    } } as any);
+    // The poll reads every track once and stores each answer.
+    await pollGooglePlayReleases(h.env, 1_000);
+    expect(calls).toBe(4);
+    const cached = await (await h.request("/api/apps/app/distributions/play/review-status")).json() as any;
+    expect(calls).toBe(4);
+    expect(cached.tracks.every((t: any) => t.source === "cached" && t.read_at === 1_000)).toBe(true);
+    expect(cached.in_review).toHaveLength(4);
+    expect(cached.in_review[0]).toMatchObject({ version_codes: [12800012], source: "cached" });
+    // ?live=1 goes to Play and stores the newer answer.
+    const live = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
+    expect(calls).toBe(8);
+    expect(live.tracks.every((t: any) => t.source === "live" && t.read_at > 1_000)).toBe(true);
+    // A live read that fails falls back to the snapshot, saying why.
+    refuse = true;
+    const refused = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
+    expect(refused.tracks[0]).toMatchObject({ source: "cached", error_code: "play_quota_exceeded" });
+    expect(refused.tracks[0].read_at).toBe(live.tracks[0].read_at);
+  });
+
   it("adds the track's current contents from an edit read when the release-state read is refused", async () => {
     const h = await readyRelease();
     const contentCalls: string[] = [];

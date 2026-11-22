@@ -268,4 +268,22 @@ describe("GET /api/apps/:appId/stats", () => {
     expect(body.stores.google_play?.package_name).toBe("build.raft.app");
     expect(body.stores.google_play?.live_tracks).toHaveLength(4); // production, open testing (beta), closed, internal
   });
+
+  it("serves Google Play track states from the stored answer after the first read", async () => {
+    let calls = 0;
+    const { request } = await setupHarness({ role: "viewer", adapterOverrides: {
+      listReleaseStates: async (input) => {
+        calls++;
+        const track = input.tracks[input.handsTrack as "internal"];
+        return { ok: true, value: [{ releaseName: "1.0", track, activeArtifacts: [{ versionCode: 1 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_PUBLISHED" }] };
+      },
+    } });
+    const first = await (await request("/api/apps/app/stats?window_days=30")).json() as any;
+    expect(calls).toBe(4);
+    const second = await (await request("/api/apps/app/stats?window_days=30")).json() as any;
+    // Google allows about 12 release-state reads per app per hour; a page view must not spend them.
+    expect(calls).toBe(4);
+    expect(second.stores.google_play.live_tracks).toEqual(first.stores.google_play.live_tracks);
+    expect(second.stores.google_play.live_tracks[0]).toMatchObject({ read_at: expect.any(Number), releases: [{ version_codes: [1] }] });
+  });
 });

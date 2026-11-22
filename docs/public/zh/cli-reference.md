@@ -350,7 +350,7 @@ API：`POST /api/apps/:appId/releases/:releaseId/distributions/play/promote`，�
 hands play review-status raft-android
 ```
 
-输出当前在审核中的内容（轨道和 versionCode）、生产轨道的 versionCode，以及每个轨道上各个版本的状态：`IN_REVIEW`、`APPROVED_NOT_PUBLISHED`、`NOT_APPROVED`、`PUBLISHED`、`DRAFT`。状态实时从 Play 读取；如果 Play 拒绝列出某个轨道，会改为显示 Hands 每小时轮询记录的最近状态和记录时间，并注明；同时通过 Play edit（推送用的同一套接口，不做任何改动）读取该轨道当前的内容，在「On the track now」下列出每个版本的发布状态（`draft`、带放量比例的 `inProgress`、`halted`、`completed`）和 versionCode。这部分不含审核状态：`completed` 不代表已过审或已发布。`--json` 输出同样内容的 JSON（`track_contents`）。viewer 角色即可。
+输出当前在审核中的内容（轨道和 versionCode）、生产轨道的 versionCode，以及每个轨道上各个版本的状态：`IN_REVIEW`、`APPROVED_NOT_PUBLISHED`、`NOT_APPROVED`、`PUBLISHED`、`DRAFT`。Google 每个应用每小时只允许读取大约 12 次（每条轨道算一次），所以默认显示 Hands 最近一次从 Play 读到的结果（每小时的轮询或任何人的实时读取）和读取时间；加 `--live` 会立即读取 Play，并把结果存下来供其他人使用。推送前的检查仍然实时读取。实时读取失败时，显示最近一次存下的结果并注明原因。如果某条轨道没有存下的结果、实时读取又失败，会改为显示轮询记录的最近状态和记录时间，并注明；同时通过 Play edit（推送用的同一套接口，不做任何改动）读取该轨道当前的内容，在「On the track now」下列出每个版本的发布状态（`draft`、带放量比例的 `inProgress`、`halted`、`completed`）和 versionCode。这部分不含审核状态：`completed` 不代表已过审或已发布。`--json` 输出同样内容的 JSON（`track_contents`）。viewer 角色即可。
 
 ## Google Play：Play 写操作没有响应时
 
