@@ -947,8 +947,8 @@ function DeviceGroupDetail({ appId, group, onClose, label }: { appId: string; gr
 
 // --- Raft notifications -----------------------------------------------------------
 
-// Off unless a destination opts in: "Processing upload" is a transient state
-// followed shortly by the final upload state.
+// Off unless a destination opts in: upload progress (waiting, processing,
+// processed) is followed by TestFlight's own "Ready for testing"; failures still post.
 const RAFT_OPT_IN_EVENTS: WebhookEventType[] = ["testflight:upload_processing"];
 const DEFAULT_RAFT_EVENTS = WEBHOOK_EVENT_TYPES.filter((event) => !RAFT_OPT_IN_EVENTS.includes(event));
 
@@ -962,7 +962,7 @@ function RaftEventPicker({ selected, onToggle }: { selected: WebhookEventType[];
           <span className="min-w-0">
             <span className="font-mono text-footnote [overflow-wrap:anywhere]">{event}</span>
             {event === "testflight:upload_processing" && (
-              <span className="block text-footnote text-foreground-muted">{t("Also App Store \"Waiting for upload\" and \"Processing upload\". Off by default; the final upload state still posts.", "也包括 App Store 的「等待上传」和「上传处理中」。默认不选；上传的最终状态仍会通知。")}</span>
+              <span className="block text-footnote text-foreground-muted">{t("Also App Store \"Waiting for upload\", \"Processing upload\" and \"Upload processed\". Off by default; a failed upload still posts.", "也包括 App Store 的「等待上传」「上传处理中」和「上传处理完成」。默认不选；上传失败仍会通知。")}</span>
             )}
           </span>
         </label>
