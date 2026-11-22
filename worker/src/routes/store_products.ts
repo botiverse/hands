@@ -22,7 +22,7 @@ class GoogleProductError extends Error {
 const GOOGLE_PRODUCT_ERRORS = new Set([
   "play_credentials_invalid", "play_binding_invalid", "package_name_invalid",
   "play_token_unavailable", "play_token_rejected", "play_token_malformed",
-  "play_api_unavailable", "play_api_rejected", "play_api_malformed",
+  "play_api_unavailable", "play_api_rejected", "play_api_malformed", "play_quota_exceeded",
   "play_subscription_malformed", "play_subscription_limit",
   "base_plan_immutable_mismatch", "base_plan_state_unknown",
 ]);

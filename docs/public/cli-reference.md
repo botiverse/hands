@@ -452,7 +452,7 @@ It prints what is in review now (track and versionCodes), the production
 versionCode, and each track's releases with their state: `IN_REVIEW`,
 `APPROVED_NOT_PUBLISHED`, `NOT_APPROVED`, `PUBLISHED`, `DRAFT`. States are read
 live from Play. If Play refuses to list a track, the command shows the last
-states Hands' five-minute poll observed for it, with the time of each
+states Hands' 30-minute poll observed for it, with the time of each
 observation, and says so. It then also reads what the track holds right now
 through a Play edit (the same API promotions use, nothing is changed) and
 shows each release's status (`draft`, `inProgress` with its rollout

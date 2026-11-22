@@ -41,8 +41,16 @@ export async function observePlayRelease(db: D1Database, appId: string, packageN
     [packageName, track, versionCode, nonce])]);
 }
 
-/** At most four apps / twelve read-only track calls per five-minute tick.
- * Persisted scheduling rotates through tenants; outages never become state. */
+/**
+ * Google rations tracks.releases.list per app ("Listing releases quota
+ * exceeded.", observed at roughly a dozen calls an hour), so each app is read
+ * once per POLL_INTERVAL_MS, leaving the rest of the hour for interactive reads
+ * (review-status, the in-review gate before a promotion). The cron still ticks
+ * every five minutes; at most four apps are claimed per tick. Persisted
+ * scheduling rotates through tenants; outages never become state.
+ */
+export const POLL_INTERVAL_MS = 30 * 60_000;
+
 export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
   if (!env.PLAY_RELEASE_SERVICE) return;
   await env.DB.prepare(`INSERT OR IGNORE INTO google_play_poll_schedule(app_id,next_poll_at)
@@ -56,13 +64,14 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
     // Anchor cooldown to cron slots: a few milliseconds of invocation jitter
     // must not suppress the next five-minute tick. The CAS still claims once.
     const claim = await env.DB.prepare(`UPDATE google_play_poll_schedule SET next_poll_at=?1
-      WHERE app_id=?2 AND next_poll_at=?3`).bind((Math.floor(now / 300_000) + 1) * 300_000, row.app_id, row.next_poll_at).run();
+      WHERE app_id=?2 AND next_poll_at=?3`).bind((Math.floor(now / 300_000) * 300_000) + POLL_INTERVAL_MS, row.app_id, row.next_poll_at).run();
     if (claim.meta.changes !== 1) continue;
     try {
       const binding = await getGooglePlayBinding(env.DB, row.app_id, env.PLAY_CRED_ENC_KEYS);
       if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") continue;
       const seenTracks = new Set<string>();
       let failureCode: string | null = null;
+      let quotaExhausted = false;
       for (const handsTrack of HANDS_PLAY_TRACKS) {
         const track = binding.tracks[handsTrack];
         if (seenTracks.has(track)) continue;
@@ -71,6 +80,8 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           packageName: binding.package_name, tracks: binding.tracks, handsTrack });
         if (!reply.ok) {
           console.warn("hands_play_poll_failure", JSON.stringify({ code: reply.error.code }));
+          // Quota is not access: no alert, and no further reads this round.
+          if (reply.error.code === "play_quota_exceeded") { quotaExhausted = true; break; }
           failureCode ??= reply.error.code;
           continue;
         }
@@ -89,6 +100,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           await observePlayRelease(env.DB, row.app_id, binding.package_name, track, release,
             version, binding.updated_at, now);
       }
+      if (quotaExhausted && !failureCode) continue;
       if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now, settingsOrigin(env)).catch(() => undefined);
       else await recordPlayAccessSuccess(env.DB, row.app_id, "publishing", now).catch(() => undefined);
     } catch {
@@ -103,9 +115,8 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
 type ReleaseStateService = Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listReleaseStates">;
 
 /**
- * Google intermittently refuses tracks.releases.list with PERMISSION_DENIED
- * while the same grant reads the same track a moment later. The read has no
- * side effects, so a refusal is retried once after a short pause.
+ * A refusal (play_api_rejected) is retried once after a short pause; the read
+ * has no side effects. An exhausted quota (play_quota_exceeded) is not retried.
  */
 export async function listReleaseStatesWithRetry(
   service: ReleaseStateService,

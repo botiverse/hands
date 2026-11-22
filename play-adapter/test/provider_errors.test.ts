@@ -266,3 +266,18 @@ it("logged provider prose has credential-shaped values replaced and is clipped",
   }
   expect(redactProviderText("x ".repeat(400)).length).toBe(300);
 });
+
+it("reports an exhausted Google quota as play_quota_exceeded, not as a refusal", async () => {
+  const { playRejection } = await import("../src/provider_errors");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  // What tracks.releases.list actually returns when its quota is used up.
+  const listing = playRejection(403, { error: { code: 403, status: "PERMISSION_DENIED", message: "Listing releases quota exceeded." } }, "list_release_states");
+  expect(listing).toMatchObject({ status: 503, code: "play_quota_exceeded" });
+  expect(playRejection(429, { error: { code: 429 } }, "list_tracks")).toMatchObject({ code: "play_quota_exceeded" });
+  expect(playRejection(403, { error: { status: "RESOURCE_EXHAUSTED" } }, "list_tracks")).toMatchObject({ code: "play_quota_exceeded" });
+  expect(playRejection(403, { error: { errors: [{ reason: "quotaExceeded" }] } }, "list_tracks")).toMatchObject({ code: "play_quota_exceeded" });
+  // A real permission refusal keeps its code.
+  expect(playRejection(403, { error: { code: 403, status: "PERMISSION_DENIED", message: "The caller does not have permission" } }, "list_release_states"))
+    .toMatchObject({ status: 403, code: "play_api_rejected" });
+  vi.restoreAllMocks();
+});

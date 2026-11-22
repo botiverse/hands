@@ -172,7 +172,8 @@ export async function readInReviewReleases(
           tracks: binding.tracks,
           handsTrack,
         });
-        if (!reply.ok) continue;
+        // An exhausted quota does not come back within these retries; each one spends more.
+        if (!reply.ok) { if (reply.error.code === "play_quota_exceeded") break; continue; }
         answered = true;
         for (const release of reply.value) {
           if (release.releaseLifecycleState !== "RELEASE_LIFECYCLE_STATE_IN_REVIEW") continue;
