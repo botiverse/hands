@@ -26,7 +26,7 @@ export function loginErrorResponse(
       lang: zh ? "zh-CN" : "en",
       title: zh ? "登录没有完成" : "Couldn't sign in",
       message: zh ? message.zh : message.en,
-      icon: "🔑",
+      icon: "key",
       action: options.backToConsole === false ? undefined : { href: "/", label: zh ? "返回 Hands" : "Back to Hands" },
     }),
     { status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },

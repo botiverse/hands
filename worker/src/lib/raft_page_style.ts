@@ -87,6 +87,20 @@ export const RAFT_PAGE_BASE_CSS = `
     .notes a { color: inherit; }
 `;
 
+/** Lucide outline icons (the set Raft UI uses), inlined so pages stay one response. */
+const RAFT_ICON_PATHS = {
+  search: '<path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/>',
+  package: '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/>',
+  key: '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+} as const;
+
+export type RaftIconName = keyof typeof RAFT_ICON_PATHS;
+
+export function raftIcon(name: RaftIconName, size = 22): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${RAFT_ICON_PATHS[name]}</svg>`;
+}
+
 function escapeNoticeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -96,8 +110,8 @@ export type RaftNoticePage = {
   lang: string;
   title: string;
   message?: string;
-  /** One emoji shown in a muted tile above the title. */
-  icon: string;
+  /** Shown in a muted tile above the title. */
+  icon: RaftIconName;
   action?: { href: string; label: string } | undefined;
   /** Pre-rendered language switch (publicLanguageMenu), or "" for none. */
   languageMenu?: string;
@@ -122,7 +136,7 @@ export function renderRaftNoticePage(page: RaftNoticePage): string {
   <style>${RAFT_PAGE_BASE_CSS}
     body { display: grid; place-items: center; }
     main { width: min(360px, calc(100vw - 32px)); padding: 32px 0; text-align: center; }
-    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); font-size: 22px; }
+    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); color: var(--fg); }
     p { margin: 6px 0 0; color: var(--fg-muted); font-size: 15px; line-height: 22px; }
     main > a.button { margin-top: 20px; }
   </style>
@@ -130,7 +144,7 @@ export function renderRaftNoticePage(page: RaftNoticePage): string {
 <body>
   <main>
     ${page.languageMenu ?? ""}
-    <div class="icon" aria-hidden="true">${escapeNoticeHtml(page.icon)}</div>
+    <div class="icon">${raftIcon(page.icon)}</div>
     <h1>${escapeNoticeHtml(page.title)}</h1>
     ${page.message ? `<p>${escapeNoticeHtml(page.message)}</p>` : ""}
     ${action}

@@ -5,7 +5,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { generateSignedR2Url, resolveChangelog , changelogToHtml } from "./public_v2";
 import { publicPageLanguage, publicLanguageMenu } from "../lib/public_locale";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
-import { RAFT_PAGE_BASE_CSS, RAFT_PAGE_FONTS } from "../lib/raft_page_style";
+import { RAFT_PAGE_BASE_CSS, RAFT_PAGE_FONTS, raftIcon } from "../lib/raft_page_style";
 
 // UI chrome and release notes follow the selected page language. API language
 // selection remains independent of the browser's saved preference.
@@ -1248,14 +1248,14 @@ function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | 
   <style>${RAFT_PAGE_BASE_CSS}
     body { display: grid; place-items: center; }
     main { width: min(360px, calc(100vw - 32px)); padding: 32px 0; text-align: center; }
-    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); font-size: 22px; }
+    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); color: var(--fg); }
     p { margin: 6px 0 0; color: var(--fg-muted); font-size: 15px; line-height: 22px; }
     main > a.button { margin-top: 20px; }
   </style>
 </head>
 <body>
   <main>
-    <div class="icon" aria-hidden="true">🔗</div>
+    <div class="icon">${raftIcon("link")}</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
     ${latestSlug ? `<a class="button" href="${escapeAttribute(withExplicitPageLanguage(`/apps/${encodeURIComponent(latestSlug)}/latest`, lang))}">${t.goToLatest}</a>` : ""}

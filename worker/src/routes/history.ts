@@ -8,7 +8,7 @@ import { requestOrigin } from "../lib/origin";
 import { parseReleaseNotes } from "../lib/release_notes";
 import { generateSignedR2Url, resolveChangelog, changelogToHtml } from "./public_v2";
 import { publicPageLanguage, publicLanguageMenu } from "../lib/public_locale";
-import { RAFT_PAGE_BASE_CSS, RAFT_PAGE_FONTS, renderRaftNoticePage } from "../lib/raft_page_style";
+import { RAFT_PAGE_BASE_CSS, RAFT_PAGE_FONTS, renderRaftNoticePage, type RaftIconName } from "../lib/raft_page_style";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 import { recordPublicAssetDownload } from "../lib/download_stats";
@@ -129,19 +129,19 @@ export function releaseNotesLanguages(changelogs: Array<string | null>): string[
 
 type PublicNotFound = "app" | "no_release" | "version";
 
-const PUBLIC_NOT_FOUND: Record<PublicNotFound, { icon: string; en: [string, string]; zh: [string, string] }> = {
+const PUBLIC_NOT_FOUND: Record<PublicNotFound, { icon: RaftIconName; en: [string, string]; zh: [string, string] }> = {
   app: {
-    icon: "🔍",
+    icon: "search",
     en: ["Page not found", "This app doesn't exist, or its releases aren't public."],
     zh: ["页面不存在", "这个应用不存在，或没有公开发布的版本。"],
   },
   no_release: {
-    icon: "📦",
+    icon: "package",
     en: ["No release yet", "Nothing has been published here yet."],
     zh: ["还没有可用的版本", "这里还没有发布任何版本。"],
   },
   version: {
-    icon: "🔍",
+    icon: "search",
     en: ["Version not found", "This version doesn't exist or is no longer available."],
     zh: ["找不到这个版本", "这个版本不存在，或已不再提供。"],
   },
