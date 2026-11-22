@@ -617,18 +617,18 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
   const token = c.req.param("token");
   const explicitLang = c.req.query?.("lang");
   const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null), 400);
 
   const row = await findActiveShare(c.env.DB, token);
 
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
     await recordShareEvent(c, row.share_id, "view");
-    return htmlResponse(renderPasswordPage(t, token, false, menu, c.req.query?.("lang")));
+    return htmlResponse(renderPasswordPage(t, token, false, c.req.query?.("lang")));
   }
 
   await recordShareEvent(c, row.share_id, "view");
@@ -640,7 +640,7 @@ export async function handlePublicReleaseShare(c: Context<{ Bindings: Env }>) {
     if (fallbackKey) {
       return c.redirect(withExplicitPageLanguage(`/apps/${encodeURIComponent(row.app_slug)}/latest`, explicitLang), 302);
     }
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, null), 404);
   }
   const origin = publicRequestOrigin(c);
   const downloadUrl = new URL(withExplicitPageLanguage(`/share/${token}/download`, explicitLang), origin).toString();
@@ -666,12 +666,12 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   const token = c.req.param("token");
   const explicitLang = c.req.query?.("lang");
   const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null), 400);
 
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, explicitLang), 404);
   }
 
   if (row.password_hash && !(await hasValidUnlockCookie(c, row))) {
@@ -685,9 +685,9 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   const requestedAssetId = (c.req.query("asset") ?? "").trim();
   if (requestedAssetId) {
     const artifact = await findShareArtifact(c.env.DB, row.share_id, requestedAssetId);
-    if (!artifact) return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
+    if (!artifact) return htmlResponse(renderErrorPage(t, t.errUnavailable, null), 404);
     if (!(await c.env.APK_BUCKET.head(artifact.r2_key))) {
-      return htmlResponse(renderErrorPage(t, t.errUnavailable, null, menu), 404);
+      return htmlResponse(renderErrorPage(t, t.errUnavailable, null), 404);
     }
     await recordShareEvent(c, row.share_id, "download");
     const ttlSeconds = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
@@ -709,7 +709,7 @@ export async function handlePublicReleaseShareDownload(c: Context<{ Bindings: En
   }
   if (!r2Key) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, explicitLang), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, explicitLang), 404);
   }
 
   await recordShareEvent(c, row.share_id, "download");
@@ -764,13 +764,12 @@ export async function handlePublicReleaseShareIcon(c: Context<{ Bindings: Env }>
 export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env }>) {
   const t = shareStrings(c);
   const token = c.req.param("token");
-  const menu = publicLanguageMenu(c, t.htmlLang, token ? `/share/${encodeURIComponent(token)}` : undefined);
   const lang = c.req.query?.("lang");
-  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null, menu), 400);
+  if (!token) return htmlResponse(renderErrorPage(t, t.errMissingToken, null), 400);
   const row = await findActiveShare(c.env.DB, token);
   if (!row) {
     const latestSlug = await findLatestLandingSlugForInactiveShare(c.env.DB, token);
-    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, menu, lang), 404);
+    return htmlResponse(renderErrorPage(t, t.errUnavailable, latestSlug, lang), 404);
   }
   if (!row.password_hash) return c.redirect(`/share/${token}${lang ? `?lang=${encodeURIComponent(lang)}` : ""}`, 302);
 
@@ -792,7 +791,7 @@ export async function handlePublicReleaseShareUnlock(c: Context<{ Bindings: Env 
         row.release_id,
       )
       .run();
-    return htmlResponse(renderPasswordPage(t, token, true, menu, lang), 401);
+    return htmlResponse(renderPasswordPage(t, token, true, lang), 401);
   }
 
   const proof = await shareUnlockProof(row, currentDayBucket());
@@ -1206,7 +1205,7 @@ function renderShareQrSvg(url: string): string {
   return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
 
-function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, languageMenu: string, lang?: string): string {
+function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lang?: string): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -1227,7 +1226,6 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lan
 </head>
 <body>
   <main>
-    ${languageMenu}
     <h1>${t.passwordRequired}</h1>
     <p>${failed ? `<span class="error">${t.wrongPassword}</span>` : t.passwordProtected}</p>
     <form method="post" action="/share/${escapeAttribute(encodeURIComponent(token))}/unlock${lang ? `?lang=${escapeAttribute(encodeURIComponent(lang))}` : ""}">
@@ -1239,7 +1237,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lan
 </html>`;
 }
 
-function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null, languageMenu = "", lang?: string): string {
+function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | null = null, lang?: string): string {
   return `<!doctype html>
 <html lang="${t.htmlLang}">
 <head>
@@ -1257,7 +1255,6 @@ function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | 
 </head>
 <body>
   <main>
-    ${languageMenu}
     <div class="icon" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
