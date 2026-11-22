@@ -3850,6 +3850,63 @@ function ticketResolveError(c: AdminContext, r: { error: "not_found" } | { error
   return c.json({ error: "ticket not found" }, 404);
 }
 
+/**
+ * DELETE /api/apps/:appId/feedback/:ticketId/attachments — permanently removes
+ * every attachment of a ticket: the stored objects (including anything else
+ * under the ticket's object prefix) and their rows. The ticket and its
+ * comments stay. For uploads that should never have been kept (for example a
+ * crash dump holding another program's memory).
+ */
+export async function handleDeleteFeedbackAttachments(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));
+  if ("error" in resolved) return ticketResolveError(c, resolved);
+  const ticketId = resolved.id;
+
+  const rows = (await c.env.DB.prepare(
+    "SELECT id, r2_key, filename FROM feedback_attachments WHERE ticket_id = ?1",
+  ).bind(ticketId).all<{ id: string; r2_key: string; filename: string }>()).results ?? [];
+
+  const keys = new Set(rows.map((row) => row.r2_key));
+  const prefix = `feedback/${appId}/${ticketId}/`;
+  let cursor: string | undefined;
+  do {
+    const listed = await c.env.APK_BUCKET.list(cursor ? { prefix, cursor } : { prefix });
+    for (const object of listed.objects) keys.add(object.key);
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  const objectKeys = [...keys];
+  for (let i = 0; i < objectKeys.length; i += 1000) {
+    await c.env.APK_BUCKET.delete(objectKeys.slice(i, i + 1000));
+  }
+
+  const now = Date.now();
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM feedback_attachments WHERE ticket_id = ?1").bind(ticketId),
+    c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       VALUES (?1, ?2, 'feedback.attachments_deleted', ?3, ?4, ?5)`,
+    ).bind(
+      crypto.randomUUID(),
+      appId,
+      currentActor(c),
+      JSON.stringify({
+        ticket_id: ticketId,
+        attachments: rows.map((row) => ({ id: row.id, filename: row.filename })),
+        objects: objectKeys.length,
+      }),
+      now,
+    ),
+  ]);
+
+  return c.json({
+    ticket_id: ticketId,
+    deleted_attachments: rows.map((row) => ({ id: row.id, filename: row.filename })),
+    deleted_objects: objectKeys.length,
+  });
+}
+
 export async function handleGetFeedback(c: AdminContext) {
   const appId = c.req.param("appId");
   const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));

@@ -116,6 +116,7 @@ import {
   handleUpdateFeedback,
   handleAddFeedbackComment,
   handleResymbolicateFeedback,
+  handleDeleteFeedbackAttachments,
   sweepPendingCrashAlerts,
   handleDownloadFeedbackAttachment,
   handleListCrashGroups,
@@ -1291,6 +1292,7 @@ bindAdmin("patch", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedba
 // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
 bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"), handleAddFeedbackComment);
 bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
+bindAdmin("delete", "/api/apps/:appId/feedback/:ticketId/attachments", requireAppRole("admin"), handleDeleteFeedbackAttachments);
 bindAdmin("get", "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
   // An attachment is the substance of most crash reports; reading a ticket
   // without being able to fetch its screenshot is not "read feedback".
