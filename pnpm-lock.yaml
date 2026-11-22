@@ -300,6 +300,9 @@ importers:
 
   worker:
     dependencies:
+      '@botiverse/raft-sdk':
+        specifier: 0.40.0
+        version: 0.40.0
       '@cloudflare/containers':
         specifier: ^0.0.30
         version: 0.0.30
@@ -595,6 +598,10 @@ packages:
     resolution: {integrity: sha512-5BqjsnZOqa4JDWsx842hJLvOIwpeL0aKiJuSr7HVl0M1vVrZmlk6S7VkJ4YY3wADFIe24dx/KkJk+WFhqpKjXA==}
     engines: {node: '>=22.12.0'}
     hasBin: true
+
+  '@botiverse/raft-sdk@0.40.0':
+    resolution: {integrity: sha512-ZdPBSk98J0Q5ijsEIxM9dBFF4nJ1D3b+ldqMQq9DxbcEkXbKmgfpcS77AJkLP6TpbTUrMslNQitpwfNk1ow6tg==}
+    engines: {node: '>=20.0.0'}
 
   '@botiverse/raft-ui@0.102.14':
     resolution: {integrity: sha512-rAezYjYqgN6/+5RXHgry+XoVFkcloprMoLL7HpHRydgF/YIn+JWJ3FZ3mV3VbnF1w4ZPsiJzQCyHHZzd1KP3Xw==}
@@ -4023,6 +4030,10 @@ snapshots:
       vue: 3.5.43(typescript@5.9.3)
 
   '@botiverse/lint@0.1.0': {}
+
+  '@botiverse/raft-sdk@0.40.0':
+    dependencies:
+      zod: 4.6.7
 
   '@botiverse/raft-ui@0.102.14(@babel/parser@7.29.9)(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:

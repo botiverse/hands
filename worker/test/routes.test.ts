@@ -47,6 +47,7 @@ import {
   handleAuthMe,
   handleDashboardRedirect,
   handleRaftCallback,
+  handleAuthLogout,
 } from "../src/routes/auth";
 import { handleListOrgs } from "../src/routes/orgs";
 
@@ -3070,6 +3071,90 @@ describe("auth origin handling", () => {
     expect(httpsRedirectUrl(ctx as any)).toBeNull();
   });
 
+  describe("when Hands is opened from Raft (Raft-Host)", () => {
+    function cookiePairs(response: Response): string[] {
+      return (response.headers.get("set-cookie") ?? "").split(/,(?=\s*[A-Za-z0-9_]+=)/).map((v) => v.trim());
+    }
+
+    it("marks the browser signed in and clears the auto sign-in guard after a browser login", async () => {
+      const env = makeMockEnv();
+      env.RAFT_CLIENT_ID = "test-client";
+      const app = new Hono<{ Bindings: MockEnv }>();
+      app.get("/api/auth/login", handleAuthLogin);
+      app.get("/login/raft/callback", handleRaftCallback);
+      const originalFetch = globalThis.fetch;
+      try {
+        const login = await app.request("https://dashboard.example/api/auth/login?return=%2Fapps", {}, env as any);
+        const state = new URL(login.headers.get("location") ?? "").searchParams.get("state");
+        globalThis.fetch = mockRaftLoginFetch() as typeof fetch;
+        const callback = await app.request(
+          `https://business.example/login/raft/callback?code=c1&state=${encodeURIComponent(state!)}`,
+          { headers: { cookie: browserProofCookie(login) } },
+          env as any,
+        );
+        expect(callback.status).toBe(302);
+        const cookies = cookiePairs(callback);
+        const hint = cookies.find((v) => v.startsWith("hands_signed_in=1"));
+        expect(hint).toBeDefined();
+        expect(hint).toMatch(/HttpOnly/i);
+        expect(hint).toMatch(/Expires=/i);
+        expect(cookies.some((v) => /^raft_host_signin_guard=;.*Max-Age=0/i.test(v))).toBe(true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("returns a cancelled Raft consent to the starting page with ?error=", async () => {
+      const env = makeMockEnv();
+      env.RAFT_CLIENT_ID = "test-client";
+      const app = new Hono<{ Bindings: MockEnv }>();
+      app.get("/api/auth/login", handleAuthLogin);
+      app.get("/login/raft/callback", handleRaftCallback);
+      const login = await app.request(
+        "https://dashboard.example/api/auth/login?return=%2Fapps%2Fa1%3Ftab%3Dbuilds",
+        {},
+        env as any,
+      );
+      const state = new URL(login.headers.get("location") ?? "").searchParams.get("state");
+      const callback = await app.request(
+        `https://business.example/login/raft/callback?error=access_denied&state=${encodeURIComponent(state!)}`,
+        { headers: { cookie: browserProofCookie(login) } },
+        env as any,
+      );
+      expect(callback.status).toBe(302);
+      const destination = new URL(callback.headers.get("location") ?? "");
+      expect(`${destination.origin}${destination.pathname}`).toBe("https://dashboard.example/apps/a1");
+      expect(destination.searchParams.get("tab")).toBe("builds");
+      expect(destination.searchParams.get("error")).toBe("access_denied");
+      expect(destination.hash).toBe("");
+      expect(callback.headers.get("set-cookie") ?? "").not.toContain("hands_signed_in=1");
+    });
+
+    it("refuses an error callback whose state does not verify", async () => {
+      const env = makeMockEnv();
+      env.RAFT_CLIENT_ID = "test-client";
+      const app = new Hono<{ Bindings: MockEnv }>();
+      app.get("/login/raft/callback", handleRaftCallback);
+      const callback = await app.request(
+        "https://business.example/login/raft/callback?error=access_denied&state=forged.state",
+        {},
+        env as any,
+      );
+      expect(callback.status).toBe(400);
+      expect(callback.headers.get("location")).toBeNull();
+    });
+
+    it("keeps a signed-out person signed out when Raft opens Hands again", async () => {
+      const env = makeMockEnv();
+      const app = new Hono<{ Bindings: MockEnv }>();
+      app.post("/api/auth/logout", handleAuthLogout);
+      const res = await app.request("https://dashboard.example/api/auth/logout", { method: "POST" }, env as any);
+      expect(res.status).toBe(200);
+      const cookies = cookiePairs(res);
+      expect(cookies.some((v) => /^hands_signed_in=;/.test(v))).toBe(true);
+      expect(cookies.some((v) => /^raft_host_signin_guard=[^;]+;/.test(v) && !/Max-Age=0/i.test(v))).toBe(true);
+    });
+  });
 });
 
 describe("quiver operation retry — legacy publish is not replayed", () => {

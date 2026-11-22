@@ -1,4 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
+import { serveConsolePage } from "./lib/raft_host_sign_in";
 import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
 import { pollGooglePlayReleases } from "./lib/play_release_poll";
@@ -930,7 +931,7 @@ function isWorkerRoute(pathname: string): boolean {
 
 app.use("*", async (c, next) => {
   if ((c.req.method === "GET" || c.req.method === "HEAD") && !isWorkerRoute(new URL(c.req.url).pathname)) {
-    return c.env.ASSETS.fetch(c.req.raw);
+    return serveConsolePage(c.req.raw, (request) => c.env.ASSETS.fetch(request));
   }
   return next();
 });

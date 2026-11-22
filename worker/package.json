@@ -18,6 +18,7 @@
     "db:migrations:list": "wrangler d1 migrations list quiver-db"
   },
   "dependencies": {
+    "@botiverse/raft-sdk": "0.40.0",
     "@cloudflare/containers": "^0.0.30",
     "@hono/zod-openapi": "^1.4.0",
     "@noble/hashes": "^1.8.0",
