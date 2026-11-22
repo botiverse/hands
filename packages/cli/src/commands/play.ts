@@ -265,6 +265,10 @@ type PlayReviewStatus = {
 };
 
 const shortState = (state: string) => state.replace(/^RELEASE_LIFECYCLE_STATE_/, "");
+/** Why the live read failed, in words; an exhausted quota is not a refusal. */
+const readFailure = (code?: string) => code === "play_quota_exceeded"
+  ? "Play's hourly read quota is used up (play_quota_exceeded)"
+  : `Play refused the read (${code})`;
 
 export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   const lines = [`Google Play · ${res.package_name} · read ${new Date(res.read_at).toISOString()}`];
@@ -275,9 +279,9 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   for (const track of res.tracks) {
     const head = `${track.hands_track} (${track.play_track})`;
     if (track.source === "unavailable") {
-      lines.push(`${head}: Play refused the read (${track.error_code}) and Hands has no stored state`);
+      lines.push(`${head}: ${readFailure(track.error_code)} and Hands has no stored state`);
     } else {
-      lines.push(track.source === "live" ? `${head}: live` : `${head}: Play refused the read (${track.error_code}); last states the poll observed`);
+      lines.push(track.source === "live" ? `${head}: live` : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
       if (track.releases.length === 0) lines.push("  (no releases)");
       for (const r of track.releases) {
         const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";

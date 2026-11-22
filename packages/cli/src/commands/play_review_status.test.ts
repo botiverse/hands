@@ -40,3 +40,14 @@ describe("play review-status output", () => {
     expect(out).toMatch(/production \(production\): Play refused the read[^\n]*\n  \(no releases\)\n  On the track now[^\n]*\n    completed +12800012/);
   });
 });
+
+describe("play review-status quota wording", () => {
+  it("says the read quota is used up instead of calling it a refusal", () => {
+    const out = formatPlayReviewStatus({
+      package_name: "build.raft.app", read_at: 0,
+      tracks: [{ hands_track: "production", play_track: "production", source: "unavailable", error_code: "play_quota_exceeded", releases: [] }],
+      in_review: [], production_version_code: null, publishing_access: null,
+    });
+    expect(out).toContain("production (production): Play's hourly read quota is used up (play_quota_exceeded) and Hands has no stored state");
+  });
+});

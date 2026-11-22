@@ -65,8 +65,11 @@ carry neither field. Failures before Hands can create
 a promotion receipt remain API errors rather than release notifications.
 
 Hands reads Google's live release lifecycle for enabled, verified connections
-on the configured tracks. Queries run every five minutes, at most four apps per
-run; larger sets rotate through subsequent runs. The first observation is a
+on the configured tracks. Google limits how often an app's release states can be
+listed, so each app is read once every 30 minutes; the cron runs every five
+minutes and handles at most four apps per run; larger sets rotate through
+subsequent runs. When the limit is used up, Hands stops reading for that round
+and does not report it as an access failure. The first observation is a
 current-state snapshot (`observation: initial_snapshot`); later changed states
 are transitions. Unchanged states produce no new notification. State and pending
 delivery records commit together. Provider failures leave the previous

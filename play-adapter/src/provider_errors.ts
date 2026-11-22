@@ -67,6 +67,13 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   const identifiers = playProviderIdentifiers(body);
   const providerCause = structured
     ?? (typeof envelopeMessage === "string" ? classifyProviderMessage(envelopeMessage) : undefined);
+  // Google answers an exhausted per-method quota (e.g. tracks.releases.list:
+  // "Listing releases quota exceeded.") with 403 PERMISSION_DENIED. It is not an
+  // access problem and retrying only burns more quota, so it gets its own code.
+  if (isQuotaRejection(status, error, envelopeMessage)) {
+    return new PlayAdapterError(503, "play_quota_exceeded",
+      `Google Play quota for this request is used up; try again later (stage=${stage})`, { stage });
+  }
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
     "play_api_rejected",
@@ -80,6 +87,15 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
       ...(identifiers ? { provider_identifiers: identifiers } : {}),
     },
   );
+}
+
+function isQuotaRejection(status: number, error: unknown, message: unknown): boolean {
+  if (status === 429) return true;
+  const e = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  if (e.status === "RESOURCE_EXHAUSTED") return true;
+  const reasons = playRejectionReason({ error }).split(",");
+  if (reasons.some((r) => /^(?:quotaExceeded|rateLimitExceeded|userRateLimitExceeded|QUOTA_EXCEEDED|RATE_LIMIT_EXCEEDED)$/.test(r))) return true;
+  return typeof message === "string" && /\bquota exceeded\b/i.test(message);
 }
 
 /**

@@ -2302,10 +2302,21 @@ describe("durable Google Play notifications", () => {
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
       calls++; return { ok: true, value: [] };
     } });
+    // One read per app every 30 minutes, anchored to the five-minute cron slot.
     await pollGooglePlayReleases(h.env, 300_611); expect(calls).toBe(4);
-    await pollGooglePlayReleases(h.env, 300_900); expect(calls).toBe(4);
-    await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(8);
-    await pollGooglePlayReleases(h.env, 600_611); expect(calls).toBe(8);
+    await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(4);
+    await pollGooglePlayReleases(h.env, 1_800_373); expect(calls).toBe(4);
+    await pollGooglePlayReleases(h.env, 2_100_373); expect(calls).toBe(8);
+    await pollGooglePlayReleases(h.env, 2_100_611); expect(calls).toBe(8);
+  });
+  it("stops reading for the round on an exhausted quota, without retrying or alerting", async () => {
+    const h = await readyRelease(); let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
+      calls++; return { ok: false, error: { status: 503, code: "play_quota_exceeded", message: "quota" } };
+    } });
+    await pollGooglePlayReleases(h.env, 1000);
+    expect(calls).toBe(1);
+    expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_access_state").get()).toEqual({ n: 0 });
   });
   it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
