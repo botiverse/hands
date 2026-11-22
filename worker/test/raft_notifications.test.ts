@@ -524,11 +524,12 @@ describe("Hands-managed Raft notifications", () => {
     const submitted = make("google_play:submission_succeeded", { track: "production", rollout_percent: 20 });
     expect(submitted).toContain("Google Play · Release submitted");
     expect(submitted).toContain("Review status is not yet confirmed");
-    expect(submitted).toContain("1.19.0 · version code 11900002 · track: production");
+    expect(submitted).toContain("1.19.0 · build 11900002 · track: production");
+    expect(submitted).not.toMatch(/code:? *\d/i);
     expect(submitted).toContain("Requested rollout: 20%");
     const distinct = make("google_play:submission_succeeded", { build_number: "ci-12", version_code: 11900002 });
-    expect(distinct).toContain("version code 11900002");
-    expect(distinct).toContain("Build: ci-12");
+    expect(distinct).toContain("build 11900002");
+    expect(distinct).toContain("Build number: ci-12");
     const saved = make("google_play:submission_succeeded", { action: "promote", review_requested: false });
     expect(saved).toContain("Release saved; not sent for review");
     expect(saved).not.toContain("Review status is not yet confirmed");
@@ -657,7 +658,8 @@ describe("Hands-managed Raft notifications", () => {
     } });
     expect(distinct).toContain("1.0 (12)");
     expect(distinct).toContain("Version name: 1.0-beta");
-    expect(distinct).toContain("Version code: 13");
+    expect(distinct).toContain("Version number: 13");
+    expect(distinct).not.toMatch(/code:? *\d/i);
   });
 
   it("makes crash spikes actionable without including crash content", () => {

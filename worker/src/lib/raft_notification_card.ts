@@ -162,7 +162,7 @@ function relativeTime(body: Payload, payload: Payload): string | null {
 }
 
 function isTechnicalLine(line: string): boolean {
-  return /^(?:Package|Reason code|Play reason code|Version code|Build|Commit): /.test(line);
+  return /^(?:Package|Reason code|Play reason code|Version number|Build number|Build|Commit): /.test(line);
 }
 
 function isFooterLine(line: string): boolean {
@@ -248,10 +248,10 @@ export function formatRaftNotificationCard(body: Payload, knownApp?: App): { car
   const ordinary: Array<{ text: string; isTestNote: boolean }> = [];
   for (const { text: line, isTestNote } of detailLines) {
     const identity = event === "google_play:submission_failed"
-      ? /^(.*?) · version code (\d{1,16})( · track: .+)?$/.exec(line) : null;
+      ? /^(.*?) · build (\d{1,16})( · track: .+)?$/.exec(line) : null;
     if (identity) {
       ordinary.push({ text: `${identity[1]}${identity[3] ?? ""}`, isTestNote: false });
-      technical.push(`Version code: ${identity[2]}`);
+      technical.push(`Build: ${identity[2]}`);
     } else if (!isTestNote && isTechnicalLine(line)) technical.push(line);
     else ordinary.push({ text: line, isTestNote });
   }
