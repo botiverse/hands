@@ -1,0 +1,43 @@
+name: Publish an existing APK to Hands
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Android version name
+        required: true
+        type: string
+      version_code:
+        description: Android version code
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Replace this step with actions/download-artifact or your build system's
+      # artifact fetch command. Fetch the APK and native-symbols archive from
+      # the same immutable build; symbols cannot be reconstructed from an APK.
+      - name: Fetch signed APK and exact native symbols
+        run: |
+          mkdir -p dist
+          cp path/to/your/signed-app.apk dist/app-release.apk
+          cp path/to/the-same-build/native-symbols.zip dist/native-symbols.zip
+
+      - name: Publish draft to Hands
+        uses: botiverse/hands/examples/publish-android@examples-v1
+        with:
+          app: my-android-app
+          apk: dist/app-release.apk
+          channel: preview
+          version-name: ${{ inputs.version_name }}
+          version-code: ${{ inputs.version_code }}
+          symbols: dist/native-symbols.zip
+          native-symbols-policy: required
+          hands-token: ${{ secrets.HANDS_BEARER_TOKEN }}

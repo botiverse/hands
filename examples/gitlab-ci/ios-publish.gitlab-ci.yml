@@ -1,0 +1,42 @@
+# Publish a signed iOS IPA (+ dSYM) to Hands from GitLab CI.
+# TestFlight uploads happen server-side in Hands afterwards — no ASC keys in CI.
+# Docs: https://hands.build/docs/ios-testflight/
+variables:
+  HANDS_APP_SLUG: your-app-slug   # <-- your Hands app slug
+
+stages:
+  - build
+  - publish
+
+build_ipa:
+  stage: build
+  tags: [macos]   # your macOS runner
+  script:
+    # Replace with your own archive/export + signing. Requirement: .ipa + .dSYM.zip
+    - echo "xcodebuild archive && xcodebuild -exportArchive"
+  artifacts:
+    paths:
+      - build/App.ipa
+      - build/App.dSYM.zip
+    expire_in: 1 day
+
+publish_hands:
+  stage: publish
+  image: node:22
+  script:
+    - npm install -g @botiverse/hands-cli@0.5.1
+    - git log --no-merges --pretty='- %s' -15 > changelog.txt
+    - >
+      hands builds publish-ios "$HANDS_APP_SLUG"
+      --ipa build/App.ipa
+      --dsym build/App.dSYM.zip
+      --channel "${HANDS_CHANNEL:-main}"
+      --version-name "$VERSION_NAME"
+      --version-code "$VERSION_CODE"
+      --changelog-file changelog.txt
+      --source-commit "$CI_COMMIT_SHA"
+      --ci-provider gitlab-ci
+      --ci-run-id "$CI_PIPELINE_ID"
+      --ci-url "$CI_PIPELINE_URL"
+      --export-method app-store
+      --draft

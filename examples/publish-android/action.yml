@@ -1,0 +1,117 @@
+name: Publish Android build to Hands
+description: Upload a signed APK and create a Hands release, draft by default.
+
+inputs:
+  app:
+    description: Hands app slug or id.
+    required: true
+  apk:
+    description: Path to the signed APK.
+    required: true
+  channel:
+    description: Hands release channel.
+    required: false
+    default: preview
+  version-name:
+    description: User-visible Android version name.
+    required: true
+  version-code:
+    description: Monotonic Android version code.
+    required: true
+  changelog-file:
+    description: Optional path to a Markdown or plain-text changelog.
+    required: false
+    default: ""
+  mapping:
+    description: Optional R8/ProGuard mapping file.
+    required: false
+    default: ""
+  symbols:
+    description: Exact Hands native-symbols classifier archive for this APK.
+    required: false
+    default: ""
+  native-symbols-policy:
+    description: auto requires symbols when the APK contains libhandscrash.so; required always requires them; disabled opts out explicitly.
+    required: false
+    default: auto
+  metadata:
+    description: Optional JSON metadata file.
+    required: false
+    default: ""
+  draft:
+    description: Create a draft release. Keep true for CI review workflows.
+    required: false
+    default: "true"
+  hands-token:
+    description: App-scoped Hands publisher deploy token.
+    required: true
+  hands-api:
+    description: Hands API base URL.
+    required: false
+    default: https://hands.build
+  cli-version:
+    description: Version of @botiverse/hands-cli to install.
+    required: false
+    default: 0.5.4
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        INPUT_APK: ${{ inputs.apk }}
+        INPUT_DRAFT: ${{ inputs.draft }}
+        INPUT_MAPPING: ${{ inputs.mapping }}
+        INPUT_SYMBOLS: ${{ inputs.symbols }}
+        INPUT_METADATA: ${{ inputs.metadata }}
+        INPUT_NATIVE_SYMBOLS_POLICY: ${{ inputs.native-symbols-policy }}
+      run: |
+        set -euo pipefail
+        test -s "$INPUT_APK" || { echo "APK not found or empty: $INPUT_APK" >&2; exit 1; }
+        test -z "$INPUT_MAPPING" || test -s "$INPUT_MAPPING" || { echo "Mapping not found or empty: $INPUT_MAPPING" >&2; exit 1; }
+        test -z "$INPUT_METADATA" || test -s "$INPUT_METADATA" || { echo "Metadata not found or empty: $INPUT_METADATA" >&2; exit 1; }
+        case "$INPUT_DRAFT" in
+          true|false) ;;
+          *) echo "draft must be true or false" >&2; exit 1 ;;
+        esac
+        validate_args=(--apk "$INPUT_APK" --policy "$INPUT_NATIVE_SYMBOLS_POLICY")
+        test -z "$INPUT_SYMBOLS" || validate_args+=(--symbols "$INPUT_SYMBOLS")
+        "$GITHUB_ACTION_PATH/../scripts/validate-android-native-symbols.sh" "${validate_args[@]}"
+
+    - name: Install Hands CLI
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: npm install --global "@botiverse/hands-cli@${CLI_VERSION}"
+
+    - name: Publish Android build
+      shell: bash
+      env:
+        HANDS_API: ${{ inputs.hands-api }}
+        HANDS_BEARER_TOKEN: ${{ inputs.hands-token }}
+        INPUT_APP: ${{ inputs.app }}
+        INPUT_APK: ${{ inputs.apk }}
+        INPUT_CHANNEL: ${{ inputs.channel }}
+        INPUT_VERSION_NAME: ${{ inputs.version-name }}
+        INPUT_VERSION_CODE: ${{ inputs.version-code }}
+        INPUT_CHANGELOG: ${{ inputs.changelog-file }}
+        INPUT_MAPPING: ${{ inputs.mapping }}
+        INPUT_SYMBOLS: ${{ inputs.symbols }}
+        INPUT_METADATA: ${{ inputs.metadata }}
+        INPUT_DRAFT: ${{ inputs.draft }}
+      run: |
+        set -euo pipefail
+        args=(
+          builds publish-android "$INPUT_APP"
+          --apk "$INPUT_APK"
+          --channel "$INPUT_CHANNEL"
+          --version-name "$INPUT_VERSION_NAME"
+          --version-code "$INPUT_VERSION_CODE"
+        )
+        test -z "$INPUT_CHANGELOG" || args+=(--changelog-file "$INPUT_CHANGELOG")
+        test -z "$INPUT_MAPPING" || args+=(--mapping "$INPUT_MAPPING")
+        test -z "$INPUT_SYMBOLS" || args+=(--symbols "$INPUT_SYMBOLS")
+        test -z "$INPUT_METADATA" || args+=(--metadata "$INPUT_METADATA")
+        test "$INPUT_DRAFT" != true || args+=(--draft)
+        hands "${args[@]}"

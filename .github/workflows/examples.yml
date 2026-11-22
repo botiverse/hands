@@ -1,0 +1,54 @@
+name: CI examples
+
+# The copy-ready publishing examples and the reusable publish-android action
+# under examples/. Same checks as the former botiverse/hands-examples CI.
+on:
+  pull_request:
+    paths:
+      - "examples/**"
+      - ".github/workflows/examples.yml"
+  push:
+    branches: [main]
+    paths:
+      - "examples/**"
+      - ".github/workflows/examples.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-examples:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Validate shell syntax
+        run: |
+          bash -n \
+            scripts/publish-android.sh \
+            scripts/validate-android-native-symbols.sh \
+            generic/*.sh \
+            tests/*.sh
+
+      - name: Run Android native-symbol fixtures
+        run: tests/test-validate-android-native-symbols.sh
+
+      - name: Parse YAML examples
+        run: |
+          python3 -m pip install --disable-pip-version-check 'pyyaml==6.0.2'
+          python3 - <<'PY'
+          import glob
+          import yaml
+
+          paths = [
+              "publish-android/action.yml",
+              *glob.glob("github-actions/*.yml"),
+              *glob.glob("gitlab-ci/*.yml"),
+          ]
+          for path in paths:
+              with open(path, encoding="utf-8") as handle:
+                  yaml.safe_load(handle)
+          PY

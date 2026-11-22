@@ -1,0 +1,51 @@
+# Publish a signed Android APK to Hands from GitLab CI.
+#
+# Setup: create an app-scoped publisher deploy token (App Settings → Deploy
+# Tokens) and store it as a masked CI/CD variable named HANDS_BEARER_TOKEN.
+# Publishes a DRAFT release: review the changelog in Hands before going live.
+variables:
+  HANDS_APP_SLUG: your-app-slug   # <-- your Hands app slug
+
+stages:
+  - build
+  - publish
+
+build_apk:
+  stage: build
+  image: eclipse-temurin:17
+  script:
+    # copyHandsNativeSymbols is documented in the repository README. It must
+    # resolve the classifier from the same Maven channel as the SDK AAR.
+    - ./gradlew :app:assembleRelease :app:copyHandsNativeSymbols
+    - mkdir -p dist
+    - cp app/build/outputs/apk/release/app-release.apk dist/app-release.apk
+    - cp "$(find app/build/outputs/hands-native-symbols -maxdepth 1 -type f -name '*native-symbols*.zip' -print -quit)" dist/native-symbols.zip
+  artifacts:
+    paths:
+      - dist/app-release.apk
+      - dist/native-symbols.zip
+    expire_in: 1 day
+
+publish_hands:
+  stage: publish
+  image: node:22
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends binutils curl python3 unzip && rm -rf /var/lib/apt/lists/*
+    - curl -fsSLo /tmp/validate-android-native-symbols.sh https://raw.githubusercontent.com/botiverse/hands/examples-v1/examples/scripts/validate-android-native-symbols.sh
+    - chmod +x /tmp/validate-android-native-symbols.sh
+    - /tmp/validate-android-native-symbols.sh --apk dist/app-release.apk --symbols dist/native-symbols.zip --policy required
+    - npm install -g @botiverse/hands-cli@0.5.4
+    - git log --no-merges --pretty='- %s' -15 > changelog.txt
+    - >
+      hands builds publish-android "$HANDS_APP_SLUG"
+      --apk dist/app-release.apk
+      --symbols dist/native-symbols.zip
+      --channel "${HANDS_CHANNEL:-preview}"
+      --version-name "$VERSION_NAME"
+      --version-code "$VERSION_CODE"
+      --changelog-file changelog.txt
+      --source-commit "$CI_COMMIT_SHA"
+      --ci-provider gitlab-ci
+      --ci-run-id "$CI_PIPELINE_ID"
+      --ci-url "$CI_PIPELINE_URL"
+      --draft

@@ -1,0 +1,100 @@
+# Build signed Tauri v2 updater bundles on each desktop OS, then publish one
+# multi-platform draft release to a single Hands channel.
+name: Publish Tauri to Hands
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version, e.g. 1.2.3"
+        required: true
+      channel:
+        required: true
+        default: "main"
+
+env:
+  HANDS_APP_SLUG: your-app-slug # <-- your Hands app slug
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-aarch64
+            artifact_path: src-tauri/target/release/bundle/macos/*.app.tar.gz*
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            artifact_path: src-tauri/target/release/bundle/appimage/*.AppImage*
+          - os: windows-latest
+            target: windows-x86_64
+            artifact_path: src-tauri/target/release/bundle/nsis/*-setup.exe*
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build signed updater bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri build
+
+      - name: Collect bundle and detached signature
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-${{ matrix.target }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-draft:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-*
+          path: bundles
+
+      - name: Install Hands CLI
+        run: npm install -g @botiverse/hands-cli@0.5.9
+
+      - name: Publish one multi-platform draft
+        shell: bash
+        env:
+          HANDS_BEARER_TOKEN: ${{ secrets.HANDS_BEARER_TOKEN }}
+        run: |
+          set -euo pipefail
+          git log --no-merges --pretty='- %s' -15 > changelog.txt
+          ARGS=(
+            --version-name "${{ inputs.version }}"
+            --channel "${{ inputs.channel }}"
+            --changelog-file ./changelog.txt
+          )
+          for target in darwin-aarch64 linux-x86_64 windows-x86_64; do
+            bundle="$(find "bundles/tauri-${target}" -type f ! -name '*.sig' | head -n 1)"
+            test -n "$bundle"
+            test -f "${bundle}.sig"
+            ARGS+=(--bundle "$bundle" --signature "${bundle}.sig" --target "$target")
+          done
+          hands builds publish-tauri "$HANDS_APP_SLUG" "${ARGS[@]}"

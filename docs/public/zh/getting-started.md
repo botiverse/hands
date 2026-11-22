@@ -37,7 +37,7 @@ Raft 身份就是你的 Hands 身份。Hands 中的操作由两层基于角色�
 
 ## 从 CI 发布
 
-[botiverse/hands-examples](https://github.com/botiverse/hands-examples) 提供可直接使用的 CI 示例：适用于 Android 的可复用 GitHub Action（`uses: botiverse/hands-examples/publish-android@v1`）、适用于 Android、iOS（含服务端 TestFlight）和 Electron 的完整 GitHub Actions 与 GitLab CI 工作流，以及适用于其他 CI 的纯 Bash 脚本。所有示例均使用限定于应用的 `publisher` 部署令牌发布草稿版本；底层命令参见[命令行参考](cli-reference.md)。
+Hands 仓库的 [`examples/`](https://github.com/botiverse/hands/tree/main/examples) 提供可直接使用的 CI 示例：适用于 Android 的可复用 GitHub Action（`uses: botiverse/hands/examples/publish-android@examples-v1`）、适用于 Android、iOS（含服务端 TestFlight）和 Electron 的完整 GitHub Actions 与 GitLab CI 工作流，以及适用于其他 CI 的纯 Bash 脚本。所有示例均使用限定于应用的 `publisher` 部署令牌发布草稿版本；底层命令参见[命令行参考](cli-reference.md)。
 
 ## 卸载
 
