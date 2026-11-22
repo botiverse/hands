@@ -11,6 +11,7 @@
  *    daily App Store metrics Hands ingested from Analytics Reports (D1, no live call).
  */
 import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
+import { loadTrackSnapshots, saveTrackSnapshot, type TrackSnapshot } from "../lib/play_track_snapshots";
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
@@ -292,6 +293,8 @@ async function queryGooglePlayStats(
   let liveTracks: Array<{
     hands_track: string;
     play_track: string;
+    /** When Google Play gave this answer. */
+    read_at: number;
     releases: Array<{
       release_name: string;
       version_codes: number[];
@@ -304,7 +307,25 @@ async function queryGooglePlayStats(
     const tracks = binding.tracks;
     const pkgName = binding.package_name;
     liveTracks = [];
+    // Google allows tracks.releases.list about 12 times per app per hour: a page
+    // view serves the last answer Hands has, and reads live only for a track it
+    // has never read.
+    const snapshots: Map<string, TrackSnapshot> = await loadTrackSnapshots(c.env.DB, appId, pkgName).catch(() => new Map());
     for (const handsTrack of ["production", "open", "closed", "internal"] as const) {
+      const snapshot = snapshots.get(tracks[handsTrack]);
+      if (snapshot) {
+        liveTracks.push({
+          hands_track: handsTrack,
+          play_track: tracks[handsTrack],
+          read_at: snapshot.read_at,
+          releases: snapshot.releases.map((rel) => ({
+            release_name: rel.releaseName,
+            version_codes: rel.activeArtifacts.map((a) => a.versionCode),
+            lifecycle_state: rel.releaseLifecycleState,
+          })),
+        });
+        continue;
+      }
       try {
         const res = await listReleaseStatesWithRetry(c.env.PLAY_RELEASE_SERVICE, {
           credential: binding.credential,
@@ -313,9 +334,12 @@ async function queryGooglePlayStats(
           handsTrack,
         });
         if (res.ok) {
+          const readAt = Date.now();
+          await saveTrackSnapshot(c.env.DB, appId, pkgName, tracks[handsTrack], res.value, readAt).catch(() => undefined);
           liveTracks.push({
             hands_track: handsTrack,
             play_track: tracks[handsTrack],
+            read_at: readAt,
             releases: res.value.map((rel) => ({
               release_name: rel.releaseName,
               version_codes: rel.activeArtifacts.map((a) => a.versionCode),

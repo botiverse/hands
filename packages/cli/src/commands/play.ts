@@ -233,13 +233,17 @@ export function registerPlayCommands(program: Command): void {
     .command("review-status <appIdOrSlug>")
     .description(
       "What Google Play holds on every track of the app: each release with its review state (in review, approved, " +
-        "published, rejected, ...) and versionCodes, what is in review now, and the production versionCode. Read live " +
-        "from Play; a track Play refuses to list shows the last states Hands' poll observed, with when.",
+        "published, rejected, ...) and versionCodes, what is in review now, and the production versionCode. Shows " +
+        "the last answer Play gave Hands (hourly poll or a live read) with when it was read; --live reads Play now. " +
+        "Google allows about 12 such reads per app per hour (one per track).",
     )
+    .option("--live", "Read Google Play now instead of the last stored answer (uses Play's read quota).", false)
     .option("--json", "Print JSON output.", false)
-    .action(async (appIdOrSlug: string, opts: { json?: boolean }) => {
+    .action(async (appIdOrSlug: string, opts: { json?: boolean; live?: boolean }) => {
       const appId = await resolveAppId(appIdOrSlug);
-      const res = await apiRequest<PlayReviewStatus>(`/api/apps/${encodeURIComponent(appId)}/distributions/play/review-status`);
+      const res = await apiRequest<PlayReviewStatus>(
+        `/api/apps/${encodeURIComponent(appId)}/distributions/play/review-status${opts.live ? "?live=1" : ""}`,
+      );
       if (jsonRequested(program, opts.json)) {
         console.log(JSON.stringify(res, null, 2));
         return;
@@ -254,7 +258,8 @@ type PlayReviewStatus = {
   tracks: Array<{
     hands_track: string;
     play_track: string;
-    source: "live" | "stored" | "unavailable";
+    source: "live" | "cached" | "stored" | "unavailable";
+    read_at?: number;
     error_code?: string;
     releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
     track_contents?: Array<{ release_name: string | null; status: string; version_codes: number[]; user_fraction?: number }>;
@@ -273,7 +278,7 @@ const readFailure = (code?: string) => code === "play_quota_exceeded"
 export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   const lines = [`Google Play · ${res.package_name} · read ${new Date(res.read_at).toISOString()}`];
   lines.push(res.in_review.length
-    ? `In review: ${res.in_review.map((r) => `${r.hands_track} (${r.play_track}) ${r.version_codes.join(", ")}${r.source === "live" ? "" : " [stored]"}`).join("; ")}`
+    ? `In review: ${res.in_review.map((r) => `${r.hands_track} (${r.play_track}) ${r.version_codes.join(", ")}${r.source === "live" ? "" : ` [${r.source}]`}`).join("; ")}`
     : "In review: nothing");
   lines.push(`Production versionCode: ${res.production_version_code ?? "none published"}`);
   for (const track of res.tracks) {
@@ -281,7 +286,10 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
     if (track.source === "unavailable") {
       lines.push(`${head}: ${readFailure(track.error_code)} and Hands has no stored state`);
     } else {
-      lines.push(track.source === "live" ? `${head}: live` : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
+      const readAt = track.read_at ? new Date(track.read_at).toISOString() : "";
+      lines.push(track.source === "live" ? `${head}: live`
+        : track.source === "cached" ? `${head}: ${track.error_code ? `${readFailure(track.error_code)}; ` : ""}as Play answered at ${readAt}`
+        : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
       if (track.releases.length === 0) lines.push("  (no releases)");
       for (const r of track.releases) {
         const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";

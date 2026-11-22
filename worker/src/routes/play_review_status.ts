@@ -4,8 +4,11 @@ import { HANDS_PLAY_TRACKS, type HandsPlayTrack } from "../lib/play_tracks";
  * release Play holds with its lifecycle state (DRAFT, IN_REVIEW,
  * APPROVED_NOT_PUBLISHED, NOT_APPROVED, PUBLISHED, ...) and versionCodes.
  *
- * Read live from Play (tracks.releases.list, read-only, the same call the
- * five-minute poll makes). A track Play refuses to list falls back to the
+ * By default each track is served from the last answer Play gave Hands
+ * (google_play_track_snapshots: the hourly poll or any live read), marked
+ * `cached` with its `read_at`, because Google allows tracks.releases.list only
+ * about 12 times per app per hour. `?live=1` reads Play (read-only) and stores
+ * the answer; a track with no snapshot yet is read live too. A track Play refuses to list falls back to the
  * last states the poll stored, marked as such with when they were observed,
  * so a caller can tell a live answer from a remembered one. It also gets the
  * track's current contents read through an edit (`track_contents`): release
@@ -16,6 +19,7 @@ import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
 import { playStateLabel } from "../lib/play_notifications";
+import { loadTrackSnapshots, saveTrackSnapshot, type SnapshotRelease, type TrackSnapshot } from "../lib/play_track_snapshots";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type HandsTrack = HandsPlayTrack;
@@ -26,7 +30,9 @@ type TrackContent = { release_name: string | null; status: string; version_codes
 type TrackStatus = {
   hands_track: HandsTrack;
   play_track: string;
-  source: "live" | "stored" | "unavailable";
+  source: "live" | "cached" | "stored" | "unavailable";
+  /** When Play gave this answer (live and cached). */
+  read_at?: number;
   releases: ReleaseRow[];
   error_code?: string;
   /** Only when the release-state read was refused and the edit read worked. */
@@ -46,28 +52,39 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
   const packageName = binding.package_name!;
   const tracks: TrackStatus[] = [];
   const seen = new Set<string>();
+  const wantLive = ["1", "true"].includes(c.req.query("live") ?? "");
+  const snapshots: Map<string, TrackSnapshot> = await loadTrackSnapshots(c.env.DB, appId, packageName).catch(() => new Map());
+  const rows = (releases: SnapshotRelease[], playTrack: string) => releases.filter((r) => r.track === playTrack).map((r) => ({
+    release_name: r.releaseName || null,
+    state: r.releaseLifecycleState,
+    state_label: playStateLabel(r.releaseLifecycleState),
+    version_codes: r.activeArtifacts.map((a) => a.versionCode).sort((a, b) => b - a),
+  }));
   for (const handsTrack of HANDS_TRACKS) {
     const playTrack = binding.tracks[handsTrack];
     if (seen.has(playTrack)) continue;
     seen.add(playTrack);
+    const snapshot = snapshots.get(playTrack);
+    if (snapshot && !wantLive) {
+      tracks.push({ hands_track: handsTrack, play_track: playTrack, source: "cached", read_at: snapshot.read_at, releases: rows(snapshot.releases, playTrack) });
+      continue;
+    }
     let errorCode = service ? null : "play_service_unavailable";
     if (service) {
       const reply = await listReleaseStatesWithRetry(service, { credential: binding.credential, packageName, tracks: binding.tracks, handsTrack });
       if (reply.ok) {
-        tracks.push({
-          hands_track: handsTrack,
-          play_track: playTrack,
-          source: "live",
-          releases: reply.value.filter((r) => r.track === playTrack).map((r) => ({
-            release_name: r.releaseName || null,
-            state: r.releaseLifecycleState,
-            state_label: playStateLabel(r.releaseLifecycleState),
-            version_codes: r.activeArtifacts.map((a) => a.versionCode).sort((a, b) => b - a),
-          })),
-        });
+        const readAt = Date.now();
+        await saveTrackSnapshot(c.env.DB, appId, packageName, playTrack, reply.value, readAt).catch(() => undefined);
+        tracks.push({ hands_track: handsTrack, play_track: playTrack, source: "live", read_at: readAt, releases: rows(reply.value, playTrack) });
         continue;
       }
       errorCode = reply.error.code;
+    }
+    if (snapshot) {
+      // The live read failed; the last answer Play gave is still the best one.
+      tracks.push({ hands_track: handsTrack, play_track: playTrack, source: "cached", read_at: snapshot.read_at,
+        error_code: errorCode ?? "play_unavailable", releases: rows(snapshot.releases, playTrack) });
+      continue;
     }
     const { results: observed } = await c.env.DB.prepare(
       `SELECT version_code, state, observed_at FROM google_play_release_observations

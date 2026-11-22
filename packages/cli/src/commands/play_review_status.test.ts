@@ -51,3 +51,21 @@ describe("play review-status quota wording", () => {
     expect(out).toContain("production (production): Play's hourly read quota is used up (play_quota_exceeded) and Hands has no stored state");
   });
 });
+
+describe("play review-status cached answers", () => {
+  it("says when Play gave a cached answer, and why a live read fell back to it", () => {
+    const out = formatPlayReviewStatus({
+      package_name: "build.raft.app", read_at: Date.UTC(2026, 10, 22, 16),
+      tracks: [
+        { hands_track: "internal", play_track: "internal", source: "cached", read_at: Date.UTC(2026, 10, 22, 15, 15), releases: [] },
+        { hands_track: "production", play_track: "production", source: "cached", read_at: Date.UTC(2026, 10, 22, 15, 15), error_code: "play_quota_exceeded",
+          releases: [{ release_name: "1.28.0", state: "RELEASE_LIFECYCLE_STATE_IN_REVIEW", state_label: "", version_codes: [12800012] }] },
+      ],
+      in_review: [{ hands_track: "production", play_track: "production", version_codes: [12800012], release_name: "1.28.0", source: "cached" }],
+      production_version_code: null, publishing_access: null,
+    });
+    expect(out).toContain("In review: production (production) 12800012 [cached]");
+    expect(out).toContain("internal (internal): as Play answered at 2026-11-22T15:15:00.000Z");
+    expect(out).toContain("production (production): Play's hourly read quota is used up (play_quota_exceeded); as Play answered at 2026-11-22T15:15:00.000Z");
+  });
+});

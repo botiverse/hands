@@ -4,6 +4,7 @@ import { enqueueDueDeliveries } from "../routes/webhooks";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_bindings";
 import { playDeliveryStatement, playStateLabel } from "./play_notifications";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
+import { saveTrackSnapshot } from "./play_track_snapshots";
 
 type Summary = { releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string };
 /** A changed observation and its deliveries commit atomically. The nonce and
@@ -86,6 +87,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           failureCode ??= reply.error.code;
           continue;
         }
+        await saveTrackSnapshot(env.DB, row.app_id, binding.package_name, track, reply.value, now).catch(() => undefined);
         // Duplicate version codes with conflicting states are ambiguous: omit
         // them, rather than guessing which release represents this artifact.
         const versions = new Map<number, Summary | null>();
