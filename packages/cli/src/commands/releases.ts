@@ -449,6 +449,84 @@ export function registerReleaseCommands(program: Command): void {
       console.log(`Restored release ${releaseId}.`);
     });
 
+  const metadata = releases
+    .command("electron-metadata")
+    .description(
+      "Replace a published Electron release's update metadata (latest*.yml) without re-publishing, " +
+        "e.g. to switch delta patches off or stage a rollout. The version, every `files` entry and " +
+        "the top-level path/sha512 must stay as built; `patches` may only name files in the build. " +
+        "Every replacement is audited and can be reverted. App admin only.",
+    );
+
+  metadata
+    .command("list <appIdOrSlug> <releaseId>")
+    .description("List the release's metadata files and their replacement history.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, releaseId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{
+        files: Array<{ file: string; platform: string; replaced: boolean; current: { id: string; created_by: string; created_at: number } | null; history: unknown[] }>;
+      }>(`/api/apps/${appId}/releases/${releaseId}/electron-metadata`);
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      for (const f of result.files) {
+        const source = f.current
+          ? `replacement ${f.current.id} by ${f.current.created_by} at ${new Date(f.current.created_at).toISOString()}`
+          : "build's own file";
+        console.log(`${f.file}\t${f.platform}\t${source}\t(${f.history.length} replacement(s))`);
+      }
+    });
+
+  metadata
+    .command("get <appIdOrSlug> <releaseId> <file>")
+    .description("Print the metadata currently served for the release (to edit and `set`).")
+    .action(async (appIdOrSlug: string, releaseId: string, file: string) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const text = await apiRequest<string>(
+        `/api/apps/${appId}/releases/${releaseId}/electron-metadata/${encodeURIComponent(file)}`,
+      );
+      process.stdout.write(typeof text === "string" ? text : JSON.stringify(text));
+    });
+
+  metadata
+    .command("set <appIdOrSlug> <releaseId> <file>")
+    .description("Serve the YAML in --from for this metadata file from now on (public within a minute).")
+    .requiredOption("--from <path>", "YAML file to serve.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, releaseId: string, file: string, opts: { from: string; json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{ current: { id: string; sha256: string } }>(
+        `/api/apps/${appId}/releases/${releaseId}/electron-metadata/${encodeURIComponent(file)}`,
+        { method: "PUT", textBody: readFileSync(opts.from, "utf8"), contentType: "text/yaml; charset=utf-8", retryOnUnauthorized: false },
+      );
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(`Serving replacement ${result.current.id} for ${file} (sha256 ${result.current.sha256}). Undo with \`hands releases electron-metadata revert\`.`);
+    });
+
+  metadata
+    .command("revert <appIdOrSlug> <releaseId> <file>")
+    .description("Stop serving the latest replacement: the previous one, or the build's own file, is served again.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, releaseId: string, file: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const result = await apiRequest<{ reverted: { id: string }; current: { id: string } | null }>(
+        `/api/apps/${appId}/releases/${releaseId}/electron-metadata/${encodeURIComponent(file)}/revert`,
+        { method: "POST", retryOnUnauthorized: false },
+      );
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(
+        `Reverted ${result.reverted.id}; now serving ${result.current ? `replacement ${result.current.id}` : "the build's own file"}.`,
+      );
+    });
+
   releases
     .command("publish <appIdOrSlug> <releaseId>")
     .description("Publish a draft release (the explicit human/agent step after changelog review).")

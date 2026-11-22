@@ -113,6 +113,9 @@ export function getApiBase(): string {
 export interface ApiRequestOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
+  /** Send this text as the body instead of JSON, with `contentType`. */
+  textBody?: string;
+  contentType?: string;
   query?: Record<string, string | number | boolean | null | undefined>;
   raw?: boolean; // when true, return Response instead of parsed JSON
   signal?: AbortSignal;
@@ -138,6 +141,9 @@ export async function apiRequest<T = unknown>(
   if (opts.body !== undefined) {
     baseHeaders["content-type"] = "application/json";
     body = JSON.stringify(opts.body);
+  } else if (opts.textBody !== undefined) {
+    baseHeaders["content-type"] = opts.contentType ?? "text/plain; charset=utf-8";
+    body = opts.textBody;
   }
   const doFetch = (bearer: string | undefined) => {
     const headers = { ...baseHeaders };

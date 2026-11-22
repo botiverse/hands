@@ -720,6 +720,20 @@ hands builds publish-electron raft-desktop \
 
 与 Android 一样遵循先草稿规则：CI 创建 Electron 版本草稿，用户或智能体审核更新说明后明确发布。macOS 更新文件必须在上传前签名；可在打包前用 `hands sign --notarize`（见“签名”）为 `.app` 签名并公证。
 
+### 修改已发布版本的更新元数据
+
+应用管理员可以替换草稿或生效中的 Electron 版本对外提供的 `latest*.yml`，不必重新发布，例如关闭增量补丁或分阶段放量：
+
+```bash
+hands releases electron-metadata list raft-desktop <releaseId>
+hands releases electron-metadata get raft-desktop <releaseId> latest-mac.yml > latest-mac.yml
+# 编辑后：
+hands releases electron-metadata set raft-desktop <releaseId> latest-mac.yml --from latest-mac.yml
+hands releases electron-metadata revert raft-desktop <releaseId> latest-mac.yml
+```
+
+客户端安装的内容不能变：`version`、每个 `files` 条目以及顶层的 `path` 和 `sha512` 必须与构建自带的文件完全一致；`patches` 的每一项（文件名，或带 `url`、`path`、`file` 的对象）必须指向同一构建中的文件。其他字段（如放量比例）可以修改。每次替换都会保留并写入审计日志；`revert` 恢复上一次替换，全部撤回后恢复构建自带的文件。`/electron/...` 返回元数据时缓存 60 秒，所以修改会在一分钟内对外生效。
+
 ## 审核并发布（草稿流程）
 
 CI 创建草稿；审核更新说明后，发布是单独的明确步骤：

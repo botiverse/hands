@@ -25,6 +25,7 @@
     "hono": "^4.13.11",
     "jose": "^5.9.6",
     "qrcode-generator": "^2.0.4",
+    "yaml": "2.9.0",
     "zod": "^4.6.6"
   },
   "devDependencies": {
