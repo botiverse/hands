@@ -12686,6 +12686,7 @@ describe("quiver public API v2 — scope resolution", () => {
       env: any,
       body: Uint8Array,
       headers: Record<string, string>,
+      slug = "scope-app",
     ) => {
       const { handlePublicMinidumpSubmit } = await import("../src/routes/feedback");
       const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -12696,7 +12697,7 @@ describe("quiver public API v2 — scope resolution", () => {
         env,
         executionCtx: { waitUntil: (p: Promise<unknown>) => waited.push(p) },
         req: {
-          param: (n: string) => (n === "slug" ? "scope-app" : ""),
+          param: (n: string) => (n === "slug" ? slug : ""),
           header: (n: string) => (n === "X-Quiver-Client-Key" ? "qk_test" : lower[n.toLowerCase()]),
           query: () => undefined,
           formData: () => raw.clone().formData(),
@@ -12742,6 +12743,30 @@ describe("quiver public API v2 — scope resolution", () => {
         "Content-Encoding": "gzip",
       });
       expect(res.status).toBe(413);
+    });
+
+    it("discards Raft Desktop minidumps without storing them, answering 200", async () => {
+      const { env, store } = setup();
+      await env.DB.prepare("UPDATE apps SET slug = 'raft-desktop' WHERE slug = 'scope-app'").run();
+      const before = ((await env.DB.prepare("SELECT COUNT(*) AS n FROM feedback_tickets").first()) as any).n;
+      const { contentType, bytes } = await multipart();
+      const res = await submit(env, await gzip(bytes), {
+        "Content-Type": contentType,
+        "Content-Encoding": "gzip",
+      }, "raft-desktop");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("discarded");
+      expect(store.size).toBe(0);
+      const after = ((await env.DB.prepare("SELECT COUNT(*) AS n FROM feedback_tickets").first()) as any).n;
+      expect(after).toBe(before);
+    });
+
+    it("still checks the client key before discarding", async () => {
+      const { env } = setup();
+      await env.DB.prepare("UPDATE apps SET slug = 'raft-desktop', client_key = 'other' WHERE slug = 'scope-app'").run();
+      const { contentType, bytes } = await multipart();
+      const res = await submit(env, bytes, { "Content-Type": contentType }, "raft-desktop");
+      expect(res.status).toBe(401);
     });
 
     it("refuses an encoding it cannot inflate", async () => {

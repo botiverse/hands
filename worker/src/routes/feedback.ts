@@ -1746,6 +1746,14 @@ const CRASH_PRODUCT_LABEL: Record<CrashProductKind, string> = {
   tauri: "Tauri",
 };
 
+/**
+ * Apps whose minidump uploads are discarded without being stored. On macOS,
+ * processes started by Raft Desktop inherit its crash handler, so dumps of
+ * unrelated programs (with their memory) arrive as Desktop crashes. Remove an
+ * app once its uploads only contain its own processes.
+ */
+export const MINIDUMP_PAUSED_APP_SLUGS: ReadonlySet<string> = new Set(["raft-desktop"]);
+
 export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) {
   const slug = c.req.param("slug");
   if (!slug) return c.json({ error: "slug required" }, 400);
@@ -1760,6 +1768,15 @@ export async function handlePublicMinidumpSubmit(c: Context<{ Bindings: Env }>) 
     c.req.header("X-Hands-Client-Key") ?? c.req.header("X-Quiver-Client-Key") ?? c.req.query("client_key") ?? "";
   if (!app.client_key || presented !== app.client_key) {
     return c.json({ error: "invalid or missing client key" }, 401);
+  }
+
+  if (MINIDUMP_PAUSED_APP_SLUGS.has(app.slug)) {
+    // Drop the upload unread and answer 200 so Crashpad does not retry it.
+    await c.req.raw.body?.cancel().catch(() => undefined);
+    return new Response("discarded", {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+    });
   }
 
   let form: FormData;
