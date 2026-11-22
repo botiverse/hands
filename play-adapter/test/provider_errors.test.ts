@@ -70,10 +70,10 @@ it("logs Google's validation reasons, which is the case the whitelist drops", as
   warn.mockRestore();
 });
 
-it("names the likely cause from Google's prose without echoing the prose", async () => {
+it("names the likely cause from Google's prose and logs the prose redacted", async () => {
   // A validation rejection's reason is only `badRequest`; the discriminating detail
-  // lives in `message`, which must never be logged verbatim. Classifying it keeps the
-  // investigation one-shot without turning the log into a credential channel.
+  // lives in `message`. It is logged with credential shapes redacted, and also
+  // classified so the cause reaches receipts without the prose.
   const cases: Array<[string, string]> = [
     ["Track 'internal' has more than one completed release.", "MULTIPLE_COMPLETED"],
     ["Only one completed release is allowed per track.", "MULTIPLE_COMPLETED"],
@@ -95,7 +95,7 @@ it("names the likely cause from Google's prose without echoing the prose", async
     const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
     const logged = JSON.stringify(warn.mock.calls);
     expect(logged).toContain(expected);
-    // The prose is logged (it is often the only diagnostic) ...
+    // The prose is logged: it is often the only diagnostic.
     expect(logged).toContain(JSON.stringify(message).slice(1, -1));
     // And the caller still only sees the sanitised code.
     expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
