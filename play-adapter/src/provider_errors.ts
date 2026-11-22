@@ -269,8 +269,10 @@ export function editStatePatternsTried(): string[] {
  *
  * What stays out: long or structured values are skipped so a provider cannot use
  * the log line as a channel or blow it up. Google's `message` is arbitrary text and
- * is the one field that could echo a credential back, so it is redacted: the reasons
- * and Google's status are the diagnostic value, the prose is not.
+ * is the one field that could echo a credential back. It is logged (Google often
+ * sends no reasons at all, e.g. a bare 403 PERMISSION_DENIED, and then the prose is
+ * the only diagnostic), but clipped and with anything credential-shaped replaced.
+ * It never travels in the error returned to callers or written to receipts.
  */
 function providerDiagnostic(body: unknown): Record<string, unknown> | null {
   const envelope = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
@@ -289,6 +291,7 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
   // category name is logged -- no provider text, no credential, still one-shot
   // diagnosable.
   if (typeof e.message === "string") {
+    out.message = redactProviderText(e.message);
     out.message_length = e.message.length;
     out.message_cause = classifyProviderMessage(e.message);
   }
@@ -307,6 +310,7 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
           // shape-checked.
           if (typeof v === "string") {
             if (k === "message") {
+              entry.message = redactProviderText(v);
               entry.message_length = v.length;
               entry.message_cause = classifyProviderMessage(v);
             } else if (itemKeyIsIdentifier(k, v)) {
@@ -324,6 +328,18 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
     out[key] = picked;
   }
   return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Google's error prose for the log: at most 300 characters, with OAuth tokens,
+ * JWTs, refresh tokens, email addresses and any long opaque run (32+ token
+ * characters) replaced by [redacted]. Package names, version codes and track
+ * names stay readable -- they are what makes the message useful.
+ */
+export function redactProviderText(value: string): string {
+  return value.slice(0, 300)
+    .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w-]+\.[\w.-]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
+    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]");
 }
 
 /** Bound a provider string so one field cannot dominate or evade the log. */
