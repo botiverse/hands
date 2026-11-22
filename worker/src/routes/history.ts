@@ -12,8 +12,8 @@ import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
 import { recordPublicAssetDownload } from "../lib/download_stats";
 
-// UI chrome and release notes follow the selected page language; anything
-// other than Chinese falls back to English for the chrome.
+// UI chrome and release notes follow the selected page language; chrome has
+// English, Chinese and Japanese, anything else falls back to English.
 type HistoryStrings = {
   htmlLang: string;
   versionsSuffix: string; // page <title>: "{app} — {suffix}"
@@ -36,7 +36,7 @@ type HistoryStrings = {
   checksumLabel: string;
 };
 
-const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
+const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings; ja: HistoryStrings } = {
   en: {
     htmlLang: "en",
     versionsSuffix: "Versions",
@@ -79,11 +79,51 @@ const HISTORY_I18N: { en: HistoryStrings; zh: HistoryStrings } = {
     platformLabel: "平台",
     checksumLabel: "校验和",
   },
+  ja: {
+    htmlLang: "ja",
+    versionsSuffix: "バージョン",
+    versionHistory: "バージョン履歴",
+    build: "ビルド",
+    latest: "最新",
+    download: "ダウンロード",
+    noVersions: "公開済みのバージョンはまだありません。",
+    releaseNotesSuffix: "リリースノート",
+    whatsNewIn: (name) => `${name} の新機能`,
+    releaseNotes: "リリースノート",
+    draft: "下書き",
+    current: "現在",
+    latestBadge: "最新",
+    noNotesForVersion: "このバージョンのリリースノートはありません。",
+    noNotesYet: "リリースノートはまだありません。",
+    packageLabel: "パッケージ",
+    artifactLabel: "成果物",
+    platformLabel: "プラットフォーム",
+    checksumLabel: "チェックサム",
+  },
 };
 
 function historyStrings(c: Context<{ Bindings: Env }>): HistoryStrings {
   const lang = (publicPageLanguage(c) ?? "").toLowerCase();
-  return lang.startsWith("zh") ? HISTORY_I18N.zh : HISTORY_I18N.en;
+  if (lang.startsWith("zh")) return HISTORY_I18N.zh;
+  if (lang.startsWith("ja")) return HISTORY_I18N.ja;
+  return HISTORY_I18N.en;
+}
+
+const NOTES_LANGUAGE_ORDER = ["en", "zh-CN", "zh-TW", "ja", "ko"];
+
+/** Languages the shown changelogs are written in, for the page's language switch. */
+export function releaseNotesLanguages(changelogs: Array<string | null>): string[] {
+  const found = new Set<string>();
+  for (const raw of changelogs) {
+    for (const key of Object.keys(parseReleaseNotes(raw) ?? {})) found.add(key);
+  }
+  const rank = (key: string) => {
+    const index = NOTES_LANGUAGE_ORDER.indexOf(key);
+    return index < 0 ? NOTES_LANGUAGE_ORDER.length : index;
+  };
+  const languages = [...found].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  // Plain-text changelogs carry no language; keep the two console languages.
+  return languages.length > 0 ? languages : ["en", "zh-CN"];
 }
 
 function publicPageNotFound(c: Context<{ Bindings: Env }>, english: string, chinese: string): Response {
@@ -449,7 +489,10 @@ export async function handlePublicReleaseNotes(c: Context<{ Bindings: Env }>) {
   const t = historyStrings(c);
 
   return new Response(
-    renderReleaseNotesPage(app, visible, requestedCode, lang, t, publicLanguageMenu(c, t.htmlLang)),
+    renderReleaseNotesPage(
+      app, visible, requestedCode, lang, t,
+      publicLanguageMenu(c, lang ?? t.htmlLang, undefined, releaseNotesLanguages(visible.map((row) => row.changelog))),
+    ),
     { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "vary": "*" } },
   );
 }
@@ -566,23 +609,79 @@ function renderLatestLandingPage(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(app.name)} — ${esc(row.version_name)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&family=Space+Mono&display=swap">
   <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
-    main { width: min(560px, calc(100vw - 32px)); padding: 32px 0; }
-    header { display: flex; align-items: center; gap: 16px; }
-    header img { border-radius: 12px; }
-    h1 { margin: 0 0 6px; font-size: 28px; }
-    p { margin: 0; color: #5b616e; line-height: 1.5; }
-    .badge { display: inline-block; margin-left: 8px; padding: 2px 7px; border-radius: 999px; background: #d8f3e8; color: #176f5d; font-size: 12px; vertical-align: middle; }
-    dl { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; margin: 28px 0; }
-    dt { color: #707782; }
-    dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
-    .download { display: inline-flex; min-height: 44px; padding: 0 18px; align-items: center; border-radius: 6px; background: #176f5d; color: white; text-decoration: none; font-weight: 700; }
-    .notes { margin-top: 24px; color: #3b3f45; }
-    .notes ul { padding-left: 20px; }
-    .history { display: inline-block; margin-left: 14px; color: #176f5d; }
-    @media (prefers-color-scheme: dark) { body { background: #17191c; color: #f5f5f2; } p, dt { color: #aeb5bf; } .notes { color: #d2d6dc; } }
+    /* Raft Design System tokens (@botiverse/raft-ui foundation), inlined so
+       the page stays a single response inside the app's WebView. */
+    :root {
+      color-scheme: light dark;
+      --sans: "Space Grotesk", Arial, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
+      --mono: "Space Mono", ui-monospace, "SF Mono", Menlo, monospace;
+      --ink: oklch(0.1813 0.005 17.62);
+      --canvas: oklch(1 0 0);
+      --card: oklch(1 0 0);
+      --fg: var(--ink);
+      --fg-muted: oklch(0.1813 0.005 17.62 / 0.678);
+      --fg-hint: oklch(0.1813 0.005 17.62 / 0.62);
+      --fill-muted: oklch(0.9642 0 0);
+      --line-strong: var(--ink);
+      --line-hairline: oklch(0.1813 0.005 17.62 / 0.149);
+      --success: oklch(0.8272 0.1354 130.07);
+      --info-soft: oklch(0.9452 0.0326 226.3);
+      --info-strong: oklch(0.348 0.06 219.02);
+      --warning: oklch(0.7855 0.1227 50.11);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: oklch(0.2213 0.0038 106.71);
+        --card: oklch(0.2596 0.0037 106.65);
+        --fg: oklch(0.9211 0.004 106.48);
+        --fg-muted: oklch(0.8195 0.0041 106.49);
+        --fg-hint: oklch(0.8195 0.0041 106.49 / 0.8);
+        --fill-muted: oklch(0.3161 0.0052 106.7);
+        --line-strong: oklch(0.9211 0.004 106.48);
+        --line-hairline: oklch(0.9843 0.004 106.47 / 0.102);
+        --info-soft: oklch(0.452 0.0862 225.67 / 0.18);
+        --info-strong: oklch(0.8 0.1 220);
+      }
+    }
+    html, body { background: var(--canvas); }
+    body { margin: 0; min-height: 100vh; color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+    main { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+    .hands-language { display: inline-flex; gap: 2px; padding: 2px; margin: 0 0 20px !important; border: 1px solid var(--line-hairline); border-radius: 8px; font-size: 0 !important; }
+    .hands-language a { color: var(--fg-muted) !important; text-decoration: none; padding: 4px 10px; border-radius: 6px; font-size: 13px; line-height: 18px; font-weight: 500; }
+    .hands-language a[aria-current="page"] { color: var(--fg) !important; background: var(--fill-muted); }
+    header { margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 22px; line-height: 28px; font-weight: 700; letter-spacing: -0.01em; }
+    .sub { color: var(--fg-muted); font-size: 13px; line-height: 18px; margin-top: 2px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    .entry { position: relative; padding: 0 0 20px 22px; }
+    .entry::before { content: ""; position: absolute; left: 4px; top: 14px; bottom: 0; width: 1px; background: var(--line-hairline); }
+    .entry:last-child::before { display: none; }
+    .rail .dot { position: absolute; left: 0; top: 7px; width: 9px; height: 9px; border-radius: 50%; box-sizing: border-box; border: 1px solid var(--line-strong); background: var(--canvas); }
+    .featured .rail .dot { background: var(--success); }
+    .card { min-width: 0; }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; }
+    .title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .title strong { font-size: 17px; line-height: 22px; font-weight: 700; }
+    .meta, .date { font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--fg-hint); white-space: nowrap; }
+    .badge { display: inline-block; border-radius: 4px; padding: 2px 6px; font-size: 11px; line-height: 13px; font-weight: 600; border: 1px solid transparent; }
+    .badge.you { background: var(--success); color: var(--ink); border-color: var(--ink); }
+    .badge.latest { background: var(--info-soft); color: var(--info-strong); }
+    .badge.draft { background: var(--warning); color: var(--ink); border-color: var(--ink); }
+    .notes { margin: 10px 0 0; font-size: 15px; line-height: 22px; color: var(--fg); overflow-wrap: anywhere; }
+    .notes.muted { color: var(--fg-hint); }
+    .notes p { margin: 12px 0 4px; }
+    .notes p:first-child { margin-top: 0; }
+    .notes p > strong:only-child, .notes p > strong { font-weight: 700; }
+    .notes ul { margin: 4px 0 0; padding-left: 18px; list-style: disc; }
+    .notes li { margin: 6px 0; }
+    .notes li::marker { color: var(--fg-hint); }
+    .notes code { font-family: var(--mono); font-size: 0.86em; background: var(--fill-muted); border-radius: 4px; padding: 1px 4px; }
+    .notes a { color: inherit; }
+    .empty { color: var(--fg-muted); font-size: 15px; }
   </style>
 </head>
 <body>

@@ -9078,6 +9078,41 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(notesHtml).not.toContain("中文更新说明");
   });
 
+  it("offers every language the release notes are written in, with Japanese page text", async () => {
+    const env = makeEnv();
+    await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
+    await seedRelease(env, "rel-ja", "build-ja", [["full", "all"]], { versionCode: 128, versionName: "1.28.0" });
+    await env.DB.prepare("UPDATE releases SET changelog = ? WHERE id = ?")
+      .bind(JSON.stringify({ ja: "日本語のリリースノート", en: "English release note", "zh-CN": "中文更新说明" }), "rel-ja").run();
+    const { handlePublicReleaseNotes } = await import("../src/routes/history");
+    const ctx = (lang: string) => ({
+      env,
+      req: {
+        url: "https://hands.build/notes/scope-app",
+        param: (name: string) => name === "slug" ? "scope-app" : "",
+        query: (name: string) => ({ lang, version_code: "128" } as Record<string, string>)[name],
+        header: () => undefined,
+      },
+      json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+    } as any);
+
+    const ja = await (await handlePublicReleaseNotes(ctx("ja"))).text();
+    expect(ja).toContain('<html lang="ja">');
+    expect(ja).toContain("の新機能");
+    expect(ja).toContain("日本語のリリースノート");
+    const menu = ja.slice(ja.indexOf('<nav class="hands-language"'), ja.indexOf("</nav>"));
+    // Ordered en, zh-CN, ja regardless of how the changelog stored them.
+    expect([...menu.matchAll(/>([^<>]+)<\/a>/g)].map((m) => m[1])).toEqual(["English", "简体中文", "日本語"]);
+    expect(menu).toMatch(/lang=ja" data-hands-locale="ja" lang="ja" aria-current="page"/);
+
+    // A language with no notes shows English and marks English as current.
+    const ko = await (await handlePublicReleaseNotes(ctx("ko"))).text();
+    expect(ko).toContain("English release note");
+    expect(ko).toMatch(/data-hands-locale="en" lang="en" aria-current="page"/);
+    // Only console languages are remembered as the shared Hands preference.
+    expect(ko).toContain('["en","zh-CN"].indexOf(locale) < 0');
+  });
+
   it("localizes public page errors without changing machine-readable notes errors", async () => {
     const env = makeEnv();
     await env.DB.prepare("UPDATE apps SET public_history = 1 WHERE id = ?").bind("app-scope").run();
