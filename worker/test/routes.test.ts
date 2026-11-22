@@ -9161,6 +9161,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(notesHtml).toContain("English release note");
     expect(notesHtml).toContain("version_code=123&amp;lang=zh-CN");
     expect(notesHtml).not.toContain("中文更新说明");
+
+    // Every public page shares the Raft Design styles.
+    for (const html of [zhShareHtml, historyHtml, notesHtml, await (await handlePublicLatestReleaseLanding(historyCtx("latest"))).text()]) {
+      expect(html).toContain("family=Space+Grotesk");
+      expect(html).not.toContain("#f5f5f2");
+    }
   });
 
   it("offers every language the release notes are written in, with Japanese page text", async () => {
@@ -9316,12 +9322,12 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(oldHtml).toContain("fixed the thing in 1.0.0");
     expect(oldHtml).toContain('href="/apps/scope-app/history/rel-ver-1/download"');
     expect(oldHtml).not.toContain("/latest/download");
-    expect(oldHtml).not.toContain('class="badge">Latest');
+    expect(oldHtml).not.toContain('class="badge latest">Latest');
 
     // Current version is badged Latest.
     const cur = await handlePublicVersionLanding(makeContext("2.0.0"));
     expect(cur.status).toBe(200);
-    expect(await cur.text()).toContain('class="badge">Latest');
+    expect(await cur.text()).toContain('class="badge latest">Latest');
 
     // Drafts, unknown versions, unknown channels and private apps are 404.
     expect((await handlePublicVersionLanding(makeContext("3.0.0"))).status).toBe(404);

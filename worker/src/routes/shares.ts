@@ -5,6 +5,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { generateSignedR2Url, resolveChangelog , changelogToHtml } from "./public_v2";
 import { publicPageLanguage, publicLanguageMenu } from "../lib/public_locale";
 import { INSTALLABLE_ORDER_BY } from "../lib/installable_precedence";
+import { RAFT_PAGE_BASE_CSS, RAFT_PAGE_FONTS } from "../lib/raft_page_style";
 
 // UI chrome and release notes follow the selected page language. API language
 // selection remains independent of the browser's saved preference.
@@ -1145,68 +1146,49 @@ function renderSharePage(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
-  <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
-    main { width: min(560px, calc(100vw - 32px)); padding: 32px 0; }
-    h1 { margin: 0 0 8px; font-size: 28px; line-height: 1.15; letter-spacing: 0; }
-    .draft-tag { font-size: 12px; font-weight: 600; vertical-align: middle; padding: 2px 8px; border-radius: 999px; background: #f59e0b; color: #fff; letter-spacing: .02em; }
-    .apphead { display: flex; align-items: center; gap: 16px; }
-    .apphead .appicon { border-radius: 12px; flex: none; }
-    p { margin: 0; color: #5b616e; line-height: 1.5; }
-    dl { display: grid; grid-template-columns: 140px 1fr; gap: 10px 16px; margin: 28px 0; }
-    dt { color: #707782; }
-    dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
-    a.download { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 18px; border-radius: 6px; background: #176f5d; color: white; text-decoration: none; font-weight: 700; }
+  ${RAFT_PAGE_FONTS}
+  <style>${RAFT_PAGE_BASE_CSS}
+    main { max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; }
     .get-it { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-    details.formats { margin-top: 20px; border-top: 1px solid #e3e3df; padding-top: 14px; }
-    details.formats > summary { cursor: pointer; font-weight: 600; color: #176f5d; }
-    table.formats { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
-    table.formats th, table.formats td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #ecece8; vertical-align: top; }
-    table.formats th { color: #707782; font-weight: 500; }
-    table.formats td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-    table.formats a { color: #176f5d; font-weight: 600; }
-    .storeonly { color: #9a3412; }
-    .storenote { margin-top: 10px; font-size: 12px; color: #707782; }
+    details.formats { margin-top: 20px; border-top: 1px solid var(--line-hairline); padding-top: 14px; }
+    details.formats > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+    table.formats { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; line-height: 18px; }
+    table.formats th, table.formats td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line-hairline); vertical-align: top; }
+    table.formats th { color: var(--fg-muted); font-weight: 500; }
+    table.formats td.mono { font-size: 11px; overflow-wrap: anywhere; }
+    table.formats a { color: var(--fg); font-weight: 600; }
+    .storeonly { color: var(--warning-strong); }
+    .storenote { margin-top: 10px; font-size: 12px; color: var(--fg-muted); }
     .qr { display: none; }
-    .qr svg { display: block; width: 128px; height: 128px; border-radius: 8px; background: white; padding: 6px; box-sizing: border-box; }
-    .qr span { display: block; margin-top: 6px; color: #707782; font-size: 12px; text-align: center; }
+    .qr svg { display: block; width: 128px; height: 128px; border-radius: 8px; border: 1px solid var(--line-hairline); background: white; padding: 6px; box-sizing: border-box; }
+    .qr span { display: block; margin-top: 6px; color: var(--fg-muted); font-size: 12px; text-align: center; }
     @media (pointer: fine) and (min-width: 480px) { .qr { display: block; } }
-    .notes { margin-top: 22px; color: #3b3f45; text-align: left; }
-    .notes ul { margin: 8px 0; padding-left: 20px; }
-    .notes li { margin: 4px 0; }
-    .notes p { margin: 8px 0; }
-    .notes code { background: rgba(125,125,125,0.15); border-radius: 4px; padding: 1px 4px; font-size: 0.92em; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #17191c; color: #f5f5f2; }
-      p, dt { color: #aeb5bf; }
-      .notes { color: #d2d6dc; }
-    }
+    .notes { margin-top: 28px; }
   </style>
 </head>
 <body>
   <main>
     ${languageMenu}
     <div class="apphead">
-      ${row.icon_r2_key ? `<img class="appicon" src="/share/${escapeAttribute(encodeURIComponent(shareToken))}/icon" alt="" width="56" height="56">` : ""}
+      ${row.icon_r2_key ? `<img src="/share/${escapeAttribute(encodeURIComponent(shareToken))}/icon" alt="" width="56" height="56">` : ""}
       <div>
         <h1>${escapeHtml(row.app_name || row.app_slug)}${
           row.release_status === "draft"
-            ? ` <span class="draft-tag">${t.preRelease}</span>`
+            ? ` <span class="badge draft">${t.preRelease}</span>`
             : ""
         }</h1>
-        <p>${escapeHtml(row.version_name)} · ${t.build} ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>
+        <p class="sub">${escapeHtml(row.version_name)} · ${t.build} ${row.version_code} · ${escapeHtml(row.channel_slug)}</p>
       </div>
     </div>
-    <dl>
+    <dl class="facts">
       <dt>${t.packageLabel}</dt><dd>${escapeHtml(row.package_id || row.app_slug)}</dd>
       <dt>${t.versionLabel}</dt><dd>${escapeHtml(row.version_name)} (${row.version_code})</dd>
       <dt>${t.artifactLabel}</dt><dd>${escapeHtml(row.filetype.toUpperCase())} · ${formatBytes(row.size_bytes, t)}</dd>
       <dt>${t.platformLabel}</dt><dd>${escapeHtml([row.platform, row.arch, row.variant].filter(Boolean).join(" / "))}</dd>
-      <dt>${t.checksumLabel}</dt><dd>${escapeHtml(row.file_hash)}</dd>
+      <dt>${t.checksumLabel}</dt><dd class="mono">${escapeHtml(row.file_hash)}</dd>
     </dl>
     <div class="get-it">
-      <a class="download" href="${escapeAttribute(downloadUrl)}">${t.downloadApk}</a>
+      <a class="button download" href="${escapeAttribute(downloadUrl)}">${t.downloadApk}</a>
       <div class="qr">${qrSvg}<span>${t.scanHint}</span></div>
     </div>
     ${artifacts.length > 1 ? `<details class="formats"><summary>${t.allFormats} (${artifacts.length})</summary>${renderAllFormats(t, artifacts, artifactUrl)}</details>` : ""}
@@ -1231,20 +1213,16 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lan
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${t.passwordRequired}</title>
-  <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
-    main { width: min(360px, calc(100vw - 32px)); }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    p { margin: 0 0 20px; color: #5b616e; }
-    .error { color: #b3261e; font-weight: 600; }
-    input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 0 12px; border: 1px solid #c8ccd2; border-radius: 6px; font-size: 16px; background: white; color: inherit; }
-    button { margin-top: 12px; width: 100%; min-height: 44px; border: 0; border-radius: 6px; background: #176f5d; color: white; font-weight: 700; font-size: 15px; cursor: pointer; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #17191c; color: #f5f5f2; }
-      p { color: #aeb5bf; }
-      input { background: #1f2226; border-color: #3a3f45; }
-    }
+  ${RAFT_PAGE_FONTS}
+  <style>${RAFT_PAGE_BASE_CSS}
+    body { display: grid; place-items: center; }
+    main { width: min(360px, calc(100vw - 32px)); padding: 32px 0; }
+    h1 { margin-bottom: 6px; }
+    p { margin: 0 0 20px; color: var(--fg-muted); font-size: 15px; line-height: 22px; }
+    .error { color: var(--danger-strong); font-weight: 600; }
+    input { width: 100%; box-sizing: border-box; min-height: 44px; padding: 0 12px; border: 1px solid var(--line-field); border-radius: 8px; font: 400 16px/24px var(--sans); background: var(--card); color: inherit; }
+    input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+    .button { margin-top: 12px; width: 100%; }
   </style>
 </head>
 <body>
@@ -1254,7 +1232,7 @@ function renderPasswordPage(t: ShareStrings, token: string, failed: boolean, lan
     <p>${failed ? `<span class="error">${t.wrongPassword}</span>` : t.passwordProtected}</p>
     <form method="post" action="/share/${escapeAttribute(encodeURIComponent(token))}/unlock${lang ? `?lang=${escapeAttribute(encodeURIComponent(lang))}` : ""}">
       <input type="password" name="password" placeholder="${escapeAttribute(t.passwordPlaceholder)}" autofocus autocomplete="off" required>
-      <button type="submit">${t.unlock}</button>
+      <button class="button" type="submit">${t.unlock}</button>
     </form>
   </main>
 </body>
@@ -1268,27 +1246,22 @@ function renderErrorPage(t: ShareStrings, message: string, latestSlug: string | 
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${t.shareUnavailable}</title>
-  <style>
-    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f2; color: #1e1f22; }
-    main { width: min(360px, calc(100vw - 32px)); text-align: center; }
-    .badge { width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; display: grid; place-items: center; background: rgba(125,125,125,0.12); font-size: 22px; }
-    h1 { margin: 0 0 8px; font-size: 22px; line-height: 1.2; }
-    p { margin: 0; color: #5b616e; line-height: 1.5; }
-    a { display: inline-block; margin-top: 16px; color: #176f5d; font-weight: 700; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #17191c; color: #f5f5f2; }
-      p { color: #aeb5bf; }
-    }
+  ${RAFT_PAGE_FONTS}
+  <style>${RAFT_PAGE_BASE_CSS}
+    body { display: grid; place-items: center; }
+    main { width: min(360px, calc(100vw - 32px)); padding: 32px 0; text-align: center; }
+    .icon { width: 44px; height: 44px; margin: 16px auto; border-radius: 10px; display: grid; place-items: center; background: var(--fill-muted); font-size: 22px; }
+    p { margin: 6px 0 0; color: var(--fg-muted); font-size: 15px; line-height: 22px; }
+    main > a.button { margin-top: 20px; }
   </style>
 </head>
 <body>
   <main>
     ${languageMenu}
-    <div class="badge" aria-hidden="true">🔗</div>
+    <div class="icon" aria-hidden="true">🔗</div>
     <h1>${t.shareUnavailable}</h1>
     <p>${escapeHtml(message)}</p>
-    ${latestSlug ? `<a href="${escapeAttribute(withExplicitPageLanguage(`/apps/${encodeURIComponent(latestSlug)}/latest`, lang))}">${t.goToLatest}</a>` : ""}
+    ${latestSlug ? `<a class="button" href="${escapeAttribute(withExplicitPageLanguage(`/apps/${encodeURIComponent(latestSlug)}/latest`, lang))}">${t.goToLatest}</a>` : ""}
   </main>
 </body>
 </html>`;
