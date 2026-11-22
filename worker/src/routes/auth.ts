@@ -26,6 +26,7 @@ import {
 import { encryptAdminRaftToken } from "../lib/admin_raft_token";
 import { loadDeployToken, resolveDeployTokenPermissions } from "../lib/deploy_tokens";
 import { SIGNED_IN_HINT_COOKIE, oauthErrorCode, raftHostAutoSignIn } from "../lib/raft_host_sign_in";
+import { loginErrorResponse } from "../lib/login_error_page";
 
 const LOGIN_PENDING_COOKIE = "quiver_raft_login_pending";
 const LOGIN_RETURN_COOKIE = "quiver_raft_return";
@@ -754,7 +755,7 @@ async function finalizeRaftLogin(
   );
   const account = await signInRaftIdentities(c.env.DB, identities);
   if (!account) {
-    return c.text("This Raft server is not allowed for this Hands admin.", 403);
+    return loginErrorResponse(c, 403, "This Raft server is not allowed for this Hands admin.", { en: "Your Raft server doesn't have access to this Hands.", zh: "你所在的 Raft 服务器没有这个 Hands 的访问权限。" });
   }
   const authToken = await createAuthToken(c.env, account.id, token.access_token);
   return { account, authToken };
@@ -931,7 +932,7 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
   if (oauthError) return handleRaftCallbackError(c, config.clientSecret, oauthError);
 
   const code = c.req.query("code") || "";
-  if (!code) return c.text("Missing Raft callback code", 400);
+  if (!code) return loginErrorResponse(c, 400, "Missing Raft callback code", { en: "This sign-in link has expired. Please sign in again.", zh: "这次登录已过期，请重新登录。" });
 
   try {
     const state = c.req.query("state");
@@ -940,7 +941,7 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
     if (state) {
       const verifiedState = await verifyBrowserLoginState(config.clientSecret, state);
       if (!verifiedState) {
-        return c.text("Invalid or expired local login state. Start again from /api/auth/login.", 400);
+        return loginErrorResponse(c, 400, "Invalid or expired local login state. Start again from /api/auth/login.", { en: "This sign-in link has expired. Please sign in again.", zh: "这次登录已过期，请重新登录。" });
       }
       browserProofCookie = browserLoginProofCookieName(verifiedState.nonce);
       const browserProof = getCookie(c, browserProofCookie);
@@ -950,7 +951,7 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
         !/^[a-f0-9]{64}$/.test(browserProof) ||
         !timingSafeEqualText(browserProofSha256, verifiedState.browser_proof_sha256)
       ) {
-        return c.text("Missing or invalid browser login proof. Start again from /api/auth/login.", 400);
+        return loginErrorResponse(c, 400, "Missing or invalid browser login proof. Start again from /api/auth/login.", { en: "Sign-in has to finish in the browser it started in. Please sign in again.", zh: "登录需要在发起登录的同一个浏览器里完成，请重新登录。" });
       }
       browserReturnPath = verifiedState.return_path;
     }
@@ -960,7 +961,7 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
 
     if (browserReturnPath === null) {
       if (result.account.principal_type !== "agent") {
-        return c.text("Missing local login state. Start again from /api/auth/login.", 400);
+        return loginErrorResponse(c, 400, "Missing local login state. Start again from /api/auth/login.", { en: "This sign-in link has expired. Please sign in again.", zh: "这次登录已过期，请重新登录。" });
       }
       // Stateless agent login (e.g. raft CLI `integration login`). The CLI stores
       // and replays a Set-Cookie rather than the JSON token, so set the session
@@ -1013,7 +1014,7 @@ export async function handleRaftCallback(c: Context<{ Bindings: Env }>) {
     console.error(
       `[raft-auth] callback failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return c.text("Login with Raft failed. Check Worker logs for details.", 502);
+    return loginErrorResponse(c, 502, "Login with Raft failed. Check Worker logs for details.", { en: "Something went wrong while signing in with Raft. Please try again.", zh: "用 Raft 登录时出了问题，请重试。" });
   }
 }
 
@@ -1058,7 +1059,7 @@ async function handleRaftCallbackError(
 ) {
   const state = c.req.query("state");
   const verifiedState = state ? await verifyBrowserLoginState(clientSecret, state) : null;
-  if (!verifiedState) return c.text(`Login with Raft was not completed (${error}).`, 400);
+  if (!verifiedState) return loginErrorResponse(c, 400, `Login with Raft was not completed (${error}).`, { en: `Login with Raft was not completed (${error}).`, zh: `Raft 登录没有完成（${error}）。` });
   deleteCookie(c, browserLoginProofCookieName(verifiedState.nonce), {
     ...sharedCookieDomainOption(c),
     path: "/login/raft/callback",
