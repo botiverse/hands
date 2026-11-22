@@ -3,9 +3,9 @@ import { createPlayAdapterService } from "../src/index";
 const credential = { type: "authorized_user" as const, client_id: "client", client_secret: "hidden-secret", refresh_token: "hidden-refresh", client_email: "person@example.invalid" };
 
 it.each([
-  ["create_edit", { error: { message: "hidden-secret", details: [{ reason: "SERVICE_DISABLED", metadata: { consumer: "private-project" } }] } }, "SERVICE_DISABLED"],
-  ["list_tracks", { error: { errors: [{ reason: "insufficientPermissions" }], message: "hidden-refresh" } }, "insufficientPermissions"],
-  ["delete_edit", { error: { errors: [{ reason: "hidden-secret" }], message: "hidden-refresh" } }, "unspecified"],
+  ["create_edit", { error: { message: "echoed ya29.hidden-secret", details: [{ reason: "SERVICE_DISABLED", metadata: { consumer: "private-project" } }] } }, "SERVICE_DISABLED"],
+  ["list_tracks", { error: { errors: [{ reason: "insufficientPermissions" }], message: "echoed 1//hidden-refresh" } }, "insufficientPermissions"],
+  ["delete_edit", { error: { errors: [{ reason: "hidden-secret" }], message: "echoed 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dden" } }, "unspecified"],
 ])("reports safe Google reason and actual failed step: %s", async (stage, body, reason) => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   const calls: string[] = [];
@@ -62,9 +62,9 @@ it("logs Google's validation reasons, which is the case the whitelist drops", as
   } } } });
   expect(JSON.stringify(result)).not.toContain("Track has more than one completed release");
   expect(JSON.stringify(result)).not.toContain("one completed per track");
-  // Provider prose is never logged verbatim; only its length.
-  expect(logged).not.toContain("Track has more than one completed release");
-  expect(logged).not.toContain("one completed per track");
+  // Provider prose is logged (redacted, clipped): it is often the only diagnostic.
+  expect(logged).toContain("Track has more than one completed release");
+  expect(logged).toContain("one completed per track");
   // And no credential, even though this body could echo one.
   expect(logged).not.toMatch(/hidden-secret|hidden-refresh|private-project|person@example/);
   warn.mockRestore();
@@ -95,9 +95,8 @@ it("names the likely cause from Google's prose without echoing the prose", async
     const result = await service.listTracks({ credential, packageName: "build.test.app" }, { MAX_AAB_SIZE_BYTES: "209715200" });
     const logged = JSON.stringify(warn.mock.calls);
     expect(logged).toContain(expected);
-    // The prose itself never reaches the log, in either position.
-    expect(logged).not.toContain("hidden-secret-abc");
-    expect(logged).not.toMatch(/Track '|Draft apps can|Version code 11500010|Unknown track:/);
+    // The prose is logged (it is often the only diagnostic) ...
+    expect(logged).toContain(JSON.stringify(message).slice(1, -1));
     // And the caller still only sees the sanitised code.
     expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected" } });
     warn.mockRestore();
@@ -253,4 +252,17 @@ it("omits provider_identifiers when the body carries none", async () => {
   const { playRejection } = await import("../src/provider_errors");
   const error = playRejection(413, "<html>too large</html>", "upload_mapping");
   expect(error.cause_detail?.provider_identifiers).toBeUndefined();
+});
+
+it("logged provider prose has credential-shaped values replaced and is clipped", async () => {
+  const { redactProviderText } = await import("../src/provider_errors");
+  const text = "The caller does not have permission ya29.a0AfH6SMhidden 1//0gHiddenRefresh eyJhbGci.eyJzdWIi.sig "
+    + "owner@example.com " + "Z".repeat(40) + " build.raft.app 12800012";
+  const out = redactProviderText(text);
+  expect(out).toContain("The caller does not have permission");
+  expect(out).toContain("build.raft.app 12800012");
+  for (const secret of ["ya29.", "1//0g", "eyJhbGci", "owner@example.com", "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"]) {
+    expect(out).not.toContain(secret);
+  }
+  expect(redactProviderText("x ".repeat(400)).length).toBe(300);
 });
