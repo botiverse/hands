@@ -3157,6 +3157,7 @@ describe("auth origin handling", () => {
       expect(html).toContain("<h1>登录没有完成</h1>");
       expect(html).toContain("这次登录已过期，请重新登录。");
       expect(html).toContain('href="/">返回 Hands</a>');
+      expect(html).not.toMatch(/\p{Extended_Pictographic}/u);
       expect(html).toContain("family=Space+Grotesk");
       const cli = await app.request(url, {}, env as any);
       expect(cli.status).toBe(400);
@@ -7337,6 +7338,11 @@ describe("quiver public API v2 — scope resolution", () => {
     const sharePage = await handlePublicReleaseShare(makeSharePublicContext(env, shareToken));
     expect(sharePage.status).toBe(200);
     expect(await sharePage.text()).toContain("Download APK");
+    const missingShare = await handlePublicReleaseShare(makeSharePublicContext(env, "no-such-share-token"));
+    expect(missingShare.status).toBe(404);
+    const missingShareHtml = await missingShare.text();
+    expect(missingShareHtml).toContain('<div class="icon"><svg');
+    expect(missingShareHtml).not.toMatch(/\p{Extended_Pictographic}/u);
 
     const historyPage = await handlePublicAppHistory({
       env,
@@ -9247,6 +9253,9 @@ describe("quiver public API v2 — scope resolution", () => {
       const html = await res.text();
       expect(html).toContain("<h1>页面不存在</h1>");
       expect(html).not.toContain('class="hands-language"');
+      // Hands' own icons are Lucide SVGs, not emoji.
+      expect(html).toContain('<div class="icon"><svg');
+      expect(html).not.toMatch(/\p{Extended_Pictographic}/u);
       expect(html).toContain("family=Space+Grotesk");
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
       expect(res.headers.get("cache-control")).toBe("private, no-store");
