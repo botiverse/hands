@@ -12899,6 +12899,63 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("handleDeleteFeedbackAttachments removes a ticket's stored files and rows but keeps the ticket", async () => {
+    const env = makeEnv();
+    const { handleDeleteFeedbackAttachments } = await import("../src/routes/feedback");
+    const ticketId = "fade0001-1111-2222-3333-444455556666";
+    const otherTicket = "fade0002-1111-2222-3333-444455556666";
+    const objects = new Map<string, string>([
+      [`feedback/app-scope/${ticketId}/minidump.dmp`, "dump"],
+      [`feedback/app-scope/${ticketId}/extra.bin`, "extra"],
+      [`feedback/app-scope/${otherTicket}/minidump.dmp`, "other"],
+    ]);
+    env.APK_BUCKET = {
+      list: async ({ prefix }: { prefix: string }) => ({
+        objects: [...objects.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
+        truncated: false,
+      }),
+      delete: async (keys: string | string[]) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
+      },
+    } as any;
+    for (const id of [ticketId, otherTicket]) {
+      await env.DB.prepare(
+        `INSERT INTO feedback_tickets (id, app_id, kind, status, message, metadata_json, created_at, updated_at)
+         VALUES (?1, 'app-scope', 'crash', 'open', 'crash', '{}', 1, 1)`,
+      ).bind(id).run();
+      await env.DB.prepare(
+        `INSERT INTO feedback_attachments (id, ticket_id, r2_key, filename, content_type, size_bytes, created_at)
+         VALUES (?1, ?2, ?3, 'minidump.dmp', 'application/x-minidump', 4, 1)`,
+      ).bind(`att-${id}`, id, `feedback/app-scope/${id}/minidump.dmp`).run();
+    }
+    const call = (tid: string) =>
+      handleDeleteFeedbackAttachments({
+        env,
+        get: () => "agent:volta",
+        req: { param: (n: string) => (n === "appId" ? "app-scope" : n === "ticketId" ? tid : undefined) },
+        json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
+      } as any);
+
+    const res = await call("fade0001");
+    expect(res.status).toBe(200);
+    expect(await responseJson<any>(res)).toEqual({
+      ticket_id: ticketId,
+      deleted_attachments: [{ id: `att-${ticketId}`, filename: "minidump.dmp" }],
+      deleted_objects: 2,
+    });
+    expect([...objects.keys()]).toEqual([`feedback/app-scope/${otherTicket}/minidump.dmp`]);
+    const left = (await env.DB.prepare("SELECT ticket_id FROM feedback_attachments ORDER BY ticket_id").all()).results;
+    expect(left).toEqual([{ ticket_id: otherTicket }]);
+    expect(await env.DB.prepare("SELECT id FROM feedback_tickets WHERE id = ?1").bind(ticketId).first()).toBeTruthy();
+    const audit = await env.DB.prepare(
+      "SELECT actor, payload FROM audit_logs WHERE action = 'feedback.attachments_deleted'",
+    ).first() as any;
+    expect(audit.actor).toBe("agent:volta");
+    expect(JSON.parse(audit.payload)).toMatchObject({ ticket_id: ticketId, objects: 2 });
+
+    expect((await call("ffffffff")).status).toBe(404);
+  });
+
   it("handleGetFeedback returns 409 on an ambiguous ticket-id prefix", async () => {
     const env = makeEnv();
     const { handleGetFeedback } = await import("../src/routes/feedback");
