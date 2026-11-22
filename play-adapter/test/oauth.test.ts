@@ -60,7 +60,7 @@ describe("Google OAuth refresh", () => {
       if (init.method === "DELETE") return new Response(null, { status: 204 });
       return Response.json({ tracks: [{ track: "internal" }, { track: "closed" }, { track: "production" }] });
     }) } as any);
-    const result = await service.verifyBinding({ credential, packageName: "build.raft.app", tracks: { internal: "internal", closed: "closed", production: "production" } }, { MAX_AAB_SIZE_BYTES: "209715200" });
+    const result = await service.verifyBinding({ credential, packageName: "build.raft.app", tracks: { internal: "internal", closed: "closed", open: "beta", production: "production" } }, { MAX_AAB_SIZE_BYTES: "209715200" });
     expect(result.ok).toBe(true);
     expect(requests.some((r) => r.startsWith("DELETE "))).toBe(true);
     expect(requests.some((r) => r.includes(":commit"))).toBe(false);

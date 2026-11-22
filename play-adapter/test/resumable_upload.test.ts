@@ -56,7 +56,7 @@ beforeAll(async () => {
       private_key_id: "key-1",
     },
     packageName: PACKAGE,
-    tracks: { internal: "qa", closed: "closed-alpha", production: "production" },
+    tracks: { internal: "qa", closed: "closed-alpha", open: "beta", production: "production" },
   };
 });
 

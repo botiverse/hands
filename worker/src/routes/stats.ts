@@ -304,7 +304,7 @@ async function queryGooglePlayStats(
     const tracks = binding.tracks;
     const pkgName = binding.package_name;
     liveTracks = [];
-    for (const handsTrack of ["production", "closed", "internal"] as const) {
+    for (const handsTrack of ["production", "open", "closed", "internal"] as const) {
       try {
         const res = await listReleaseStatesWithRetry(c.env.PLAY_RELEASE_SERVICE, {
           credential: binding.credential,

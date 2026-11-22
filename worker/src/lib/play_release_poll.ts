@@ -1,3 +1,4 @@
+import { HANDS_PLAY_TRACKS } from "./play_tracks";
 import { settingsOrigin } from "./play_access_origin";
 import { enqueueDueDeliveries } from "../routes/webhooks";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_bindings";
@@ -19,7 +20,7 @@ export async function observePlayRelease(db: D1Database, appId: string, packageN
     (app_id,package_name,play_track,version_code,state,revision,nonce,observed_at)
     SELECT ?1,?2,?3,?4,?5,?6,?7,?8 WHERE EXISTS (SELECT 1 FROM app_google_play_bindings
       WHERE app_id=?1 AND package_name=?2 AND enabled=1 AND verification_state='verified'
-        AND updated_at=?9 AND ?3 IN (internal_track,closed_track,production_track))
+        AND updated_at=?9 AND ?3 IN (internal_track,closed_track,production_track,'beta'))
     ON CONFLICT(app_id,package_name,play_track,version_code) DO UPDATE SET
       state=excluded.state,revision=excluded.revision,nonce=excluded.nonce,observed_at=excluded.observed_at
     WHERE google_play_release_observations.revision=?10
@@ -62,7 +63,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
       if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") continue;
       const seenTracks = new Set<string>();
       let failureCode: string | null = null;
-      for (const handsTrack of ["internal", "closed", "production"] as const) {
+      for (const handsTrack of HANDS_PLAY_TRACKS) {
         const track = binding.tracks[handsTrack];
         if (seenTracks.has(track)) continue;
         seenTracks.add(track);

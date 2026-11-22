@@ -2353,6 +2353,20 @@ describe("play distribution commands", () => {
     }
   });
 
+  it("promotes to open testing by Play's track id with a staged rollout", async () => {
+    const harness = await startPlayHarness();
+    try {
+      await harness.run("releases", "play-promote", "raft-android", "release-1", "--track", "beta", "--rollout-percent", "20", "--note", "preview");
+      await harness.run("releases", "play-promote", "raft-android", "release-1", "--track", "Alpha", "--note", "closed");
+      expect(harness.requests.filter((request) => request.method === "POST").map((post) => post.body)).toEqual([
+        { track: "beta", expected_revision: 7, approval: { note: "preview" }, rollout_percent: 20 },
+        { track: "alpha", expected_revision: 7, approval: { note: "closed" } },
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("sends changes_not_sent_for_review only with --changes-not-sent-for-review and prints the next step", async () => {
     const harness = await startPlayHarness({ writeExtra: { review: { requested: false, changes_not_sent_for_review: true } } });
     try {
@@ -2470,8 +2484,8 @@ describe("play distribution commands", () => {
     try {
       await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1"))
         .rejects.toThrow("required option '--note <note>' not specified");
-      await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--track", "beta", "--note", "n"))
-        .rejects.toThrow("--track must be one of: internal, closed, production");
+      await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--track", "gamma", "--note", "n"))
+        .rejects.toThrow("--track must be one of: internal, alpha (closed testing), beta (open testing) or production");
       expect(harness.requests).toHaveLength(0);
       await expect(harness.run("releases", "play-send-for-review", "raft-android", "release-1", "--note", "n"))
         .rejects.toThrow("Play send-for-review failed (edit_in_review/play_edit_in_review): Another change for this app is in review on Google Play (failed-closed receipt rcpt-failed)");
@@ -2688,8 +2702,8 @@ describe("play distribution commands", () => {
     const harness = await startPlayHarness();
     try {
       await expect(harness.run(
-        "releases", "play-promote", "raft-android", "release-1", "--track", "beta", "--note", "n",
-      )).rejects.toThrow("--track must be one of: internal, closed, production");
+        "releases", "play-promote", "raft-android", "release-1", "--track", "gamma", "--note", "n",
+      )).rejects.toThrow("--track must be one of: internal, alpha (closed testing), beta (open testing) or production");
       await expect(harness.run(
         "releases", "play-promote", "raft-android", "release-1", "--track", "closed", "--rollout-percent", "101", "--note", "n",
       )).rejects.toThrow("--rollout-percent must be an integer from 0 to 100");

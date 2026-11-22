@@ -5,7 +5,7 @@ import { currentAccount, ensureAppRole, insertAuditLog } from "../lib/permission
 import { businessOrigin, dashboardOrigin, configuredProductionHost, sharedCookieDomain } from "../lib/origin";
 import { decryptGooglePlayValue, encryptGooglePlayValue, getGooglePlayBindingMeta,
   normalizeGooglePlayPackage, normalizeGooglePlayTracks, storeGooglePlayBinding, storeGooglePlayReportsGrant,
-  parseGooglePlayCredential, type GooglePlayTracks } from "../lib/google_play_bindings";
+  parseGooglePlayCredential, withOpenTestingTrack, type GooglePlayTracks } from "../lib/google_play_bindings";
 import { requireAndroidApp, verifyBinding } from "./google_play_bindings";
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 const SCOPE = "https://www.googleapis.com/auth/androidpublisher";
@@ -256,7 +256,7 @@ export async function handleGooglePlayOAuthCallback(c: AdminContext) {
     if (pending.package_name !== null || tracks !== null) {
       if (pending.package_name === null || tracks === null) return fail("server_configuration");
       stage = "play_permissions";
-      const verified = await verifyBinding(c, { credential, package_name: pending.package_name, tracks });
+      const verified = await verifyBinding(c, { credential, package_name: pending.package_name, tracks: withOpenTestingTrack(tracks) });
       if (!verified.ok) return fail("play_permissions");
     }
     // Recheck role after I/O; compare-and-set protects an intervening binding

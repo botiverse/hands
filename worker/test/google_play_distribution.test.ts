@@ -18,6 +18,7 @@ import {
 } from "../src/routes/android_release_artifacts";
 import {
   normalizePlayPromotionInput,
+  normalizePlaySendForReviewInput,
   playReadbackMatches,
   handleCreateAcceptanceReceipt,
   handleListDistributions,
@@ -188,6 +189,19 @@ describe("Play promotion gates", () => {
       expected_revision: 3,
       approval: { note: "ship" },
     })).toMatchObject({ track: "production", rollout_percent: 25 });
+  });
+
+  it("takes Play's own track ids and allows a staged rollout on open testing", () => {
+    const base = { expected_revision: 3, approval: { note: "ship" } };
+    expect(normalizePlayPromotionInput({ ...base, track: "beta", rollout_percent: 20 } as never))
+      .toMatchObject({ track: "open", rollout_percent: 20 });
+    expect(normalizePlayPromotionInput({ ...base, track: "open" } as never)).toMatchObject({ track: "open" });
+    expect(normalizePlayPromotionInput({ ...base, track: "alpha" } as never)).toMatchObject({ track: "closed" });
+    expect(normalizePlayPromotionInput({ ...base, track: "closed" })).toMatchObject({ track: "closed" });
+    expect(() => normalizePlayPromotionInput({ ...base, track: "alpha", rollout_percent: 20 } as never))
+      .toThrow(/partial rollout.*open testing/);
+    expect(() => normalizePlayPromotionInput({ ...base, track: "gamma" } as never)).toThrow(/beta \(open testing\)/);
+    expect(normalizePlaySendForReviewInput({ ...base, track: "beta" } as never)).toEqual({ ...base, track: "open" });
   });
 
   it("accepts readback only when package, version, track, and SHA all match", () => {
@@ -2288,10 +2302,10 @@ describe("durable Google Play notifications", () => {
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
       calls++; return { ok: true, value: [] };
     } });
-    await pollGooglePlayReleases(h.env, 300_611); expect(calls).toBe(3);
-    await pollGooglePlayReleases(h.env, 300_900); expect(calls).toBe(3);
-    await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(6);
-    await pollGooglePlayReleases(h.env, 600_611); expect(calls).toBe(6);
+    await pollGooglePlayReleases(h.env, 300_611); expect(calls).toBe(4);
+    await pollGooglePlayReleases(h.env, 300_900); expect(calls).toBe(4);
+    await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(8);
+    await pollGooglePlayReleases(h.env, 600_611); expect(calls).toBe(8);
   });
   it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
@@ -2300,12 +2314,12 @@ describe("durable Google Play notifications", () => {
       return input.handsTrack === "internal" ? { ok: true, value: [stateSummary] }
         : { ok: false, error: { status: 403, code: "play_api_rejected", message: "not authorized" } };
     } });
-    // Three tracks; each refused read is retried once.
-    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(5);
+    // Four tracks (internal, closed, open testing, production); each refused read is retried once.
+    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(7);
     expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 1 });
-    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(5);
+    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(7);
     h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
-    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(5);
+    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(7);
   });
 });
 

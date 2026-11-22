@@ -309,6 +309,15 @@ hands builds publish-android raft-android \
 
 向已有构建添加符号时，使用 `hands builds attach-symbols <app> <build-id> <file> --kind <kind>`。类型为 `proguard-mapping`、`native-symbols` 或 `dsym`；命令也会根据文件名推断类型。原生符号压缩包根据构建的 Android、HarmonyOS 或 iOS 产品类型选择平台；产品类型未知时必须明确传入 `--platform`。附件只能新增，不会替换同一槽位的已有文件。
 
+## Google Play 轨道
+
+`--track` 直接使用 Google Play 自己的轨道名：`internal`（内部测试）、`alpha`（封闭测试，或应用配置的封闭测试轨道）、`beta`（开放测试）和 `production`（正式版）。原来的 `closed` 和 `open` 仍然可用。分阶段发布（`--rollout-percent` 小于 100）可用于 `production` 和 `beta`：
+
+```bash
+hands releases play-promote raft-android <release> --track beta \
+  --rollout-percent 20 --note "1.28.0 preview to open testing"
+```
+
 ## Google Play：现在上传，稍后送审
 
 Google Play 一次审核一组变更。应用的另一版本正在审核时，`hands releases play-promote` 在 `stage=commit_edit` 失败：Hands 对每个 Play 编辑使用 `changesInReviewBehavior=ERROR_IF_IN_REVIEW` 提交，绝不会取消正在进行的审核。若仍需将下一版本上传到 Play，可将上传与送审分开：

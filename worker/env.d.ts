@@ -7,7 +7,7 @@ import "@cloudflare/workers-types";
 
 type GooglePlayCredential = import("./src/lib/google_play_bindings").GooglePlayCredential;
 
-type GooglePlayTracks = Record<"internal" | "closed" | "production", string>;
+type GooglePlayTracks = Record<"internal" | "closed" | "open" | "production", string>;
 
 type GooglePlayBindingInput = {
   credential: GooglePlayCredential;

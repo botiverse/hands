@@ -49,7 +49,7 @@ beforeAll(async () => {
       private_key_id: "key-1",
     },
     packageName: PACKAGE,
-    tracks: { internal: "qa", closed: "closed-alpha", production: "production" },
+    tracks: { internal: "qa", closed: "closed-alpha", open: "beta", production: "production" },
   };
 });
 
@@ -837,6 +837,33 @@ describe("Google Play adapter RPC service", () => {
       { name: "existing", versionCodes: ["41"], status: "completed" },
       { versionCodes: ["42"], status: "inProgress", userFraction: 0.2 },
     ]);
+  });
+
+  it("promotes to open testing on Play's beta track with a staged rollout", async () => {
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    // An older caller sends no `open` track: open testing is still Play's `beta`.
+    const { open: _open, ...withoutOpen } = binding.tracks;
+    const promoted = await service.promote(
+      { ...promotion({ versionCode: 42, handsTrack: "open", rolloutPercent: 20 }), tracks: withoutOpen as typeof binding.tracks },
+      body(),
+      null,
+      environment(),
+    );
+    expect(promoted.ok).toBe(true);
+    const put = fixture.requests.filter((request) => request.method === "PUT" && request.url.includes("/tracks/"));
+    expect(put).toHaveLength(1);
+    expect(put[0]!.url).toContain("/tracks/beta");
+    const raw = put[0]!.body;
+    const sent = (typeof raw === "string" ? JSON.parse(raw) : raw) as { releases: Array<{ status?: string; userFraction?: number }> };
+    expect(sent.releases.at(-1)).toMatchObject({ versionCodes: ["42"], status: "inProgress", userFraction: 0.2 });
+  });
+
+  it("refuses a partial rollout on closed testing", async () => {
+    const fixture = googleFixture({ trackMaximum: 41, uploadVersionCode: 42 });
+    const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
+    expect(await service.promote(promotion({ versionCode: 42, handsTrack: "closed", rolloutPercent: 20 }), body(), null, environment()))
+      .toMatchObject({ ok: false, error: { code: "rollout_track_invalid" } });
   });
 
   it.each([
