@@ -66,7 +66,8 @@ a promotion receipt remain API errors rather than release notifications.
 
 Hands reads Google's live release lifecycle for enabled, verified connections
 on the configured tracks. Google limits how often an app's release states can be
-listed, so each app is read once every 30 minutes; the cron runs every five
+listed (about 12 calls an hour, one per track), so each app is read once an
+hour; the cron runs every five
 minutes and handles at most four apps per run; larger sets rotate through
 subsequent runs. When the limit is used up, Hands stops reading for that round
 and does not report it as an access failure. The first observation is a

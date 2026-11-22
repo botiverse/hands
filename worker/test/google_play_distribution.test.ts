@@ -2302,12 +2302,12 @@ describe("durable Google Play notifications", () => {
     h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
       calls++; return { ok: true, value: [] };
     } });
-    // One read per app every 30 minutes, anchored to the five-minute cron slot.
+    // One read per app every hour, anchored to the five-minute cron slot.
     await pollGooglePlayReleases(h.env, 300_611); expect(calls).toBe(4);
     await pollGooglePlayReleases(h.env, 600_373); expect(calls).toBe(4);
-    await pollGooglePlayReleases(h.env, 1_800_373); expect(calls).toBe(4);
-    await pollGooglePlayReleases(h.env, 2_100_373); expect(calls).toBe(8);
-    await pollGooglePlayReleases(h.env, 2_100_611); expect(calls).toBe(8);
+    await pollGooglePlayReleases(h.env, 3_600_373); expect(calls).toBe(4);
+    await pollGooglePlayReleases(h.env, 3_900_373); expect(calls).toBe(8);
+    await pollGooglePlayReleases(h.env, 3_900_611); expect(calls).toBe(8);
   });
   it("stops reading for the round on an exhausted quota, without retrying or alerting", async () => {
     const h = await readyRelease(); let calls = 0;
