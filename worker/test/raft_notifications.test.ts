@@ -960,7 +960,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("posts in-progress App Store upload states only to destinations that chose upload processing", async () => {
+  it("posts App Store upload progress (waiting, processing, processed) only to destinations that chose it", async () => {
     const { request, sqlite } = await harness();
     const sent: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -979,13 +979,17 @@ describe("Hands-managed Raft notifications", () => {
     expect(await (await request(upload("PROCESSING"), "delivery-1")).json()).toMatchObject({ skipped: true });
     expect(await (await request({ ...upload("PROCESSING"), event: "testflight:upload_processing" }, "delivery-2")).json())
       .toMatchObject({ skipped: true });
+    // "Upload processed" follows the same choice; a failed upload always posts.
+    expect(await (await request(upload("COMPLETE"), "delivery-3")).json()).toMatchObject({ skipped: true });
     expect(sent).toHaveLength(0);
-    expect((await request(upload("COMPLETE"), "delivery-3")).status).toBe(200);
+    expect((await request(upload("FAILED"), "delivery-5")).status).toBe(200);
     expect(sent).toHaveLength(1);
 
     setEvents(["app_store:build_upload_state_changed", "testflight:upload_processing"]);
     expect((await request({ ...upload("PROCESSING"), payload: { ...upload("PROCESSING").payload, resource: { type: "buildUploads", id: "upload-2" } } }, "delivery-4")).status).toBe(200);
     expect(sent).toHaveLength(2);
+    expect((await request({ ...upload("COMPLETE"), payload: { ...upload("COMPLETE").payload, resource: { type: "buildUploads", id: "upload-3" } } }, "delivery-6")).status).toBe(200);
+    expect(sent).toHaveLength(3);
   });
 
   it("drops upload processing from existing Raft destinations but keeps a destination's only event and generic webhooks", () => {
@@ -1284,8 +1288,8 @@ describe("Hands-managed Raft notifications", () => {
     // A timestamp is not needed to order standalone receipts.
     const first = { event: eventName, delivered_at: 100, payload: {
       release_id: "release-1", build_id: "build-1", version: "1.20.0", version_code: 12000003,
-      // In-progress App Store upload states follow the upload-processing choice.
-      track: "production", state: eventName === "app_store:build_upload_state_changed" ? "COMPLETE" : "PROCESSING",
+      // Upload progress follows the upload-processing choice; a failed upload always posts.
+      track: "production", state: eventName === "app_store:build_upload_state_changed" ? "FAILED" : "PROCESSING",
     } };
     const second = { ...first, payload: { ...first.payload, version_code: 12000004 } };
     expect((await request(first, "one")).status).toBe(200);

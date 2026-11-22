@@ -22,20 +22,22 @@ export function isReleaseChannelEvent(event: unknown): boolean {
   );
 }
 
-const IN_PROGRESS_UPLOAD_STATES = new Set(["AWAITING_UPLOAD", "PROCESSING"]);
+/** Upload progress; only FAILED is always worth a notice. */
+const UPLOAD_PROGRESS_STATES = new Set(["AWAITING_UPLOAD", "PROCESSING", "COMPLETE"]);
 
 /**
  * The event a Raft destination must subscribe to for this notice. Apple's own
- * upload callback reports in-progress states under
- * app_store:build_upload_state_changed; those follow the same "upload
- * processing" choice as testflight:upload_processing, so one setting silences
- * every in-progress upload notice while the final state still posts.
+ * upload callback reports upload progress under
+ * app_store:build_upload_state_changed; waiting, processing and processed
+ * follow the same "upload processing" choice as testflight:upload_processing,
+ * so one setting silences them all (TestFlight's "Ready for testing" follows a
+ * processed upload anyway). A failed upload still posts.
  */
 export function raftSubscriptionEvent(body: Record<string, unknown>): string {
   const event = typeof body.event === "string" ? body.event : "";
   const state = record(body.payload).state;
   return event === "app_store:build_upload_state_changed"
-    && typeof state === "string" && IN_PROGRESS_UPLOAD_STATES.has(state)
+    && typeof state === "string" && UPLOAD_PROGRESS_STATES.has(state)
     ? "testflight:upload_processing" : event;
 }
 
