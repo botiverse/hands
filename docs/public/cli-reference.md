@@ -39,6 +39,12 @@ export HANDS_BEARER_TOKEN=<deploy-token>
 If `HANDS_API` is unset, the CLI defaults to `https://hands.build`.
 `HANDS_AUTH_TOKEN` is also accepted as an alias for `HANDS_BEARER_TOKEN`.
 
+With a deploy token, `hands whoami` prints the token's name, app, role and
+permissions (`--json` returns them under `deploy_token`, with `account: null`),
+so a pipeline can check its credential before it acts. Commands that take an
+app slug resolve the token's own app from it, so `hands releases show`,
+`cancel` and `restore` work with a deploy token restricted to one app.
+
 Legacy `QUIVER_*` names still work: every variable is read as `HANDS_<name>`
 first, then `QUIVER_<name>`, so existing CI keeps working unchanged.
 

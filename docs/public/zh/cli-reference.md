@@ -38,6 +38,8 @@ export HANDS_BEARER_TOKEN=<deploy-token>
 
 未设置 `HANDS_API` 时默认使用 `https://hands.build`。`HANDS_AUTH_TOKEN` 也可作为 `HANDS_BEARER_TOKEN` 的别名。
 
+使用部署令牌时，`hands whoami` 会显示令牌的名称、所属应用、角色和权限（`--json` 时放在 `deploy_token` 下，`account` 为 `null`），方便流水线在执行前先检查凭据。按应用名称（slug）指定应用的命令会直接从令牌识别它所属的应用，所以只限一个应用的部署令牌也能运行 `hands releases show`、`cancel` 和 `restore`。
+
 旧版 `QUIVER_*` 名称仍可使用：每个变量先读取 `HANDS_<name>`，再读取 `QUIVER_<name>`，因此现有 CI 无需更改。
 
 CI 应使用限定于应用的部署令牌。通过下文的 `hands deploy-tokens create` 或应用设置页创建，选择所需的最低角色，并将原始令牌存入 CI 密钥存储。
