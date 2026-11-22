@@ -97,7 +97,7 @@ export function publicLanguageMenu(
     }
   })();`;
   // The language the page is shown in leads the switch; the rest keep their order.
-  const ordered = [active, ...languages.filter((language) => language !== active)];
+  const ordered = [...languages].sort((a, b) => Number(b === active) - Number(a === active));
   const links = ordered.map((language) =>
     `<a style="color:inherit" href="${link(language)}" data-hands-locale="${escapeAttribute(language)}" lang="${escapeAttribute(language)}"${language === active ? ' aria-current="page"' : ""}>${escapeAttribute(LANGUAGE_NAMES[language] ?? language)}</a>`,
   ).join(" · ");
