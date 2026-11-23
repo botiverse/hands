@@ -299,6 +299,8 @@ declare global {
     RAFT_BOT_ENC_KEY?: string;
     RAFT_ORIGIN?: string;
     RAFT_API_ORIGIN?: string;
+    /** off | shadow | on (lib/raft_live_role.ts); unset is the code default. */
+    RAFT_LIVE_ROLE_MODE?: string;
     RAFT_CLIENT_ID?: string;
     CORS_ALLOWED_ORIGINS?: string;
     BUSINESS_ORIGIN?: string;
