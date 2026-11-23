@@ -256,7 +256,7 @@ import {
   handleDeclareBuildAssetUpload,
   handleGetBuildAssetUpload,
 } from "./routes/build_asset_uploads";
-import { handleDesktopFilesComplete, handleDesktopFilesMissing } from "./routes/desktop_files";
+import { handleDesktopFilesComplete, handleDesktopFilesMissing, sweepAbandonedDesktopStaging } from "./routes/desktop_files";
 import { handlePublicDesktopFile, handlePublicDesktopUpdate } from "./routes/desktop_public";
 import {
   handleListOperations,
@@ -1654,6 +1654,7 @@ export async function scheduled(
     storeReportsIngest(env, scheduledTime),
     cleanupReporterFeedbackData(env),
     cleanupExpiredBuildAssetUploads(env),
+    sweepAbandonedDesktopStaging(env).catch(() => undefined),
     sweepPendingCrashAlerts(env, scheduledTime).catch(() => undefined),
   ]).then(() => undefined));
 }

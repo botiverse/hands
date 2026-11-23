@@ -302,3 +302,38 @@ export async function handleDesktopFilesComplete(c: AdminContext) {
   c.header("Cache-Control", "no-store");
   return c.json({ ok: failed === 0, stored: storedCount, present: presentCount, failed, results });
 }
+
+/** A staged file older than this was never verified (its upload URL lived UPLOAD_TTL_SECONDS). */
+export const STAGING_ABANDONED_MS = 24 * 60 * 60 * 1000;
+const STAGING_SWEEP_APPS = 20;
+const STAGING_SWEEP_DELETES = 500;
+
+/**
+ * Deletes desktop files that were uploaded to staging and never verified by
+ * /desktop/files/complete (a CI job that died between the two). Verified files
+ * leave staging when they are stored, so whatever is still there a day later
+ * is abandoned. R2 lifecycle rules match only a key prefix, and staging sits
+ * under each app's own prefix, so this runs from the scheduled handler.
+ */
+export async function sweepAbandonedDesktopStaging(env: Pick<Env, "DB" | "APK_BUCKET">, now = Date.now()): Promise<{ deleted: number }> {
+  const { results } = await env.DB.prepare(
+    "SELECT id FROM apps WHERE platform = 'desktop' ORDER BY id LIMIT ?1",
+  ).bind(STAGING_SWEEP_APPS).all<{ id: string }>();
+  // List first, delete after: deleting while paging must not move the cursor.
+  const stale: string[] = [];
+  for (const app of results) {
+    let cursor: string | undefined;
+    do {
+      const page = await env.APK_BUCKET.list({ prefix: desktopFileStagingKey(app.id, ""), limit: 1000, ...(cursor ? { cursor } : {}) });
+      for (const o of page.objects) {
+        if (now - o.uploaded.getTime() >= STAGING_ABANDONED_MS && stale.length < STAGING_SWEEP_DELETES) stale.push(o.key);
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor && stale.length < STAGING_SWEEP_DELETES);
+    if (stale.length >= STAGING_SWEEP_DELETES) break;
+  }
+  for (let i = 0; i < stale.length; i += 100) await env.APK_BUCKET.delete(stale.slice(i, i + 100));
+  const deleted = stale.length;
+  if (deleted > 0) console.info("hands_desktop_staging_sweep", JSON.stringify({ deleted }));
+  return { deleted };
+}
