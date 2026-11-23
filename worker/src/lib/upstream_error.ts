@@ -27,15 +27,24 @@ export const UPSTREAM_SERVICE_LABELS: Record<UpstreamService, string> = {
 };
 
 /**
- * At most 300 characters, control characters flattened, and OAuth tokens, JWTs,
- * refresh tokens, email addresses and any long opaque run (32+ token
- * characters) replaced by [redacted]. Same rule as the adapter's
+ * At most 300 characters (clipped after redaction), control characters
+ * flattened, percent-encoding decoded, URL queries dropped, and OAuth tokens,
+ * JWTs, refresh tokens, Google API keys and client secrets, PEM blocks, email
+ * addresses and any long opaque run (32+ token characters) replaced by [redacted]. Same rule as the adapter's
  * redactProviderText; package names, version codes and track names stay.
  */
 export function redactUpstreamText(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300)
-    .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w-]+\.[\w.-]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
-    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]");
+  // Redact BEFORE clipping, so a secret cut at the edge cannot survive as a short
+  // tail; percent-encoded text is decoded first so an encoded token is matched too.
+  let text = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  try { text = decodeURIComponent(text); } catch { /* keep as is */ }
+  return text
+    // URLs: keep where they point, drop query and fragment (project numbers, keys).
+    .replace(/https?:\/\/[^\s?#"'<>]+[^\s"'<>]*/g, (url) => url.replace(/[?#].*$/, ""))
+    .replace(/-----BEGIN[^-]*-----[\s\S]*?(?:-----END[^-]*-----|$)/g, "[redacted]")
+    .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|GOCSPX-[\w-]+|AIza[\w-]+|eyJ[\w-]{2,}(?:\.[\w.-]+)?|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
+    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]")
+    .slice(0, 300);
 }
 
 export function upstreamDetail(service: UpstreamService, message: unknown, httpStatus?: unknown): UpstreamDetail | undefined {

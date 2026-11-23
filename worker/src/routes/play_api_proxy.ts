@@ -396,7 +396,8 @@ export async function handleProxyPlayApi(c: AdminContext) {
         typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code)
           ? reply.error.code
           : "play_adapter_error";
-      const cause = reply?.error?.cause ?? null;
+      // Google's words travel once, re-redacted, as `upstream`; not inside the raw cause.
+      const { provider_message: _said, ...cause } = (reply?.error?.cause ?? {}) as Record<string, unknown>;
       let receiptId: string | null = null;
       if (isMutating) {
         receiptId = crypto.randomUUID();
@@ -418,7 +419,7 @@ export async function handleProxyPlayApi(c: AdminContext) {
             status: "failed-closed",
             failure_code: code,
             http_status: reply?.error?.status ?? 502,
-            ...(cause ? { cause } : {}),
+            ...(Object.keys(cause).length ? { cause } : {}),
           },
         };
         await c.env.DB.prepare(
@@ -464,7 +465,7 @@ export async function handleProxyPlayApi(c: AdminContext) {
         failure_code: code,
         message: reply?.error?.message ?? "Google Play API request failed",
         receipt_id: receiptId,
-        ...(cause ? { cause } : {}),
+        ...(Object.keys(cause).length ? { cause } : {}),
         ...withPlayUpstream(reply?.error),
       });
     }

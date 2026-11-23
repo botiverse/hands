@@ -268,7 +268,7 @@ type PlayReviewStatus = {
   }>;
   in_review: Array<{ hands_track: string; play_track: string; version_codes: number[]; release_name: string | null; source: string }>;
   production_version_code: number | null;
-  publishing_access: { failing_since: number; last_error_code: string } | null;
+  publishing_access: { failing_since: number; last_error_code: string; upstream?: Upstream } | null;
 };
 
 const shortState = (state: string) => state.replace(/^RELEASE_LIFECYCLE_STATE_/, "");
@@ -313,6 +313,8 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   }
   if (res.publishing_access) {
     lines.push(`Warning: Hands' Play status poll has been failing since ${new Date(res.publishing_access.failing_since).toISOString()} (${res.publishing_access.last_error_code}).`);
+    const said = upstreamLine(res.publishing_access.upstream);
+    if (said) lines.push(`  ${said}`);
   }
   return lines.join("\n");
 }

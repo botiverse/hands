@@ -3,8 +3,8 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError, type PlayProviderIdentifiers } from "./errors";
 
 // Documented error identifiers cross the provider boundary, plus Google's
-// message after redactProviderText (provider_message). Never metadata, URLs or
-// the request's credential.
+// message after redactProviderText (provider_message: URLs without query, no
+// credential shapes). Never metadata or the request's credential.
 const REASONS = new Set([
   "SERVICE_DISABLED", "API_DISABLED", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
   "IAM_PERMISSION_DENIED", "RATE_LIMIT_EXCEEDED", "QUOTA_EXCEEDED",
@@ -359,9 +359,25 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
  * names stay readable -- they are what makes the message useful.
  */
 export function redactProviderText(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 300)
-    .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w-]+\.[\w.-]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
-    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]");
+  // Redact BEFORE clipping, so a secret cut at the edge cannot survive as a short
+  // tail; percent-encoded text is decoded first so an encoded token is matched too.
+  let text = value.replace(/[\u0000-\u001f\u007f]+/g, " ");
+  try { text = decodeURIComponent(text); } catch { /* keep as is */ }
+  return text
+    // URLs: keep where they point, drop query and fragment (project numbers, keys).
+    .replace(/https?:\/\/[^\s?#"'<>]+[^\s"'<>]*/g, (url) => url.replace(/[?#].*$/, ""))
+    .replace(/-----BEGIN[^-]*-----[\s\S]*?(?:-----END[^-]*-----|$)/g, "[redacted]")
+    .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|GOCSPX-[\w-]+|AIza[\w-]+|eyJ[\w-]{2,}(?:\.[\w.-]+)?|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
+    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]")
+    .slice(0, 300);
+}
+
+/** provider_message / provider_http_status from a cause, for errors that rebuild it. */
+export function providerSaid(cause: { provider_message?: string; provider_http_status?: number } | undefined) {
+  return {
+    ...(cause?.provider_message ? { provider_message: cause.provider_message } : {}),
+    ...(cause?.provider_http_status !== undefined ? { provider_http_status: cause.provider_http_status } : {}),
+  };
 }
 
 /** Bound a provider string so one field cannot dominate or evade the log. */

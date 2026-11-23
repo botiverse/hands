@@ -1065,7 +1065,7 @@ describe("changesNotSentForReview and sendForReview", () => {
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
     const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
     expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_edit_state_unknown", cause: { stage: "commit_edit", provider_cause: "OTHER" } } });
-    expect(JSON.stringify(result)).not.toContain("schiefgelaufen");
+    expect(result).toMatchObject({ error: { cause: { provider_message: "Etwas ist schiefgelaufen." } } });
   });
 
   it("without the flag, the same in-review rejection keeps today's play_api_rejected error", async () => {

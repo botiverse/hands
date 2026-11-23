@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { exportPKCS8, generateKeyPair } from "jose";
 import { createAccessToken, parsePlayCredential } from "../src/auth";
 import { createPlayAdapterService } from "../src/index";
 const credential = { type: "authorized_user" as const, client_id: "client", client_secret: "private-client-secret", refresh_token: "private-refresh", client_email: "human@example.com" };
@@ -59,6 +60,24 @@ describe("Google OAuth refresh", () => {
     expect(said).toContain("invalid_grant / invalid_rapt: reauth related error (invalid_rapt)");
     for (const secret of ["private-refresh", "private-client-secret", "human@example.com"]) expect(said).not.toContain(secret);
     warn.mockRestore();
+  });
+  it("scrubs a service account's identity and assertion from Google's refusal text", async () => {
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    const sa = { type: "service_account" as const, client_email: "ci@proj.iam.gserviceaccount.com", private_key_id: "kid-123456",
+      private_key: await exportPKCS8(pair.privateKey) };
+    let sent = "";
+    const refused = await createAccessToken(sa, vi.fn(async (_url, init) => {
+      sent = new URLSearchParams(String(init.body)).get("assertion") ?? "";
+      return Response.json({ error: "invalid_grant", error_description: `Invalid JWT ${sent.slice(0, 20)} kid-123456 for ci` }, { status: 400 });
+    })).catch((e) => e);
+    expect(refused).toMatchObject({ code: "play_token_rejected", cause_detail: { stage: "oauth_token", provider_http_status: 400 } });
+    const said = refused.cause_detail.provider_message as string;
+    expect(said).toContain("invalid_grant: Invalid JWT");
+    expect(said).not.toContain("kid-123456");
+    expect(said).not.toContain(sent.slice(0, 20));
+    // Rate limits are retried, and still say what Google answered.
+    const limited = await createAccessToken(credential, vi.fn(async () => Response.json({ error: "rate_limit_exceeded", error_description: "Slow down" }, { status: 429 }))).catch((e) => e);
+    expect(limited).toMatchObject({ code: "play_token_unavailable", cause_detail: { provider_http_status: 429, provider_message: "rate_limit_exceeded: Slow down" } });
   });
   it("rejects malformed successful responses and missing credentials", async () => {
     await expect(createAccessToken(credential, vi.fn(async () => Response.json({ access_token: "access" })))).rejects.toMatchObject({ status: 502 });

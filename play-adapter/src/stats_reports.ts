@@ -113,7 +113,22 @@ async function storageErrorMessage(response: Response): Promise<string | undefin
     return undefined;
   }
   try {
-    const text = (await response.text()).slice(0, 8192);
+    const reader = response.body?.getReader();
+    if (!reader) return undefined;
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (size < 8192) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+    await reader.cancel().catch(() => undefined);
+    if (size > 8192) return undefined; // Google's error JSON is small; a large body is not one.
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const text = new TextDecoder().decode(bytes);
     const message = (JSON.parse(text) as { error?: { message?: unknown } })?.error?.message;
     return typeof message === "string" && message.trim() ? message.trim() : undefined;
   } catch {

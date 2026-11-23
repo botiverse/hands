@@ -3,6 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError } from "./errors";
 import {
   editStatePatternsTried,
+  providerSaid,
   PLAY_UPLOAD_FAILURE_CODES,
   playRejection,
   playRejectionReason,
@@ -286,6 +287,7 @@ export function releaseEditStateRejection(
         ...(error.cause_detail?.message_sha256
           ? { message_sha256: error.cause_detail.message_sha256, message_length: error.cause_detail.message_length }
           : {}),
+        ...providerSaid(error.cause_detail),
       });
   }
   return error;

@@ -1,5 +1,5 @@
 import { PlayAdapterError } from "./errors";
-import { editStatePatternsTried } from "./provider_errors";
+import { editStatePatternsTried, providerSaid } from "./provider_errors";
 import type { GooglePlayClient } from "./google_play";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -380,7 +380,7 @@ function editStateRejection(error: unknown, stage: "validate_edit" | "commit_edi
 function editStateUnknown(
   stage: "validate_edit" | "commit_edit",
   providerCause: string,
-  detail?: { message_sha256?: string; message_length?: number },
+  detail?: { message_sha256?: string; message_length?: number; provider_message?: string; provider_http_status?: number },
 ): PlayAdapterError {
   return new PlayAdapterError(502, "play_edit_state_unknown",
     `Google Play answered ${stage === "commit_edit" ? "the commit" : "validation"} in a way Hands does not recognise; the store listing is not reported as ${stage === "commit_edit" ? "committed" : "validated"}. Check the app in Play Console before pushing again.`,
@@ -389,6 +389,7 @@ function editStateUnknown(
       provider_cause: providerCause,
       tried: editStatePatternsTried(),
       ...(detail?.message_sha256 ? { message_sha256: detail.message_sha256, message_length: detail.message_length } : {}),
+      ...providerSaid(detail),
     });
 }
 

@@ -262,6 +262,19 @@ it("redacts credential-shaped text in the message it hands to the caller", async
   expect(error.cause_detail?.provider_http_status).toBe(403);
 });
 
+it("redacts before clipping, decodes percent-encoding, and drops URL queries and PEM blocks", async () => {
+  const { redactProviderText } = await import("../src/provider_errors");
+  // A 40-character key straddling the 300-character clip must not leave a tail.
+  const edge = redactProviderText(`${"a ".repeat(140)}x ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ tail`);
+  expect(edge).not.toMatch(/Z{3,}/);
+  expect(redactProviderText("token ya29%2Ea0AfBsecret and me%40proj.iam.gserviceaccount.com")).toBe("token [redacted] and [redacted]");
+  expect(redactProviderText("Enable it at https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview?project=123456 then retry"))
+    .toBe("Enable it at https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview then retry");
+  expect(redactProviderText("key -----BEGIN PRIVATE KEY-----\nMIIEv\nabc\n-----END PRIVATE KEY----- end")).toBe("key [redacted] end");
+  expect(redactProviderText("secret GOCSPX-short and AIzaSyShort here")).toBe("secret [redacted] and [redacted] here");
+  expect(redactProviderText("100% of quota")).toBe("100% of quota");
+});
+
 it("omits provider_identifiers when the body carries none", async () => {
   const { playRejection } = await import("../src/provider_errors");
   const error = playRejection(413, "<html>too large</html>", "upload_mapping");

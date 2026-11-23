@@ -20,7 +20,7 @@ import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_
 import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
 import { playStateLabel } from "../lib/play_notifications";
 import { loadTrackSnapshots, saveTrackSnapshot, type SnapshotRelease, type TrackSnapshot } from "../lib/play_track_snapshots";
-import { upstreamFromPlayCause, type UpstreamDetail } from "../lib/upstream_error";
+import { upstreamDetail, upstreamFromPlayCause, type UpstreamDetail } from "../lib/upstream_error";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type HandsTrack = HandsPlayTrack;
@@ -129,14 +129,21 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
   const production = tracks.find((t) => t.hands_track === "production");
   const publishedProduction = production?.releases.filter((r) => isPublished(r.state)).flatMap((r) => r.version_codes) ?? [];
   const access = await c.env.DB.prepare(
-    "SELECT failing_since, last_error_code FROM google_play_access_state WHERE app_id = ?1 AND access = 'publishing'",
-  ).bind(appId).first<{ failing_since: number; last_error_code: string }>().catch(() => null);
+    "SELECT failing_since, last_error_code, last_upstream_json FROM google_play_access_state WHERE app_id = ?1 AND access = 'publishing'",
+  ).bind(appId).first<{ failing_since: number; last_error_code: string; last_upstream_json: string | null }>().catch(() => null);
+  const accessUpstream = (() => {
+    try {
+      const u = access?.last_upstream_json ? JSON.parse(access.last_upstream_json) as Partial<UpstreamDetail> : null;
+      return u?.service ? upstreamDetail(u.service, u.message, u.http_status) : undefined;
+    } catch { return undefined; }
+  })();
   return c.json({
     package_name: packageName,
     read_at: Date.now(),
     tracks,
     in_review: inReview,
     production_version_code: publishedProduction.length ? Math.max(...publishedProduction) : null,
-    publishing_access: access ? { failing_since: access.failing_since, last_error_code: access.last_error_code } : null,
+    publishing_access: access ? { failing_since: access.failing_since, last_error_code: access.last_error_code,
+      ...(accessUpstream ? { upstream: accessUpstream } : {}) } : null,
   });
 }

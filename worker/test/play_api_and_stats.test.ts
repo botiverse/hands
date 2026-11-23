@@ -233,6 +233,26 @@ describe("POST /api/apps/:appId/distributions/play/api", () => {
   });
 });
 
+describe("Play API proxy failures", () => {
+  it("relays what Google said once, as upstream, not inside the raw cause", async () => {
+    const { request, sqlite } = await setupHarness({ role: "publisher", adapterOverrides: {
+      callPlayApi: async () => ({ ok: false, error: { status: 403, code: "play_api_rejected", message: "refused",
+        cause: { stage: "play_request", provider_http_status: 403, provider_message: "The caller does not have permission ya29.leak" } } }),
+    } as Partial<Adapter> });
+    const res = await request("/api/apps/app/distributions/play/api", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "PUT", path: "edits/e1/tracks/production", body: {}, note: "n" }),
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json() as any;
+    expect(body.error.upstream).toEqual({ service: "google_play", http_status: 403, message: "The caller does not have permission [redacted]" });
+    expect(body.error.cause).toEqual({ stage: "play_request", provider_http_status: 403 });
+    const receipt = sqlite.prepare("SELECT payload_json FROM play_store_listing_receipts").get() as { payload_json: string };
+    expect(receipt.payload_json).not.toContain("ya29.");
+    expect(receipt.payload_json).not.toContain("provider_message");
+  });
+});
+
 describe("GET /api/apps/:appId/stats", () => {
   it("aggregates direct device pings, downloads, and live Google Play track states", async () => {
     const { sqlite, request } = await setupHarness({ role: "viewer" });

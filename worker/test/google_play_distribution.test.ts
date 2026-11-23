@@ -3337,6 +3337,12 @@ describe("app-wide Play review status", () => {
     expect(body.tracks[0]).toMatchObject({ error_code: "play_quota_exceeded",
       upstream: { service: "google_play", http_status: 403, message: "Listing releases quota exceeded. [redacted]" } });
     expect(JSON.stringify(body)).not.toContain("ya29.");
+    // The poll's last failure keeps what Google said, shown with the access warning.
+    h.sqlite.prepare(`INSERT INTO google_play_access_state (app_id, access, failing_since, last_failure_at, last_error_code, last_upstream_json)
+      VALUES ('app', 'publishing', 1, 2, 'play_api_rejected', ?)`).run(JSON.stringify({ service: "google_play", http_status: 403, message: "The caller does not have permission" }));
+    const warned = await (await h.request("/api/apps/app/distributions/play/review-status")).json() as any;
+    expect(warned.publishing_access).toEqual({ failing_since: 1, last_error_code: "play_api_rejected",
+      upstream: { service: "google_play", http_status: 403, message: "The caller does not have permission" } });
   });
 
   it("adds the track's current contents from an edit read when the release-state read is refused", async () => {
