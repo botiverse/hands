@@ -33,6 +33,7 @@ import {
 import { useToast } from "../components/Toast";
 import { useLocale, useText } from "../lib/locale";
 import { buildAssetFilename, formatBuildAssetSize } from "../lib/buildAssetDisplay";
+import { desktopAssetRole, groupDesktopTargets, isDesktopBuild } from "../lib/desktopTargets";
 import { DetailColumn, DetailSection, ListPage } from "../components/ListPage";
 import { BuildContents } from "../components/BuildContents";
 import { timeAgo } from "./Operations";
@@ -645,52 +646,85 @@ function BuildAssetList({ appId, buildId }: { appId: string; buildId: string }) 
   if (assets.error) return <Text.Sans size="small" variant="warning">{t("Could not load files:", "无法加载文件：")} {errorMessage(assets.error)}</Text.Sans>;
   const list = assets.data?.assets ?? [];
   if (list.length === 0) return <Text.Sans size="small" variant="muted">{t("No assets registered.", "尚未登记文件。")}</Text.Sans>;
+
+  const download = async (a: BuildAsset) => {
+    if (downloading.has(a.id)) return;
+    setDownloading((s) => new Set(s).add(a.id));
+    try {
+      const { download_url } = await getBuildAssetDownloadUrl(appId, buildId, a.id);
+      window.location.href = download_url;
+    } catch (e) {
+      toast.show({
+        kind: "error",
+        title: t("Download failed", "下载失败"),
+        description: errorMessage(e),
+      });
+    } finally {
+      setDownloading((s) => {
+        const next = new Set(s);
+        next.delete(a.id);
+        return next;
+      });
+    }
+  };
+
+  const row = (a: BuildAsset, role?: { en: string; zh: string }) => {
+    const filename = buildAssetFilename(a, locale);
+    return (
+      <ListRow key={a.id} variant="plain" interactive={false}>
+        <ListRowBody>
+          <ListRowTitle className="whitespace-normal font-mono text-footnote [overflow-wrap:anywhere]">{filename}</ListRowTitle>
+          <ListRowSubtitle className="whitespace-normal font-mono">
+            {(role
+              ? [t(role.en, role.zh), formatBuildAssetSize(a.size_bytes, locale), a.filetype]
+              : [formatBuildAssetSize(a.size_bytes, locale), `${a.platform}${a.arch ? `/${a.arch}` : ""}`, a.filetype, a.artifact_kind]
+            ).join(" · ")}
+          </ListRowSubtitle>
+          <ListRowSubtitle className="font-mono text-foreground-hint">sha256 {a.file_hash.slice(0, 16)}…</ListRowSubtitle>
+        </ListRowBody>
+        <Button
+          variant="default"
+          aria-label={t(`Download ${filename}`, `下载 ${filename}`)}
+          loading={downloading.has(a.id)}
+          loadingLabel={t("Preparing…", "准备中…")}
+          disabled={downloading.has(a.id)}
+          onClick={() => void download(a)}
+        >
+          {t("Download", "下载")}
+        </Button>
+      </ListRow>
+    );
+  };
+
+  if (!isDesktopBuild(list)) return <ListRowGroup>{list.map((a) => row(a))}</ListRowGroup>;
+
+  // A desktop build carries every target of its version: show each target with
+  // whether it is live for updates (its manifest sealed) and its files.
+  const { targets, other } = groupDesktopTargets(list);
   return (
-    <ListRowGroup>
-      {list.map((a: BuildAsset) => {
-        const filename = buildAssetFilename(a, locale);
-        return (
-          <ListRow key={a.id} variant="plain" interactive={false}>
-            <ListRowBody>
-              <ListRowTitle className="whitespace-normal font-mono text-footnote [overflow-wrap:anywhere]">{filename}</ListRowTitle>
-              <ListRowSubtitle className="whitespace-normal font-mono">
-                {[formatBuildAssetSize(a.size_bytes, locale), `${a.platform}${a.arch ? `/${a.arch}` : ""}`, a.filetype, a.artifact_kind].join(" · ")}
-              </ListRowSubtitle>
-              <ListRowSubtitle className="font-mono text-foreground-hint">sha256 {a.file_hash.slice(0, 16)}…</ListRowSubtitle>
-            </ListRowBody>
-            <Button
-              variant="default"
-              aria-label={t(`Download ${filename}`, `下载 ${filename}`)}
-              loading={downloading.has(a.id)}
-              loadingLabel={t("Preparing…", "准备中…")}
-              disabled={downloading.has(a.id)}
-              onClick={async () => {
-                if (downloading.has(a.id)) return;
-                setDownloading((s) => new Set(s).add(a.id));
-                try {
-                  const { download_url } = await getBuildAssetDownloadUrl(appId, buildId, a.id);
-                  window.location.href = download_url;
-                } catch (e) {
-                  toast.show({
-                    kind: "error",
-                    title: t("Download failed", "下载失败"),
-                    description: errorMessage(e),
-                  });
-                } finally {
-                  setDownloading((s) => {
-                    const next = new Set(s);
-                    next.delete(a.id);
-                    return next;
-                  });
-                }
-              }}
-            >
-              {t("Download", "下载")}
-            </Button>
-          </ListRow>
-        );
-      })}
-    </ListRowGroup>
+    <div className="flex flex-col gap-4">
+      {targets.map((g) => (
+        <section key={g.target} className="flex flex-col gap-2" aria-label={t(g.label.en, g.label.zh)}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Text.Sans size="small" className="font-medium">{t(g.label.en, g.label.zh)}</Text.Sans>
+            <Text.Sans size="small" variant="muted" className="font-mono">{g.target}</Text.Sans>
+            {g.live
+              ? <Badge appearance="soft" variant="success">{t("Live for updates", "已开放更新")}</Badge>
+              : <Badge appearance="soft" variant="warning">{t("Not published: no manifest", "未发布：缺少更新清单")}</Badge>}
+            <Text.Sans size="small" variant="muted">{formatBuildAssetSize(g.sizeBytes, locale)}</Text.Sans>
+          </div>
+          <ListRowGroup>
+            {[g.manifest, g.archive, ...g.installers].filter((a): a is BuildAsset => !!a).map((a) => row(a, desktopAssetRole(a)))}
+          </ListRowGroup>
+        </section>
+      ))}
+      {other.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <Text.Sans size="small" className="font-medium">{t("Other files", "其他文件")}</Text.Sans>
+          <ListRowGroup>{other.map((a) => row(a))}</ListRowGroup>
+        </section>
+      )}
+    </div>
   );
 }
 
