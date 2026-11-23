@@ -19,7 +19,19 @@ export type LiveRole = "owner" | "admin" | "member" | "guest" | null;
 
 export type LiveRoleResult =
   | { ok: true; role: LiveRole }
-  | { ok: false; reason: string };
+  /** `revoked`: Raft says Hands has no installation (or a disabled one) on that server, which ends
+   *  access like a removed member (RFC 079 §5.6); otherwise the read failed and says nothing. */
+  | { ok: false; reason: string; revoked: boolean };
+
+/**
+ * Failures that mean Hands is no longer installed (or enabled) on the server, as
+ * opposed to a network error, a 5xx or a missing installation group: the
+ * installation lookup's not-found, and a 401 or 404 for the installation token
+ * or (after minting again) for the role read.
+ */
+export function isRevokedReason(reason: string): boolean {
+  return /^(lookup_404|installation-token_(401|404)|role_(401|404))$/.test(reason);
+}
 
 /** How the check acts: "off" skips it, "shadow" reads and logs without
  * refusing anyone, "on" refuses ended memberships. */
@@ -184,7 +196,7 @@ export async function readLiveRaftRole(
   const cached = roleCache.get(key);
   if (cached && cached.expiresAt > now) return { ok: true, role: cached.value };
   const failed = cacheGet(failureCache, serverId, now);
-  if (failed) return { ok: false, reason: failed };
+  if (failed) return { ok: false, reason: failed, revoked: isRevokedReason(failed) };
   try {
     const installation = await installationId(env, serverId, now);
     let role: LiveRole;
@@ -206,10 +218,10 @@ export async function readLiveRaftRole(
       // The installation is gone from that server: forget it so the next read looks again.
       if (error.status === 404) installationCache.delete(serverId);
       cacheSet(failureCache, serverId, error.reason, now + FAILURE_CACHE_MS);
-      return { ok: false, reason: error.reason };
+      return { ok: false, reason: error.reason, revoked: isRevokedReason(error.reason) };
     }
     cacheSet(failureCache, serverId, "role_read_failed", now + FAILURE_CACHE_MS);
-    return { ok: false, reason: "role_read_failed" };
+    return { ok: false, reason: "role_read_failed", revoked: false };
   }
 }
 

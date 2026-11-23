@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { type AdminAccount, type AdminEnv } from "./auth";
+import { liveRoleMode, readLiveRaftRole } from "../lib/raft_live_role";
 
 function deny(c: Context, status: 401 | 403, code: string) {
   return c.json({ error: status === 401 ? "unauthorized" : "forbidden", code }, status);
@@ -44,12 +45,44 @@ export const requireHandsAdmin: MiddlewareHandler<AdminEnv & { Bindings: Env }> 
     .split(",").map((value) => value.trim()).filter(Boolean);
   const role = (account.server_role || "").toLowerCase();
   const sessionServerAdmits = allowedServers.includes(account.server_id) && ["owner", "admin"].includes(role);
-  if (!sessionServerAdmits && !(await sameLoginAdmits(c.env, account, allowedServers))) {
-    return deny(c, 403, "HANDS_ADMIN_REQUIRED");
+  const storedAdmits = sessionServerAdmits || await sameLoginAdmits(c.env, account, allowedServers);
+
+  // RFC 079 §8.2: for a person, the admin role on an allowed server is read live
+  // from Raft (lib/raft_live_role.ts), not taken from what a login up to 14 days
+  // ago said. Agents keep their server-bound login's role.
+  const mode = liveRoleMode(c.env);
+  if (mode !== "off" && account.principal_type === "human") {
+    const live = await liveAdminAdmits(c.env, account, allowedServers);
+    if (live !== storedAdmits) {
+      console.warn(JSON.stringify({ event: "hands_admin_live_role_differs", mode, stored: storedAdmits, live }));
+    }
+    if (mode === "on") {
+      if (!live) return deny(c, 403, "HANDS_ADMIN_REQUIRED");
+      await next();
+      return;
+    }
   }
+  if (!storedAdmits) return deny(c, 403, "HANDS_ADMIN_REQUIRED");
 
   await next();
 };
+
+/** Whether the person is owner or admin, per Raft now, on an allowed server they have an account on. */
+async function liveAdminAdmits(env: Env, account: AdminAccount, allowedServers: string[]): Promise<boolean> {
+  if (allowedServers.length === 0) return false;
+  const placeholders = allowedServers.map((_, index) => `?${index + 4}`).join(", ");
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT server_id FROM raft_accounts
+     WHERE provider = ?1 AND provider_subject = ?2 AND principal_type = ?3 AND server_id IN (${placeholders})`,
+  ).bind(account.provider, account.provider_subject, account.principal_type, ...allowedServers)
+    .all<{ server_id: string }>();
+  for (const { server_id } of results) {
+    const read = await readLiveRaftRole(env, server_id, account.provider_subject);
+    // A failed read admits nobody: the console is not worth an unchecked grant.
+    if (read.ok && (read.role === "owner" || read.role === "admin")) return true;
+  }
+  return false;
+}
 
 // An account-mode Login with Raft (RFC 079) refreshes one account per server
 // in the same sign-in (signInRaftIdentities) and starts the session in one of

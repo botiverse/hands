@@ -548,5 +548,6 @@
   "from must be a date YYYY-MM-DD": "from 必须是 YYYY-MM-DD 格式的日期",
   "to must be a date YYYY-MM-DD": "to 必须是 YYYY-MM-DD 格式的日期",
   "to must not be before from": "to 不能早于 from",
-  "request body is larger than 8 MiB": "请求体超过 8 MiB"
+  "request body is larger than 8 MiB": "请求体超过 8 MiB",
+  "Hands is no longer installed on this Raft server, so its Hands organization is not available.": "这个 Raft 服务器已不再安装 Hands，所以它在 Hands 里的组织暂时不可用。"
 }

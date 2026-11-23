@@ -7,7 +7,8 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { raftLoginIdentities, signInRaftIdentities, type RaftUserinfo } from "../src/routes/auth";
 import { requireHandsAdmin } from "../src/middleware/hands_admin";
-import { accountForRequestedOrg, type AdminAccount, type AdminEnv } from "../src/middleware/auth";
+import { accountForRequestedOrg, liveMembershipRefusal, type AdminAccount, type AdminEnv } from "../src/middleware/auth";
+import { resetLiveRoleCache } from "../src/lib/raft_live_role";
 
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -157,6 +158,71 @@ describe("server isolation (RFC 079 §8.2 item 1)", () => {
     });
     ownerApp.get("/api/apps/:appId", requireAppRole("viewer"), (c) => c.json({ ok: true }));
     expect((await ownerApp.fetch(new Request("https://hands.test/api/apps/app-b"), { DB: db } as unknown as Env)).status).toBe(200);
+  });
+});
+
+describe("live Raft roles (RFC 079 §8.2 item 2)", () => {
+  const RAFT = { RAFT_API_ORIGIN: API, RAFT_CLIENT_ID: "hands", RAFT_CLIENT_SECRET: "secret", RAFT_LIVE_ROLE_MODE: "on" };
+  function raftRoles(roles: Record<string, string | null>) {
+    resetLiveRoleCache();
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/oauth/installations/lookup")) return Response.json({ installation_id: "inst" });
+      if (url.endsWith("/api/oauth/installation-token")) return Response.json({ access_token: "itok", expires_in: 600 });
+      const m = /\/members\/([^/]+)\/role$/.exec(url);
+      if (m) return Response.json({ role: roles[decodeURIComponent(m[1]!)] ?? null });
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+  }
+  async function gate(db: D1Database, account: AdminAccount) {
+    const app = new Hono<AdminEnv & { Bindings: Env }>();
+    app.get("*", async (c) => (await liveMembershipRefusal(c, account)) ?? c.json({ ok: true }));
+    return app.fetch(new Request("https://hands.test/x"), { DB: db, ...RAFT } as unknown as Env);
+  }
+  const orgRole = (sqlite: Database.Database, sub: string) =>
+    (sqlite.prepare(`SELECT om.org_role FROM org_members om JOIN raft_accounts a ON a.id = om.account_id
+      WHERE a.provider_subject = ? AND om.org_id = 'raft_srv-a'`).get(sub) as { org_role: string } | undefined)?.org_role;
+  const signIn = (db: D1Database, sub: string, role: string) => signInRaftIdentities(db, [{
+    identity: { ...accountUserinfo, sub, server_id: "srv-a", server_slug: "alpha", server_role: role }, serverName: "Alpha Co", accountMode: true }]);
+
+  it("a Raft admin demoted to member loses Hands admin in the organization; the last owner is kept", async () => {
+    const { sqlite, db } = openDb();
+    const owner = (await signIn(db, "owner-1", "owner"))!;
+    const admin = (await signIn(db, "admin-1", "admin"))!;
+    expect([orgRole(sqlite, "owner-1"), orgRole(sqlite, "admin-1")]).toEqual(["owner", "admin"]);
+    raftRoles({ "owner-1": "member", "admin-1": "member" });
+    expect((await gate(db, admin)).status).toBe(200);
+    expect(orgRole(sqlite, "admin-1")).toBe("member");
+    // The organization's only owner stays owner even though Raft says member.
+    expect((await gate(db, owner)).status).toBe(200);
+    expect(orgRole(sqlite, "owner-1")).toBe("owner");
+    // A member promoted to admin on Raft becomes an organization admin.
+    raftRoles({ "admin-1": "admin" });
+    await gate(db, { ...admin, org_role: "member" });
+    expect(orgRole(sqlite, "admin-1")).toBe("admin");
+  });
+
+  it("an invited membership keeps the role Hands gave it", async () => {
+    const { sqlite, db } = openDb();
+    const inviter = (await signIn(db, "owner-1", "owner"))!;
+    const admin = (await signIn(db, "admin-1", "admin"))!;
+    sqlite.prepare("UPDATE org_members SET invited_by = ? WHERE account_id = ?").run(inviter.id, admin.id);
+    raftRoles({ "admin-1": "member" });
+    await gate(db, admin);
+    expect(orgRole(sqlite, "admin-1")).toBe("admin");
+  });
+
+  it("the Hands admin console follows the live Raft role, not the stored one", async () => {
+    const { db } = openDb();
+    const admin = (await signIn(db, "admin-1", "admin"))!;
+    const app = new Hono<AdminEnv & { Bindings: Env }>();
+    app.use("*", async (c, next) => { c.set("authenticated_account", admin); c.set("admin_account", admin); await next(); });
+    app.get("/admin", requireHandsAdmin, (c) => c.json({ ok: true }));
+    const env = { DB: db, ...RAFT, HANDS_ADMIN_ALLOWED_SERVER_IDS: "srv-a" } as unknown as Env;
+    raftRoles({ "admin-1": "admin" });
+    expect((await app.fetch(new Request("https://hands.test/admin"), env)).status).toBe(200);
+    raftRoles({ "admin-1": "member" });
+    expect((await app.fetch(new Request("https://hands.test/admin"), env)).status).toBe(403);
   });
 });
 
