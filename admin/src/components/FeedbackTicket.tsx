@@ -948,9 +948,19 @@ function CommentsSection({
   const [comment, setComment] = useState("");
   const addComment = useMutation({
     mutationFn: (internal: boolean) => addFeedbackComment(appId, ticketId, comment.trim(), internal),
-    onSuccess: () => {
+    onSuccess: (res) => {
       setComment("");
       onAdded();
+      // A reply is stored either way; say when the reporter will not be told.
+      if (res.reporter_event === "no_reporter_channel") {
+        toast.show({ kind: "info", title: tx("The reporter is not notified", "提交者收不到通知"),
+          description: tx("This ticket was not filed from an app connected to Hands, so there is no way to notify the reporter. Reply to them where they reported it.",
+            "这条反馈不是从接入 Hands 的应用里提交的，没有办法通知提交者。请到对方反馈的地方回复。") });
+      } else if (res.reporter_event === "reporter_inactive") {
+        toast.show({ kind: "info", title: tx("The reporter is not notified", "提交者收不到通知"),
+          description: tx("The app this ticket came from is no longer connected for replies, so the reporter's app is not told about this reply.",
+            "这条反馈来自的应用已不再接收回复，提交者的应用不会收到这条回复的通知。") });
+      }
     },
     onError: (e) =>
       toast.show({ kind: "error", title: tx("Comment failed", "评论发送失败"), description: errorMessage(e) }),

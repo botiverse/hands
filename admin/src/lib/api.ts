@@ -2283,7 +2283,7 @@ export const addFeedbackComment = (
   body: string,
   internal: boolean,
 ) =>
-  request<{ id: string }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {
+  request<{ id: string; reporter_event?: "queued" | "internal" | "no_reporter_channel" | "reporter_inactive" }>(`/api/apps/${appId}/feedback/${ticketId}/comments`, {
     method: "POST",
     body: JSON.stringify({ body, internal }),
     admin: true,
