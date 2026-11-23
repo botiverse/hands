@@ -1,4 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
+import { jsonBodyLimit } from "./middleware/json_body_limit";
 import { handleGetAppQuota } from "./routes/upstream_quota";
 import { serveConsolePage } from "./lib/raft_host_sign_in";
 import { handleApplyStoreProduct } from "./routes/store_products";
@@ -658,6 +659,7 @@ const app = new OpenAPIHono<{ Bindings: Env }>({
 
 app.onError(reporterErrorHandler);
 app.use("*", httpResponseTelemetry);
+app.use("*", jsonBodyLimit);
 
 app.use("*", async (c, next) => {
   const redirectUrl = httpsRedirectUrl(c);
