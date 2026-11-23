@@ -134,12 +134,16 @@ function Launch {
     }
   } catch { Log ("could not start {0}: {1}" -f ${'$'}Launcher, ${'$'}_.Exception.Message) }
 }
+# The new version and everything it started: a child left running would keep files in the
+# install open, and Windows would then refuse to move the install back.
 function StopNew {
   if (${'$'}null -eq ${'$'}script:NewProc) { return }
   try { [void]${'$'}script:NewProc.CloseMainWindow() } catch {}
   if (-not ${'$'}script:NewProc.WaitForExit([int]${'$'}KillMillis)) {
-    Stop-Process -Id ${'$'}script:NewProc.Id -Force -ErrorAction SilentlyContinue
+    & taskkill.exe /PID ${'$'}script:NewProc.Id /T /F 2>&1 | Out-Null
     [void]${'$'}script:NewProc.WaitForExit(5000)
+  } else {
+    & taskkill.exe /PID ${'$'}script:NewProc.Id /T /F 2>&1 | Out-Null
   }
 }
 function Restore {

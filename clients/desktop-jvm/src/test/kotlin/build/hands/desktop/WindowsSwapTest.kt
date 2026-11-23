@@ -90,7 +90,8 @@ class WindowsSwapTest {
             if (runCatching { Files.readAllLines(log).map { it.trim() } }.getOrDefault(emptyList()).contains(line)) return
             Thread.sleep(100)
         }
-        error("no '$line' in launches log: ${runCatching { Files.readString(log) }.getOrDefault("<none>")}")
+        error("no '$line' in launches log: ${runCatching { Files.readString(log) }.getOrDefault("<none>")}\nhelper log:\n" +
+            runCatching { Files.readString(state.resolve("hands-swap.log")) }.getOrDefault("<none>"))
     }
 
     private fun prepareAndSwap(newApp: Tree, timeouts: SwapTimeouts, appPid: Long): HandsDesktopUpdater {
@@ -103,7 +104,7 @@ class WindowsSwapTest {
     }
 
     @Test fun `a new version that confirms its launch stays installed`() {
-        val newApp = app(">> \"$log\" echo new %*\r\n<nul set /p=2> \"${state.resolve("hands-launch-ok")}\"", "2")
+        val newApp = app(">> \"$log\" echo new %*\r\n<nul set /p=\"2\" > \"${state.resolve("hands-launch-ok")}\"", "2")
         val u = prepareAndSwap(newApp, SwapTimeouts(appExitMillis = 20_000, launchConfirmMillis = 20_000, tickMillis = 100), fakeAppProcess(1))
         assertEquals(InstallResult(InstallOutcome.INSTALLED, 2), awaitResult(u))
         awaitLog("new --updated \"a b\"")
@@ -129,7 +130,7 @@ class WindowsSwapTest {
     }
 
     @Test fun `an app that does not exit aborts the swap and leaves the install alone`() {
-        val newApp = app("<nul set /p=2> \"${state.resolve("hands-launch-ok")}\"", "2")
+        val newApp = app("<nul set /p=\"2\" > \"${state.resolve("hands-launch-ok")}\"", "2")
         val u = prepareAndSwap(newApp, SwapTimeouts(appExitMillis = 1_000, tickMillis = 100), fakeAppProcess(30))
         assertEquals(InstallResult(InstallOutcome.ABORTED, 2), awaitResult(u))
         assertEquals(snapshot(oldApp.writeTo(tmp.resolve("old/Fake"))), snapshot(install))
