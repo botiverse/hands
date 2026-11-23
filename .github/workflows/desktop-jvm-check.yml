@@ -1,0 +1,25 @@
+name: Desktop JVM updater check
+
+on:
+  pull_request:
+    paths:
+      - "clients/desktop-jvm/**"
+      - ".github/workflows/desktop-jvm-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Build and test (hermetic; the production smoke test stays off)
+        run: gradle -p clients/desktop-jvm build
