@@ -258,6 +258,10 @@ export async function liveMembershipRefusal(
              AND (SELECT COUNT(*) FROM org_members WHERE org_id = ?2 AND org_role = 'owner') <= 1)`,
       ).bind(orgRole, account.org_id, account.id).run().catch(() => null);
       if (changed?.meta?.changes === 1) account.org_role = orgRole;
+      else if (account.org_role === "owner" && orgRole !== "owner") {
+        // Kept as the organization's only owner although Raft no longer says owner or admin.
+        console.warn(JSON.stringify({ event: "raft_org_last_owner_kept", raft_role: result.role, org_id: account.org_id, account_id: account.id }));
+      }
     }
   }
   return null;
