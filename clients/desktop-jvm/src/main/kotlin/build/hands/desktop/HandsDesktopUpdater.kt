@@ -40,6 +40,8 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
     httpClient: HttpClient? = null,
     /** Concurrent file downloads and hashes. */
     public val parallelism: Int = 4,
+    /** A file download that receives no bytes for this long is abandoned and retried. */
+    public val downloadStallTimeout: Duration = Duration.ofSeconds(30),
 ) {
     public val installRoot: Path = installRoot.toAbsolutePath().normalize()
     public val stateDir: Path = stateDir.toAbsolutePath().normalize()
@@ -60,12 +62,13 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
         require(target in DesktopManifest.TARGETS) { "target must be one of ${DesktopManifest.TARGETS}" }
         require(currentVersionCode >= 0) { "currentVersionCode must be non-negative" }
         require(parallelism in 1..32) { "parallelism must be 1-32" }
+        require(!downloadStallTimeout.isNegative && !downloadStallTimeout.isZero) { "downloadStallTimeout must be positive" }
         require(!this.stateDir.startsWith(this.installRoot) && !this.installRoot.startsWith(this.stateDir)) {
             "stateDir and installRoot must not contain each other: the swap moves installRoot"
         }
     }
 
-    private val http get() = Http(client, retries, retryBackoffMillis)
+    private val http get() = Http(client, retries, retryBackoffMillis, downloadStallTimeout.toMillis())
     private val marker: Path get() = stateDir.resolve(MARKER)
     private val lock: Path get() = stateDir.resolve(LOCK)
     private val resultFile: Path get() = stateDir.resolve(RESULT)
