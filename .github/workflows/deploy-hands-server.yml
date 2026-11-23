@@ -504,14 +504,34 @@ jobs:
           # unrelated jq error and lose. The scope names are plain identifiers (checked
           # by the script), so they are passed to PRAGMA unquoted, its documented form.
           : > /tmp/fkc.err
+          # D1 answers 7429 ("overloaded ... within a 10 second window") when these
+          # scans come back to back, right after the migrations themselves ran. That is
+          # a rate limit, not a refusal of the PRAGMA, so it is waited out: each query
+          # is spaced from the last, and an overloaded answer is retried after 10, 20
+          # and 40 seconds before it counts as not runnable. Any other error is final.
           fkq() {
-            local out
-            if ! out=$(pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
-                --remote --json --config wrangler.hands.generated.jsonc --command "$1" 2>>/tmp/fkc.err) \
-              || ! jq -e '.[0].results | if type == "array" then . else error("results is not an array") end' <<<"${out}"; then
+            local out err attempt delay
+            for attempt in 1 2 3 4; do
+              sleep 2
+              err=$(mktemp)
+              if out=$(pnpm exec wrangler d1 execute "${HANDS_D1_DATABASE_NAME}" \
+                  --remote --json --config wrangler.hands.generated.jsonc --command "$1" 2>"$err") \
+                && jq -e '.[0].results | if type == "array" then . else error("results is not an array") end' <<<"${out}"; then
+                rm -f "$err"
+                return 0
+              fi
+              if (( attempt < 4 )) && { grep -qE '7429|overloaded' "$err" || grep -qE '7429|overloaded' <<<"${out}"; }; then
+                delay=$(( 10 * 2 ** (attempt - 1) ))
+                echo "  wait  $1: D1 overloaded (7429), retrying in ${delay}s" >&2
+                rm -f "$err"
+                sleep "$delay"
+                continue
+              fi
+              cat "$err" >> /tmp/fkc.err
+              rm -f "$err"
               printf '%s: %s\n' "$1" "$(head -c 300 <<<"${out}")" >> /tmp/fkc.err
               return 1
-            fi
+            done
           }
           if [[ "${MIGRATIONS_APPLIED}" != "true" ]]; then
             skip "foreign_key_check is empty" "no migration applied this run, so no row can have changed"
