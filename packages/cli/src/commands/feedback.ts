@@ -224,6 +224,8 @@ export function registerFeedbackCommands(program: Command): void {
         return;
       }
       console.log(`${opts.internal ? "Internal note" : "Commented"} on ${ticketId.slice(0, 8)}.`);
+      const note = reporterEventNote(res.reporter_event);
+      if (note) console.log(note);
     });
 
   feedback
@@ -260,4 +262,16 @@ export function registerFeedbackCommands(program: Command): void {
         console.log(`Saved ${bytes.length} bytes to ${outPath}`);
       },
     );
+}
+
+/** What happens to the reporter after a reply (the comment answer's `reporter_event`). */
+export function reporterEventNote(event: unknown): string | null {
+  if (event === "queued") return "The reporter's app is notified of this reply.";
+  if (event === "no_reporter_channel") {
+    return "Note: this ticket has no channel back to the reporter (it was not filed from an app with a reporter integration), so nobody is notified. Reply to them where they reported it.";
+  }
+  if (event === "reporter_inactive") {
+    return "Note: the reporter's integration is inactive, so their app is not notified of this reply.";
+  }
+  return null;
 }

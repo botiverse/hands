@@ -4302,13 +4302,15 @@ export async function handleAddFeedbackComment(c: AdminContext) {
       now,
     ),
   ];
-  if (
-    !isInternal
-    && ticket.org_id
-    && ticket.reporter_integration_id
-    && ticket.reporter_id
-    && ticket.reporter_active === 1
-  ) {
+  // Whether the reporter's app is told about this reply: only a ticket bound to
+  // an active reporter integration has a channel back to the reporter. Said in
+  // the answer so the person replying knows when nobody will be notified.
+  const reporterEvent: "queued" | "internal" | "no_reporter_channel" | "reporter_inactive" = isInternal
+    ? "internal"
+    : !ticket.org_id || !ticket.reporter_integration_id || !ticket.reporter_id
+      ? "no_reporter_channel"
+      : ticket.reporter_active === 1 ? "queued" : "reporter_inactive";
+  if (reporterEvent === "queued" && ticket.org_id && ticket.reporter_integration_id && ticket.reporter_id) {
     statements.push(...feedbackReporterEventStatements(c.env.DB, {
       eventType: "feedback:comment_created",
       orgId: ticket.org_id,
@@ -4327,7 +4329,7 @@ export async function handleAddFeedbackComment(c: AdminContext) {
     `hands_comment_preflight;dur=${timingDuration(startedAt, preflightAt)}`,
     `hands_comment_commit;dur=${timingDuration(preflightAt, committedAt)}`,
   ].join(", "));
-  return c.json({ id, ticket_id: ticketId, created_at: now }, 201);
+  return c.json({ id, ticket_id: ticketId, created_at: now, reporter_event: reporterEvent }, 201);
 }
 
 export function feedbackReporterEventStatements(

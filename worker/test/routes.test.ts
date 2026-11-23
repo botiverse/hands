@@ -1576,6 +1576,7 @@ describe("quiver route handlers — SQL smoke", () => {
       env as any,
     );
     expect(memberComment.status).toBe(201);
+    await expect(memberComment.clone().json()).resolves.toMatchObject({ reporter_event: "internal" });
     expect(memberComment.headers.get("server-timing")).toMatch(
       /^hands_comment_preflight;dur=\d+\.\d, hands_comment_commit;dur=\d+\.\d$/,
     );
@@ -15103,6 +15104,8 @@ describe("quiver public API v2 — scope resolution", () => {
       adminContext({ appId: "app-scope", ticketId }, { body: { body: "已复现，排查中" } }),
     );
     expect(commented.status).toBe(201);
+    // Filed without a reporter integration: nobody is told about the reply.
+    expect((await responseJson<any>(commented)).reporter_event).toBe("no_reporter_channel");
 
     const detail = await handleGetFeedback(adminContext({ appId: "app-scope", ticketId }));
     const detailBody = await responseJson<any>(detail);

@@ -929,7 +929,14 @@ describe("feedback material delta production routes", () => {
     expect(first.status).toBe(201);
     const ticketId = (await first.json() as { id: string }).id;
     expect((await submit()).status).toBe(200);
-    expect((await handleAddFeedbackComment(jsonContext(env, { appId: "app-a", ticketId }, { body: "reply" }))).status).toBe(201);
+    const replied = await handleAddFeedbackComment(jsonContext(env, { appId: "app-a", ticketId }, { body: "reply" }));
+    expect(replied.status).toBe(201);
+    expect(((await replied.json()) as { reporter_event: string }).reporter_event).toBe("queued");
+    // An archived reporter integration: the reply is stored, nobody is notified, and the answer says so.
+    sqlite.prepare("UPDATE app_reporter_integrations SET archived_at = 1").run();
+    const unheard = await handleAddFeedbackComment(jsonContext(env, { appId: "app-a", ticketId }, { body: "unheard" }));
+    expect(((await unheard.json()) as { reporter_event: string }).reporter_event).toBe("reporter_inactive");
+    sqlite.prepare("UPDATE app_reporter_integrations SET archived_at = NULL").run();
     expect((await handleUpdateFeedback(jsonContext(env, { appId: "app-a", ticketId }, { status: "resolved" }))).status).toBe(200);
     await Promise.allSettled(pending);
     expect(sqlite.prepare("SELECT event_type, webhook_id FROM webhook_deliveries ORDER BY event_type").all()).toEqual([

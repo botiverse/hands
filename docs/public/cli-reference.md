@@ -1350,6 +1350,14 @@ hands feedback update raft-android <ticket-id> --status closed --closure-reason 
 hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
 
+A comment the reporter can see reaches their app only when the ticket was filed
+from an app connected to Hands (a reporter integration). The comment answer
+says what happened in `reporter_event`: `queued` (the reporter's app is
+notified), `no_reporter_channel` (nobody can be notified; reply where they
+reported it), `reporter_inactive` (the integration was removed) or `internal`.
+`hands feedback comment` and the console both say so when the reporter is not
+notified.
+
 `hands feedback list` shows in-app (SDK) tickets only. TestFlight crashes and
 screenshot feedback come from Apple and use `hands testflight crashes` and
 `hands testflight feedback`; an empty list prints these commands.

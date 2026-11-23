@@ -900,6 +900,8 @@ hands feedback update raft-android <ticket-id> --status closed --closure-reason 
 hands feedback update raft-android <ticket-id> --closure-reason duplicate --duplicate-of <canonical-ticket-id>
 ```
 
+提交者能看到的评论，只有在工单是从接入 Hands 的应用（有 reporter integration）里提交时，才会通知到提交者的应用。评论接口的返回里 `reporter_event` 说明结果：`queued`（提交者的应用会收到通知）、`no_reporter_channel`（没有办法通知，请到对方反馈的地方回复）、`reporter_inactive`（集成已被移除）或 `internal`。提交者收不到通知时，`hands feedback comment` 和控制台都会提示。
+
 `hands feedback list` 只显示应用内（SDK）工单。TestFlight 崩溃和截图反馈来自 Apple，请使用 `hands testflight crashes` 和 `hands testflight feedback`；列表为空时会打印这些命令。
 
 `--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce` 或 `duplicate`），重复工单还需提供 `--duplicate-of <ticket-id>`；`no_longer_needed` 只出现在提交者自己关闭的工单上。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
