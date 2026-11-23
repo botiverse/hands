@@ -255,6 +255,8 @@ import {
   handleDeclareBuildAssetUpload,
   handleGetBuildAssetUpload,
 } from "./routes/build_asset_uploads";
+import { handleDesktopFilesComplete, handleDesktopFilesMissing } from "./routes/desktop_files";
+import { handlePublicDesktopFile, handlePublicDesktopUpdate } from "./routes/desktop_public";
 import {
   handleListOperations,
   handleGetOperation,
@@ -877,6 +879,9 @@ bindApp("get", "/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck)
 bindApp("get", "/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
 bindApp("get", "/public/v2/apps/:slug/installer/:channel/:target", handleCliInstallerMetadata);
 bindApp("get", "/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
+// Desktop apps: per-target update check and content-addressed bundle files.
+bindApp("get", "/public/v2/apps/:slug/desktop/update", handlePublicDesktopUpdate);
+bindApp("get", "/public/v2/apps/:slug/files/:sha256", handlePublicDesktopFile);
 bindApp("get", "/public/r2/:key", handlePublicR2Download);
 // Internal signed R2 fetch (delta-patch container pulls source APKs by key).
 bindApp("get", "/internal/r2/:key", handleInternalR2Download);
@@ -1155,6 +1160,10 @@ bindAdmin("post", "/api/apps/:appId/builds/:buildId/assets/:assetId/upload/abort
   requireAppRole("publisher"),
   handleAbortBuildAssetUpload,
 );
+// Desktop bundle files, content-addressed per app. Same authorization as the
+// build-asset direct uploads above: publisher role or a deploy token.
+bindAdmin("post", "/api/apps/:appId/desktop/files/missing", requireAppRole("publisher"), handleDesktopFilesMissing);
+bindAdmin("post", "/api/apps/:appId/desktop/files/complete", requireAppRole("publisher"), handleDesktopFilesComplete);
 bindAdmin("post", "/api/apps/:appId/builds/:buildId/hosted-migration",
   requireAppRole("publisher"),
   handleBeginHostedBuildMigration,

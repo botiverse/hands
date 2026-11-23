@@ -4,6 +4,17 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { recomputeInventoryAfterMappingUpload } from "./build_inventory";
+import {
+  DESKTOP_MANIFEST_FILETYPE,
+  DESKTOP_MANIFEST_KIND,
+  DESKTOP_MANIFEST_MAX_BYTES,
+  DIGEST_CHUNK,
+  DesktopManifestError,
+  chunked,
+  findUnstoredDesktopFiles,
+  isDesktopTarget,
+  parseDesktopManifest,
+} from "../lib/desktop_manifest";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -305,6 +316,17 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
     input = normalizedInput(await c.req.json() as DirectBuildAssetUploadInput);
   } catch (error) {
     return c.json({ error: (error as Error).message, code: "INVALID_ASSET_UPLOAD" }, 400);
+  }
+  if (input.artifactKind === DESKTOP_MANIFEST_KIND) {
+    // The manifest is parsed in the Worker when it is sealed, so refuse an
+    // unparseable declaration now rather than after the bytes are uploaded.
+    const target = `${input.platform}-${input.arch ?? ""}`;
+    if (input.filetype !== DESKTOP_MANIFEST_FILETYPE || input.sizeBytes > DESKTOP_MANIFEST_MAX_BYTES || !isDesktopTarget(target)) {
+      return c.json({
+        error: `a ${DESKTOP_MANIFEST_KIND} asset must be filetype '${DESKTOP_MANIFEST_FILETYPE}', at most ${DESKTOP_MANIFEST_MAX_BYTES} bytes, and declared for a desktop target (platform darwin|win32|linux, arch arm64|x64)`,
+        code: "INVALID_ASSET_UPLOAD",
+      }, 400);
+    }
   }
   const digest = requestDigest(input);
   const replay = await findUploadByReplay(c.env.DB, appId, buildId, input.idempotencyKey);
@@ -682,11 +704,11 @@ async function finalizeFailedVerificationCleanup(
   ]);
 }
 
-class UploadStreamSizeError extends Error {
+export class UploadStreamSizeError extends Error {
   constructor(readonly actualBytes: number, readonly expectedBytes: number) { super("streamed asset size differs from declaration"); }
 }
 
-function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
+export function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
   let seen = 0;
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -700,7 +722,7 @@ function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number
   }));
 }
 
-async function hashBody(body: ReadableStream<Uint8Array>) {
+export async function hashBody(body: ReadableStream<Uint8Array>) {
   const hasher = sha256.create();
   let size = 0;
   const reader = body.getReader();
@@ -714,7 +736,7 @@ async function hashBody(body: ReadableStream<Uint8Array>) {
   return { sha256: bytesToHex(hasher.digest()), size };
 }
 
-function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number, signal: AbortSignal) {
+export function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number, signal: AbortSignal) {
   if (typeof FixedLengthStream === "undefined") return { readable: body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal }), pump: Promise.resolve() };
   const fixed = new FixedLengthStream(length);
   return { readable: fixed.readable, pump: body.pipeTo(fixed.writable, { signal }) };
@@ -986,6 +1008,22 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({ error: "verified asset readback failed", code: "ASSET_UPLOAD_SEAL_FAILED", reason: "sealed_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: finalHead?.size ?? null } }, 422);
   }
 
+  // A desktop manifest is only sealed once every file it names is already stored
+  // for this app, verified, with the declared size. Fail closed otherwise: a
+  // published manifest that points at a missing file is an update nobody can apply.
+  let manifestDigests: string[] = [];
+  if (row.artifact_kind === DESKTOP_MANIFEST_KIND) {
+    const checked = await checkDesktopManifest(c.env, appId, finalKey, `${row.platform}-${row.arch ?? ""}`);
+    if (!checked.ok) {
+      if (checked.retryable) return retryStorageVerification(c, row, leaseId, "desktop_manifest_read");
+      if (!await failVerification(c, row, leaseId, checked.reason)) {
+        return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
+      }
+      return c.json(checked.body, 422);
+    }
+    manifestDigests = checked.digests;
+  }
+
   const readyAt = Date.now();
   const readyCleanupReceipt = `ready:${leaseId}`;
   // Record the timings on success too. Without this, a verification that took 14
@@ -1056,6 +1094,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
       JSON.stringify({ build_id: buildId, asset_id: assetId, attempt: row.attempt, lease_generation: generation, size_bytes: actual.size, sha256: actual.sha256 }),
       readyAt, assetId, row.attempt, finalKey,
     ),
+    // Index the manifest's files in the same transaction that makes it ready, so
+    // the public file route serves exactly the files of validated manifests.
+    ...chunked(manifestDigests, DIGEST_CHUNK).map((chunk) => c.env.DB.prepare(
+      `INSERT OR IGNORE INTO desktop_manifest_files (app_id, build_asset_id, sha256)
+       SELECT ?1, ?2, j.value FROM json_each(?3) j
+        WHERE EXISTS (
+          SELECT 1 FROM build_asset_ingest_attempt i
+           WHERE i.asset_id = ?2 AND i.attempt = ?4
+             AND i.state = 'ready' AND i.committed_final_key = ?5
+        )`,
+    ).bind(appId, assetId, JSON.stringify(chunk), row.attempt, finalKey)),
   ]);
   if ((readyResults[2]?.meta?.changes ?? 0) !== 1) {
     await c.env.APK_BUCKET.delete(finalKey).catch(() => {});
@@ -1074,6 +1123,51 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     }
   }
   return c.json({ asset_id: assetId, state: "ready", r2_key: finalKey, file_hash: actual.sha256, size_bytes: actual.size, replayed: false });
+}
+
+type DesktopManifestCheck =
+  | { ok: true; digests: string[] }
+  | { ok: false; retryable: true }
+  | { ok: false; retryable: false; reason: string; body: Record<string, unknown> };
+
+async function checkDesktopManifest(env: Env, appId: string, key: string, target: string): Promise<DesktopManifestCheck> {
+  let bytes: Uint8Array;
+  try {
+    const object = await env.APK_BUCKET.get(key);
+    if (!object?.body) return { ok: false, retryable: true };
+    bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+  } catch {
+    return { ok: false, retryable: true };
+  }
+  let manifest;
+  try {
+    manifest = parseDesktopManifest(bytes, target);
+  } catch (error) {
+    if (!(error instanceof DesktopManifestError)) throw error;
+    return {
+      ok: false, retryable: false, reason: "desktop_manifest_invalid",
+      body: { error: `desktop manifest is invalid: ${error.message}`, code: "DESKTOP_MANIFEST_INVALID", retryable: false },
+    };
+  }
+  let unstored;
+  try {
+    unstored = await findUnstoredDesktopFiles(env.DB, appId, manifest.digests);
+  } catch {
+    return { ok: false, retryable: true };
+  }
+  if (unstored.length > 0) {
+    return {
+      ok: false, retryable: false, reason: "desktop_manifest_files_missing",
+      body: {
+        error: `desktop manifest references ${unstored.length} file(s) that are not stored for this app with the declared size; upload them through /desktop/files first`,
+        code: "DESKTOP_MANIFEST_FILES_MISSING",
+        retryable: false,
+        missing_count: unstored.length,
+        missing: unstored.slice(0, 50),
+      },
+    };
+  }
+  return { ok: true, digests: [...manifest.digests.keys()] };
 }
 
 export async function handleAbortBuildAssetUpload(c: AdminContext) {

@@ -80,11 +80,11 @@ const DEFAULT_PRODUCT_TYPES: Array<{
     artifact_note_zh: "从 OHOS CI 上传 AppGallery 和侧载文件。",
   },
   {
-    name: "electron-installer",
-    display_name: "Electron desktop app",
-    display_name_zh: "Electron 桌面应用",
-    description: "Cross-platform desktop (darwin / linux / win32)",
-    description_zh: "跨平台桌面应用（darwin / linux / win32）",
+    name: "desktop-installer",
+    display_name: "Desktop app",
+    display_name_zh: "桌面应用",
+    description: "Cross-platform desktop installer, Electron or native (darwin / linux / win32)",
+    description_zh: "跨平台桌面安装包，Electron 或原生（darwin / linux / win32）",
     artifact_note:
       "Platform-specific installers such as dmg, exe, AppImage, and arch variants are chosen at artifact upload time.",
     artifact_note_zh: "上传文件时选择对应平台的安装包，例如 dmg、exe、AppImage 及不同架构的版本。",
@@ -101,7 +101,7 @@ const DEFAULT_PRODUCT_TYPES: Array<{
   },
 ];
 
-const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node", "web"] as const;
+const APP_PLATFORMS = ["android", "ios", "ohos", "electron", "node", "web", "desktop"] as const;
 type AppPlatform = (typeof APP_PLATFORMS)[number];
 
 // Every channel offers the same product types: the ones we support. The three
@@ -110,7 +110,7 @@ type AppPlatform = (typeof APP_PLATFORMS)[number];
 // not shipped).
 const DEFAULT_CHANNEL_PRODUCT_TYPES = [
   "android-apk",
-  "electron-installer",
+  "desktop-installer",
   "ios-ipa",
   "ohos-app",
   "cli-binary",
@@ -169,6 +169,7 @@ export function AppCreationWizard({
   const finalSlug = slug.trim() || slugify(name);
   const platformLabels: Record<AppPlatform, string> = {
     android: "Android", ios: "iOS", ohos: "HarmonyOS", electron: "Electron", node: "Node.js", web: t("Web", "网页"),
+    desktop: t("Desktop (any runtime)", "桌面应用（任意运行时）"),
   };
 
   const create = useMutation({
