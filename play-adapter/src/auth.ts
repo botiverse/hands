@@ -1,5 +1,6 @@
 import { importPKCS8, SignJWT } from "jose";
-import { PlayAdapterError } from "./errors";
+import { PlayAdapterError, type PlayErrorCause } from "./errors";
+import { redactProviderText } from "./provider_errors";
 import type { ServiceAccountCredential, GooglePlayCredential } from "./types";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -85,11 +86,12 @@ export async function createAccessToken(
     }
     if (!response.ok) {
       logTokenRejection(reports ? "reports" : "publishing", response.status, body);
+      const cause = tokenRefusalCause(response.status, body, [credential.refresh_token, credential.client_secret, credential.client_id, credential.client_email]);
       if (!authorizationRefused(response.status, body)) {
         // Rate limits, Google outages and unexplained refusals: retried by the next call, alerted only if they last.
-        throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`);
+        throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`, cause);
       }
-      throw new PlayAdapterError(403, "play_token_rejected", "Google OAuth authorization needs reconnection");
+      throw new PlayAdapterError(403, "play_token_rejected", "Google OAuth authorization needs reconnection", cause);
     }
     if (typeof body?.access_token !== "string" || !body.access_token || body.token_type !== "Bearer") {
       throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
@@ -134,10 +136,11 @@ export async function createAccessToken(
   }
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok) {
+    const cause = tokenRefusalCause(response.status, body, [credential.client_email, credential.private_key_id, assertion]);
     if (!authorizationRefused(response.status, body)) {
-      throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`);
+      throw new PlayAdapterError(502, "play_token_unavailable", `Google OAuth token request failed with ${response.status}`, cause);
     }
-    throw new PlayAdapterError(403, "play_token_rejected", `Google OAuth token request failed with ${response.status}`);
+    throw new PlayAdapterError(403, "play_token_rejected", `Google OAuth token request failed with ${response.status}`, cause);
   }
   if (!body || typeof body.access_token !== "string" || !body.access_token) {
     throw new PlayAdapterError(502, "play_token_malformed", "Google OAuth returned a malformed token response");
@@ -146,6 +149,32 @@ export async function createAccessToken(
 }
 
 const OAUTH_CODE = /^[a-z_]{1,40}$/;
+
+/**
+ * What Google's token endpoint said, for the caller: its fixed OAuth codes as
+ * identifiers and its description (e.g. "reauth related error (invalid_rapt)",
+ * "Token has been expired or revoked.") through the same redaction as any other
+ * provider message, after removing every value of the credential that was sent.
+ * Never the token, the client secret or the request.
+ */
+function tokenRefusalCause(status: number, body: Record<string, unknown> | null, secrets: Array<string | undefined>): PlayErrorCause {
+  const code = (value: unknown) => (typeof value === "string" && OAUTH_CODE.test(value) ? value : undefined);
+  const error = code(body?.error);
+  const subtype = code(body?.error_subtype);
+  // Any value of the request's own credential is removed outright, whatever its shape.
+  let description = typeof body?.error_description === "string" ? body.error_description.trim() : "";
+  for (const secret of secrets) {
+    if (secret && secret.length >= 4) description = description.split(secret).join("[redacted]");
+  }
+  const said = [error, subtype && subtype !== error ? subtype : undefined].filter(Boolean).join(" / ");
+  const message = [said, description].filter(Boolean).join(": ");
+  return {
+    stage: "oauth_token",
+    provider_http_status: status,
+    ...(error ? { provider_identifiers: { errors_reasons: [error, ...(subtype ? [subtype] : [])] } } : {}),
+    ...(message ? { provider_message: redactProviderText(message) } : {}),
+  };
+}
 
 /**
  * Why Google refused to refresh a user grant, as its fixed OAuth codes only

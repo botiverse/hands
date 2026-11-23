@@ -48,6 +48,7 @@ import { recordCliEvent } from "./lib/logging.js";
 import { createRequire } from "node:module";
 import { startUpdateCheck } from "./lib/update_check.js";
 import { DeviceIdError } from "@botiverse/hands-node";
+import { upstreamFromBody, upstreamLine } from "./lib/upstream.js";
 
 // Single source of truth for the CLI version: read it from package.json at runtime so
 // `--version` can never drift from the published package version. (Previously the string
@@ -190,6 +191,9 @@ program.parseAsync(process.argv).then(() => updateCheck.finish(), async (err) =>
     const info =
       body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     console.error(`Error: ${err.message}`);
+    // What Google / Apple / Huawei said, when the failure came from them.
+    const said = upstreamLine(upstreamFromBody(body));
+    if (said) console.error(said);
     if (typeof info.code === "string") console.error(`Code: ${info.code}`);
     if (typeof info.next_action === "string") {
       console.error(`Next action: ${info.next_action}`);

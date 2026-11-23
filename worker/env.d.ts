@@ -33,6 +33,9 @@ type GooglePlayAdapterResult<T> =
         message_length?: number;
         /** play_edit_state_unknown: the adapter's own descriptions of the patterns it tried. */
         tried?: string[];
+        /** What Google said, redacted by the adapter (see lib/upstream_error.ts). */
+        provider_message?: string;
+        provider_http_status?: number;
       } };
     };
 

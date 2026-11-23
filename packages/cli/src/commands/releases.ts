@@ -8,6 +8,7 @@ import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { resolveAuthToken } from "../lib/config.js";
 import { readEnv } from "../lib/env.js";
 import { jsonRequested } from "../lib/json_output.js";
+import { upstreamLine } from "../lib/upstream.js";
 
 interface AppRow {
   id: string;
@@ -152,14 +153,15 @@ function playWriteError(action: string, err: unknown, appIdOrSlug: string, relea
       const code = typeof info.code === "string" ? info.code : "unknown_error";
       const message = typeof info.message === "string" ? info.message : err.message;
       const receiptId = typeof info.receipt_id === "string" ? info.receipt_id : null;
-      const receiptNote = receiptId ? ` (failed-closed receipt ${receiptId})` : "";
+      const said = upstreamLine(info.upstream);
+      const receiptNote = `${receiptId ? ` (failed-closed receipt ${receiptId})` : ""}${said ? `\n${said}` : ""}`;
       if (code === "gate_failed") {
         const gate = typeof info.gate === "string" ? info.gate : "unknown";
         return new Error(`Play ${action} blocked by gate ${gate}: ${message}${receiptNote}`);
       }
       if (code === "edit_conflict" || code === "version_conflict") {
         return new Error(
-          `Play ${action} failed (${code}): ${message}. Not retried automatically; resolve the conflict and re-run the command.`,
+          `Play ${action} failed (${code}): ${message}. Not retried automatically; resolve the conflict and re-run the command.${said ? `\n${said}` : ""}`,
         );
       }
       const failureCode = typeof info.failure_code === "string" ? `/${info.failure_code}` : "";

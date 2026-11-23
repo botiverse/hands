@@ -672,6 +672,12 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
     if (code) lines.push(`${event === "google_play:access_failed" ? "Error" : "Was"}: ${code}`);
     const since = safePreview(payload.failing_since, 40);
     if (since) lines.push(`Failing since: ${since}`);
+    if (event === "google_play:access_failed") {
+      const upstream = payload.upstream && typeof payload.upstream === "object" ? payload.upstream as Payload : null;
+      const said = upstream ? safePreview(upstream.message, 300) : null;
+      const who = safePreview(payload.upstream_label, 40) ?? "Google";
+      if (said) lines.push(`${who} said: ${said}`);
+    }
     const help = safePreview(payload.hint, 400);
     if (help && event === "google_play:access_failed") lines.push(`What to do: ${help}`);
     const settings = safeValue(payload.settings_url);

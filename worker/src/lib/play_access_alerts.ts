@@ -7,6 +7,7 @@
  */
 
 import { playDeliveryStatement } from "./play_notifications";
+import { UPSTREAM_SERVICE_LABELS, upstreamDetail, type UpstreamDetail } from "./upstream_error";
 
 export type PlayAccess = "statistics" | "publishing";
 
@@ -51,12 +52,16 @@ export function playSettingsUrl(dashboardOrigin: string | null, appId: string): 
 
 export async function recordPlayAccessFailure(
   db: D1Database, appId: string, access: PlayAccess, code: string, now = Date.now(), dashboardOrigin: string | null = null,
+  upstream?: UpstreamDetail,
 ) {
+  // Re-checked here: this value is persisted and sent to channels.
+  const said = upstream ? upstreamDetail(upstream.service, upstream.message, upstream.http_status) : undefined;
   await db.prepare(
-    `INSERT INTO google_play_access_state (app_id, access, failing_since, last_failure_at, last_error_code)
-     VALUES (?1, ?2, ?3, ?3, ?4)
-     ON CONFLICT (app_id, access) DO UPDATE SET last_failure_at = excluded.last_failure_at, last_error_code = excluded.last_error_code`,
-  ).bind(appId, access, now, code).run();
+    `INSERT INTO google_play_access_state (app_id, access, failing_since, last_failure_at, last_error_code, last_upstream_json)
+     VALUES (?1, ?2, ?3, ?3, ?4, ?5)
+     ON CONFLICT (app_id, access) DO UPDATE SET last_failure_at = excluded.last_failure_at, last_error_code = excluded.last_error_code,
+       last_upstream_json = excluded.last_upstream_json`,
+  ).bind(appId, access, now, code, said ? JSON.stringify(said) : null).run();
   const state = await readState(db, appId, access);
   if (!state || state.alerted_at !== null) return;
   if (!AUTHORIZATION_CODES.has(code) && now - state.failing_since < PLAY_ACCESS_ALERT_AFTER_MS) return;
@@ -73,6 +78,7 @@ export async function recordPlayAccessFailure(
         error_code: code,
         failing_since: new Date(state.failing_since).toISOString(),
         hint: hint(access, code),
+        ...(said ? { upstream: said, upstream_label: UPSTREAM_SERVICE_LABELS[said.service] } : {}),
         settings_url: playSettingsUrl(dashboardOrigin, appId),
         occurred_at: new Date(now).toISOString(),
       }, now,

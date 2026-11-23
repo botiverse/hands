@@ -415,7 +415,8 @@ describe("Google Play statistics ingest", () => {
     const body = await res.json() as any;
     expect(body).toMatchObject({ code: "PLAY_STATS_LIST_FAILED", provider_code: "play_reports_bucket_forbidden" });
     expect(body.hint).toMatch(/pubsite_prod_rev_<digits>/);
-    expect(JSON.stringify(body)).not.toContain("secret provider text");
+    // Google's own words come back, under `upstream`, for the person who ran it.
+    expect(body.upstream).toEqual({ service: "google_cloud_storage", http_status: 403, message: "secret provider text" });
     // Every listing went to the configured bucket only.
     for (const c of h.g.calls.filter((c) => new URL(c.url).origin === "https://storage.googleapis.com")) {
       expect(new URL(c.url).pathname).toBe(`/storage/v1/b/${BUCKET}/o`);

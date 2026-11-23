@@ -17,6 +17,10 @@ import {
   type GooglePlayBinding,
   withOpenTestingTrack,
 } from "../lib/google_play_bindings";
+import { withPlayUpstream, type UpstreamDetail } from "../lib/upstream_error";
+
+const upstreamOf = (value: object): { upstream?: UpstreamDetail } =>
+  "upstream" in value && value.upstream ? { upstream: value.upstream as UpstreamDetail } : {};
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -55,6 +59,7 @@ export async function verifyBinding(c: AdminContext, binding: Pick<GooglePlayBin
         status: 502 as const,
         code: result?.error?.code ?? "PLAY_BINDING_REJECTED",
         error: result?.error?.message ?? "Google Play rejected the binding",
+        ...withPlayUpstream(result?.error),
       };
     }
     if (
@@ -102,7 +107,7 @@ export async function handleListGooglePlayTracks(c: AdminContext) {
   if (!c.env.PLAY_RELEASE_SERVICE) return c.json({ code: "PLAY_SERVICE_UNAVAILABLE", error: "Google Play service is unavailable" }, 503);
   try {
     const result = await c.env.PLAY_RELEASE_SERVICE.listTracks({ credential, packageName });
-    if (!result?.ok) return c.json({ code: result?.error?.code ?? "PLAY_TRACKS_UNAVAILABLE", error: result?.error?.message ?? "Google Play tracks could not be read" }, 502);
+    if (!result?.ok) return c.json({ code: result?.error?.code ?? "PLAY_TRACKS_UNAVAILABLE", error: result?.error?.message ?? "Google Play tracks could not be read", ...withPlayUpstream(result?.error) }, 502);
     if (result.value.package_name !== packageName || result.value.client_email !== credential.client_email
       || !Array.isArray(result.value.tracks) || result.value.tracks.some((t) => typeof t !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(t))) {
       return c.json({ code: "PLAY_BINDING_MISMATCH", error: "Google Play returned an invalid app or track identity" }, 502);
@@ -157,7 +162,7 @@ export async function handlePutGooglePlayBinding(c: AdminContext) {
     }, 500);
   }
   const verified = await verifyBinding(c, { credential, package_name: packageName, tracks: withOpenTestingTrack(tracks) });
-  if (!verified.ok) return c.json({ error: verified.error, code: verified.code }, verified.status);
+  if (!verified.ok) return c.json({ error: verified.error, code: verified.code, ...upstreamOf(verified) }, verified.status);
   const role = await ensureAppRole(c, appId, "admin");
   if (!role.ok) return role.response;
   let meta;
@@ -209,7 +214,7 @@ export async function handleVerifyGooglePlayBinding(c: AdminContext) {
     action: "google_play.binding.verify",
     payload: { package_name: binding.package_name, ok: verified.ok },
   });
-  if (!verified.ok) return c.json({ error: verified.error, code: verified.code }, verified.status);
+  if (!verified.ok) return c.json({ error: verified.error, code: verified.code, ...upstreamOf(verified) }, verified.status);
   return c.json({ ok: true, verification: verified.result });
 }
 
@@ -244,7 +249,7 @@ export async function handleEnableGooglePlayBinding(c: AdminContext) {
       action: "google_play.binding.enable",
       payload: { package_name: binding.package_name, ok: false, code: verified.code },
     });
-    return c.json({ error: verified.error, code: verified.code }, verified.status);
+    return c.json({ error: verified.error, code: verified.code, ...upstreamOf(verified) }, verified.status);
   }
   await setGooglePlayBindingEnabled(c.env.DB, appId, true, currentActor(c));
   await insertAuditLog(c.env.DB, c, { app_id: appId, action: "google_play.binding.enable", payload: { package_name: binding.package_name, ok: true } });

@@ -2,8 +2,9 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { PlayAdapterError, type PlayProviderIdentifiers } from "./errors";
 
-// Only documented error identifiers cross the provider boundary. Never expose
-// Google's arbitrary message, metadata, URLs or the request's credential.
+// Documented error identifiers cross the provider boundary, plus Google's
+// message after redactProviderText (provider_message). Never metadata, URLs or
+// the request's credential.
 const REASONS = new Set([
   "SERVICE_DISABLED", "API_DISABLED", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
   "IAM_PERMISSION_DENIED", "RATE_LIMIT_EXCEEDED", "QUOTA_EXCEEDED",
@@ -70,9 +71,12 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
   // Google answers an exhausted per-method quota (e.g. tracks.releases.list:
   // "Listing releases quota exceeded.") with 403 PERMISSION_DENIED. It is not an
   // access problem and retrying only burns more quota, so it gets its own code.
+  const said = typeof envelopeMessage === "string" && envelopeMessage.trim()
+    ? { provider_message: redactProviderText(envelopeMessage.trim()) } : {};
   if (isQuotaRejection(status, error, envelopeMessage)) {
     return new PlayAdapterError(503, "play_quota_exceeded",
-      `Google Play quota for this request is used up; try again later (stage=${stage})`, { stage });
+      `Google Play quota for this request is used up; try again later (stage=${stage})`,
+      { stage, provider_http_status: status, ...said });
   }
   return new PlayAdapterError(
     [400, 401, 403, 404].includes(status) ? 403 : 502,
@@ -85,6 +89,8 @@ export function playRejection(status: number, body: unknown, stage: string): Pla
         ? { message_sha256: bytesToHex(sha256(new TextEncoder().encode(envelopeMessage))), message_length: envelopeMessage.length }
         : {}),
       ...(identifiers ? { provider_identifiers: identifiers } : {}),
+      provider_http_status: status,
+      ...said,
     },
   );
 }
@@ -288,7 +294,7 @@ export function editStatePatternsTried(): string[] {
  * is the one field that could echo a credential back. It is logged (Google often
  * sends no reasons at all, e.g. a bare 403 PERMISSION_DENIED, and then the prose is
  * the only diagnostic), but clipped and with anything credential-shaped replaced.
- * It never travels in the error returned to callers or written to receipts.
+ * The same redacted text also travels to callers as cause.provider_message.
  */
 function providerDiagnostic(body: unknown): Record<string, unknown> | null {
   const envelope = body && typeof body === "object" ? (body as Record<string, unknown>).error : null;
@@ -347,13 +353,13 @@ function providerDiagnostic(body: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Google's error prose for the log: at most 300 characters, with OAuth tokens,
+ * Google's error prose for the log and for provider_message: at most 300 characters, with OAuth tokens,
  * JWTs, refresh tokens, email addresses and any long opaque run (32+ token
  * characters) replaced by [redacted]. Package names, version codes and track
  * names stay readable -- they are what makes the message useful.
  */
 export function redactProviderText(value: string): string {
-  return value.slice(0, 300)
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 300)
     .replace(/ya29\.[\w.-]+|1\/\/[\w.-]+|eyJ[\w-]+\.[\w.-]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[redacted]")
     .replace(/[A-Za-z0-9_\-+/=]{32,}/g, "[redacted]");
 }

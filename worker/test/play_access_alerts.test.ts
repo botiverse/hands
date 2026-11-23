@@ -91,4 +91,25 @@ describe("Google Play access alerts", () => {
     const foreign = formatRaftNotificationMessage({ event: "google_play:access_failed", payload: { settings_url: "https://evil.example/phish" } });
     expect(foreign).not.toContain("evil.example");
   });
+
+  it("carries what Google said on the alert, redacted, and keeps the latest", async () => {
+    const { db, deliveries, sqlite } = setup();
+    const t0 = 1_800_000_000_000;
+    await recordPlayAccessFailure(db, "app", "statistics", "play_reports_token_rejected", t0, null,
+      { service: "google_oauth", http_status: 400, message: "invalid_grant / invalid_rapt: reauth related error (invalid_rapt) for owner@example.com" });
+    const row = sqlite.prepare("SELECT last_upstream_json FROM google_play_access_state WHERE app_id = 'app'").get() as any;
+    expect(JSON.parse(row.last_upstream_json)).toEqual({ service: "google_oauth", http_status: 400,
+      message: "invalid_grant / invalid_rapt: reauth related error (invalid_rapt) for [redacted]" });
+    const payload = JSON.parse(deliveries()[0].payload_json).payload;
+    expect(payload).toMatchObject({ upstream_label: "Google sign-in", upstream: { service: "google_oauth", http_status: 400 } });
+    expect(JSON.stringify(payload)).not.toContain("owner@example.com");
+    const text = formatRaftNotificationMessage({ event: "google_play:access_failed", payload: { ...payload, app: { name: "Raft Android" } } });
+    // Markdown-escaped like every other provider-derived field on the card.
+    expect(text).toContain("Google sign-in said: invalid\\_grant / invalid\\_rapt: reauth related error \\(invalid\\_rapt\\) for \\[redacted\\]");
+    // A later failure without upstream text clears the stale one.
+    await recordPlayAccessFailure(db, "app", "statistics", "play_reports_unavailable", t0 + 60_000);
+    expect((sqlite.prepare("SELECT last_upstream_json FROM google_play_access_state WHERE app_id = 'app'").get() as any).last_upstream_json).toBeNull();
+    // No upstream, no line.
+    expect(formatRaftNotificationMessage({ event: "google_play:access_failed", payload: { access_label: "release status" } })).not.toContain(" said:");
+  });
 });

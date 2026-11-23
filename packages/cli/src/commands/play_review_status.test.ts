@@ -68,4 +68,19 @@ describe("play review-status cached answers", () => {
     expect(out).toContain("internal (internal): as Play answered at 2026-11-22T15:15:00.000Z");
     expect(out).toContain("production (production): Play's hourly read quota is used up (play_quota_exceeded); as Play answered at 2026-11-22T15:15:00.000Z");
   });
+
+  it("prints what Google said under a failed track", () => {
+    const out = formatPlayReviewStatus({
+      package_name: "build.raft.app", read_at: Date.UTC(2026, 10, 23, 3),
+      tracks: [
+        { hands_track: "production", play_track: "production", source: "cached", read_at: Date.UTC(2026, 10, 23, 2, 15), error_code: "play_quota_exceeded",
+          upstream: { service: "google_play", http_status: 403, message: "Listing releases quota exceeded." }, releases: [] },
+        { hands_track: "closed", play_track: "closed", source: "unavailable", error_code: "play_api_rejected",
+          upstream: { service: "google_play", http_status: 403, message: "The caller does not have permission" }, releases: [] },
+      ],
+      in_review: [], production_version_code: null, publishing_access: null,
+    });
+    expect(out).toContain("production (production): Play's hourly read quota is used up (play_quota_exceeded); as Play answered at 2026-11-23T02:15:00.000Z\n  Google Play said (HTTP 403): Listing releases quota exceeded.");
+    expect(out).toContain("closed (closed): Play refused the read (play_api_rejected) and Hands has no stored state\n  Google Play said (HTTP 403): The caller does not have permission");
+  });
 });

@@ -1732,7 +1732,8 @@ describe("Play promotion route", () => {
           status: 502,
           code: "play_api_rejected",
           message: "Google Play API request failed with 403 (stage=upload_symbols; reason=insufficientPermissions)",
-          cause: { stage: "update_track", provider_cause: "MULTIPLE_COMPLETED" },
+          cause: { stage: "update_track", provider_cause: "MULTIPLE_COMPLETED", provider_http_status: 400,
+            provider_message: "Track has more than one completed release. Contact owner@example.com" },
         } };
       },
     });
@@ -1756,6 +1757,11 @@ describe("Play promotion route", () => {
     // `details` is serialised into failure_reason, which is what a reader actually gets.
     const details = JSON.parse(failedResult.failure_reason.replace(/^play_api_error: /, ""));
     expect(details).toMatchObject({ cause: { stage: "update_track", provider_cause: "MULTIPLE_COMPLETED" } });
+    // What Google said reaches the caller and the receipt, re-redacted at this boundary.
+    const said = { service: "google_play", http_status: 400, message: "Track has more than one completed release. Contact [redacted]" };
+    expect((body.error as any).upstream).toEqual(said);
+    expect(details.cause.upstream).toEqual(said);
+    expect(failed.payload_json).not.toContain("owner@example.com");
   });
 
   it.each([{ max: 0, candidate: 11300001 }, { max: 41, candidate: 11300001 }])("accepts candidate $candidate above track max $max without consecutive numbering", async ({ max, candidate }) => {
@@ -3319,6 +3325,18 @@ describe("app-wide Play review status", () => {
     const refused = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
     expect(refused.tracks[0]).toMatchObject({ source: "cached", error_code: "play_quota_exceeded" });
     expect(refused.tracks[0].read_at).toBe(live.tracks[0].read_at);
+  });
+
+  it("says what Google answered when a live read fails", async () => {
+    const h = await readyRelease();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => ({ ok: false, error: {
+      status: 503, code: "play_quota_exceeded", message: "quota",
+      cause: { stage: "list_release_states", provider_http_status: 403, provider_message: "Listing releases quota exceeded. ya29.leaked-token" },
+    } }) } as any);
+    const body = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
+    expect(body.tracks[0]).toMatchObject({ error_code: "play_quota_exceeded",
+      upstream: { service: "google_play", http_status: 403, message: "Listing releases quota exceeded. [redacted]" } });
+    expect(JSON.stringify(body)).not.toContain("ya29.");
   });
 
   it("adds the track's current contents from an edit read when the release-state read is refused", async () => {

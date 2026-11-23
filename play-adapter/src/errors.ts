@@ -1,9 +1,11 @@
 /**
  * Structured, provider-safe detail for a rejection.
  *
- * Every value is a constant this adapter chose: the stage it failed at and a
- * classified cause. Google's own text never travels in here, so it is safe to
- * return to the caller and to persist in a receipt. That matters because the
+ * Every value is a constant this adapter chose (the stage it failed at and a
+ * classified cause), except provider_message: Google's own words, clipped and
+ * with anything credential-shaped redacted, so whoever hits an error Hands does
+ * not recognise can read what Google said. It is safe to return to the caller
+ * and to persist in a receipt. That matters because the
  * operator log is not reachable by everyone who can read a receipt -- putting the
  * cause here means whoever triggers the next failure can read it themselves,
  * instead of needing someone with observability scope to go and fetch a log line.
@@ -21,6 +23,14 @@ export type PlayErrorCause = {
    */
   message_sha256?: string;
   message_length?: number;
+  /**
+   * What Google said, for the person who hit the error: at most 300 characters,
+   * with anything credential-shaped (OAuth tokens, JWTs, refresh tokens, email
+   * addresses, long opaque runs) replaced by [redacted]. See redactProviderText.
+   */
+  provider_message?: string;
+  /** The HTTP status Google answered with (the adapter's own status is normalised). */
+  provider_http_status?: number;
   /**
    * Google's structured identifiers from the rejection body, kept per source field
    * so a reader can tell WHERE Google named the condition. Every value is

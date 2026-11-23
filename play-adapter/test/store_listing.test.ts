@@ -220,7 +220,7 @@ describe("Google Play store listing RPC", () => {
     const google = googleFixture([EN], { commitError: { status: 400, message: "Changes are currently in review and ERROR_IF_IN_REVIEW was set" } });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
     expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
-    expect(JSON.stringify(result)).not.toContain("currently in review");
+    expect(JSON.stringify(result)).toContain("currently in review");
     expect(realEdits(google.edits)).toEqual([]);
     expect(google.live().get("en-US")).toEqual(EN);
   });

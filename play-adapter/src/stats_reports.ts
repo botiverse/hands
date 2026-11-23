@@ -16,7 +16,8 @@
  *
  * Errors carry adapter-chosen codes only; Google's bodies never leave here.
  */
-import { PlayAdapterError } from "./errors";
+import { PlayAdapterError, type PlayErrorCause } from "./errors";
+import { redactProviderText } from "./provider_errors";
 
 export const STATS_BUCKET = /^pubsite_prod_(rev_)?[0-9]{1,30}$/;
 export const STATS_REPORTS = ["installs", "store_performance"] as const;
@@ -87,17 +88,37 @@ export function statsObjectInput(packageName: string, name: unknown, generation:
   return { name, report, generation };
 }
 
-function bucketError(status: number): PlayAdapterError {
+function bucketError(status: number, providerMessage?: string): PlayAdapterError {
+  const cause: PlayErrorCause = {
+    stage: "reports_storage",
+    provider_http_status: status,
+    ...(providerMessage ? { provider_message: redactProviderText(providerMessage) } : {}),
+  };
   if (status === 401 || status === 403) {
-    return new PlayAdapterError(403, "play_reports_bucket_forbidden", "Google Cloud Storage denied access to the Play reports bucket");
+    return new PlayAdapterError(403, "play_reports_bucket_forbidden", "Google Cloud Storage denied access to the Play reports bucket", cause);
   }
   if (status === 404) {
-    return new PlayAdapterError(403, "play_reports_bucket_not_found", "The Play reports bucket or object was not found");
+    return new PlayAdapterError(403, "play_reports_bucket_not_found", "The Play reports bucket or object was not found", cause);
   }
   if (status >= 300 && status < 400) {
-    return new PlayAdapterError(502, "play_reports_redirect_refused", "Google Cloud Storage answered with a redirect, which is not followed");
+    return new PlayAdapterError(502, "play_reports_redirect_refused", "Google Cloud Storage answered with a redirect, which is not followed", cause);
   }
-  return new PlayAdapterError(502, "play_reports_unavailable", `Google Cloud Storage request failed with ${status}`);
+  return new PlayAdapterError(502, "play_reports_unavailable", `Google Cloud Storage request failed with ${status}`, cause);
+}
+
+/** Google Cloud Storage's JSON error message, read from at most 8 KiB of the body. */
+async function storageErrorMessage(response: Response): Promise<string | undefined> {
+  if (!(response.headers.get("content-type") ?? "").includes("json")) {
+    await response.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  try {
+    const text = (await response.text()).slice(0, 8192);
+    const message = (JSON.parse(text) as { error?: { message?: unknown } })?.error?.message;
+    return typeof message === "string" && message.trim() ? message.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class PlayStatsStorageClient {
@@ -124,8 +145,10 @@ export class PlayStatsStorageClient {
       throw new PlayAdapterError(502, "play_reports_unavailable", "Google Cloud Storage request failed");
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw bucketError(response.status);
+      const providerMessage = response.status >= 300 && response.status < 400
+        ? (await response.body?.cancel().catch(() => undefined), undefined)
+        : await storageErrorMessage(response);
+      throw bucketError(response.status, providerMessage);
     }
     return response;
   }

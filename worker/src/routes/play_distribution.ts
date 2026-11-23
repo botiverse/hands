@@ -9,6 +9,7 @@ import { currentDeployToken } from "../lib/permissions";
 import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { playFailureNotificationFields } from "../lib/play_failure_notification";
+import { upstreamFromPlayCause, withPlayUpstream, type UpstreamDetail } from "../lib/upstream_error";
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -81,6 +82,8 @@ interface GateFailure {
   receipt_id?: string | null;
   /** Specific, stable reason within the gate (e.g. play_release_notes_too_long). */
   failure_code?: string;
+  /** What Google said, when the failure came from Google (lib/upstream_error.ts). */
+  upstream?: UpstreamDetail;
 }
 
 function fail(c: Context<any>, status: 400 | 403 | 409 | 502, failure: GateFailure) {
@@ -713,8 +716,8 @@ async function withPlayEditLock(c: AdminContext, operationId: string, run: () =>
 }
 
 /**
- * Narrow an adapter-supplied cause to the two fields a receipt may carry, each
- * validated as an identifier. Anything else is dropped rather than persisted: a
+ * Narrow an adapter-supplied cause to the fields a receipt may carry: identifiers,
+ * each validated, plus Google's redacted message as `upstream`. Anything else is dropped rather than persisted: a
  * receipt is durable and outward-facing, so an unexpected key must not survive just
  * because some upstream chose to include it.
  */
@@ -725,7 +728,7 @@ type ReceiptProviderIdentifiers = {
   details?: Array<{ type?: string; reason?: string; domain?: string }>;
 };
 
-function receiptCause(value: unknown): { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers } | null {
+function receiptCause(value: unknown): { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers; upstream?: UpstreamDetail } | null {
   if (!value || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
   const pick = (field: string): string | null => {
@@ -742,13 +745,16 @@ function receiptCause(value: unknown): { stage: string; provider_cause: string; 
     ? source.cause_source
     : undefined;
   const provider_identifiers = receiptProviderIdentifiers(source.provider_identifiers);
-  if (!stage && !provider_cause && !provider_identifiers) return null;
+  // Google's own words, re-redacted at this durable boundary (lib/upstream_error.ts).
+  const upstream = upstreamFromPlayCause(source);
+  if (!stage && !provider_cause && !provider_identifiers && !upstream) return null;
   return {
     ...(stage ? { stage } : {}),
     ...(provider_cause ? { provider_cause } : {}),
     ...(cause_source ? { cause_source } : {}),
     ...(provider_identifiers ? { provider_identifiers } : {}),
-  } as { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers };
+    ...(upstream ? { upstream } : {}),
+  } as { stage: string; provider_cause: string; cause_source?: "structured" | "message"; provider_identifiers?: ReceiptProviderIdentifiers; upstream?: UpstreamDetail };
 }
 
 /** A google.rpc @type URL, e.g. type.googleapis.com/google.rpc.ErrorInfo. */
@@ -1149,20 +1155,20 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
       // Edit-state codes come only from the changes_not_sent_for_review path (the
       // adapter classifies its commit); a default promote keeps today's mapping.
       if (errorCode === "play_edit_in_review" || errorCode === "play_changes_not_sent_for_review" || errorCode === "play_review_not_managed") {
-        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId, ...withPlayUpstream(uploadResponse.error) });
       }
       if (errorCode === "play_edit_state_unknown") {
-        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId, ...withPlayUpstream(uploadResponse.error) });
       }
       if (errorCode === "play_bundle_not_on_play" || errorCode === "aab_integrity_mismatch") {
-        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId, ...withPlayUpstream(uploadResponse.error) });
       }
       // Upload-protocol failures of a deobfuscation file (resumable session, 413, an
       // interrupted or incomplete transfer) keep their specific code for the caller.
       if (PLAY_UPLOAD_FAILURE_CODES.has(errorCode)) {
-        return fail(c, 502, { code: "play_api_error", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId });
+        return fail(c, 502, { code: "play_api_error", gate: null, failure_code: errorCode, message: uploadResponse.error.message, receipt_id: receiptId, ...withPlayUpstream(uploadResponse.error) });
       }
-      return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId });
+      return fail(c, 502, { code: "play_api_error", gate: null, message: uploadResponse?.error?.message ?? "Play edit failed", receipt_id: receiptId, ...withPlayUpstream(uploadResponse.error) });
     }
     const readback: PlayReadback = uploadResponse.value;
     if (priorMapping && (uploadResponse.value.confirmed_existing_bundle !== true || uploadResponse.value.bundle_uploaded !== false)) {
@@ -1387,15 +1393,15 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
       }, options);
       const message = reply?.error?.message ?? "Play send-for-review failed";
       if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
-        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
       if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
-        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
       if (code === "play_release_not_on_track" || code === "play_bundle_not_on_play" || code === "aab_integrity_mismatch") {
-        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
-      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId });
+      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
     }
     const value = reply.value;
     const readback: PlayReadback = {
@@ -1596,15 +1602,15 @@ export async function handleUpdatePlayReleaseNotes(c: AdminContext) {
       }, options);
       const message = reply?.error?.message ?? "Play release notes update failed";
       if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
-        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 409, { code: "edit_in_review", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
       if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
-        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 502, { code: "edit_state_unknown", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
       if (code === "play_release_not_on_track" || code === "play_bundle_not_on_play" || code === "aab_integrity_mismatch") {
-        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId });
+        return fail(c, 409, { code: "gate_failed", gate: "immutable_binding", failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
       }
-      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId });
+      return fail(c, 502, { code: "play_api_error", gate: null, failure_code: code, message, receipt_id: receiptId, ...withPlayUpstream(reply?.error) });
     }
     const value = reply.value;
     const readback: PlayReadback = {
@@ -1930,7 +1936,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
       if (!reply?.ok) {
         const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
         const [status, failure] = uploadSymbolsAdapterFailure(code, reply?.error?.message ?? "Play deobfuscation dry run failed", null);
-        return fail(c, status, failure);
+        return fail(c, status, { ...failure, ...withPlayUpstream(reply?.error) });
       }
       if (reply.value.version_on_play !== true || reply.value.version_code !== artifact.version_code || reply.value.package_name !== artifact.package_name) {
         return fail(c, 502, { code: "play_api_error", gate: "immutable_binding", message: "Play dry-run answer did not match package/versionCode" });
@@ -1990,7 +1996,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
       const cause = receiptCause(reply?.error?.cause);
       const receiptId = await failed("play_api_error", { code, ...(cause ? { cause } : {}) });
       const [status, failure] = uploadSymbolsAdapterFailure(code, reply?.error?.message ?? "Play deobfuscation upload failed", receiptId);
-      return fail(c, status, failure);
+      return fail(c, status, { ...failure, ...withPlayUpstream(reply?.error) });
     }
     const value = reply.value;
     const acknowledged = selected.every(({ type, asset }) => (value.files ?? []).some((file) =>

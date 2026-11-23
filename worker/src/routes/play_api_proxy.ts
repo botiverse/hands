@@ -23,6 +23,8 @@ import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/aut
 import { ensureAppRole, insertAuditLog } from "../lib/permissions";
 import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration, type GooglePlayBinding } from "../lib/google_play_bindings";
+import { withPlayUpstream } from "../lib/upstream_error";
+
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -463,6 +465,7 @@ export async function handleProxyPlayApi(c: AdminContext) {
         message: reply?.error?.message ?? "Google Play API request failed",
         receipt_id: receiptId,
         ...(cause ? { cause } : {}),
+        ...withPlayUpstream(reply?.error),
       });
     }
 

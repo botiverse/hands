@@ -45,6 +45,13 @@ Use a new version code for each new build. Your first upload can use your app's 
 | The account is connected but still needs configuration | Expand Google Play, choose the package name and tracks, and save. |
 | A previously working connection stops working | Try Test connection. Reconnect if Google access has expired or been revoked. |
 
+When Google refuses a request, Hands shows what Google said under its own
+explanation: in the CLI as a line like `Google Play said (HTTP 403): ...`, in API
+errors as `upstream: { service, http_status, message }`, in receipts, and on
+"Google Play access failing" alerts. The text is Google's, clipped to 300
+characters, with anything that looks like a token, key or email address
+replaced by `[redacted]`.
+
 ## Disable or disconnect
 
 **Disable** stops publishing through this connection while keeping its settings for later use.

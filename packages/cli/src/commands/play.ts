@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
+import { upstreamLine, type Upstream } from "../lib/upstream.js";
 
 type AppRow = { id: string; slug: string };
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
@@ -261,6 +262,7 @@ type PlayReviewStatus = {
     source: "live" | "cached" | "stored" | "unavailable";
     read_at?: number;
     error_code?: string;
+    upstream?: Upstream;
     releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
     track_contents?: Array<{ release_name: string | null; status: string; version_codes: number[]; user_fraction?: number }>;
   }>;
@@ -285,11 +287,15 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
     const head = `${track.hands_track} (${track.play_track})`;
     if (track.source === "unavailable") {
       lines.push(`${head}: ${readFailure(track.error_code)} and Hands has no stored state`);
+      const said = upstreamLine(track.upstream);
+      if (said) lines.push(`  ${said}`);
     } else {
       const readAt = track.read_at ? new Date(track.read_at).toISOString() : "";
       lines.push(track.source === "live" ? `${head}: live`
         : track.source === "cached" ? `${head}: ${track.error_code ? `${readFailure(track.error_code)}; ` : ""}as Play answered at ${readAt}`
         : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
+      const saidHere = upstreamLine(track.upstream);
+      if (saidHere) lines.push(`  ${saidHere}`);
       if (track.releases.length === 0) lines.push("  (no releases)");
       for (const r of track.releases) {
         const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";

@@ -45,6 +45,8 @@ order: 7
 | 账号已连接，但仍待配置 | 展开 Google Play，选择包名和轨道并保存。 |
 | 原先正常的连接失效 | 先测试连接；Google 授权过期或被撤销时，重新连接。 |
 
+Google 拒绝请求时，Hands 会在自己的说明下面显示 Google 的原话：命令行里是一行 `Google Play said (HTTP 403): ...`，接口错误里是 `upstream: { service, http_status, message }`，回执和「Google Play access failing」告警里也有。内容是 Google 的原文，截到 300 字，像令牌、密钥、邮箱地址的部分替换为 `[redacted]`。
+
 ## 停用或解除绑定
 
 **停用**会停止通过此连接发布，并保留设置供以后使用。

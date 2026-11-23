@@ -22,6 +22,7 @@ import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/aut
 import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration, type GooglePlayBinding } from "../lib/google_play_bindings";
 import { isPlayListingLanguage, suggestPlayListingLanguage } from "../lib/play_listing_languages";
+import { upstreamFromPlayCause, withPlayUpstream, type UpstreamDetail } from "../lib/upstream_error";
 import {
   PLAY_AI_GENERATED_STATES,
   PLAY_IMAGE_MAX_BYTES,
@@ -368,6 +369,8 @@ type NarrowCause = {
   message_sha256?: string;
   message_length?: number;
   tried?: string[];
+  /** What Google said, redacted (lib/upstream_error.ts). */
+  upstream?: UpstreamDetail;
 };
 
 /**
@@ -390,6 +393,8 @@ function narrowCause(value: unknown): NarrowCause | null {
     const tried = source.tried.filter((item): item is string => typeof item === "string" && item.length <= 200 && /^(?:structured|text):/.test(item)).slice(0, 16);
     if (tried.length) out.tried = tried;
   }
+  const upstream = upstreamFromPlayCause(source);
+  if (upstream) out.upstream = upstream;
   return Object.keys(out).length ? out : null;
 }
 
@@ -479,7 +484,7 @@ export async function handleGetPlayStoreListing(c: AdminContext) {
     return fail(c, 502, { code: "play_api_error", failure_code: "play_adapter_unavailable", message: "Google Play store listing read failed" });
   }
   if (!reply?.ok) {
-    return fail(c, 502, { code: "play_api_error", failure_code: reply?.error?.code ?? "play_adapter_error", message: reply?.error?.message ?? "Google Play store listing read failed" });
+    return fail(c, 502, { code: "play_api_error", failure_code: reply?.error?.code ?? "play_adapter_error", message: reply?.error?.message ?? "Google Play store listing read failed", ...withPlayUpstream(reply?.error) });
   }
   return c.json({
     package_name: reply.value.package_name,
@@ -576,10 +581,10 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
       });
       const status = reply?.error?.status;
       if (code === "play_edit_in_review" || code === "play_changes_not_sent_for_review" || code === "play_review_not_managed") {
-        return fail(c, 409, { code: "edit_in_review", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}) });
+        return fail(c, 409, { code: "edit_in_review", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}), ...withPlayUpstream(reply.error) });
       }
       if (code === "play_edit_state_unknown" || code === "play_commit_ambiguous") {
-        return fail(c, 502, { code: "edit_state_unknown", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}) });
+        return fail(c, 502, { code: "edit_state_unknown", failure_code: code, message: reply.error.message, receipt_id: receiptId, ...(cause ? { cause } : {}), ...withPlayUpstream(reply.error) });
       }
       return fail(c, status === 400 ? 400 : 502, {
         code: status === 400 ? "gate_failed" : "play_api_error",
@@ -587,6 +592,7 @@ export async function handlePushPlayStoreListing(c: AdminContext) {
         message: reply?.error?.message ?? "Google Play store listing request failed",
         receipt_id: receiptId,
         ...(cause ? { cause } : {}),
+        ...withPlayUpstream(reply?.error),
       });
     }
     const value = reply.value;
