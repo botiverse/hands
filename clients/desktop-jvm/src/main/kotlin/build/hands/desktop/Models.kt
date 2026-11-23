@@ -57,7 +57,32 @@ public data class PreparedUpdate(
 public enum class PreparePhase { MANIFEST, COMPARING, DOWNLOADING, ASSEMBLING, VERIFYING }
 
 /** Progress of [HandsDesktopUpdater.prepare]. Bytes are those of the current phase. */
-public data class PrepareProgress(val phase: PreparePhase, val doneBytes: Long, val totalBytes: Long)
+public data class PrepareProgress(val phase: PreparePhase, val doneBytes: Long, val totalBytes: Long) {
+    /**
+     * The whole of [HandsDesktopUpdater.prepare] as one number from 0.0 to 1.0, for a
+     * single progress bar. Phases are weighted by how long they usually take (downloading
+     * most), and the value never depends on which phases a particular update skips, so
+     * a bar bound to it only moves forward; a phase an update does not need is simply
+     * jumped over.
+     */
+    val fraction: Double
+        get() {
+            val within = if (totalBytes <= 0) 1.0 else (doneBytes.toDouble() / totalBytes).coerceIn(0.0, 1.0)
+            val (start, weight) = PHASE_SPAN.getValue(phase)
+            return (start + weight * within).coerceIn(0.0, 1.0)
+        }
+
+    private companion object {
+        /** Start and width of each phase on the overall bar, in order. */
+        val PHASE_SPAN: Map<PreparePhase, Pair<Double, Double>> = mapOf(
+            PreparePhase.MANIFEST to (0.00 to 0.02),
+            PreparePhase.COMPARING to (0.02 to 0.13),
+            PreparePhase.DOWNLOADING to (0.15 to 0.65),
+            PreparePhase.ASSEMBLING to (0.80 to 0.08),
+            PreparePhase.VERIFYING to (0.88 to 0.12),
+        )
+    }
+}
 
 /** Called from worker threads; keep it cheap and thread-safe (e.g. post to the UI thread). */
 public fun interface ProgressListener {

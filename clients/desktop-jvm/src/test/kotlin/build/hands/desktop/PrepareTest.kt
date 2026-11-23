@@ -75,6 +75,15 @@ class PrepareTest {
         assertEquals(before, snapshot(install))
         assertTrue(events.any { it.phase == PreparePhase.DOWNLOADING })
         assertTrue(events.any { it.phase == PreparePhase.VERIFYING })
+        // One bar for the whole prepare(): starts near 0, ends at 1, and each phase sits
+        // after the one before it.
+        assertTrue(events.first().fraction < 0.05)
+        assertEquals(1.0, events.last().fraction, 1e-9)
+        val byPhase = events.groupBy { it.phase }
+        val order = PreparePhase.values().filter { it in byPhase }
+        order.zipWithNext().forEach { (a, b) ->
+            assertTrue(byPhase.getValue(a).maxOf { it.fraction } <= byPhase.getValue(b).minOf { it.fraction } + 1e-9, "$a before $b")
+        }
         assertEquals(setOf("device-1"), hands.deviceIds.toSet())
         assertEquals(2L, u.loadPrepared()?.release?.versionCode)
         assertFalse(Files.exists(tmp.resolve("state/work/2")))

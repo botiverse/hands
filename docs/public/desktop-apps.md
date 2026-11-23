@@ -298,6 +298,7 @@ fun main() = application {
 | `checkForUpdate()` | At startup and periodically, off the UI thread | The [update check](#check-for-an-update); `NoUpdate` or `Available` (with `forceUpdate`) |
 | `prepare(update, progress)` | Right after an `Available` check (its URLs expire) | Builds and verifies `stateDir/staging/<version_code>/<root>` from unchanged installed files plus downloads; on failure removes it and throws, the install is untouched |
 | `installAndRestart(prepared)` | When the user agrees to restart; then exit | Starts a detached helper that waits for the app to exit, moves the install to `stateDir/backup/`, moves the new tree in, relaunches, and rolls back if the new version does not confirm within 60 s |
+| `ProgressListener` | Pass to `prepare` | Called with `PrepareProgress` (phase, bytes done and total of that phase) from worker threads. `progress.fraction` is the whole `prepare()` from 0.0 to 1.0 for a single bar, e.g. `LinearProgressIndicator(progress = { fraction.toFloat() })` after posting it to the UI thread |
 | `markLaunchSucceeded()` | Every start, once the app works (first window shown) | Confirms the launch to the helper; cleans old staging and backups |
 
 `stateDir` belongs to the app and holds staged trees, one backup of the
