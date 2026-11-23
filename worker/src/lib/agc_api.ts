@@ -5,7 +5,40 @@ export class AgcApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-export async function exchangeAgcApiClientToken(credential: AgcApiClientCredential, fetchImpl: typeof fetch = fetch) {
+/**
+ * AGC API client tokens by client id, in this isolate's memory only (never
+ * stored). Huawei issues them for 48 hours, and every Hands call used to
+ * exchange a new one, spending the token endpoint's allowance on each poll.
+ * Reused until 10 minutes before expiry; a different secret for the same
+ * client id is a different entry.
+ */
+const tokenCache = new Map<string, { access_token: string; expires_in: number; until: number }>();
+const TOKEN_EARLY_MS = 10 * 60_000;
+
+export function resetAgcTokenCache() {
+  tokenCache.clear();
+}
+
+export async function exchangeAgcApiClientToken(credential: AgcApiClientCredential, fetchImpl: typeof fetch = fetch, now = Date.now()) {
+  const key = `${credential.client_id}\u0000${credential.client_secret}`;
+  const cached = tokenCache.get(key);
+  if (cached && cached.until > now) return { access_token: cached.access_token, expires_in: Math.floor((cached.until + TOKEN_EARLY_MS - now) / 1000) };
+  const fresh = await exchangeAgcApiClientTokenUncached(credential, fetchImpl);
+  const until = now + fresh.expires_in * 1000 - TOKEN_EARLY_MS;
+  if (until > now) {
+    if (tokenCache.size >= 200) tokenCache.delete(tokenCache.keys().next().value!);
+    tokenCache.set(key, { ...fresh, until });
+  }
+  return fresh;
+}
+
+/** Drop every cached token of a client AGC refused (e.g. revoked before expiry). */
+export function forgetAgcTokens(clientId: string) {
+  for (const key of [...tokenCache.keys()]) if (key.startsWith(`${clientId}\u0000`)) tokenCache.delete(key);
+}
+
+/** A new token every time: for checking credentials someone just entered. */
+export async function exchangeAgcApiClientTokenUncached(credential: AgcApiClientCredential, fetchImpl: typeof fetch = fetch) {
   const response = await fetchImpl("https://connect-api.cloud.huawei.com/api/oauth2/v1/token", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -40,6 +73,7 @@ async function agcJson(auth: AgcAuth, path: string, init: RequestInit = {}, fetc
   });
   const body = await response.json().catch(() => null) as any;
   const providerCode = body?.ret?.code ?? body?.rtnCode;
+  if (response.status === 401 && auth.clientId) forgetAgcTokens(auth.clientId);
   if (!response.ok || (providerCode !== undefined && String(providerCode) !== "0")) {
     const providerMessage = body?.ret?.msg || body?.rtnDesc || body?.error_description || body?.error;
     const suffix = providerCode !== undefined ? `, code ${String(providerCode)}` : "";
