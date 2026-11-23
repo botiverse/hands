@@ -19,6 +19,7 @@
  * read again; an incomplete (mapping lost data) or failed one is retried at
  * most every INSTANCE_RETRY_MS.
  */
+import { ascQuotaAllows, ascQuotaObservation, type AscQuotaTier } from "./asc_quota";
 import { createHash } from "node:crypto";
 import { ASC_API_BASE, AscApiError, ascRequest, type AscApiCredentials } from "./asc_api";
 import { getAscCredentials } from "./asc_credentials";
@@ -435,7 +436,7 @@ export const SCHEDULED_BUDGET: IngestBudget = {
 };
 
 export type IngestSummary = {
-  status: "ok" | "not_configured" | "bundle_id_missing" | "asc_app_not_found";
+  status: "ok" | "not_configured" | "bundle_id_missing" | "asc_app_not_found" | "quota_low";
   asc_app_id: string | null;
   requests: number;
   reports_matched: Array<{ report_id: string; name: string }>;
@@ -496,6 +497,8 @@ export async function ingestAscAnalyticsForApp(
   appId: string,
   budget: IngestBudget,
   now = Date.now(),
+  /** The scheduled run is background: it waits when Apple's quota for the key runs low (lib/asc_quota.ts). */
+  tier: AscQuotaTier = "interactive",
 ): Promise<IngestSummary> {
   const summary: IngestSummary = {
     status: "ok",
@@ -516,6 +519,8 @@ export async function ingestAscAnalyticsForApp(
   if (!env.ASC_CRED_ENC_KEY) return { ...summary, status: "not_configured" };
   const creds = await getAscCredentials(env.DB, env.ASC_CRED_ENC_KEY, appId);
   if (!creds) return { ...summary, status: "not_configured" };
+  const quota = ascQuotaAllows(await ascQuotaObservation(env.DB, creds.key_id).catch(() => null), tier, now);
+  if (!quota.ok) return { ...summary, status: "quota_low", more_pending: true };
   const channel = await env.DB.prepare("SELECT bundle_id FROM channels WHERE app_id = ?1 AND slug = 'main' LIMIT 1")
     .bind(appId).first<{ bundle_id: string | null }>();
   const bundleId = channel?.bundle_id?.trim();
@@ -704,12 +709,14 @@ export async function pollAscAnalytics(env: Env, now = Date.now()) {
     let next = now + RUN_INTERVAL_MS;
     let code: string | null = null;
     try {
-      const summary = await ingestAscAnalyticsForApp(env, row.app_id, SCHEDULED_BUDGET, now);
+      const summary = await ingestAscAnalyticsForApp(env, row.app_id, SCHEDULED_BUDGET, now, "background");
       if (summary.status !== "ok") code = summary.status;
       else code = summary.instances_failed[0]?.code ?? summary.instances_over_limit[0]?.code
         ?? summary.instances_incomplete[0]?.code ?? null;
       // Backlog left: continue on the next five-minute slot instead of in six hours.
       if (summary.more_pending && summary.instances_processed > 0) next = (Math.floor(now / 300_000) + 1) * 300_000;
+      // Apple's quota for the key is low: try again in half an hour, not six.
+      if (summary.status === "quota_low") next = now + 30 * 60_000;
     } catch (err) {
       code = errorCode(err);
       logFailure(row.app_id, code);

@@ -8,6 +8,7 @@
  * ASC JWTs). The AES key is derived from the ASC_CRED_ENC_KEY worker secret;
  * key_id / issuer_id are non-secret identifiers stored in plaintext.
  */
+import { withAscQuota } from "./asc_quota";
 
 export type AscCredentialsMeta = {
   id: string;
@@ -162,7 +163,8 @@ export async function getAscCredentials(
     >();
   if (!row) return null;
   const p8 = await decryptP8(row.p8_ciphertext_b64, row.p8_iv_b64, encKey);
-  return {
+  // Every call made with these credentials reports Apple's quota for the key.
+  return withAscQuota(db, {
     id: row.id,
     app_id: row.app_id,
     key_id: row.key_id,
@@ -171,7 +173,7 @@ export async function getAscCredentials(
     created_at: row.created_at,
     updated_at: row.updated_at,
     p8,
-  };
+  });
 }
 
 export async function deleteAscCredentials(

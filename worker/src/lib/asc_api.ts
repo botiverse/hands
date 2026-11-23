@@ -13,6 +13,31 @@ export interface AscApiCredentials {
   issuer_id: string;
   /** PEM contents of the AuthKey_XXXX.p8 file. */
   p8: string;
+  /**
+   * Called with what Apple's X-Rate-Limit header says after every response,
+   * and with `refused` on a 429 (lib/asc_quota.ts records it per API key).
+   */
+  onRateLimit?: (observation: AscRateLimit, refused: boolean) => Promise<void> | void;
+}
+
+/** Apple's per-API-key request quota as one response reported it. */
+export type AscRateLimit = { limit: number; remaining: number; observed_at: number };
+
+/**
+ * Parses `X-Rate-Limit: user-hour-lim:3600;user-hour-rem:3599;` (App Store
+ * Connect API: a rolling hour per API key). Null when absent or malformed.
+ */
+export function parseAscRateLimit(header: string | null, now = Date.now()): AscRateLimit | null {
+  if (!header) return null;
+  const fields = new Map<string, number>();
+  for (const part of header.split(";")) {
+    const [name, value] = part.split(":").map((x) => x.trim());
+    if (name && value !== undefined && /^\d+$/.test(value)) fields.set(name.toLowerCase(), Number(value));
+  }
+  const limit = fields.get("user-hour-lim");
+  const remaining = fields.get("user-hour-rem");
+  if (limit === undefined || remaining === undefined) return null;
+  return { limit, remaining, observed_at: now };
 }
 
 export const ASC_API_BASE = "https://api.appstoreconnect.apple.com";
@@ -190,6 +215,14 @@ export async function ascRequest<T>(
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   const text = await res.text();
+  if (creds.onRateLimit) {
+    const observed = parseAscRateLimit(res.headers.get("x-rate-limit"));
+    const refused = res.status === 429;
+    if (observed || refused) {
+      await Promise.resolve(creds.onRateLimit(observed ?? { limit: 0, remaining: 0, observed_at: Date.now() }, refused))
+        .catch(() => undefined);
+    }
+  }
   let parsed: unknown = null;
   try {
     parsed = text ? JSON.parse(text) : null;
