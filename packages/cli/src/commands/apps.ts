@@ -42,7 +42,11 @@ export function registerAppCommands(program: Command): void {
     .requiredOption("--name <name>", "Display name.")
     .requiredOption(
       "--platform <platform>",
-      "App platform, for example web, android, ios, ohos, node, or electron.",
+      "App platform, for example web, android, ios, ohos, node, electron, or desktop.",
+    )
+    .option(
+      "--runtime <runtime>",
+      "What a desktop app is built with: jvm, electron, native, tauri, or other. Descriptive only.",
     )
     .option("--description <text>", "Optional app description.")
     .option("--json", "Output JSON.", false)
@@ -50,6 +54,7 @@ export function registerAppCommands(program: Command): void {
       slug: string;
       name: string;
       platform: string;
+      runtime?: string;
       description?: string;
       json?: boolean;
     }) => {
@@ -59,6 +64,7 @@ export function registerAppCommands(program: Command): void {
           slug: opts.slug,
           name: opts.name,
           platform: opts.platform,
+          ...(opts.runtime !== undefined ? { runtime: opts.runtime } : {}),
           ...(opts.description !== undefined
             ? { description: opts.description }
             : {}),

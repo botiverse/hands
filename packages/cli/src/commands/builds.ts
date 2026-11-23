@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { jsonRequested } from "../lib/json_output.js";
 import { recoveryGuidance, type RecoveryPart } from "../lib/recovery_guidance.js";
 import { registerBuildInventoryCommands } from "./build_inventory.js";
+import { registerPublishDesktopCommand } from "./publish_desktop.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -713,6 +714,7 @@ export function registerBuildCommands(program: Command): void {
     );
 
   registerBuildInventoryCommands(builds, program, resolveAppId);
+  registerPublishDesktopCommand(builds, program);
 
   builds
     .command("presign-asset <appIdOrSlug> <buildId> <assetId>")
@@ -2572,7 +2574,7 @@ export function registerBuildCommands(program: Command): void {
 
 }
 
-async function resolveAppId(slugOrId: string): Promise<string> {
+export async function resolveAppId(slugOrId: string): Promise<string> {
   if (slugOrId.length === 36 && slugOrId.split("-").length === 5) {
     return slugOrId;
   }
@@ -2587,7 +2589,7 @@ async function resolveAppId(slugOrId: string): Promise<string> {
   return match.id;
 }
 
-async function resolveChannelId(appId: string, channelSlugOrId: string): Promise<string> {
+export async function resolveChannelId(appId: string, channelSlugOrId: string): Promise<string> {
   const res = await apiRequest<{ channels: ChannelRow[] }>(`/api/apps/${appId}/channels`);
   const match = res.channels.find((channel) => channel.id === channelSlugOrId || channel.slug === channelSlugOrId);
   if (!match) {
@@ -2719,7 +2721,7 @@ async function completeWithRetry(appId: string, buildId: string, assetId: string
   throw lastError;
 }
 
-async function uploadDirectBuildAsset(
+export async function uploadDirectBuildAsset(
   appId: string,
   buildId: string,
   filePath: string,
