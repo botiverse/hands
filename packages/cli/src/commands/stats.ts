@@ -18,8 +18,16 @@ export interface AppStatsResponse {
   };
   window_days: number;
   window_start: number;
+  /** First and last UTC day of the window (servers before 2026-11-24 omit them). */
+  from?: string;
+  to?: string;
   channel_filter: string | null;
   direct: {
+    /** From device_ping_days: exact for from/to. */
+    recorded_since?: string | null;
+    active_devices_range?: number | null;
+    daily?: Array<{ date: string; active_devices: number }>;
+    by_country?: Array<{ country: string; active_devices: number }>;
     devices: {
       active_window: number;
       active_7d: number;
@@ -121,6 +129,7 @@ export interface AppStatsResponse {
       };
     } | null;
     app_store: {
+      by_territory?: Array<{ territory: string } & Partial<Record<"downloads_first_time" | "downloads_redownload" | "installations" | "deletions" | "sessions", number>>>;
       configured: boolean;
       bundle_id: string | null;
       key_id: string | null;
@@ -304,6 +313,33 @@ export function formatAppStoreAnalytics(asc: NonNullable<AppStatsResponse["store
   return lines;
 }
 
+/** Direct-install daily active devices and countries (device_ping_days). */
+export function formatDirectDaily(direct: AppStatsResponse["direct"]): string[] {
+  const lines: string[] = [];
+  const daily = direct.daily ?? [];
+  if (direct.active_devices_range != null && daily.length > 0) {
+    lines.push(`Direct Active Devices in range: ${direct.active_devices_range}` +
+      (direct.recorded_since ? ` (daily data since ${direct.recorded_since})` : ""));
+    lines.push("  Date        Devices");
+    for (const d of daily.slice(-14)) lines.push(`  ${d.date}  ${String(d.active_devices).padStart(7)}`);
+    if (daily.length > 14) lines.push(`  (${daily.length - 14} earlier days in --json)`);
+  }
+  const countries = direct.by_country ?? [];
+  if (countries.length > 0) {
+    lines.push(`Direct By Country: ${countries.slice(0, 10).map((c) => `${c.country} ${c.active_devices}`).join(", ")}` +
+      (countries.length > 10 ? `, +${countries.length - 10} more in --json` : ""));
+  }
+  return lines;
+}
+
+/** App Store downloads by territory (Analytics Reports). */
+export function formatTerritories(rows: NonNullable<NonNullable<AppStatsResponse["stores"]["app_store"]>["by_territory"]>): string[] {
+  const shown = rows.filter((r) => r.territory !== "");
+  if (shown.length === 0) return [];
+  return [`  - App Store By Territory (first-time downloads): ${shown.slice(0, 10).map((r) => `${r.territory} ${r.downloads_first_time ?? 0}`).join(", ")}` +
+    (shown.length > 10 ? `, +${shown.length - 10} more in --json` : "")];
+}
+
 async function resolveTargetApps(appIdOrSlug: string | undefined, all: boolean): Promise<AppRow[]> {
   const { apps } = await apiRequest<{ apps: AppRow[] }>("/api/apps");
   if (all || !appIdOrSlug) return apps;
@@ -319,13 +355,16 @@ export function formatAppStatsReport(stats: AppStatsResponse): string {
   const lines: string[] = [];
   const { app, window_days, direct, stores } = stats;
   const title = `${app.name} (${app.slug}${app.platform ? `, ${app.platform}` : ""})`;
-  lines.push(`=== ${title} — Window: last ${window_days}d ===`);
+  const range = stats.from && stats.to ? `${stats.from} to ${stats.to} (${window_days}d)` : `last ${window_days}d`;
+  lines.push(`=== ${title} — Window: ${range} ===`);
   lines.push(
     `Active Devices: ${direct.devices.active_window} (${window_days}d) | ${direct.devices.active_7d} (7d) | ${direct.devices.active_24h} (24h) | ${direct.devices.new_window} new (${window_days}d) | ${direct.devices.total_all_time} total all-time`,
   );
   lines.push(
     `Direct Downloads & Checks: ${direct.downloads.public_unique_window} unique public downloads (${window_days}d), ${direct.downloads.public_unique_all_time} all-time | ${direct.downloads.console_asset_downloads} console/API asset downloads | ${direct.downloads.update_checks_offered} updates offered (${direct.downloads.update_checks_unique_devices} unique check devices)`,
   );
+
+  lines.push(...formatDirectDaily(direct));
 
   if (direct.by_channel.length > 0) {
     const chSummary = direct.by_channel
@@ -401,6 +440,7 @@ export function formatAppStatsReport(stats: AppStatsResponse): string {
       }
     }
     lines.push(...formatAppStoreAnalytics(asc, window_days));
+    lines.push(...formatTerritories(asc.by_territory ?? []));
     if (asc.live_error) {
       lines.push(`  - ASC live query warning: ${asc.live_error}`);
     }
@@ -416,6 +456,8 @@ export function registerStatsCommands(program: Command): void {
       "Show unified download, active-device, and store distribution stats across Hands direct-install, Google Play, and App Store Connect.",
     )
     .option("-d, --days <days>", "Window in days (1-365).", "30")
+    .option("--from <date>", "First UTC day (YYYY-MM-DD) of the range; overrides --days.")
+    .option("--to <date>", "Last UTC day (YYYY-MM-DD, default today) of the range; needs --from.")
     .option("-c, --channel <slug>", "Filter direct-install stats by channel slug (e.g. main, preview, nightly).")
     .option("--no-live", "Skip live Google Play / App Store Connect API queries and return cached/D1 state only.")
     .option("--all", "Query all visible apps.", false)
@@ -425,18 +467,21 @@ export function registerStatsCommands(program: Command): void {
         appIdOrSlug: string | undefined,
         opts: {
           days?: string;
+          from?: string;
+          to?: string;
           channel?: string;
           live?: boolean;
           all?: boolean;
           json?: boolean;
         },
       ) => {
+        if (opts.to && !opts.from) throw new Error("--to needs --from");
         const targets = await resolveTargetApps(appIdOrSlug, Boolean(opts.all));
         const results: AppStatsResponse[] = [];
         for (const target of targets) {
           const res = await apiRequest<AppStatsResponse>(`/api/apps/${target.id}/stats`, {
             query: {
-              window_days: opts.days ?? "30",
+              ...(opts.from ? { from: opts.from, ...(opts.to ? { to: opts.to } : {}) } : { window_days: opts.days ?? "30" }),
               ...(opts.channel ? { channel: opts.channel } : {}),
               ...(opts.live === false ? { live: "false" } : {}),
             },

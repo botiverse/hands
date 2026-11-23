@@ -729,14 +729,14 @@ const ADDITIVE: AscAnalyticsMetric[] = ["downloads_first_time", "downloads_redow
  * Reads the per-instance daily totals (already summed over territories). The
  * winner is chosen once per (report, date) with a window function over a
  * covering-index scan, then joined back on the primary key; no correlated
- * subquery. ?1 = app id, ?2 = first date.
+ * subquery. ?1 = app id, ?2 = first date, ?3 = last date (both inclusive).
  */
 export const ASC_DAILY_SQL = `WITH winners AS (
   SELECT report_name, date, instance_id FROM (
     SELECT report_name, date, instance_id,
            ROW_NUMBER() OVER (PARTITION BY report_name, date ORDER BY processing_date DESC, instance_id DESC) AS rn
     FROM (SELECT DISTINCT report_name, date, instance_id, processing_date
-          FROM asc_analytics_daily_totals WHERE app_id = ?1 AND date >= ?2))
+          FROM asc_analytics_daily_totals WHERE app_id = ?1 AND date >= ?2 AND date <= ?3))
   WHERE rn = 1
 )
 SELECT t.date AS date, t.metric AS metric, SUM(t.value) AS value
@@ -744,6 +744,40 @@ FROM winners w
 JOIN asc_analytics_daily_totals t ON t.app_id = ?1 AND t.instance_id = w.instance_id AND t.date = w.date
 GROUP BY t.date, t.metric
 ORDER BY t.date`;
+
+/**
+ * The additive App Store metrics per territory over a date range (both
+ * inclusive), using the same winning instance per (report, date) as the
+ * daily totals. ?1 = app id, ?2 = first date, ?3 = last date.
+ */
+export const ASC_BY_TERRITORY_SQL = `WITH winners AS (
+  SELECT report_name, date, instance_id FROM (
+    SELECT report_name, date, instance_id,
+           ROW_NUMBER() OVER (PARTITION BY report_name, date ORDER BY processing_date DESC, instance_id DESC) AS rn
+    FROM (SELECT DISTINCT report_name, date, instance_id, processing_date
+          FROM asc_analytics_daily_totals WHERE app_id = ?1 AND date >= ?2 AND date <= ?3))
+  WHERE rn = 1
+)
+SELECT d.dimension_key AS territory, d.metric AS metric, SUM(d.value) AS value
+FROM winners w
+JOIN asc_analytics_daily d ON d.app_id = ?1 AND d.instance_id = w.instance_id AND d.date = w.date
+GROUP BY d.dimension_key, d.metric`;
+
+export type AscTerritoryRow = { territory: string } & Partial<Record<AscAnalyticsMetric, number>>;
+
+/** Additive metrics per territory, largest first-time downloads first ('' = no territory in the report). */
+export async function queryAscAnalyticsByTerritory(db: D1Database, appId: string, sinceDate: string, untilDate: string): Promise<AscTerritoryRow[]> {
+  const { results } = await db.prepare(ASC_BY_TERRITORY_SQL).bind(appId, sinceDate, untilDate)
+    .all<{ territory: string; metric: string; value: number }>();
+  const rows = new Map<string, AscTerritoryRow>();
+  for (const r of results) {
+    if (!(ADDITIVE as readonly string[]).includes(r.metric)) continue;
+    const row = rows.get(r.territory) ?? { territory: r.territory };
+    row[r.metric as AscAnalyticsMetric] = Number(r.value);
+    rows.set(r.territory, row);
+  }
+  return [...rows.values()].sort((a, b) => (b.downloads_first_time ?? 0) - (a.downloads_first_time ?? 0) || a.territory.localeCompare(b.territory));
+}
 
 /**
  * Daily App Store metrics since `sinceDate` (YYYY-MM-DD, inclusive). For each
@@ -756,10 +790,10 @@ ORDER BY t.date`;
  * rule would undercount that date, and the selection would have to become a
  * union of instances per date.
  */
-export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinceDate: string) {
+export async function queryAscAnalyticsDaily(db: D1Database, appId: string, sinceDate: string, untilDate = "9999-12-31") {
   const { results } = await db.prepare(
     ASC_DAILY_SQL,
-  ).bind(appId, sinceDate).all<{ date: string; metric: string; value: number }>();
+  ).bind(appId, sinceDate, untilDate).all<{ date: string; metric: string; value: number }>();
   const byDate = new Map<string, AscDailyRow>();
   for (const r of results) {
     if (!(ASC_ANALYTICS_METRICS as readonly string[]).includes(r.metric)) continue;

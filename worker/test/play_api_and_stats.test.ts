@@ -291,6 +291,36 @@ describe("GET /api/apps/:appId/stats", () => {
     expect(body.stores.google_play?.live_tracks).toHaveLength(4); // production, open testing (beta), closed, internal
   });
 
+  it("gives direct-install daily active devices and countries for a from/to range", async () => {
+    const { sqlite, request } = await setupHarness({ role: "viewer" });
+    const insert = sqlite.prepare(
+      `INSERT INTO device_ping_days (app_id, day, device_id, channel, platform, version_code, country) VALUES ('app', ?, ?, ?, 'android', 1, ?)`,
+    );
+    insert.run("2026-11-01", "d1", "main", "CN");
+    insert.run("2026-11-01", "d2", "main", "US");
+    insert.run("2026-11-02", "d1", "main", "CN");
+    insert.run("2026-11-02", "d3", "preview", null);
+    insert.run("2026-11-05", "d4", "main", "CN"); // outside the range
+
+    const body = await (await request("/api/apps/app/stats?from=2026-11-01&to=2026-11-03&live=0")).json() as any;
+    expect([body.from, body.to, body.window_days]).toEqual(["2026-11-01", "2026-11-03", 3]);
+    expect(body.direct.recorded_since).toBe("2026-11-01");
+    expect(body.direct.daily).toEqual([{ date: "2026-11-01", active_devices: 2 }, { date: "2026-11-02", active_devices: 2 }]);
+    expect(body.direct.active_devices_range).toBe(3);
+    expect(body.direct.by_country).toEqual([
+      { country: "CN", active_devices: 1 }, { country: "US", active_devices: 1 }, { country: "unknown", active_devices: 1 },
+    ]);
+
+    const main = await (await request("/api/apps/app/stats?from=2026-11-01&to=2026-11-03&channel=main&live=0")).json() as any;
+    expect(main.direct.active_devices_range).toBe(2);
+
+    for (const bad of ["from=2026-11-31", "from=2026-11-05&to=2026-11-01", "to=2026-11-01", "from=2025-01-01&to=2026-11-01"]) {
+      const res = await request(`/api/apps/app/stats?${bad}&live=0`);
+      expect(res.status, bad).toBe(400);
+      expect(((await res.json()) as { code: string }).code).toBe("INVALID_STATS_RANGE");
+    }
+  });
+
   it("serves Google Play track states from the stored answer after the first read", async () => {
     let calls = 0;
     const { request } = await setupHarness({ role: "viewer", adapterOverrides: {

@@ -629,10 +629,11 @@ const ADDITIVE: PlayStatsMetric[] = [
 
 /** ?1 = app id, ?2 = first date. A primary-key range scan: O(days x metrics). */
 export const PLAY_DAILY_SQL = `SELECT date, metric, value FROM google_play_stats_daily_totals
-  WHERE app_id = ?1 AND date >= ?2 ORDER BY date`;
+  WHERE app_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date`;
 
-export async function queryGooglePlayStatsDaily(db: D1Database, appId: string, sinceDate: string) {
-  const { results } = await db.prepare(PLAY_DAILY_SQL).bind(appId, sinceDate)
+/** Daily Play metrics from `sinceDate` to `untilDate` (YYYY-MM-DD, both inclusive). */
+export async function queryGooglePlayStatsDaily(db: D1Database, appId: string, sinceDate: string, untilDate = "9999-12-31") {
+  const { results } = await db.prepare(PLAY_DAILY_SQL).bind(appId, sinceDate, untilDate)
     .all<{ date: string; metric: string; value: number }>();
   const byDate = new Map<string, PlayDailyRow>();
   for (const r of results) {

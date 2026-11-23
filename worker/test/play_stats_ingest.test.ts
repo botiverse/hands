@@ -647,7 +647,7 @@ describe("GET /stats", () => {
       }
     })();
     h.sqlite.exec("ANALYZE");
-    const plan = (h.sqlite.prepare(`EXPLAIN QUERY PLAN ${PLAY_DAILY_SQL.replace(/\?(\d+)/g, "?")}`).all("app", day(0)) as Array<{ detail: string }>)
+    const plan = (h.sqlite.prepare(`EXPLAIN QUERY PLAN ${PLAY_DAILY_SQL.replace(/\?(\d+)/g, "?")}`).all("app", day(0), "9999-12-31") as Array<{ detail: string }>)
       .map((r) => r.detail).join("\n");
     expect(plan).toMatch(/SEARCH google_play_stats_daily_totals USING (INDEX sqlite_autoindex_google_play_stats_daily_totals_1|PRIMARY KEY)/);
     expect(plan).not.toMatch(/^SCAN/m);

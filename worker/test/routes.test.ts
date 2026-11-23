@@ -533,6 +533,12 @@ function makeMockDb() {
       ping_count INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY (app_id, device_id)
     );
+    -- Mirrors migrations/sql/0112_device_ping_days.sql.
+    CREATE TABLE device_ping_days (
+      app_id TEXT NOT NULL, day TEXT NOT NULL, device_id TEXT NOT NULL,
+      channel TEXT, platform TEXT, version_code INTEGER, country TEXT,
+      PRIMARY KEY (app_id, day, device_id)
+    );
     CREATE TABLE app_sessions (
       app_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
@@ -13741,6 +13747,7 @@ describe("quiver public API v2 — scope resolution", () => {
             n === "X-Quiver-Client-Key" ? "qk_test" : n === "X-Quiver-Device-Id" ? deviceId : undefined,
           query: () => undefined,
           json: async () => body,
+          raw: { cf: { country: deviceId === "devB" ? "US" : "CN" } },
         },
         json: (data: unknown, status = 200) => new Response(JSON.stringify(data), { status }),
       } as any);
@@ -13775,6 +13782,13 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(v102.devices).toBe(2);
     expect(body.by_platform[0].platform).toBe("android");
     expect(body.by_platform[0].devices).toBe(4);
+
+    // One device_ping_days row per device per day, with the country of its first ping.
+    const days = await env.DB.prepare(
+      "SELECT device_id, channel, country, day FROM device_ping_days WHERE app_id = 'app-scope' ORDER BY device_id",
+    ).all();
+    expect(days.results.map((r: any) => [r.device_id, r.country])).toEqual([["devA", "CN"], ["devB", "US"], ["devC", "CN"], ["devD", "CN"]]);
+    expect((days.results[0] as any).day).toBe(new Date().toISOString().slice(0, 10));
   });
 
   it("sessions: start/end/crash events roll up into crash-free release health", async () => {
