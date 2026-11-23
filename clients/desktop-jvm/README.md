@@ -29,6 +29,7 @@ class HandsDesktopUpdater(
     deviceId: String? = null,   // stable per install; needed for staged rollouts
     httpClient: HttpClient? = null,
     parallelism: Int = 4,
+    downloadStallTimeout: Duration = Duration.ofSeconds(30), // no bytes for this long: abandon and retry
 )
 
 fun installBlocker(): InstallBlocker?            // TRANSLOCATED | READ_ONLY_VOLUME | NOT_WRITABLE | MISSING, or null
@@ -58,8 +59,9 @@ app's choice.
    1 MiB or more are cloned with `cp -c` on macOS, which costs no space on
    APFS).
 3. Downloads each missing digest once from `files_url_template`, four at a
-   time, three retries with backoff on transfer errors, 5xx/429 and digest
-   mismatches; each download is size-capped and checked. When the missing
+   time, three retries with backoff on transfer errors, 5xx/429, digest
+   mismatches and downloads that receive nothing for `downloadStallTimeout`
+   (30 s by default; the JDK client's own timeout ends once headers arrive); each download is size-capped and checked. When the missing
    bytes plus 32 KiB per missing file exceed the full archive, it downloads
    the archive instead, checks its SHA-256, and takes the missing files out of
    it by path, checking each one; anything still missing is then downloaded

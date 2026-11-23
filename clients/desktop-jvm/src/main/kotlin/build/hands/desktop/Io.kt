@@ -130,7 +130,58 @@ internal fun copyFile(source: Path, target: Path) {
 /** Spawning `cp` costs a few ms; below this a plain copy is as fast. */
 private const val CLONE_THRESHOLD = 1L shl 20
 
-internal class Http(private val client: HttpClient, private val retries: Int, private val backoffMillis: Long) {
+/**
+ * Closes [input] when no byte has arrived for [stallMillis]. The JDK HTTP client's request
+ * timeout ends once headers arrive, so a body that stops mid-way would otherwise block a read
+ * forever. Closing makes the blocked read fail, and [Http.download] retries it.
+ */
+internal class StallGuard(private val input: InputStream, private val stallMillis: Long) : InputStream() {
+    @Volatile private var lastProgress = System.nanoTime()
+    @Volatile var stalled = false
+        private set
+    @Volatile private var done = false
+    private val watchdog = Thread({
+        val step = (stallMillis / 4).coerceIn(10L, 1_000L)
+        while (!done) {
+            try { Thread.sleep(step) } catch (_: InterruptedException) { return@Thread }
+            if (!done && (System.nanoTime() - lastProgress) / 1_000_000 >= stallMillis) {
+                stalled = true
+                try { input.close() } catch (_: IOException) {}
+                return@Thread
+            }
+        }
+    }, "hands-download-stall-guard").apply { isDaemon = true; start() }
+
+    private fun <T> guarded(block: () -> T): T {
+        try {
+            val result = block()
+            lastProgress = System.nanoTime()
+            return result
+        } catch (e: IOException) {
+            if (stalled) throw StallException(stallMillis, e)
+            throw e
+        }
+    }
+
+    override fun read(): Int = guarded { input.read() }
+    override fun read(b: ByteArray, off: Int, len: Int): Int = guarded { input.read(b, off, len) }
+    override fun close() {
+        done = true
+        watchdog.interrupt()
+        input.close()
+    }
+}
+
+/** A download stopped receiving bytes; retried like any other transfer error. */
+internal class StallException(stallMillis: Long, cause: Throwable) :
+    IOException("no data received for ${stallMillis} ms", cause)
+
+internal class Http(
+    private val client: HttpClient,
+    private val retries: Int,
+    private val backoffMillis: Long,
+    private val stallMillis: Long = DEFAULT_STALL_MILLIS,
+) {
     fun getBytes(url: String, headers: Map<String, String>, maxBytes: Int): Pair<Int, ByteArray> {
         val request = request(url, headers)
         val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
@@ -149,7 +200,7 @@ internal class Http(private val client: HttpClient, private val retries: Int, pr
             var counted = 0L
             try {
                 val response = client.send(request(url, emptyMap()), HttpResponse.BodyHandlers.ofInputStream())
-                response.body().use { body ->
+                StallGuard(response.body(), stallMillis).use { body ->
                     val status = response.statusCode()
                     if (status != 200) {
                         val retryable = status == 408 || status == 429 || status >= 500
@@ -187,6 +238,9 @@ internal class Http(private val client: HttpClient, private val retries: Int, pr
     private class NonRetryable(val error: HandsUpdateException) : Exception(error)
 
     companion object {
+        /** A download that receives nothing for this long is abandoned and retried. */
+        const val DEFAULT_STALL_MILLIS = 30_000L
+
         /** Signed URLs carry their signature in the query; keep it out of messages and logs. */
         fun redact(url: String): String = url.substringBefore('?')
     }
