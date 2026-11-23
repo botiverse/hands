@@ -174,6 +174,56 @@ GET /public/v2/apps/:slug/files/:sha256
 3. 在已安装的应用包旁组装新应用包（设置 `mode`，创建符号链接），然后替换；
 4. 第 2 或第 3 步失败时改用 `full_archive`，同样校验其 `sha256`。
 
+## Kotlin 客户端 {#kotlin-client}
+
+`build.hands:hands-desktop-updater`（源码在 `clients/desktop-jvm`，尚未发布首个版本）为 JVM 应用（例如用 jpackage 打包的 Compose Desktop 应用）在 macOS 和 Linux 上实现了上述步骤。它需要 JDK 17+（jlink 生成的运行时需包含 `java.net.http` 模块），只依赖 `kotlinx-serialization-json`。
+
+```kotlin
+import build.hands.desktop.*
+import kotlin.io.path.Path
+
+val stateDir = Path(System.getProperty("user.home"), "Library/Application Support/Raft/hands-updates")
+// jpackage 启动器会把 jpackage.app-path 设为 .../Raft.app/Contents/MacOS/Raft
+val installRoot = Path(System.getProperty("jpackage.app-path")).parent.parent.parent
+
+val updater = HandsDesktopUpdater(
+    appSlug = "raft-desktop",
+    currentVersionCode = 1004000,       // 本构建的 --version-code
+    installRoot = installRoot,
+    stateDir = stateDir,
+    deviceId = loadOrCreateDeviceId(),  // 每个安装生成并保存一次的 UUID
+)
+
+fun main() = application {
+    Window(onCloseRequest = ::exitApplication, title = "Raft") {
+        var ready by remember { mutableStateOf<PreparedUpdate?>(null) }
+        LaunchedEffect(Unit) {
+            updater.markLaunchSucceeded()   // 窗口已显示：这个版本可用
+            ready = withContext(Dispatchers.IO) {
+                updater.loadPrepared() ?: when (val check = updater.checkForUpdate()) {
+                    is UpdateCheck.Available -> updater.prepare(check) { /* 进度 */ }
+                    is UpdateCheck.NoUpdate -> null
+                }
+            }
+        }
+        ready?.let { update ->
+            Button(onClick = { updater.installAndRestart(update); exitApplication() }) {
+                Text("重启以更新到 ${update.release.version}")
+            }
+        }
+    }
+}
+```
+
+| 调用 | 时机 | 作用 |
+| --- | --- | --- |
+| `checkForUpdate()` | 启动时及定期，在 UI 线程之外 | 即[检查更新](#check-for-an-update)；返回 `NoUpdate` 或 `Available`（含 `forceUpdate`） |
+| `prepare(update, progress)` | 拿到 `Available` 后立即调用（其 URL 会过期） | 用已安装的未变文件加下载的文件构建并校验 `stateDir/staging/<version_code>/<root>`；失败时删除它并抛出异常，已安装的应用不受影响 |
+| `installAndRestart(prepared)` | 用户同意重启时；随后退出应用 | 启动一个独立的辅助脚本：等应用退出，把安装目录移到 `stateDir/backup/`，移入新目录树并重新启动；新版本 60 秒内未确认则回滚 |
+| `markLaunchSucceeded()` | 每次启动、应用确认可用后（首个窗口显示时） | 向辅助脚本确认启动成功；清理旧的暂存目录和备份 |
+
+`stateDir` 归应用所有，存放暂存的目录树、上一版本的一份备份、辅助脚本及其日志：macOS 上用 `~/Library/Application Support/<App>/hands-updates`，Linux 上用 `~/.local/state/<app>/hands-updates`；它必须在安装目录之外，最好与安装目录在同一卷上，这样替换只是一次重命名。用户必须有权重命名安装目录。在 Linux 上，除非正在运行的可执行文件位于安装目录内，否则需要给 `installAndRestart` 传入 `launcher`（例如 `bin/Raft`）。Windows 上可以检查和准备更新，但 `installAndRestart` 尚未实现。
+
 ## 完整性与签名 {#integrity-and-signing}
 
 每个文件都按 SHA-256 寻址和校验：上传内容与声明的摘要不符时 Hands 会拒绝，客户端也会按清单校验每次下载。Hands 不会对桌面应用签名或公证。代码签名（Developer ID 与公证、Authenticode、安装包签名）由你的构建负责：发布前先签名应用包，这样 Hands 存储的就是已签名的文件。

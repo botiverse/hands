@@ -1,0 +1,5 @@
+/.gradle/
+/build/
+/.kotlin/
+# The repo-wide build/ rule would hide the build.hands package directories.
+!/src/**/build/
