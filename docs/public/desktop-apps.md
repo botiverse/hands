@@ -247,6 +247,68 @@ A client typically:
 4. falls back to `full_archive` when step 2 or 3 fails, and checks its
    `sha256` too.
 
+## Kotlin client
+
+`build.hands:hands-desktop-updater` (source in `clients/desktop-jvm`, first
+release pending) implements the steps above for a JVM app, such as a Compose
+Desktop app packaged with jpackage, on macOS and Linux. It needs JDK 17+
+(with the `java.net.http` module in a jlinked runtime) and depends only on
+`kotlinx-serialization-json`.
+
+```kotlin
+import build.hands.desktop.*
+import kotlin.io.path.Path
+
+val stateDir = Path(System.getProperty("user.home"), "Library/Application Support/Raft/hands-updates")
+// jpackage launchers set jpackage.app-path to .../Raft.app/Contents/MacOS/Raft
+val installRoot = Path(System.getProperty("jpackage.app-path")).parent.parent.parent
+
+val updater = HandsDesktopUpdater(
+    appSlug = "raft-desktop",
+    currentVersionCode = 1004000,       // this build's --version-code
+    installRoot = installRoot,
+    stateDir = stateDir,
+    deviceId = loadOrCreateDeviceId(),  // a UUID you store once per install
+)
+
+fun main() = application {
+    Window(onCloseRequest = ::exitApplication, title = "Raft") {
+        var ready by remember { mutableStateOf<PreparedUpdate?>(null) }
+        LaunchedEffect(Unit) {
+            updater.markLaunchSucceeded()   // the window is up: this version works
+            ready = withContext(Dispatchers.IO) {
+                updater.loadPrepared() ?: when (val check = updater.checkForUpdate()) {
+                    is UpdateCheck.Available -> updater.prepare(check) { /* progress */ }
+                    is UpdateCheck.NoUpdate -> null
+                }
+            }
+        }
+        ready?.let { update ->
+            Button(onClick = { updater.installAndRestart(update); exitApplication() }) {
+                Text("Restart to update to ${update.release.version}")
+            }
+        }
+    }
+}
+```
+
+| Call | When | What it does |
+| --- | --- | --- |
+| `checkForUpdate()` | At startup and periodically, off the UI thread | The [update check](#check-for-an-update); `NoUpdate` or `Available` (with `forceUpdate`) |
+| `prepare(update, progress)` | Right after an `Available` check (its URLs expire) | Builds and verifies `stateDir/staging/<version_code>/<root>` from unchanged installed files plus downloads; on failure removes it and throws, the install is untouched |
+| `installAndRestart(prepared)` | When the user agrees to restart; then exit | Starts a detached helper that waits for the app to exit, moves the install to `stateDir/backup/`, moves the new tree in, relaunches, and rolls back if the new version does not confirm within 60 s |
+| `markLaunchSucceeded()` | Every start, once the app works (first window shown) | Confirms the launch to the helper; cleans old staging and backups |
+
+`stateDir` belongs to the app and holds staged trees, one backup of the
+previous version, the helper script and its log: use
+`~/Library/Application Support/<App>/hands-updates` on macOS and
+`~/.local/state/<app>/hands-updates` on Linux, outside the install and
+preferably on the same volume, so the swap is a rename. The user must be able
+to rename the install directory. On Linux, pass `launcher` (for example
+`bin/Raft`) to `installAndRestart` unless the running executable is inside the
+install directory. Windows can check and prepare, but `installAndRestart` is
+not implemented there yet.
+
 ## Integrity and signing
 
 Every file is addressed and checked by SHA-256: Hands refuses an upload
