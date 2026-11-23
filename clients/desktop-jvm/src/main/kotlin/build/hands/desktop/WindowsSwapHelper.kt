@@ -206,7 +206,8 @@ while (-not (MarkerSays)) {
 
 Remove-Item -LiteralPath ${'$'}StagingDir -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem -LiteralPath ${'$'}BackupDir -Force -ErrorAction SilentlyContinue |
-  Where-Object { ${'$'}_.FullName -ne ${'$'}Backup } |
+  # By name: the same directory can be spelled two ways (an 8.3 short name in the temp path).
+  Where-Object { ${'$'}_.Name -ne [System.IO.Path]::GetFileName(${'$'}Backup) } |
   ForEach-Object { Remove-Item -LiteralPath ${'$'}_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 Finish 'installed'
 """.trimStart()
