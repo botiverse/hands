@@ -465,6 +465,56 @@ That read carries no review state: `completed` does not mean approved or
 published. `--json` gives the same as JSON (`track_contents`). Viewer role is
 enough.
 
+A live read is paid for from the app's shared read quota (see the next
+section). When that has no room left, Hands does not call Google for the
+track; it shows the stored answer as for a failed read, with
+`play_quota_exceeded` and a quota line saying how many reads were used, when
+the quota resets, and whether Hands' own budget or Google said it is used up
+(`quota.source` is `hands_budget` or `google` in `--json`).
+
+## Google Play: read quota
+
+Google allows `tracks.releases.list` (reading a track's releases and their
+review state) about 12 times per app per hour, measured on 2026-11-22; the
+count resets around minute :10 of each hour. Several parts of Hands use those
+reads: the hourly poll, `play review-status --live`, the stats page, the
+in-review check before a promotion with `--cancel-in-review`, and
+`play-send-for-review` (which reads the track twice to record the release
+state before and after). Hands keeps one count per app for all of them, so one
+caller cannot use up what another needs:
+
+- the check before a promotion can use all 12;
+- reads a person or agent asked for (`review-status --live`, the stats page's
+  first read of a track) can use up to 8, leaving 4 for promotions;
+- the hourly poll can use up to 4 (one read per track), and when it has no room
+  it skips the app and reads it again just after the reset.
+
+`play-send-for-review` is counted after it runs; Hands cannot hold it back.
+When Google itself answers that the quota is used up, Hands makes no further
+reads for that app until the reset, because Google's count can include reads
+Hands did not make. A promotion whose in-review check cannot finish because of
+the quota fails closed (`review_state_unreadable`) and its error carries
+`reset_at`.
+
+See what is used and what is left:
+
+```bash
+hands quota raft-android
+```
+
+```text
+QUOTA                             SCOPE           USED  GATE  INTERACTIVE  BACKGROUND  RESETS
+google_play tracks.releases.list  build.raft.app  5/12  7     3            0           2026-11-22T14:10:00.000Z
+```
+
+`GATE`, `INTERACTIVE` and `BACKGROUND` are the reads left for the promotion
+check, for requested reads, and for the poll. `--json` prints the API answer
+(`GET /api/apps/:appId/quota`): `quotas[]` with `key`, `service`, `operation`,
+`scope`, `scope_key`, `limit`, `used`, `remaining.{gate,interactive,background}`,
+`reset_at`, `exhausted_until` and `source`. Only quotas that apply to the app
+are listed: an Android app with a verified Google Play connection. Viewer role
+is enough; the command never calls Google.
+
 ## Google Play: when a Play write gets no response
 
 A Play write can finish on Google Play after the CLI has given up waiting

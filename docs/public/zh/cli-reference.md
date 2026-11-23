@@ -352,6 +352,31 @@ hands play review-status raft-android
 
 输出当前在审核中的内容（轨道和 versionCode）、生产轨道的 versionCode，以及每个轨道上各个版本的状态：`IN_REVIEW`、`APPROVED_NOT_PUBLISHED`、`NOT_APPROVED`、`PUBLISHED`、`DRAFT`。Google 每个应用每小时只允许读取大约 12 次（每条轨道算一次），所以默认显示 Hands 最近一次从 Play 读到的结果（每小时的轮询或任何人的实时读取）和读取时间；加 `--live` 会立即读取 Play，并把结果存下来供其他人使用。推送前的检查仍然实时读取。实时读取失败时，显示最近一次存下的结果并注明原因。如果某条轨道没有存下的结果、实时读取又失败，会改为显示轮询记录的最近状态和记录时间，并注明；同时通过 Play edit（推送用的同一套接口，不做任何改动）读取该轨道当前的内容，在「On the track now」下列出每个版本的发布状态（`draft`、带放量比例的 `inProgress`、`halted`、`completed`）和 versionCode。这部分不含审核状态：`completed` 不代表已过审或已发布。`--json` 输出同样内容的 JSON（`track_contents`）。viewer 角色即可。
 
+实时读取从该应用共享的读取配额中扣除（见下一节）。配额没有余量时，Hands 不会为该轨道调用 Google，而是像读取失败一样显示存下的结果，注明 `play_quota_exceeded`，并用一行配额说明已用的次数、重置时间，以及是 Hands 自己的预算还是 Google 表示已用完（`--json` 中 `quota.source` 为 `hands_budget` 或 `google`）。
+
+## Google Play：读取配额
+
+Google 允许每个应用每小时调用约 12 次 `tracks.releases.list`（读取轨道上的版本及其审核状态），这是 2026-11-22 实测的数值；计数在每小时第 10 分钟左右重置。Hands 有多处会用到这些读取：每小时的轮询、`play review-status --live`、统计页面、带 `--cancel-in-review` 的推送前审核检查，以及 `play-send-for-review`（它会读取两次轨道，记录提交前后的版本状态）。Hands 为每个应用维护一份共同的计数，避免一处用完另一处需要的次数：
+
+- 推送前的检查最多可以用满 12 次；
+- 由人或 agent 发起的读取（`review-status --live`、统计页面首次读取某条轨道）最多用到 8 次，为推送留出 4 次；
+- 每小时轮询最多用到 4 次（每条轨道一次），没有余量时跳过该应用，在重置后不久再读取。
+
+`play-send-for-review` 在执行之后计数，Hands 无法提前拦住它。如果 Google 自己回答配额已用完，Hands 在重置前不再为该应用读取，因为 Google 的计数可能包含不是 Hands 发出的读取。推送前的审核检查因配额而无法完成时，推送按失败关闭处理（`review_state_unreadable`），错误中带有 `reset_at`。
+
+查看已用和剩余的次数：
+
+```bash
+hands quota raft-android
+```
+
+```text
+QUOTA                             SCOPE           USED  GATE  INTERACTIVE  BACKGROUND  RESETS
+google_play tracks.releases.list  build.raft.app  5/12  7     3            0           2026-11-22T14:10:00.000Z
+```
+
+`GATE`、`INTERACTIVE` 和 `BACKGROUND` 分别是推送检查、主动发起的读取和轮询还剩的次数。`--json` 输出 API 的原始回答（`GET /api/apps/:appId/quota`）：`quotas[]`，包含 `key`、`service`、`operation`、`scope`、`scope_key`、`limit`、`used`、`remaining.{gate,interactive,background}`、`reset_at`、`exhausted_until` 和 `source`。只列出适用于该应用的配额：已验证 Google Play 连接的 Android 应用。viewer 角色即可；这个命令不会调用 Google。
+
 ## Google Play：Play 写操作没有响应时
 
 CLI 放弃等待（`fetch failed`）之后，Play 写操作仍可能在 Google Play 上完成。此时 CLI 会报告 `no response from Hands`，且不会自动重试。再次运行前，先用 `hands releases receipts <app> <release>` 和 `hands releases play-status <app> <release>` 检查，并与 Play Console 对照。

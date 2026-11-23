@@ -8,6 +8,7 @@ import { storeGooglePlayBinding } from "../src/lib/google_play_bindings";
 import { requireAppRole } from "../src/lib/permissions";
 import { handleProxyPlayApi, normalizePlayApiPathForPackage } from "../src/routes/play_api_proxy";
 import { handleAppStats } from "../src/routes/stats";
+import { handleGetAppQuota } from "../src/routes/upstream_quota";
 
 let privateKey: string;
 beforeAll(async () => {
@@ -170,6 +171,7 @@ async function setupHarness(options: {
   });
   app.post("/api/apps/:appId/distributions/play/api", requireAppRole("viewer"), handleProxyPlayApi);
   app.get("/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
+  app.get("/api/apps/:appId/quota", requireAppRole("viewer"), handleGetAppQuota);
 
   const request = (path: string, init?: RequestInit) =>
     app.fetch(new Request(`https://hands.test${path}`, init), env, executionContext);
@@ -305,5 +307,66 @@ describe("GET /api/apps/:appId/stats", () => {
     expect(calls).toBe(4);
     expect(second.stores.google_play.live_tracks).toEqual(first.stores.google_play.live_tracks);
     expect(second.stores.google_play.live_tracks[0]).toMatchObject({ read_at: expect.any(Number), releases: [{ version_codes: [1] }] });
+  });
+
+  it("leaves a never-read track unread when the interactive budget is used up, without failing the page", async () => {
+    let calls = 0;
+    const { sqlite, request } = await setupHarness({ role: "viewer", adapterOverrides: {
+      listReleaseStates: async (input) => {
+        calls++;
+        const track = input.tracks[input.handsTrack as "internal"];
+        return { ok: true, value: [{ releaseName: "1.0", track, activeArtifacts: [{ versionCode: 1 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_PUBLISHED" }] };
+      },
+    } });
+    // Six calls spent this hour: two first reads fit under the interactive ceiling of eight.
+    spendPlayQuota(sqlite, 6);
+    const res = await request("/api/apps/app/stats?window_days=30");
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(calls).toBe(2);
+    expect(body.stores.google_play.live_tracks.map((t: any) => t.hands_track)).toEqual(["production", "open"]);
+    expect(body.stores.google_play.live_error).toBeNull();
+  });
+});
+
+/** Spend `used` calls of this hour's Play release-listing quota for the test package. */
+function spendPlayQuota(sqlite: Database.Database, used: number, exhaustedUntil: number | null = null) {
+  const now = Date.now();
+  const start = Math.floor((now - 600_000) / 3_600_000) * 3_600_000 + 600_000;
+  sqlite.prepare(`INSERT INTO upstream_quota_usage (quota_key, scope_key, window_start, used, exhausted_until, updated_at)
+    VALUES ('google_play:tracks.releases.list', 'build.raft.app', ?, ?, ?, ?)`).run(start, used, exhaustedUntil, now);
+  return { reset_at: start + 3_600_000 };
+}
+
+describe("GET /api/apps/:appId/quota", () => {
+  it("lists Play's release-listing quota for an Android app with a verified binding, to viewers", async () => {
+    const { sqlite, request } = await setupHarness({ role: "viewer" });
+    sqlite.exec("UPDATE app_google_play_bindings SET verification_state='verified', enabled=1");
+    const { reset_at } = spendPlayQuota(sqlite, 5);
+    const res = await request("/api/apps/app/quota");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ quotas: [{
+      key: "google_play:tracks.releases.list", service: "google_play", operation: "tracks.releases.list",
+      scope: "package", scope_key: "build.raft.app", limit: 12, used: 5,
+      remaining: { gate: 7, interactive: 3, background: 0 }, reset_at, exhausted_until: null,
+      source: "measured 2026-11-22",
+    }] });
+  });
+
+  it("reports an exhausted quota as nothing left until it resets", async () => {
+    const { sqlite, request } = await setupHarness({ role: "viewer" });
+    const now = Date.now();
+    const start = Math.floor((now - 600_000) / 3_600_000) * 3_600_000 + 600_000;
+    spendPlayQuota(sqlite, 2, start + 3_600_000);
+    const body = await (await request("/api/apps/app/quota")).json() as any;
+    expect(body.quotas[0]).toMatchObject({ used: 2, exhausted_until: start + 3_600_000, remaining: { gate: 0, interactive: 0, background: 0 } });
+  });
+
+  it("lists nothing for an app without a verified Play binding", async () => {
+    const { sqlite, request } = await setupHarness({ role: "viewer" });
+    sqlite.exec("UPDATE app_google_play_bindings SET verification_state='stale'");
+    expect(await (await request("/api/apps/app/quota")).json()).toEqual({ quotas: [] });
+    sqlite.exec("UPDATE app_google_play_bindings SET verification_state='verified'; UPDATE apps SET platform='ios'");
+    expect(await (await request("/api/apps/app/quota")).json()).toEqual({ quotas: [] });
   });
 });

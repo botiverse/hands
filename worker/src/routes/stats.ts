@@ -10,7 +10,7 @@
  *    via the app's stored ASC credentials (without exposing credentials), plus the
  *    daily App Store metrics Hands ingested from Analytics Reports (D1, no live call).
  */
-import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
+import { listReleaseStatesBudgeted } from "../lib/play_release_poll";
 import { loadTrackSnapshots, saveTrackSnapshot, type TrackSnapshot } from "../lib/play_track_snapshots";
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
@@ -327,12 +327,15 @@ async function queryGooglePlayStats(
         continue;
       }
       try {
-        const res = await listReleaseStatesWithRetry(c.env.PLAY_RELEASE_SERVICE, {
+        // Paid for from the interactive tier of the shared quota ledger. With no
+        // room left the track stays unread (as if Hands had no data for it).
+        const { reply: res, quota } = await listReleaseStatesBudgeted(c.env.DB, c.env.PLAY_RELEASE_SERVICE, {
           credential: binding.credential,
           packageName: pkgName,
           tracks,
           handsTrack,
-        });
+        }, "interactive");
+        if (quota?.source === "hands_budget") continue;
         if (res.ok) {
           const readAt = Date.now();
           await saveTrackSnapshot(c.env.DB, appId, pkgName, tracks[handsTrack], res.value, readAt).catch(() => undefined);

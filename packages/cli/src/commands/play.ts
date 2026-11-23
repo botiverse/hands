@@ -263,6 +263,7 @@ type PlayReviewStatus = {
     read_at?: number;
     error_code?: string;
     upstream?: Upstream;
+    quota?: { used: number; limit: number; reset_at: number; source: "hands_budget" | "google" };
     releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
     track_contents?: Array<{ release_name: string | null; status: string; version_codes: number[]; user_fraction?: number }>;
   }>;
@@ -277,6 +278,11 @@ const readFailure = (code?: string) => code === "play_quota_exceeded"
   ? "Play's hourly read quota is used up (play_quota_exceeded)"
   : `Play refused the read (${code})`;
 
+/** Where a used-up read quota was decided, and when it resets. */
+const quotaLine = (quota?: PlayReviewStatus["tracks"][number]["quota"]) => quota
+  ? `Quota: ${quota.used} of ${quota.limit} reads used this hour (${quota.source === "google" ? "Google said it is used up" : "Hands' budget, Google not called"}); resets at ${new Date(quota.reset_at).toISOString()}`
+  : null;
+
 export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   const lines = [`Google Play · ${res.package_name} · read ${new Date(res.read_at).toISOString()}`];
   lines.push(res.in_review.length
@@ -289,6 +295,8 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
       lines.push(`${head}: ${readFailure(track.error_code)} and Hands has no stored state`);
       const said = upstreamLine(track.upstream);
       if (said) lines.push(`  ${said}`);
+      const quota = quotaLine(track.quota);
+      if (quota) lines.push(`  ${quota}`);
     } else {
       const readAt = track.read_at ? new Date(track.read_at).toISOString() : "";
       lines.push(track.source === "live" ? `${head}: live`
@@ -296,6 +304,8 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
         : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
       const saidHere = upstreamLine(track.upstream);
       if (saidHere) lines.push(`  ${saidHere}`);
+      const quotaHere = quotaLine(track.quota);
+      if (quotaHere) lines.push(`  ${quotaHere}`);
       if (track.releases.length === 0) lines.push("  (no releases)");
       for (const r of track.releases) {
         const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";

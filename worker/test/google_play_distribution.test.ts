@@ -2323,6 +2323,9 @@ describe("durable Google Play notifications", () => {
     await pollGooglePlayReleases(h.env, 1000);
     expect(calls).toBe(1);
     expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_access_state").get()).toEqual({ n: 0 });
+    // Google's count may include calls Hands did not make: nothing reads again before the reset (00:10).
+    expect(h.sqlite.prepare("SELECT used, exhausted_until FROM upstream_quota_usage").get()).toEqual({ used: 4, exhausted_until: 600_000 });
+    expect(h.sqlite.prepare("SELECT next_poll_at FROM google_play_poll_schedule").get()).toEqual({ next_poll_at: 660_000 });
   });
   it("polls enabled bindings only, retains state on API failure, and respects schedule", async () => {
     const h = await readyRelease(); notificationSubscriptions(h.sqlite); let calls = 0;
@@ -2331,12 +2334,45 @@ describe("durable Google Play notifications", () => {
       return input.handsTrack === "internal" ? { ok: true, value: [stateSummary] }
         : { ok: false, error: { status: 403, code: "play_api_rejected", message: "not authorized" } };
     } });
-    // Four tracks (internal, closed, open testing, production); each refused read is retried once.
-    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(7);
+    // Four tracks (internal, closed, open testing, production). The round pays
+    // for all four up front, which is the whole background tier, so a refused
+    // read gets no retry: the ledger has no room for it.
+    await pollGooglePlayReleases(h.env, 1000); expect(calls).toBe(4);
+    expect(h.sqlite.prepare("SELECT used FROM upstream_quota_usage WHERE scope_key='build.raft.app'").get()).toEqual({ used: 4 });
     expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_release_observations").get()).toEqual({ n: 1 });
-    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(7);
+    await pollGooglePlayReleases(h.env, 2000); expect(calls).toBe(4);
     h.sqlite.exec("UPDATE app_google_play_bindings SET enabled=0");
-    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(7);
+    await pollGooglePlayReleases(h.env, 400000); expect(calls).toBe(4);
+  });
+  it("retries a refused read once when the background tier still has room", async () => {
+    const h = await readyRelease(); const reads: string[] = [];
+    // closed shares the internal Play track: three distinct tracks leave one call of room.
+    h.sqlite.exec("UPDATE app_google_play_bindings SET closed_track=internal_track");
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async (input) => {
+      reads.push(input.handsTrack);
+      return input.handsTrack === "internal" ? { ok: true, value: [] }
+        : { ok: false, error: { status: 403, code: "play_api_rejected", message: "not authorized" } };
+    } });
+    await pollGooglePlayReleases(h.env, 1000);
+    expect(reads).toEqual(["internal", "open", "open", "production"]);
+    expect(h.sqlite.prepare("SELECT used FROM upstream_quota_usage").get()).toEqual({ used: 4 });
+  });
+  it("skips an app whose budget is used up, without alerting, and polls it again after the reset", async () => {
+    const h = await readyRelease(); let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => { calls++; return { ok: true, value: [] }; } });
+    const now = Date.UTC(2026, 10, 22, 13, 20);
+    const windowStart = Date.UTC(2026, 10, 22, 13, 10);
+    // Interactive reads already spent five of this hour's twelve calls.
+    h.sqlite.prepare(`INSERT INTO upstream_quota_usage (quota_key, scope_key, window_start, used, exhausted_until, updated_at)
+      VALUES ('google_play:tracks.releases.list', 'build.raft.app', ?, 5, NULL, ?)`).run(windowStart, now);
+    await pollGooglePlayReleases(h.env, now);
+    expect(calls).toBe(0);
+    expect(h.sqlite.prepare("SELECT used FROM upstream_quota_usage").get()).toEqual({ used: 5 });
+    expect(h.sqlite.prepare("SELECT count(*) n FROM google_play_access_state").get()).toEqual({ n: 0 });
+    expect(h.sqlite.prepare("SELECT next_poll_at FROM google_play_poll_schedule WHERE app_id='app'").get())
+      .toEqual({ next_poll_at: windowStart + 3_600_000 + 60_000 });
+    await pollGooglePlayReleases(h.env, windowStart + 3_600_000 + 60_000);
+    expect(calls).toBe(4);
   });
 });
 
@@ -2483,6 +2519,39 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
       const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
       expect(response.status).toBe(502);
       expect(await response.json()).toMatchObject({ error: { failure_code: "review_state_unreadable" } });
+    });
+
+    it("stops the in-review read when the quota is used up, and says when it resets", async () => {
+      const h = await readyRelease();
+      let reads = 0;
+      const seen: { input?: Record<string, unknown> } = {};
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub(seen), listReleaseStates: async (input: any) => {
+        reads++; return inReview(productionInReview)(input);
+      } } as never;
+      // Two calls left in the window: the gate reads two tracks, then stops.
+      const { reset_at } = spendPlayQuota(h.sqlite, 10);
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(502);
+      const body = await response.json() as any;
+      expect(body.error).toMatchObject({ code: "play_api_error", gate: "review_state", failure_code: "review_state_unreadable", reset_at });
+      expect(body.error.message).toContain(new Date(reset_at).toISOString());
+      expect(body.error.message).toContain("quota is used up");
+      expect(reads).toBe(2);
+      expect(seen.input).toBeUndefined();
+    });
+
+    it("stops the in-review read on Google's quota answer without spending the retries", async () => {
+      const h = await readyRelease();
+      let reads = 0;
+      h.env.PLAY_RELEASE_SERVICE = { ...promoteStub({}), listReleaseStates: async () => {
+        reads++; return { ok: false, error: { status: 503, code: "play_quota_exceeded", message: "quota" } };
+      } } as never;
+      const response = await promoteProduction(h, { cancel_in_review_version_codes: [12400004] });
+      expect(response.status).toBe(502);
+      const body = await response.json() as any;
+      expect(body.error).toMatchObject({ failure_code: "review_state_unreadable", reset_at: expect.any(Number) });
+      expect(reads).toBe(1);
+      expect(h.sqlite.prepare("SELECT exhausted_until FROM upstream_quota_usage").get()).toEqual({ exhausted_until: body.error.reset_at });
     }, 20_000);
 
     it("refuses when a release in review has no versionCode to name", async () => {
@@ -2665,6 +2734,22 @@ describe("Play promote with changes_not_sent_for_review, then send-for-review", 
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ error: { code: "edit_conflict", gate: "edit_lock" } });
     expect(h.sqlite.prepare("SELECT revision FROM releases WHERE id='release'").get()).toEqual({ revision: 2 });
+  });
+
+  it("counts the two release listings the adapter makes inside send-for-review", async () => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ sendForReview: async () => ({ ok: true, value: sendValue() }) });
+    expect((await sendForReview(h)).status).toBe(200);
+    expect(h.sqlite.prepare("SELECT quota_key, scope_key, used FROM upstream_quota_usage").all()).toEqual([
+      { quota_key: "google_play:tracks.releases.list", scope_key: "build.raft.app", used: 2 }]);
+  });
+
+  it("counts only the first listing when send-for-review stops before the commit", async () => {
+    const h = await uploadedNotSent();
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ sendForReview: async () => ({ ok: false, error: {
+      status: 409, code: "play_release_not_on_track", message: "not on track" } }) });
+    expect((await sendForReview(h)).status).toBe(409);
+    expect(h.sqlite.prepare("SELECT used FROM upstream_quota_usage").all()).toEqual([{ used: 1 }]);
   });
 
   it.each([
@@ -3253,6 +3338,15 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
   });
 });
 
+/** Spend `used` calls of this hour's Play release-listing quota for the test package. */
+function spendPlayQuota(sqlite: Database.Database, used: number, exhaustedUntil: number | null = null) {
+  const now = Date.now();
+  const start = Math.floor((now - 600_000) / 3_600_000) * 3_600_000 + 600_000;
+  sqlite.prepare(`INSERT INTO upstream_quota_usage (quota_key, scope_key, window_start, used, exhausted_until, updated_at)
+    VALUES ('google_play:tracks.releases.list', 'build.raft.app', ?, ?, ?, ?)`).run(start, used, exhaustedUntil, now);
+  return { reset_at: start + 3_600_000 };
+}
+
 describe("app-wide Play review status", () => {
   it("reads every bound track live, and falls back to the poll's stored states when Play refuses one", async () => {
     const h = await readyRelease();
@@ -3325,6 +3419,41 @@ describe("app-wide Play review status", () => {
     const refused = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
     expect(refused.tracks[0]).toMatchObject({ source: "cached", error_code: "play_quota_exceeded" });
     expect(refused.tracks[0].read_at).toBe(live.tracks[0].read_at);
+  });
+
+  it("does not call Google when the interactive budget is used up, and falls back with the quota", async () => {
+    const h = await readyRelease();
+    let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async (input: any) => {
+      calls++;
+      return { ok: true, value: [{ releaseName: "1.28.0", track: input.tracks[input.handsTrack], activeArtifacts: [{ versionCode: 12800012 }], releaseLifecycleState: "RELEASE_LIFECYCLE_STATE_IN_REVIEW" }] };
+    } } as any);
+    await pollGooglePlayReleases(h.env, 1_000);
+    expect(calls).toBe(4);
+    // Eight calls this hour leave nothing for interactive reads (the gate keeps four).
+    const { reset_at } = spendPlayQuota(h.sqlite, 8);
+    const body = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
+    expect(calls).toBe(4);
+    expect(body.tracks).toHaveLength(4);
+    for (const track of body.tracks) {
+      expect(track).toMatchObject({ source: "cached", read_at: 1_000, error_code: "play_quota_exceeded",
+        quota: { used: 8, limit: 12, reset_at, source: "hands_budget" } });
+    }
+    expect(h.sqlite.prepare("SELECT used FROM upstream_quota_usage WHERE window_start > 0").get()).toEqual({ used: 8 });
+  });
+
+  it("marks the quota exhausted when Google says so, and stops asking for the rest of the window", async () => {
+    const h = await readyRelease();
+    let calls = 0;
+    h.env.PLAY_RELEASE_SERVICE = playAdapterStub({ listReleaseStates: async () => {
+      calls++; return { ok: false, error: { status: 503, code: "play_quota_exceeded", message: "quota" } };
+    } } as any);
+    const body = await (await h.request("/api/apps/app/distributions/play/review-status?live=1")).json() as any;
+    expect(calls).toBe(1);
+    expect(body.tracks[0]).toMatchObject({ source: "unavailable", error_code: "play_quota_exceeded", quota: { used: 1, limit: 12, source: "google" } });
+    expect(body.tracks.slice(1).every((t: any) => t.error_code === "play_quota_exceeded" && t.quota.source === "hands_budget")).toBe(true);
+    const row = h.sqlite.prepare("SELECT exhausted_until FROM upstream_quota_usage").get() as { exhausted_until: number };
+    expect(row.exhausted_until).toBe(body.tracks[0].quota.reset_at);
   });
 
   it("says what Google answered when a live read fails", async () => {
