@@ -76,14 +76,14 @@ describe("readLiveRaftRole", () => {
     await readLiveRaftRole(env, "srv-1", "sub-1", 1_000);
     roleStatus = 401;
     const failed = await readLiveRaftRole(env, "srv-1", "sub-2", 1_000);
-    expect(failed).toEqual({ ok: false, reason: "role_401" });
+    expect(failed).toEqual({ ok: false, reason: "role_401", revoked: true });
     expect(tokenSerial).toBe(2);
     resetLiveRoleCache();
     roleStatus = 503;
-    expect(await readLiveRaftRole(env, "srv-1", "sub-3", 1_000)).toEqual({ ok: false, reason: "role_503" });
+    expect(await readLiveRaftRole(env, "srv-1", "sub-3", 1_000)).toEqual({ ok: false, reason: "role_503", revoked: false });
     lookupStatus = 404;
     resetLiveRoleCache();
-    expect(await readLiveRaftRole(env, "srv-1", "sub-1", 1_000)).toEqual({ ok: false, reason: "lookup_404" });
+    expect(await readLiveRaftRole(env, "srv-1", "sub-1", 1_000)).toEqual({ ok: false, reason: "lookup_404", revoked: true });
   });
 
   it("remembers a failed read per server for 30 seconds", async () => {
@@ -91,13 +91,13 @@ describe("readLiveRaftRole", () => {
     await readLiveRaftRole(env, "srv-1", "sub-1", 1_000);
     const made = calls.length;
     roleStatus = 200;
-    expect(await readLiveRaftRole(env, "srv-1", "sub-2", 1_000 + 29_999)).toEqual({ ok: false, reason: "role_503" });
+    expect(await readLiveRaftRole(env, "srv-1", "sub-2", 1_000 + 29_999)).toEqual({ ok: false, reason: "role_503", revoked: false });
     expect(calls.length).toBe(made);
     expect(await readLiveRaftRole(env, "srv-1", "sub-2", 1_000 + 30_000)).toEqual({ ok: true, role: "member" });
   });
 
   it("does nothing without client credentials", async () => {
-    expect(await readLiveRaftRole({}, "srv-1", "sub-1")).toEqual({ ok: false, reason: "client_credentials_missing" });
+    expect(await readLiveRaftRole({}, "srv-1", "sub-1")).toEqual({ ok: false, reason: "client_credentials_missing", revoked: false });
     expect(calls).toHaveLength(0);
   });
 });
@@ -136,7 +136,27 @@ describe("liveMembershipRefusal", () => {
     role = "admin";
     const { res, writes } = await gate("on", account());
     expect(res.status).toBe(200);
-    expect(writes).toEqual([{ sql: "UPDATE raft_accounts SET server_role = ?1 WHERE id = ?2", args: ["admin", "acct-1"] }]);
+    expect(writes[0]).toEqual({ sql: "UPDATE raft_accounts SET server_role = ?1 WHERE id = ?2", args: ["admin", "acct-1"] });
+    // The Raft-created membership follows the Raft admin role.
+    expect(writes[1]?.sql).toMatch(/^UPDATE org_members SET org_role = \?1/);
+    expect(writes[1]?.args).toEqual(["admin", "raft_srv-1", "acct-1"]);
+  });
+
+  it("on: Hands no longer installed on the server ends reads too", async () => {
+    lookupStatus = 404;
+    const read = await gate("on", account(), "GET");
+    expect(read.res.status).toBe(403);
+    expect((await read.res.json() as { code: string }).code).toBe("RAFT_INSTALLATION_GONE");
+  });
+
+  it("maps live Raft roles to the organization role of a Raft-created membership", async () => {
+    const { raftOrgRoleFor } = await import("../src/middleware/auth");
+    expect(raftOrgRoleFor("owner", "member")).toBe("owner");
+    expect(raftOrgRoleFor("admin", "owner")).toBe("admin");
+    expect(raftOrgRoleFor("member", "admin")).toBe("member");
+    expect(raftOrgRoleFor("member", "owner")).toBe("member");
+    expect(raftOrgRoleFor("member", "viewer")).toBeNull();
+    expect(raftOrgRoleFor("member", "member")).toBeNull();
   });
 
   it("on: a read error refuses writes but not reads", async () => {

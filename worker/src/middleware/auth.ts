@@ -212,6 +212,14 @@ export async function liveMembershipRefusal(
   if (!account.org_id || account.org_id !== `raft_${account.server_id}`) return null;
   const result = await readLiveRaftRole(c.env, account.server_id, account.provider_subject);
   const enforce = mode === "on";
+  if (!result.ok && result.revoked) {
+    // Hands is no longer installed (or is disabled) on that server: access ends
+    // for reads and writes alike (RFC 079 §5.6).
+    console.warn(JSON.stringify({ event: "raft_installation_gone", mode, reason: result.reason, server_id: account.server_id }));
+    if (!enforce) return null;
+    return c.json({ error: "Hands is no longer installed on this Raft server, so its Hands organization is not available.",
+      code: "RAFT_INSTALLATION_GONE" }, 403);
+  }
   if (!result.ok) {
     console.warn(JSON.stringify({ event: "raft_live_role_unavailable", mode, reason: result.reason, server_id: account.server_id }));
     const method = c.req.method.toUpperCase();
@@ -236,6 +244,34 @@ export async function liveMembershipRefusal(
       .bind(result.role, account.id).run().catch(() => undefined);
     account.server_role = result.role;
   }
+  const orgRole = raftOrgRoleFor(result.role, account.org_role ?? null);
+  if (orgRole && orgRole !== account.org_role) {
+    console.info(JSON.stringify({ event: "raft_org_role_follows_raft", mode, from: account.org_role, to: orgRole, org_id: account.org_id }));
+    if (enforce) {
+      // Only memberships Hands created from the Raft role (invited_by NULL) follow
+      // it; an invitation's role is Hands' own. The org's last owner is never
+      // demoted, so an organization always keeps one.
+      const changed = await c.env.DB.prepare(
+        `UPDATE org_members SET org_role = ?1
+         WHERE org_id = ?2 AND account_id = ?3 AND invited_by IS NULL
+           AND NOT (org_role = 'owner' AND ?1 <> 'owner'
+             AND (SELECT COUNT(*) FROM org_members WHERE org_id = ?2 AND org_role = 'owner') <= 1)`,
+      ).bind(orgRole, account.org_id, account.id).run().catch(() => null);
+      if (changed?.meta?.changes === 1) account.org_role = orgRole;
+    }
+  }
+  return null;
+}
+
+/**
+ * The organization role a Raft-created membership should have for a live Raft
+ * role: Raft owners and admins are the organization's owners and admins; a Raft
+ * member who holds owner or admin only because Raft once said so goes back to
+ * member. Member and viewer set in Hands for a Raft member stay. Null: no change.
+ */
+export function raftOrgRoleFor(raftRole: string | null, current: string | null): "owner" | "admin" | "member" | null {
+  if (raftRole === "owner" || raftRole === "admin") return raftRole;
+  if (raftRole === "member" && (current === "owner" || current === "admin")) return "member";
   return null;
 }
 

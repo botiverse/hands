@@ -40,7 +40,7 @@ async function request(
   const DB = {
     prepare: () => ({ bind: () => ({ first: async () => { dbReads += 1; return null; } }) }),
   };
-  const env = { DB, HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-allowed" } as unknown as Env;
+  const env = { DB, HANDS_ADMIN_ALLOWED_SERVER_IDS: "server-allowed", RAFT_LIVE_ROLE_MODE: "off" } as unknown as Env;
   return app.request("https://app.hands.build/admin/overview", {}, env);
 }
 const withRole = (server_role: string | null, server_id = "server-allowed") =>
