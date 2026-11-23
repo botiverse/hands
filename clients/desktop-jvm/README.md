@@ -12,8 +12,8 @@ when the new version does not confirm its launch. Server contract:
   needs the `java.net.http` module.
 - One dependency: `org.jetbrains.kotlinx:kotlinx-serialization-json` (JSON
   tree parsing only; no compiler plugin).
-- macOS and Linux. On Windows `checkForUpdate` and `prepare` work, and
-  `installAndRestart` throws `UnsupportedOperationException`.
+- macOS, Linux and Windows (the Windows swap helper needs Windows PowerShell
+  5.1, which every supported Windows ships).
 
 ## API
 
@@ -95,6 +95,15 @@ detached, and returns. **The app must then exit**. The helper:
 
 It logs to `stateDir/hands-swap.log`; `lastInstallResult()` reads the outcome.
 
+On Windows the helper is `stateDir/hands-swap.ps1`, run by Windows PowerShell
+with the same steps, and the launcher (`launcher`, or this process's
+executable) is started directly with the relaunch arguments quoted for the
+Windows command line. Windows refuses to rename a directory while any process
+holds a file in it open (an antivirus scan, the indexer), so each move is
+retried for up to 15 s, and a move across volumes falls back to copy plus
+delete. Stopping an unconfirmed version is `CloseMainWindow`, then a forced
+stop after the grace time.
+
 ## Required app behaviour
 
 - Call `markLaunchSucceeded()` on every start once the app is known to work
@@ -116,9 +125,6 @@ It logs to `stateDir/hands-swap.log`; `lastInstallResult()` reads the outcome.
 - No `com.apple.quarantine` handling: files the app downloads itself are not
   quarantined.
 - No resumable downloads; a failed `prepare` starts again.
-- No read timeout on a stalled body stream beyond the TCP stack's; call
-  `prepare` from a thread you can abandon.
-- Windows swap helper.
 
 ## Build and test
 

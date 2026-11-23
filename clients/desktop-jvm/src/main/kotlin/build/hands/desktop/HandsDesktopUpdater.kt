@@ -188,9 +188,6 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
         appPid: Long,
         mode: RelaunchMode,
     ) {
-        if (Platform.os == "win32") {
-            throw UnsupportedOperationException("installAndRestart is not implemented on Windows yet; use the installer")
-        }
         val stagingDir = stateDir.resolve("staging").resolve(prepared.release.versionCode.toString())
         if (prepared.stagedRoot.parent != stagingDir || !Files.isDirectory(prepared.stagedRoot) ||
             !Files.isRegularFile(stagingDir.resolve(Stager.RECEIPT))
@@ -236,6 +233,12 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
         Files.createDirectories(stateDir)
         Files.deleteIfExists(marker)
         Files.deleteIfExists(resultFile)
+        if (Platform.os == "win32") {
+            val script = stateDir.resolve(WindowsSwapHelper.SCRIPT)
+            WindowsSwapHelper.write(spec, script)
+            WindowsSwapHelper.launch(script)
+            return
+        }
         val script = stateDir.resolve(SwapHelper.SCRIPT)
         SwapHelper.write(spec, script)
         SwapHelper.launch(script)
