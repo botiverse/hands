@@ -952,6 +952,23 @@ hands --json api GET /api/apps
 - **认证与角色控制不变。** 复用现有命令行登录或令牌；服务端执行与其他调用相同的角色检查。
 - 参数：`--param key=value`（可重复）、`--data <json|@file>`、`--output <file>`（二进制响应时必填）。全局 `--api` 和 `--json` 均有效。
 
+### 按日期范围统计
+
+`hands stats <app>` 默认统计最近 30 天（`--days N`，最多 365）。要指定范围，就给出 UTC 日期，首尾都包含（最多 365 天，`--to` 默认是今天）：
+
+```bash
+hands stats raft-android --from 2026-11-01 --to 2026-11-07 --json
+```
+
+返回里的 `from`、`to` 就是这个范围。直装部分会多出：
+
+- `direct.daily`：每天向 Hands 上报过的设备数（`[{date, active_devices}]`）；
+- `direct.active_devices_range`：整个范围内去重后的设备数；
+- `direct.by_country`：按国家去重的设备数（取设备当天第一次上报时网络所在的国家代码，不知道时为 `unknown`）；
+- `direct.recorded_since`：最早有按天数据的日期。Hands 从 2026-11-24 开始记录，更早的日期没有数据。
+
+这几项严格按范围计算，`--channel` 也生效。直装的其它数字（`direct.devices`、`by_version`、`by_channel`）仍然是从现在往前算，因为 Hands 对它们只保留每台设备最近一次上报。商店的每日指标（`stores.*.daily`、`totals`）按范围计算，`stores.app_store.by_territory` 给出 App Store 按地区的拆分。Google Play 暂时还没有按国家拆分。
+
 ### App Store 分析报表
 
 Apple 只有在应用存在「分析报表请求」后才会生成 App Store 分析报表（安装、删除、会话、活跃设备），而请求只能通过 API 创建。应用管理员执行一次即可：

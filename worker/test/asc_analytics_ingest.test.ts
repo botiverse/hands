@@ -15,6 +15,7 @@ import {
   ingestAscAnalyticsForApp,
   parseTsvStream,
   pollAscAnalytics,
+  queryAscAnalyticsByTerritory,
   queryAscAnalyticsDaily,
   SCHEDULED_BUDGET,
   segmentUrlHost,
@@ -241,6 +242,14 @@ describe("App Store analytics ingest", () => {
     // Territory is kept as the dimension.
     expect(h.sqlite.prepare("SELECT dimension_key, value FROM asc_analytics_daily WHERE instance_id='i-sess' AND metric='sessions' ORDER BY dimension_key").all())
       .toEqual([{ dimension_key: "JP", value: 5 }, { dimension_key: "US", value: 10 }]);
+    // Per territory over a range, with the same winning instance per date: the
+    // territories sum to the daily totals, and the range bounds the dates.
+    const territories = await queryAscAnalyticsByTerritory(h.env.DB, "app", "2026-11-01", "2026-11-30");
+    const sum = (m: "sessions" | "downloads_first_time") => territories.reduce((a, t) => a + (t[m] ?? 0), 0);
+    expect(sum("sessions")).toBe(23);
+    expect(sum("downloads_first_time")).toBe(7);
+    expect((await queryAscAnalyticsByTerritory(h.env.DB, "app", "2026-11-01", "2026-11-09")).reduce((a, t) => a + (t.sessions ?? 0), 0)).toBe(8);
+    expect((await queryAscAnalyticsDaily(h.env.DB, "app", "2026-11-01", "2026-11-09")).daily.map((d) => d.date)).toEqual(["2026-11-09"]);
 
     // The pre-signed URL never receives the ASC JWT.
     expect(segmentCalls(fetch)).toHaveLength(7);
@@ -593,7 +602,7 @@ describe("stats read at realistic volume", () => {
       GROUP BY app_id, instance_id, report_name, processing_date, date, metric`);
     h.sqlite.exec("ANALYZE");
 
-    const plan = (h.sqlite.prepare(`EXPLAIN QUERY PLAN ${ASC_DAILY_SQL.replace(/\?(\d+)/g, "?")}`).all("app", day(0), "app") as Array<{ detail: string }>)
+    const plan = (h.sqlite.prepare(`EXPLAIN QUERY PLAN ${ASC_DAILY_SQL.replace(/\?(\d+)/g, "?")}`).all("app", day(0), "9999-12-31", "app") as Array<{ detail: string }>)
       .map((r) => r.detail).join("\n");
     expect(plan).not.toMatch(/CORRELATED/);
 

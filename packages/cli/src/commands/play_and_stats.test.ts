@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { parseQueryParams, resolvePlayApiBody, registerPlayCommands } from "./play.js";
-import { formatAppStatsReport, formatAppStoreAnalytics, formatGooglePlayReports, registerStatsCommands } from "./stats.js";
+import { formatAppStatsReport, formatAppStoreAnalytics, formatDirectDaily, formatGooglePlayReports, formatTerritories, registerStatsCommands } from "./stats.js";
 
 const APP_ID = "a78f3891-f980-4f48-80d7-2a58e93a99aa";
 
@@ -155,6 +155,18 @@ describe("hands play api & hands stats CLI", () => {
       query: { window_days: "14" },
     });
 
+    await program.parseAsync(["node", "hands", "stats", "raft-android", "--from", "2026-11-01", "--to", "2026-11-07"]);
+    expect(calls).toContainEqual({
+      method: "GET",
+      path: `/api/apps/${APP_ID}/stats`,
+      body: undefined,
+      query: { from: "2026-11-01", to: "2026-11-07" },
+    });
+    const fresh = new Command();
+    fresh.exitOverride();
+    registerStatsCommands(fresh);
+    await expect(fresh.parseAsync(["node", "hands", "stats", "raft-android", "--to", "2026-11-07"])).rejects.toThrow("--to needs --from");
+
     logSpy.mockRestore();
     errSpy.mockRestore();
   });
@@ -205,6 +217,20 @@ describe("hands play api & hands stats CLI", () => {
     expect(text).toContain("Raft Android (raft-android, android)");
     expect(text).toContain("Active Devices: 12 (30d)");
     expect(text).toContain("Track production (production): 1.23.0 [12300] (completed)");
+  });
+
+  it("prints direct daily active devices, countries and App Store territories", () => {
+    const lines = formatDirectDaily({
+      recorded_since: "2026-11-24", active_devices_range: 3,
+      daily: [{ date: "2026-11-24", active_devices: 2 }, { date: "2026-11-25", active_devices: 3 }],
+      by_country: [{ country: "CN", active_devices: 2 }, { country: "US", active_devices: 1 }],
+    } as never);
+    expect(lines[0]).toBe("Direct Active Devices in range: 3 (daily data since 2026-11-24)");
+    expect(lines).toContain("  2026-11-25        3");
+    expect(lines.at(-1)).toBe("Direct By Country: CN 2, US 1");
+    expect(formatDirectDaily({} as never)).toEqual([]);
+    expect(formatTerritories([{ territory: "", downloads_first_time: 9 }, { territory: "JP", downloads_first_time: 4 }]))
+      .toEqual(["  - App Store By Territory (first-time downloads): JP 4"]);
   });
 
   it("prints ingested App Store daily metrics, totals, warnings and the privacy note", () => {

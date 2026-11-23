@@ -17,7 +17,7 @@ import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { getAscCredentials, getAscCredentialsMeta } from "../lib/asc_credentials";
 import { ascRequest, resolveAscAppId, type AscApiCredentials } from "../lib/asc_api";
-import { queryAscAnalyticsDaily } from "../lib/asc_analytics_ingest";
+import { queryAscAnalyticsByTerritory, queryAscAnalyticsDaily } from "../lib/asc_analytics_ingest";
 import { queryGooglePlayStatsDaily } from "../lib/play_stats_ingest";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -25,13 +25,77 @@ type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 const WINDOW_DEFAULT_DAYS = 30;
 const WINDOW_MAX_DAYS = 365;
 
-function parseWindowDays(raw: string | undefined): { since: number; windowDays: number } {
-  let days = raw ? Number(raw) : WINDOW_DEFAULT_DAYS;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export type StatsWindow = {
+  since: number;
+  /** Exclusive end (ms). */
+  until: number;
+  windowDays: number;
+  /** First and last UTC day, both inclusive. */
+  fromDay: string;
+  toDay: string;
+  /** Whether from/to named the range (else the last window_days days). */
+  explicit: boolean;
+};
+
+const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+function parseDay(raw: string | undefined): number | null {
+  if (!raw || !DAY_RE.test(raw)) return null;
+  const ms = Date.parse(`${raw}T00:00:00Z`);
+  return Number.isFinite(ms) && isoDay(ms) === raw ? ms : null;
+}
+
+/**
+ * The stats window: `from`/`to` (YYYY-MM-DD, UTC, both inclusive; `to`
+ * defaults to today) or the last `window_days` days. At most 365 days.
+ */
+export function parseStatsWindow(query: { from?: string | undefined; to?: string | undefined; window_days?: string | undefined }, now = Date.now()):
+  StatsWindow | { error: string } {
+  if (query.from !== undefined || query.to !== undefined) {
+    const from = parseDay(query.from);
+    if (from === null) return { error: "from must be a date YYYY-MM-DD" };
+    const to = query.to === undefined ? parseDay(isoDay(now)) : parseDay(query.to);
+    if (to === null) return { error: "to must be a date YYYY-MM-DD" };
+    if (to < from) return { error: "to must not be before from" };
+    const windowDays = Math.round((to - from) / DAY_MS) + 1;
+    if (windowDays > WINDOW_MAX_DAYS) return { error: `a stats range is at most ${WINDOW_MAX_DAYS} days` };
+    return { since: from, until: to + DAY_MS, windowDays, fromDay: isoDay(from), toDay: isoDay(to), explicit: true };
+  }
+  let days = query.window_days ? Number(query.window_days) : WINDOW_DEFAULT_DAYS;
   if (!Number.isFinite(days) || days <= 0) days = WINDOW_DEFAULT_DAYS;
   days = Math.min(Math.ceil(days), WINDOW_MAX_DAYS);
+  const since = now - days * DAY_MS;
+  return { since, until: now, windowDays: days, fromDay: isoDay(since), toDay: isoDay(now), explicit: false };
+}
+
+/**
+ * Direct-install devices per UTC day and per country over the window, from
+ * device_ping_days (one row per device per day it pinged). Recorded from
+ * 2026-11-24; `recorded_since` is the first day with data.
+ */
+async function queryDirectDaily(db: D1Database, appId: string, window: StatsWindow, channelFilter: string | null) {
+  const bind = [appId, window.fromDay, window.toDay, channelFilter] as const;
+  const where = `app_id = ?1 AND day >= ?2 AND day <= ?3 AND (?4 IS NULL OR COALESCE(channel, 'unknown') = ?4)`;
+  const [daily, byCountry, range, first] = await Promise.all([
+    db.prepare(`SELECT day AS date, COUNT(*) AS active_devices FROM device_ping_days WHERE ${where} GROUP BY day ORDER BY day`)
+      .bind(...bind).all<{ date: string; active_devices: number }>(),
+    db.prepare(
+      `SELECT COALESCE(country, 'unknown') AS country, COUNT(DISTINCT device_id) AS active_devices
+       FROM device_ping_days WHERE ${where}
+       GROUP BY COALESCE(country, 'unknown') ORDER BY active_devices DESC, country LIMIT 100`,
+    ).bind(...bind).all<{ country: string; active_devices: number }>(),
+    db.prepare(`SELECT COUNT(DISTINCT device_id) AS n FROM device_ping_days WHERE ${where}`)
+      .bind(...bind).first<{ n: number | null }>(),
+    db.prepare("SELECT MIN(day) AS d FROM device_ping_days WHERE app_id = ?1").bind(appId).first<{ d: string | null }>(),
+  ]);
   return {
-    since: Date.now() - days * 24 * 60 * 60 * 1000,
-    windowDays: days,
+    recorded_since: first?.d ?? null,
+    active_devices_range: Number(range?.n ?? 0),
+    daily: daily.results.map((r) => ({ date: r.date, active_devices: Number(r.active_devices) })),
+    by_country: byCountry.results.map((r) => ({ country: r.country, active_devices: Number(r.active_devices) })),
   };
 }
 
@@ -234,7 +298,7 @@ async function queryGooglePlayStats(
   appId: string,
   appPlatform: string | null,
   includeStoreLive: boolean,
-  since: number,
+  window: StatsWindow,
 ) {
   const localDistributions = await c.env.DB.prepare(
     `SELECT
@@ -359,7 +423,7 @@ async function queryGooglePlayStats(
   }
 
   // Ingested Play Console statistics come from D1, so they are shown with or without `live`.
-  const reports = await queryGooglePlayStatsDaily(c.env.DB, appId, new Date(since).toISOString().slice(0, 10))
+  const reports = await queryGooglePlayStatsDaily(c.env.DB, appId, window.fromDay, window.toDay)
     .catch(() => null);
 
   return {
@@ -391,16 +455,19 @@ async function queryAppStoreStats(
   appId: string,
   appPlatform: string | null,
   includeStoreLive: boolean,
-  since: number,
+  window: StatsWindow,
 ) {
   const live = await queryAppStoreLiveStats(c, appId, appPlatform, includeStoreLive);
   if (!live) return null;
   // Ingested daily metrics come from D1, so they are shown with or without `live`.
-  const analytics = await queryAscAnalyticsDaily(c.env.DB, appId, new Date(since).toISOString().slice(0, 10))
-    .catch(() => null);
+  const [analytics, byTerritory] = await Promise.all([
+    queryAscAnalyticsDaily(c.env.DB, appId, window.fromDay, window.toDay).catch(() => null),
+    queryAscAnalyticsByTerritory(c.env.DB, appId, window.fromDay, window.toDay).catch(() => []),
+  ]);
   return {
     ...live,
     daily: analytics?.daily ?? [],
+    by_territory: byTerritory,
     totals: analytics?.totals ?? null,
     analytics_ingest: analytics?.ingest ?? null,
     analytics_note: analytics?.note ?? null,
@@ -650,14 +717,17 @@ export async function handleAppStats(c: AdminContext) {
     }>();
   if (!app) return c.json({ error: "app not found" }, 404);
 
-  const { since, windowDays } = parseWindowDays(c.req.query("window_days"));
+  const window = parseStatsWindow({ from: c.req.query("from"), to: c.req.query("to"), window_days: c.req.query("window_days") });
+  if ("error" in window) return c.json({ error: window.error, code: "INVALID_STATS_RANGE" }, 400);
+  const { since, windowDays } = window;
   const channelFilter = c.req.query("channel")?.trim() || null;
   const includeStoreLive = c.req.query("live") !== "false" && c.req.query("live") !== "0";
 
-  const [direct, googlePlay, appStore] = await Promise.all([
+  const [direct, directDaily, googlePlay, appStore] = await Promise.all([
     queryDirectStats(c.env.DB, appId, since, channelFilter),
-    queryGooglePlayStats(c, appId, app.platform, includeStoreLive, since),
-    queryAppStoreStats(c, appId, app.platform, includeStoreLive, since),
+    queryDirectDaily(c.env.DB, appId, window, channelFilter).catch(() => null),
+    queryGooglePlayStats(c, appId, app.platform, includeStoreLive, window),
+    queryAppStoreStats(c, appId, app.platform, includeStoreLive, window),
   ]);
 
   return c.json({
@@ -669,8 +739,14 @@ export async function handleAppStats(c: AdminContext) {
     },
     window_days: windowDays,
     window_start: since,
+    window_end: window.until,
+    from: window.fromDay,
+    to: window.toDay,
     channel_filter: channelFilter,
-    direct,
+    // device_pings keeps each device's latest ping only, so the summary
+    // counts (devices, by_version, ...) look back from now; `daily`,
+    // `by_country` and `active_devices_range` follow from/to exactly.
+    direct: { ...direct, ...(directDaily ?? { recorded_since: null, active_devices_range: null, daily: [], by_country: [] }) },
     stores: {
       google_play: googlePlay,
       app_store: appStore,

@@ -1431,6 +1431,32 @@ hands --json api GET /api/apps
   `--output <file>` (required for binary). Both the global `--api` and `--json`
   flags are honored.
 
+### Stats over a date range
+
+`hands stats <app>` covers the last 30 days (`--days N`, up to 365). To name
+the range instead, give UTC days, both inclusive (at most 365 days; `--to`
+defaults to today):
+
+```bash
+hands stats raft-android --from 2026-11-01 --to 2026-11-07 --json
+```
+
+The answer names the range in `from` and `to`. For direct installs it adds:
+
+- `direct.daily`: devices that reported to Hands on each day (`[{date, active_devices}]`);
+- `direct.active_devices_range`: distinct devices over the whole range;
+- `direct.by_country`: distinct devices per country (ISO code from the
+  network at the device's first report that day; `unknown` when not known);
+- `direct.recorded_since`: the first day with daily data. Hands records it from
+  2026-11-24; earlier days are empty.
+
+These follow the range exactly, with `--channel` too. The other direct-install
+counts (`direct.devices`, `by_version`, `by_channel`) count back from now,
+because Hands keeps only each device's latest report for them. Store daily
+metrics (`stores.*.daily`, `totals`) follow the range, and
+`stores.app_store.by_territory` splits the App Store counts by territory.
+Google Play has no country split yet.
+
 ### App Store analytics reports
 
 Apple produces App Store analytics reports (installs, deletions, sessions,
