@@ -66,6 +66,7 @@ export const PLATFORM_LABELS: Record<string, string> = {
   electron: "Electron",
   node: "Node.js",
   web: "Web",
+  desktop: "Desktop",
 };
 
 export function AppsList({ onSelectApp, initialShowCreate }: { onSelectApp: (id: string) => void; initialShowCreate?: boolean }) {

@@ -84,13 +84,14 @@ type PublicLatestResponse = {
 
 const PUBLIC_DOWNLOAD_PREFIX = "/public/r2";
 
-const PRIORITY = {
+export const SCOPE_PRIORITY = {
   ip_range: 4,
   device_group: 5,
   user_cohort: 3,
   platform: 2,
   full: 1,
 } as const;
+const PRIORITY = SCOPE_PRIORITY;
 
 /**
  * Public channel aliases (inbound only).
@@ -574,7 +575,7 @@ export async function handlePublicV2Latest(c: Context<{ Bindings: Env }>) {
  * this release, `offered` when it is being offered an update to it. Runs in
  * the background; never affects the response.
  */
-function bumpReleaseMetric(
+export function bumpReleaseMetric(
   c: Context<{ Bindings: Env }>,
   releaseId: string | undefined,
   kind: "offered" | "current",
@@ -1292,7 +1293,7 @@ function effectiveClientPlatform(c: Context<{ Bindings: Env }>): string | null {
   return platform ?? null;
 }
 
-function matchesScope(
+export function matchesScope(
   scopeType: string,
   scopeValue: string,
   cohort: string | null,
@@ -1521,7 +1522,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      JOIN releases r ON r.build_id = b.id
      WHERE ba.r2_key = ?1
        AND (
-         ba.artifact_kind = 'installable'
+         ba.artifact_kind IN ('installable', 'desktop-manifest', 'desktop-archive')
          OR (ba.artifact_kind = 'delta-patch' AND ba.filetype = 'patch')
        )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
@@ -1539,6 +1540,10 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
       app_slug: string;
     }>();
   if (!asset) {
+    // A content-addressed desktop bundle file. The signature proves this URL was minted
+    // by the file route, which already checked the file belongs to a published manifest.
+    const desktopFile = await serveSignedDesktopFile(c, key, expires);
+    if (desktopFile) return desktopFile;
     // Not a build asset — the HMAC signature (key + expiry) already proves
     // this URL came from an authenticated presign call, so also serve
     // feedback attachments (task #123: agents fetch binaries via signed URL
@@ -1592,6 +1597,36 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
   return new Response(object.body, { headers });
 }
 
+const DESKTOP_FILE_KEY_RE = /^apps\/([^/]+)\/files\/sha256\/([0-9a-f]{64})$/;
+
+async function serveSignedDesktopFile(
+  c: Context<{ Bindings: Env }>,
+  key: string,
+  expires: number,
+): Promise<Response | null> {
+  const match = DESKTOP_FILE_KEY_RE.exec(key);
+  if (!match) return null;
+  const row = await c.env.DB.prepare(
+    "SELECT size_bytes FROM desktop_files WHERE app_id = ?1 AND sha256 = ?2",
+  ).bind(match[1], match[2]).first<{ size_bytes: number }>();
+  if (!row) return null;
+  const contentDisposition = `attachment; filename="${match[2]}"`;
+  const directUrl = await presignR2DownloadUrl(c.env, { key, filetype: "bin", contentDisposition }, Math.min(
+    Number(c.env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS ?? c.env.SIGNED_URL_TTL_SECONDS ?? "3600"),
+    Math.max(1, expires - Math.floor(Date.now() / 1000)),
+  ));
+  if (directUrl) return c.redirect(directUrl, 302);
+  const object = await c.env.APK_BUCKET.get(key);
+  if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
+  const headers = new Headers();
+  headers.set("etag", object.httpEtag);
+  headers.set("cache-control", "private, max-age=0, no-store");
+  headers.set("content-type", "application/octet-stream");
+  headers.set("content-length", String(row.size_bytes));
+  headers.set("content-disposition", contentDisposition);
+  return new Response(object.body, { headers });
+}
+
 function contentDispositionForAsset(asset: {
   app_slug: string;
   version_name: string;
@@ -1624,6 +1659,8 @@ function contentTypeForAsset(filetype: string): string {
       return "application/octet-stream";
     case "zip":
       return "application/zip";
+    case "json":
+      return "application/json";
     default:
       return "application/octet-stream";
   }

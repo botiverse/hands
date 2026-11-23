@@ -127,9 +127,13 @@ function schema(sqlite: Database.Database) {
       artifact_mode TEXT NOT NULL, asset_ingest_protocol_version INTEGER,
       required_asset_slots_json TEXT, source TEXT NOT NULL DEFAULT 'cli',
       version_name TEXT NOT NULL DEFAULT '1.0.0', version_code INTEGER NOT NULL DEFAULT 1000000,
-      updated_at INTEGER NOT NULL DEFAULT 0, completed_at INTEGER
+      updated_at INTEGER NOT NULL DEFAULT 0, completed_at INTEGER,
+      product_type TEXT NOT NULL DEFAULT 'android-apk'
     );
     CREATE UNIQUE INDEX idx_builds_app_scope ON builds(app_id, id);
+    -- Read by the desktop target-append gate on a published build.
+    CREATE TABLE apps (id TEXT PRIMARY KEY, platform TEXT NOT NULL);
+    CREATE TABLE releases (id TEXT PRIMARY KEY, build_id TEXT NOT NULL, status TEXT NOT NULL);
     CREATE TABLE build_assets (
       id TEXT PRIMARY KEY, build_id TEXT NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
       artifact_kind TEXT NOT NULL, platform TEXT NOT NULL, arch TEXT, variant TEXT,

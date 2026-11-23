@@ -6,7 +6,7 @@
  */
 
 import type { Context } from "hono";
-import { APP_PLATFORMS, isAppPlatform } from "../lib/app_platform";
+import { APP_PLATFORMS, APP_RUNTIMES, isAppPlatform, isAppRuntime } from "../lib/app_platform";
 import { FEEDBACK_BUILD_ORIGIN_FLAG } from "../lib/feedback_build_origin";
 import { currentActor, currentActorInfo, type AdminEnv } from "../middleware/auth";
 import { currentAccount, currentDeployToken, ensureOwningOrgAdmin } from "../lib/permissions";
@@ -26,7 +26,7 @@ export async function handleListApps(c: AdminContext) {
   const deployToken = currentDeployToken(c);
   if (deployToken) {
     const row = await c.env.DB.prepare(
-      `SELECT id, org_id, slug, name, platform,
+      `SELECT id, org_id, slug, name, platform, runtime,
               description, archived, archived_at, created_at, public_history,
               history_channels, history_show_downloads,
               release_requires_human_approval
@@ -72,7 +72,7 @@ export async function handleListApps(c: AdminContext) {
   // One statement, no per-app round trips.
   const query = orgId && account
     ? {
-        sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform,
+        sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.runtime,
                      a.description, a.archived, a.archived_at, a.created_at, a.public_history,
                      a.history_channels, a.history_show_downloads,
                      a.release_requires_human_approval
@@ -118,7 +118,7 @@ export async function handleListApps(c: AdminContext) {
       }
     : orgId
     ? {
-        sql: `SELECT id, org_id, slug, name, platform,
+        sql: `SELECT id, org_id, slug, name, platform, runtime,
                      description, archived, archived_at, created_at, public_history,
                      history_channels, history_show_downloads,
                      release_requires_human_approval
@@ -128,7 +128,7 @@ export async function handleListApps(c: AdminContext) {
         params: [orgId],
       }
     : {
-        sql: `SELECT id, org_id, slug, name, platform,
+        sql: `SELECT id, org_id, slug, name, platform, runtime,
                      description, archived, archived_at, created_at, public_history,
                      history_channels, history_show_downloads,
                      release_requires_human_approval
@@ -158,6 +158,7 @@ export async function handleCreateApp(c: AdminContext) {
     slug: string;
     name: string;
     platform: string;
+    runtime?: string | null;
     description?: string;
   };
   if (!body.slug || !body.name || !body.platform) {
@@ -173,6 +174,8 @@ export async function handleCreateApp(c: AdminContext) {
       400,
     );
   }
+  const runtimeError = invalidRuntime(body.runtime);
+  if (runtimeError) return c.json(runtimeError, 400);
   const id = crypto.randomUUID();
   const now = Date.now();
   const orgId = await currentOrgId(c);
@@ -206,7 +209,7 @@ export async function handleCreateApp(c: AdminContext) {
   try {
     await c.env.DB.batch([
       c.env.DB.prepare(
-        "INSERT INTO apps (id, org_id, slug, name, platform, description, created_at, client_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO apps (id, org_id, slug, name, platform, description, created_at, client_key, runtime) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
       ).bind(
         id,
         orgId,
@@ -216,6 +219,7 @@ export async function handleCreateApp(c: AdminContext) {
         body.description ?? null,
         now,
         generateClientKey(),
+        body.runtime ?? null,
       ),
       // product_types
       c.env.DB.prepare(
@@ -302,7 +306,18 @@ export async function handleCreateApp(c: AdminContext) {
     throw error;
   }
 
-  return c.json({ id, org_id: orgId, slug: body.slug, name: body.name, platform: body.platform }, 201);
+  return c.json({ id, org_id: orgId, slug: body.slug, name: body.name, platform: body.platform, runtime: body.runtime ?? null }, 201);
+}
+
+/**
+ * `runtime` is optional and descriptive (see APP_RUNTIMES). Absent or null means
+ * "not recorded"; anything else must be one of the known values, so a typo does
+ * not become a new category.
+ */
+function invalidRuntime(value: unknown): Record<string, unknown> | null {
+  if (value === undefined || value === null) return null;
+  if (isAppRuntime(value)) return null;
+  return { error: "unsupported app runtime", code: "UNSUPPORTED_APP_RUNTIME", supported_runtimes: APP_RUNTIMES };
 }
 
 /** POST /api/apps/:appId/transfer — move an app identity between orgs.
@@ -643,7 +658,7 @@ export async function handlePurgeApp(c: AdminContext) {
 export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(
-    `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.description,
+    `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.runtime, a.description,
             a.archived, a.archived_at, a.created_at, a.public_history,
             a.history_channels, a.history_show_downloads,
             a.delta_updates_enabled,
@@ -682,6 +697,7 @@ export async function handleUpdateApp(c: AdminContext) {
   const body = (await c.req.json().catch(() => ({}))) as {
     name?: string;
     description?: string | null;
+    runtime?: string | null;
     default_channel_id?: string | null;
     public_history?: boolean;
     delta_updates_enabled?: boolean;
@@ -707,6 +723,12 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.description !== undefined) {
     updates.push("description = ?");
     binds.push(body.description ?? null);
+  }
+  if (body.runtime !== undefined) {
+    const runtimeError = invalidRuntime(body.runtime);
+    if (runtimeError) return c.json(runtimeError, 400);
+    updates.push("runtime = ?");
+    binds.push(body.runtime ?? null);
   }
   if (body.public_history !== undefined) {
     updates.push("public_history = ?");

@@ -15,7 +15,7 @@ type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 export async function handleGetAppQuota(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const app = await c.env.DB.prepare("SELECT platform FROM apps WHERE id = ?1").bind(appId).first<{ platform: string | null }>();
-  if (!app) return c.json({ error: "App not found" }, 404);
+  if (!app) return c.json({ error: "app not found" }, 404);
   const quotas = [];
   if (app.platform === "android") {
     const binding = await getGooglePlayBinding(c.env.DB, appId, c.env.PLAY_CRED_ENC_KEYS).catch(() => null);

@@ -17,6 +17,7 @@ const AppInput = z
     slug: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
     platform: z.string().optional(),
+    runtime: z.enum(["jvm", "electron", "native", "tauri", "other"]).nullable().optional(),
     description: z.string().nullable().optional(),
     public_history: z.boolean().optional(),
     history_channels: z.array(z.string().min(1)).nullable().optional(),

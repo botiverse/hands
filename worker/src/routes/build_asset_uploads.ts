@@ -2,8 +2,22 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
+import { currentAccount, currentDeployToken } from "../lib/permissions";
+import { equivalentsOf, DESKTOP_INSTALLER } from "../lib/release_resolver";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { recomputeInventoryAfterMappingUpload } from "./build_inventory";
+import {
+  DESKTOP_ARCHIVE_KIND,
+  DESKTOP_MANIFEST_FILETYPE,
+  DESKTOP_MANIFEST_KIND,
+  DESKTOP_MANIFEST_MAX_BYTES,
+  DIGEST_CHUNK,
+  DesktopManifestError,
+  chunked,
+  findUnstoredDesktopFiles,
+  isDesktopTarget,
+  parseDesktopManifest,
+} from "../lib/desktop_manifest";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -164,6 +178,70 @@ function isAppendableSymbolAsset(kind: string, filetype: string): boolean {
   return allowed !== undefined && allowed.has(filetype);
 }
 
+/** A slot that carries one desktop target: its manifest, archive or installer. */
+function isDesktopTargetSlot(kind: string, filetype: string, platform: string, arch: string | null): boolean {
+  if (!isDesktopTarget(`${platform}-${arch ?? ""}`)) return false;
+  return (kind === DESKTOP_MANIFEST_KIND && filetype === DESKTOP_MANIFEST_FILETYPE)
+    || (kind === DESKTOP_ARCHIVE_KIND && filetype === "zip")
+    || kind === "installable";
+}
+
+function isHumanCaller(c: AdminContext): boolean {
+  if (currentDeployToken(c) !== null) return false;
+  const account = currentAccount(c);
+  return account !== null && account.principal_type === "human";
+}
+
+/**
+ * One desktop version is one build and one release carrying every target, and
+ * targets are published one CI job at a time. So a succeeded build of a desktop app
+ * may receive the slots of a target it does not have yet. It may not touch a target
+ * it already has (the sealed manifest is what makes a target live), may not change a
+ * superseded or cancelled release, and only a person may add a target to a release
+ * that is already active, the same rule as creating an active release.
+ */
+async function desktopTargetAppendRefusal(
+  c: AdminContext,
+  appId: string,
+  buildId: string,
+  platform: string,
+  arch: string,
+  completingAssetId: string | null,
+): Promise<{ status: 403 | 409; body: Record<string, unknown> } | null> {
+  const productTypes = equivalentsOf(DESKTOP_INSTALLER);
+  const row = await c.env.DB.prepare(
+    `SELECT a.platform AS app_platform, b.product_type,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id AND r.status = 'active') AS has_active,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id AND r.status = 'draft') AS has_draft,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id) AS has_release,
+            EXISTS (
+              SELECT 1 FROM build_assets ba
+                JOIN build_asset_ingest_attempt i ON i.asset_id = ba.id AND i.state = 'ready'
+               WHERE ba.build_id = b.id AND ba.artifact_kind = 'desktop-manifest'
+                 AND ba.platform = ?3 AND ba.arch = ?4 AND ba.id IS NOT ?5
+            ) AS target_sealed
+       FROM builds b JOIN apps a ON a.id = b.app_id
+      WHERE b.app_id = ?1 AND b.id = ?2`,
+  ).bind(appId, buildId, platform, arch, completingAssetId).first<{
+    app_platform: string; product_type: string; has_active: number; has_draft: number;
+    has_release: number; target_sealed: number;
+  }>();
+  const refuse = (status: 403 | 409, code: string, error: string) => ({ status, body: { error, code } });
+  if (!row || row.app_platform !== "desktop" || !productTypes.includes(row.product_type)) {
+    return refuse(409, "BUILD_NOT_UPLOADABLE", "a published build accepts another target only on a desktop app's desktop-installer build");
+  }
+  if (row.target_sealed === 1) {
+    return refuse(409, "DESKTOP_TARGET_EXISTS", `this build already publishes ${platform}-${arch}; a published target cannot be changed`);
+  }
+  if (row.has_release === 1 && row.has_active !== 1 && row.has_draft !== 1) {
+    return refuse(409, "DESKTOP_RELEASE_NOT_APPENDABLE", "the build's release is superseded or cancelled; publish a new version instead");
+  }
+  if (row.has_active === 1 && !isHumanCaller(c)) {
+    return refuse(403, "AGENT_ACTIVE_RELEASE_FORBIDDEN", "only a person can add a target to an active release; agents and deploy tokens add targets while the release is a draft");
+  }
+  return null;
+}
+
 function slotKey(slot: {
   artifactKind: string;
   platform: string;
@@ -306,6 +384,17 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
   } catch (error) {
     return c.json({ error: (error as Error).message, code: "INVALID_ASSET_UPLOAD" }, 400);
   }
+  if (input.artifactKind === DESKTOP_MANIFEST_KIND) {
+    // The manifest is parsed in the Worker when it is sealed, so refuse an
+    // unparseable declaration now rather than after the bytes are uploaded.
+    const target = `${input.platform}-${input.arch ?? ""}`;
+    if (input.filetype !== DESKTOP_MANIFEST_FILETYPE || input.sizeBytes > DESKTOP_MANIFEST_MAX_BYTES || !isDesktopTarget(target)) {
+      return c.json({
+        error: `a ${DESKTOP_MANIFEST_KIND} asset must be filetype '${DESKTOP_MANIFEST_FILETYPE}', at most ${DESKTOP_MANIFEST_MAX_BYTES} bytes, and declared for a desktop target (platform darwin|win32|linux, arch arm64|x64)`,
+        code: "INVALID_ASSET_UPLOAD",
+      }, 400);
+    }
+  }
   const digest = requestDigest(input);
   const replay = await findUploadByReplay(c.env.DB, appId, buildId, input.idempotencyKey);
   if (replay) {
@@ -348,18 +437,28 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
     build.status === "succeeded" &&
     build.artifact_mode !== "external" &&
     isAppendableSymbolAsset(input.artifactKind, input.filetype);
-  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
+  // A published desktop build may gain another target (see desktopTargetAppendRefusal).
+  let desktopAppend = false;
+  if (!newBuildUpload && !migrationUpload && !symbolAppend
+    && build.status === "succeeded" && build.artifact_mode === "hands_r2"
+    && isDesktopTargetSlot(input.artifactKind, input.filetype, input.platform, input.arch)) {
+    const refusal = await desktopTargetAppendRefusal(c, appId, buildId, input.platform, input.arch!, null);
+    if (refusal) return c.json(refusal.body, refusal.status);
+    desktopAppend = true;
+  }
+  const appendOnly = symbolAppend || desktopAppend;
+  if (!newBuildUpload && !migrationUpload && !appendOnly) {
     return c.json({ error: "direct asset uploads require a pending Hands-hosted build or an initialized external-build migration; a published build accepts debug symbols only", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
   if (!migrationUpload && build.asset_ingest_protocol_version !== DIRECT_UPLOAD_PROTOCOL) {
     // A symbol append on an older build is still allowed: the protocol flag governs
     // whether the build waited for its required slots, which an append never changes.
-    if (!symbolAppend) {
+    if (!appendOnly) {
       return c.json({ error: "build does not use direct asset ingest protocol v1", code: "ASSET_INGEST_PROTOCOL_REQUIRED" }, 409);
     }
   }
   const declaredSlot = slotKey(input);
-  if (!symbolAppend) {
+  if (!appendOnly) {
     let required: Set<string>;
     try {
       required = requiredSlotKeys(build.required_asset_slots_json);
@@ -381,7 +480,7 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
       .bind(buildId, input.artifactKind, input.platform, input.arch ?? null, input.variant ?? null, input.filetype)
       .first<{ id: string }>();
     if (existing) {
-      return c.json({ error: "an asset for this slot already exists; appended debug symbols are add-only and cannot replace it", code: "ASSET_APPEND_CONFLICT", asset_id: existing.id }, 409);
+      return c.json({ error: "an asset for this slot already exists; appended assets are add-only and cannot replace it", code: "ASSET_APPEND_CONFLICT", asset_id: existing.id }, 409);
     }
   }
 
@@ -682,11 +781,11 @@ async function finalizeFailedVerificationCleanup(
   ]);
 }
 
-class UploadStreamSizeError extends Error {
+export class UploadStreamSizeError extends Error {
   constructor(readonly actualBytes: number, readonly expectedBytes: number) { super("streamed asset size differs from declaration"); }
 }
 
-function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
+export function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number) {
   let seen = 0;
   return body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
@@ -700,7 +799,7 @@ function limitObjectBody(body: ReadableStream<Uint8Array>, expectedBytes: number
   }));
 }
 
-async function hashBody(body: ReadableStream<Uint8Array>) {
+export async function hashBody(body: ReadableStream<Uint8Array>) {
   const hasher = sha256.create();
   let size = 0;
   const reader = body.getReader();
@@ -714,7 +813,7 @@ async function hashBody(body: ReadableStream<Uint8Array>) {
   return { sha256: bytesToHex(hasher.digest()), size };
 }
 
-function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number, signal: AbortSignal) {
+export function fixedLengthBody(body: ReadableStream<Uint8Array>, length: number, signal: AbortSignal) {
   if (typeof FixedLengthStream === "undefined") return { readable: body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal }), pump: Promise.resolve() };
   const fixed = new FixedLengthStream(length);
   return { readable: fixed.readable, pump: body.pipeTo(fixed.writable, { signal }) };
@@ -824,7 +923,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     row.build_status === "succeeded" &&
     row.artifact_mode !== "external" &&
     isAppendableSymbolAsset(row.artifact_kind, row.filetype);
-  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
+  let desktopAppend = false;
+  if (!newBuildUpload && !migrationUpload && !symbolAppend
+    && row.build_status === "succeeded" && row.artifact_mode === "hands_r2"
+    && isDesktopTargetSlot(row.artifact_kind, row.filetype, row.platform, row.arch)) {
+    // Re-evaluated at completion: the release may have been published or the
+    // target sealed by another upload since the declaration.
+    const refusal = await desktopTargetAppendRefusal(c, appId, buildId, row.platform, row.arch!, assetId);
+    if (refusal) return c.json(refusal.body, refusal.status);
+    desktopAppend = true;
+  }
+  if (!newBuildUpload && !migrationUpload && !symbolAppend && !desktopAppend) {
     return c.json({ error: "build is no longer uploadable", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
   const now = Date.now();
@@ -986,6 +1095,22 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     return c.json({ error: "verified asset readback failed", code: "ASSET_UPLOAD_SEAL_FAILED", reason: "sealed_size_mismatch", retryable: false, expected: { size_bytes: row.size_bytes }, actual: { size_bytes: finalHead?.size ?? null } }, 422);
   }
 
+  // A desktop manifest is only sealed once every file it names is already stored
+  // for this app, verified, with the declared size. Fail closed otherwise: a
+  // published manifest that points at a missing file is an update nobody can apply.
+  let manifestDigests: string[] = [];
+  if (row.artifact_kind === DESKTOP_MANIFEST_KIND) {
+    const checked = await checkDesktopManifest(c.env, appId, finalKey, `${row.platform}-${row.arch ?? ""}`);
+    if (!checked.ok) {
+      if (checked.retryable) return retryStorageVerification(c, row, leaseId, "desktop_manifest_read");
+      if (!await failVerification(c, row, leaseId, checked.reason)) {
+        return c.json({ error: "asset verification lease was lost", code: "ASSET_UPLOAD_LEASE_LOST" }, 409);
+      }
+      return c.json(checked.body, 422);
+    }
+    manifestDigests = checked.digests;
+  }
+
   const readyAt = Date.now();
   const readyCleanupReceipt = `ready:${leaseId}`;
   // Record the timings on success too. Without this, a verification that took 14
@@ -1056,6 +1181,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
       JSON.stringify({ build_id: buildId, asset_id: assetId, attempt: row.attempt, lease_generation: generation, size_bytes: actual.size, sha256: actual.sha256 }),
       readyAt, assetId, row.attempt, finalKey,
     ),
+    // Index the manifest's files in the same transaction that makes it ready, so
+    // the public file route serves exactly the files of validated manifests.
+    ...chunked(manifestDigests, DIGEST_CHUNK).map((chunk) => c.env.DB.prepare(
+      `INSERT OR IGNORE INTO desktop_manifest_files (app_id, build_asset_id, sha256)
+       SELECT ?1, ?2, j.value FROM json_each(?3) j
+        WHERE EXISTS (
+          SELECT 1 FROM build_asset_ingest_attempt i
+           WHERE i.asset_id = ?2 AND i.attempt = ?4
+             AND i.state = 'ready' AND i.committed_final_key = ?5
+        )`,
+    ).bind(appId, assetId, JSON.stringify(chunk), row.attempt, finalKey)),
   ]);
   if ((readyResults[2]?.meta?.changes ?? 0) !== 1) {
     await c.env.APK_BUCKET.delete(finalKey).catch(() => {});
@@ -1074,6 +1210,51 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     }
   }
   return c.json({ asset_id: assetId, state: "ready", r2_key: finalKey, file_hash: actual.sha256, size_bytes: actual.size, replayed: false });
+}
+
+type DesktopManifestCheck =
+  | { ok: true; digests: string[] }
+  | { ok: false; retryable: true }
+  | { ok: false; retryable: false; reason: string; body: Record<string, unknown> };
+
+async function checkDesktopManifest(env: Env, appId: string, key: string, target: string): Promise<DesktopManifestCheck> {
+  let bytes: Uint8Array;
+  try {
+    const object = await env.APK_BUCKET.get(key);
+    if (!object?.body) return { ok: false, retryable: true };
+    bytes = new Uint8Array(await new Response(object.body).arrayBuffer());
+  } catch {
+    return { ok: false, retryable: true };
+  }
+  let manifest;
+  try {
+    manifest = parseDesktopManifest(bytes, target);
+  } catch (error) {
+    if (!(error instanceof DesktopManifestError)) throw error;
+    return {
+      ok: false, retryable: false, reason: "desktop_manifest_invalid",
+      body: { error: `desktop manifest is invalid: ${error.message}`, code: "DESKTOP_MANIFEST_INVALID", retryable: false },
+    };
+  }
+  let unstored;
+  try {
+    unstored = await findUnstoredDesktopFiles(env.DB, appId, manifest.digests);
+  } catch {
+    return { ok: false, retryable: true };
+  }
+  if (unstored.length > 0) {
+    return {
+      ok: false, retryable: false, reason: "desktop_manifest_files_missing",
+      body: {
+        error: `desktop manifest references ${unstored.length} file(s) that are not stored for this app with the declared size; upload them through /desktop/files first`,
+        code: "DESKTOP_MANIFEST_FILES_MISSING",
+        retryable: false,
+        missing_count: unstored.length,
+        missing: unstored.slice(0, 50),
+      },
+    };
+  }
+  return { ok: true, digests: [...manifest.digests.keys()] };
 }
 
 export async function handleAbortBuildAssetUpload(c: AdminContext) {

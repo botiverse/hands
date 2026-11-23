@@ -398,6 +398,56 @@ Example asset conventions:
 macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
 
+## Desktop App Updates
+
+Apps on the `desktop` platform (any runtime) check for updates per machine
+target and download only the files that changed. The full model, the
+manifest format and the client steps are in
+[Ship a desktop app](desktop-apps.md).
+
+```http
+GET /public/v2/apps/:appSlug/desktop/update?target=darwin-arm64&channel=main&current_version_code=1003000
+X-Hands-Device-Id: <stable install id>
+```
+
+`target` (`darwin-arm64`, `darwin-x64`, `win32-x64`, `win32-arm64`,
+`linux-x64`, `linux-arm64`) and `current_version_code` are required;
+`channel` defaults to `main`; `installer_filetype` prefers one installer type.
+The release is chosen as for [Latest Release](#latest-release) (scopes,
+staged rollout by device id, channel aliases), among active releases that are
+not hidden, are already available, and have a desktop manifest for the target.
+
+```json
+{
+  "update_available": true,
+  "channel": "main",
+  "target": "darwin-arm64",
+  "current_version_code": 1003000,
+  "release": { "id": "…", "version": "1.4.0", "version_code": 1004000, "notes_url": "https://hands.build/apps/raft-desktop/v/1.4.0", "force_update": false, "released_at": 1795000000000 },
+  "manifest": { "url": "…", "sha256": "…", "size": 48211 },
+  "full_archive": { "url": "…", "sha256": "…", "size": 201326592 },
+  "installer": { "url": "…", "sha256": "…", "size": 210763776, "filetype": "dmg" },
+  "files_url_template": "https://hands.build/public/v2/apps/raft-desktop/files/{sha256}",
+  "expires_in": 3600
+}
+```
+
+`full_archive` and `installer` may be `null`. Without a newer release the
+answer is `{"update_available": false, "latest_version_code": N}` (plus
+`channel`, `target`, `current_version_code`), with `latest_version_code`
+`null` when nothing is eligible. URLs are signed and expire after
+`expires_in` seconds.
+
+```http
+GET /public/v2/apps/:appSlug/files/:sha256
+```
+
+Redirects (`302`) to a short-lived signed URL for one content-addressed file
+of the app. It answers only for a digest referenced by a validated manifest on
+a succeeded build whose release is active or superseded, not hidden, not QA,
+and already available; otherwise `404`.
+Verify each file against the `sha256` and `size` in the manifest.
+
 ## Submit Feedback
 
 ```http
