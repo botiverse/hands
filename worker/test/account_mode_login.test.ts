@@ -193,9 +193,12 @@ describe("live Raft roles (RFC 079 §8.2 item 2)", () => {
     raftRoles({ "owner-1": "member", "admin-1": "member" });
     expect((await gate(db, admin)).status).toBe(200);
     expect(orgRole(sqlite, "admin-1")).toBe("member");
-    // The organization's only owner stays owner even though Raft says member.
+    // The organization's only owner stays owner even though Raft says member, and a line says so.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect((await gate(db, owner)).status).toBe(200);
     expect(orgRole(sqlite, "owner-1")).toBe("owner");
+    expect(warn.mock.calls.map((c) => String(c[0])).some((line) => line.includes('"event":"raft_org_last_owner_kept"'))).toBe(true);
+    warn.mockRestore();
     // A member promoted to admin on Raft becomes an organization admin.
     raftRoles({ "admin-1": "admin" });
     await gate(db, { ...admin, org_role: "member" });
