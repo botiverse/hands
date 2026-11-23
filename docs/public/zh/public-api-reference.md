@@ -271,6 +271,40 @@ Hands 从该渠道的活动 `desktop-installer` 版本提供这些文件（旧�
 
 macOS 更新仍要求签名的应用文件。Hands 只托管已构建并签名的文件，不会为 Electron 应用签名。
 
+## 桌面应用更新 {#desktop-app-updates}
+
+`desktop` 平台的应用（任意运行时）按机器目标检查更新，并只下载发生变化的文件。完整模型、清单格式和客户端步骤见[发布桌面应用](desktop-apps.md)。
+
+```http
+GET /public/v2/apps/:appSlug/desktop/update?target=darwin-arm64&channel=main&current_version_code=1003000
+X-Hands-Device-Id: <稳定的安装标识>
+```
+
+`target`（`darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64`、`linux-x64`、`linux-arm64`）和 `current_version_code` 为必需参数；`channel` 默认 `main`；`installer_filetype` 用于优先选择某种安装包。版本的选择方式与“最新版本”一节相同（范围、按设备标识的分阶段发布、渠道别名），范围限于未隐藏、已到可用时间且带有该目标桌面清单的有效版本。
+
+```json
+{
+  "update_available": true,
+  "channel": "main",
+  "target": "darwin-arm64",
+  "current_version_code": 1003000,
+  "release": { "id": "…", "version": "1.4.0", "version_code": 1004000, "notes_url": "https://hands.build/apps/raft-desktop/v/1.4.0", "force_update": false, "released_at": 1795000000000 },
+  "manifest": { "url": "…", "sha256": "…", "size": 48211 },
+  "full_archive": { "url": "…", "sha256": "…", "size": 201326592 },
+  "installer": { "url": "…", "sha256": "…", "size": 210763776, "filetype": "dmg" },
+  "files_url_template": "https://hands.build/public/v2/apps/raft-desktop/files/{sha256}",
+  "expires_in": 3600
+}
+```
+
+`full_archive` 和 `installer` 可能为 `null`。没有更新版本时返回 `{"update_available": false, "latest_version_code": N}`（另含 `channel`、`target`、`current_version_code`），没有任何符合条件的版本时 `latest_version_code` 为 `null`。各 URL 已签名，在 `expires_in` 秒后过期。
+
+```http
+GET /public/v2/apps/:appSlug/files/:sha256
+```
+
+重定向（`302`）到该应用某个按内容寻址文件的短期签名 URL。只有当该应用某个有效或已被取代、且未隐藏的版本中，经过校验的清单引用了这个摘要时才会响应，否则返回 `404`。请按清单中的 `sha256` 和 `size` 校验每个文件。
+
 ## 提交反馈
 
 ```http

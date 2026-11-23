@@ -196,6 +196,11 @@ hands apps create \
   --description "Hands web app example"
 ```
 
+`--platform` is one of `android`, `ios`, `ohos`, `electron`, `node`, `web`, or
+`desktop`. A `desktop` app may record what it is built with in `--runtime`
+(`jvm`, `electron`, `native`, `tauri`, or `other`); the runtime is descriptive
+only. See [Ship a desktop app](desktop-apps.md).
+
 List apps visible to the current token. The list contains exactly the apps you
 can open: every app of the current organization, plus apps in other
 organizations reached through an app role or an additional owner server you
@@ -1161,6 +1166,49 @@ change. Each replacement is kept and recorded in the audit log; `revert` serves
 the previous replacement again, and after the last one the build's own file.
 `/electron/...` serves metadata with a 60-second cache, so a change is public
 within a minute.
+
+## Publish a desktop app
+
+`builds publish-desktop` publishes one target of a `desktop` app, whatever its
+runtime. It uploads each regular file of the bundle once per app, by SHA-256
+(files Hands already holds from an earlier version are reused), then the
+manifest, the full archive and the optional installer, and creates the
+release:
+
+```bash
+hands builds publish-desktop raft-desktop \
+  --target darwin-arm64 \
+  --channel main \
+  --version-name 1.4.0 \
+  --version-code 1004000 \
+  --bundle build/Raft.app \
+  --archive build/Raft-1.4.0-darwin-arm64.zip \
+  --installer build/Raft-1.4.0.dmg \
+  --notes-file notes.md \
+  --draft
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--target <os-arch>` | `darwin-arm64`, `darwin-x64`, `win32-x64`, `win32-arm64`, `linux-x64`, or `linux-arm64` (required) |
+| `--version-name <semver>` | Version name (required) |
+| `--version-code <int>` | Non-negative integer the app reports when it checks for updates (required) |
+| `--bundle <path>` | The `.app` directory or install directory (required) |
+| `--archive <zip>` | Full archive of the same bundle, the update fallback (required) |
+| `--installer <file>` | Installer for first installs; its file type comes from the extension |
+| `--channel <slug>` | Channel, default `main` |
+| `--notes <text>` / `--notes-file <path>` | Release notes |
+| `--product-type <type>` | Default `desktop-installer` |
+| `--force-update` | Mark the release as a forced update |
+| `--draft` | Create a draft release (required for agents and deploy tokens) |
+| `--json` | Print the result as JSON |
+
+The command refuses a bundle with a symlink that is absolute or points outside
+it, and stops before creating a build if Hands refuses an uploaded file. It
+prints how many files the bundle has, how many were uploaded and their size,
+and how many were reused. Run it once per target. The manifest format, the
+update check and the file route are described in
+[Ship a desktop app](desktop-apps.md).
 
 ## Review and Publish (draft flow)
 

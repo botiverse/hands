@@ -183,6 +183,8 @@ hands apps create \
   --description "Hands web app example"
 ```
 
+`--platform` 取 `android`、`ios`、`ohos`、`electron`、`node`、`web` 或 `desktop`。`desktop` 应用可以用 `--runtime` 记录构建所用的运行时（`jvm`、`electron`、`native`、`tauri` 或 `other`），运行时只用于描述。见[发布桌面应用](desktop-apps.md)。
+
 列出当前令牌可见的应用。列表恰好包含你能打开的应用：当前组织的全部应用，以及通过应用角色或你所属的附加所有者服务器可访问的其他组织应用。
 
 ```bash
@@ -767,6 +769,40 @@ hands releases electron-metadata revert raft-desktop <releaseId> latest-mac.yml
 ```
 
 客户端安装的内容不能变：`version`、每个 `files` 条目以及顶层的 `path` 和 `sha512` 必须与构建自带的文件完全一致；`patches` 的每一项（文件名，或带 `url`、`path`、`file` 的对象）必须指向同一构建中的文件。其他字段（如放量比例）可以修改。每次替换都会保留并写入审计日志；`revert` 恢复上一次替换，全部撤回后恢复构建自带的文件。`/electron/...` 返回元数据时缓存 60 秒，所以修改会在一分钟内对外生效。
+
+## 发布桌面应用 {#publish-a-desktop-app}
+
+`builds publish-desktop` 发布 `desktop` 应用的一个目标，与运行时无关。它把应用包中的每个普通文件按 SHA-256 在每个应用下只上传一次（Hands 已从早期版本存储的文件会被复用），再上传清单、完整压缩包和可选的安装包，然后创建版本：
+
+```bash
+hands builds publish-desktop raft-desktop \
+  --target darwin-arm64 \
+  --channel main \
+  --version-name 1.4.0 \
+  --version-code 1004000 \
+  --bundle build/Raft.app \
+  --archive build/Raft-1.4.0-darwin-arm64.zip \
+  --installer build/Raft-1.4.0.dmg \
+  --notes-file notes.md \
+  --draft
+```
+
+| 选项 | 含义 |
+| --- | --- |
+| `--target <os-arch>` | `darwin-arm64`、`darwin-x64`、`win32-x64`、`win32-arm64`、`linux-x64` 或 `linux-arm64`（必需） |
+| `--version-name <semver>` | 版本名称（必需） |
+| `--version-code <int>` | 应用检查更新时上报的非负整数（必需） |
+| `--bundle <path>` | `.app` 目录或安装目录（必需） |
+| `--archive <zip>` | 同一应用包的完整压缩包，作为更新后备（必需） |
+| `--installer <file>` | 首次安装用的安装包；文件类型取自扩展名 |
+| `--channel <slug>` | 渠道，默认 `main` |
+| `--notes <text>` / `--notes-file <path>` | 更新说明 |
+| `--product-type <type>` | 默认 `desktop-installer` |
+| `--force-update` | 将版本标记为强制更新 |
+| `--draft` | 创建草稿版本（智能体和部署令牌必须使用） |
+| `--json` | 以 JSON 输出结果 |
+
+应用包中存在绝对路径或指向包外的符号链接时，命令会拒绝执行；如果 Hands 拒绝某个已上传的文件，命令会在创建构建前停止。命令会输出应用包的文件数、上传的文件数及其大小，以及复用的文件数。每个目标运行一次。清单格式、更新检查和文件接口见[发布桌面应用](desktop-apps.md)。
 
 ## 审核并发布（草稿流程）
 

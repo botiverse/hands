@@ -535,5 +535,12 @@
   "metadata file not found in this release": "此版本中找不到该元数据文件",
   "metadata must be UTF-8 text": "元数据必须是 UTF-8 文本",
   "the build's own metadata is already served": "当前已在提供构建自带的元数据",
-  "the build's own metadata is missing": "构建自带的元数据文件缺失"
+  "the build's own metadata is missing": "构建自带的元数据文件缺失",
+  "a listed sha256 is already stored with a different size": "列出的某个 sha256 已以不同的大小存储",
+  "body must be JSON": "请求体必须是 JSON",
+  "current_version_code must be a non-negative integer": "current_version_code 必须是非负整数",
+  "file not found": "文件不存在",
+  "matched release has no desktop manifest for this target": "匹配到的版本没有该目标平台的桌面清单",
+  "target must be one of darwin-arm64, darwin-x64, win32-x64, win32-arm64, linux-x64, linux-arm64": "target 必须是 darwin-arm64、darwin-x64、win32-x64、win32-arm64、linux-x64、linux-arm64 之一",
+  "unsupported app runtime": "不支持的应用运行时"
 }
