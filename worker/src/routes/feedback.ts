@@ -7,7 +7,7 @@
  * download them through an authenticated streaming endpoint (no presign
  * needed).
  */
-import { presignR2DownloadUrl } from "../lib/r2_presign";
+import { presignR2DownloadUrl, redirectToR2 } from "../lib/r2_presign";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
@@ -4505,12 +4505,15 @@ export async function handleDownloadFeedbackAttachment(c: AdminContext) {
       size_bytes: row.size_bytes,
     });
   }
-  const object = await c.env.APK_BUCKET.get(row.r2_key);
-  if (!object) return c.json({ error: "attachment blob missing" }, 404);
   const contentType = row.content_type ?? "application/octet-stream";
   // Serve images inline (for the ticket UI's thumbnails/lightbox) when asked;
   // everything else, and the default, downloads as an attachment.
   const inline = c.req.query("inline") === "1" && contentType.startsWith("image/");
+  const direct = await redirectToR2(c.env, { key: row.r2_key, filetype: "bin", contentType,
+    contentDisposition: `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(row.filename)}` });
+  if (direct) return direct;
+  const object = await c.env.APK_BUCKET.get(row.r2_key);
+  if (!object) return c.json({ error: "attachment blob missing" }, 404);
   return new Response(object.body, {
     headers: {
       "content-type": contentType,

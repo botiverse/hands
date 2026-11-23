@@ -6,6 +6,7 @@ import { computeReporterAuditHash } from "../lib/reporter_audit";
 import { buildFeedbackCommentEvent } from "../lib/feedback_events";
 import { feedbackReporterEventStatements } from "./feedback";
 import { triggerDeliveryNow } from "./webhooks";
+import { redirectToR2 } from "../lib/r2_presign";
 
 type ReporterContext = Context<{ Bindings: Env }>;
 
@@ -1200,9 +1201,13 @@ export async function handleDownloadReporterAttachment(c: ReporterContext) {
     attachmentId,
     everyTime: true,
   });
+  const filename = safeFilename(row.filename);
+  const direct = await redirectToR2(c.env, { key: row.r2_key, filetype: "bin",
+    contentType: row.content_type ?? "application/octet-stream",
+    contentDisposition: `attachment; filename="${filename}"` });
+  if (direct) return direct;
   const object = await c.env.APK_BUCKET.get(row.r2_key);
   if (!object) return ticketNotFound(c);
-  const filename = safeFilename(row.filename);
   const headers = new Headers({
     "content-type": row.content_type ?? "application/octet-stream",
     "content-disposition": `attachment; filename="${filename}"`,

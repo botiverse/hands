@@ -125,6 +125,13 @@ jobs:
             pnpm exec wrangler r2 bucket create "${HANDS_R2_BUCKET_NAME}"
           fi
 
+          # Downloads are 302s to signed R2 URLs (lib/r2_presign.ts redirectToR2), and
+          # the admin console and feedback widgets fetch() them, so the bucket must
+          # answer CORS for GET/HEAD. Signed URLs are the only way in: the rules open
+          # no listing and no writes. Applied every deploy so the file is the truth.
+          pnpm exec wrangler r2 bucket cors set "${HANDS_R2_BUCKET_NAME}" --file r2-cors.json --force
+          pnpm exec wrangler r2 bucket cors list "${HANDS_R2_BUCKET_NAME}"
+
           # Real-time webhook delivery queue (PR #550). Create it only when
           # missing so a re-run is a no-op.
           if ! pnpm exec wrangler queues list 2>/dev/null | grep -q 'hands-webhook-deliveries'; then

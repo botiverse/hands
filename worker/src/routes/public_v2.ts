@@ -20,7 +20,7 @@
 
 import type { Context } from "hono";
 import { requestOrigin } from "../lib/origin";
-import { presignR2DownloadUrl } from "../lib/r2_presign";
+import { presignR2DownloadUrl, redirectToR2 } from "../lib/r2_presign";
 import { parseReleaseNotes, resolveReleaseNote, type ReleaseNotes } from "../lib/release_notes";
 import { isFeatureEnabled } from "../lib/feature_flags";
 import {
@@ -1476,6 +1476,9 @@ export async function handleInternalR2Download(c: Context<{ Bindings: Env }>) {
   if (!sig || !constantTimeEqual(sig, expectedSig)) {
     return c.json({ error: "invalid download signature" }, 403);
   }
+  const direct = await redirectToR2(c.env, { key, filetype: "bin", contentType: "application/octet-stream",
+    contentDisposition: "attachment" }, "GET", Math.max(60, expires - Math.floor(Date.now() / 1000)));
+  if (direct) return direct;
   const object = await c.env.APK_BUCKET.get(key);
   if (!object) return c.json({ error: "object not found" }, 404);
   const headers = new Headers();
@@ -1554,6 +1557,10 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
       .bind(key)
       .first<{ filename: string; content_type: string | null; size_bytes: number | null }>();
     if (!attachment) return c.json({ error: "asset not found", code: "object_not_found" }, 404);
+    const direct = await redirectToR2(c.env, { key, filetype: "bin",
+      contentType: attachment.content_type ?? "application/octet-stream",
+      contentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(attachment.filename)}` });
+    if (direct) return direct;
     const object = await c.env.APK_BUCKET.get(key);
     if (!object) return c.json({ error: "object not found", code: "object_not_found" }, 404);
     const headers = new Headers();
