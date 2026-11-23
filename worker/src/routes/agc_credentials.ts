@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, deleteAgcCredentials, getAgcCredentials, getAgcCredentialsMeta, parseAgcCredential, storeAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
-import { AgcApiError, createAgcServiceAccountJwt, exchangeAgcApiClientToken } from "../lib/agc_api";
+import { AgcApiError, createAgcServiceAccountJwt, exchangeAgcApiClientTokenUncached } from "../lib/agc_api";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 async function requireOhosApp(c: AdminContext) {
@@ -49,7 +49,7 @@ export async function handleVerifyAgcCredentials(c: AdminContext) {
       return c.json({ ok: true, credential_kind: kind, project_id: service.project_id ?? null, key_id: service.key_id, sub_account: service.sub_account, expires_in: 3600 });
     }
     const api = credential as AgcApiClientCredential;
-    const token = await exchangeAgcApiClientToken(api);
+    const token = await exchangeAgcApiClientTokenUncached(api);
     await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.verify", payload: { credential_kind: kind, ok: true } });
     return c.json({ ok: true, credential_kind: kind, developer_id: api.developer_id, project_id: api.project_id, client_id: api.client_id, region: api.region ?? null, expires_in: token.expires_in });
   } catch (e) {

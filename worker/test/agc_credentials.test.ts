@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeProtectedHeader, exportPKCS8, generateKeyPair, jwtVerify } from "jose";
 import { decryptAgcCredential, encryptAgcCredential, fingerprintAgcCredential, parseAgcCredential, type AgcApiClientCredential } from "../src/lib/agc_credentials";
-import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, getAgcCompileStatus, invitationTestWindow, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion, updateAgcOpenTest } from "../src/lib/agc_api";
+import { AgcApiError, addAgcTestPackage, bindAgcTestPackage, createAgcInvitationVersion, createAgcServiceAccountJwt, exchangeAgcApiClientToken, exchangeAgcApiClientTokenUncached, forgetAgcTokens, resetAgcTokenCache, getAgcCompileStatus, invitationTestWindow, listAgcTestGroups, requestAgcUpload, resolveAgcAppId, setAgcInvitationTestWindow, submitAgcTestVersion, updateAgcOpenTest } from "../src/lib/agc_api";
 
 const raw = JSON.stringify({ type: "api_client", developer_id: "dev", project_id: "project", client_id: "client", client_secret: "secret", configuration_version: "1.0", region: "CN" });
 
@@ -209,6 +209,7 @@ describe("AGC service account JWT", () => {
 
 describe("AGC token exchange", () => {
   const credential = parseAgcCredential(raw) as AgcApiClientCredential;
+  beforeEach(() => resetAgcTokenCache());
   it("returns the token internally and expiry on success", async () => {
     let requestBody = "";
     const mockFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -221,6 +222,21 @@ describe("AGC token exchange", () => {
   it("redacts provider errors", async () => {
     const mockFetch = vi.fn(async () => new Response(JSON.stringify({ error: "contains provider details" }), { status: 401 }));
     await expect(exchangeAgcApiClientToken(credential, mockFetch as typeof fetch)).rejects.toEqual(expect.objectContaining<Partial<AgcApiError>>({ status: 401, message: "AGC rejected the API client credentials" }));
+  });
+  it("reuses a token until 10 minutes before it expires, and forgets it after a 401", async () => {
+    let issued = 0;
+    const tokenFetch = vi.fn(async () => Response.json({ access_token: `token-${++issued}`, expires_in: 3600 }));
+    const t0 = 1_000_000;
+    expect((await exchangeAgcApiClientToken(credential, tokenFetch as typeof fetch, t0)).access_token).toBe("token-1");
+    expect((await exchangeAgcApiClientToken(credential, tokenFetch as typeof fetch, t0 + 49 * 60_000)).access_token).toBe("token-1");
+    expect((await exchangeAgcApiClientToken(credential, tokenFetch as typeof fetch, t0 + 50 * 60_000)).access_token).toBe("token-2");
+    expect(tokenFetch).toHaveBeenCalledTimes(2);
+    // Another secret for the same client id is another token.
+    expect((await exchangeAgcApiClientToken({ ...credential, client_secret: "other" }, tokenFetch as typeof fetch, t0 + 50 * 60_000)).access_token).toBe("token-3");
+    forgetAgcTokens(credential.client_id);
+    expect((await exchangeAgcApiClientToken(credential, tokenFetch as typeof fetch, t0 + 50 * 60_000)).access_token).toBe("token-4");
+    // Checking credentials someone just entered never uses the cache.
+    expect((await exchangeAgcApiClientTokenUncached(credential, tokenFetch as typeof fetch)).access_token).toBe("token-5");
   });
   it("rejects malformed success responses", async () => {
     const mockFetch = vi.fn(async () => new Response(JSON.stringify({ expires_in: 10 }), { status: 200 }));
