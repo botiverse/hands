@@ -15,6 +15,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppPermission } from "../lib/app_permissions";
 import { getCookie } from "hono/cookie";
+import { liveRoleMode, readLiveRaftRole, resetLiveRoleCache, roleAllowsAccess } from "../lib/raft_live_role";
 import {
   loadDeployToken,
   resolveDeployTokenPermissions,
@@ -193,6 +194,51 @@ export async function accountForRequestedOrg(
   return membership ?? account;
 }
 
+/**
+ * RFC 079 §8.2: a person's access to a Raft server's organization follows
+ * their live role there (lib/raft_live_role.ts), not the role their login
+ * reported. Only a person (agents stay server-bound to their own login) in
+ * the organization of the account's own Raft server is checked. A removed
+ * member or a guest loses that organization; a read error refuses writes
+ * only, since it is no claim about the role. "shadow" logs what "on" would
+ * do and refuses nobody.
+ */
+export async function liveMembershipRefusal(
+  c: Context<AdminEnv & { Bindings: Env }>,
+  account: AdminAccount,
+): Promise<Response | null> {
+  const mode = liveRoleMode(c.env);
+  if (mode === "off" || account.principal_type !== "human") return null;
+  if (!account.org_id || account.org_id !== `raft_${account.server_id}`) return null;
+  const result = await readLiveRaftRole(c.env, account.server_id, account.provider_subject);
+  const enforce = mode === "on";
+  if (!result.ok) {
+    console.warn(JSON.stringify({ event: "raft_live_role_unavailable", mode, reason: result.reason, server_id: account.server_id }));
+    const method = c.req.method.toUpperCase();
+    if (enforce && method !== "GET" && method !== "HEAD") {
+      return c.json({ error: "raft_role_unavailable", code: "RAFT_ROLE_UNAVAILABLE",
+        message: "Could not confirm your current role on this Raft server. Try again in a minute." }, 503);
+    }
+    return null;
+  }
+  if (!roleAllowsAccess(result.role)) {
+    console.warn(JSON.stringify({ event: "raft_membership_ended", mode, role: result.role, server_id: account.server_id, account_id: account.id }));
+    if (!enforce) return null;
+    await c.env.DB.prepare("DELETE FROM org_members WHERE org_id = ?1 AND account_id = ?2")
+      .bind(account.org_id, account.id).run().catch(() => undefined);
+    resetLiveRoleCache({ serverId: account.server_id, sub: account.provider_subject });
+    return c.json({ error: "raft_membership_ended", code: "RAFT_MEMBERSHIP_ENDED",
+      message: "You are no longer a member of this Raft server, so its Hands organization is no longer available to you." }, 403);
+  }
+  if (enforce && result.role !== (account.server_role || "").toLowerCase()) {
+    // Keep the stored role current: Hands admin checks read it.
+    await c.env.DB.prepare("UPDATE raft_accounts SET server_role = ?1 WHERE id = ?2")
+      .bind(result.role, account.id).run().catch(() => undefined);
+    account.server_role = result.role;
+  }
+  return null;
+}
+
 export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
   async (c, next) => {
     const authHeader = c.req.header("authorization");
@@ -218,6 +264,8 @@ export const authMiddleware: MiddlewareHandler<AdminEnv & { Bindings: Env }> =
         sessionAccount,
         c.req.header(ACTIVE_ORG_HEADER),
       );
+      const refusal = await liveMembershipRefusal(c, account);
+      if (refusal) return refusal;
       c.set("admin_account", account);
       c.set("admin_actor", accountActor(account));
       if (account.org_id) c.set("org_id", account.org_id);
