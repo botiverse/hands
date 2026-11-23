@@ -377,6 +377,14 @@ assets. Use `artifact_kind = electron-metadata` for `latest*.yml`; use the
 original filename in `variant` or `metadata_json.filename` so relative URLs
 inside the yml resolve unchanged.
 
+An installer download accepts `?name=<token>`. When the token is exactly eight
+lowercase letters or digits (`^[a-z0-9]{8}$`), the saved file name gets
+`-<token>` before its extension, for example
+`Raft-Desktop-1.36.0-universal.dmg?name=k3x9a2pq` saves as
+`Raft-Desktop-1.36.0-universal-k3x9a2pq.dmg`, so the installed app can read
+where it was downloaded from. The bytes, length and etag are unchanged. Any
+other value is ignored, and `latest*.yml` keeps its name.
+
 Example asset conventions:
 
 | File | `platform` | `arch` | `filetype` | `artifact_kind` |
