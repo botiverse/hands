@@ -1223,10 +1223,15 @@ export function changelogToHtml(raw: string): string {
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
-  const inline = (t: string) =>
-    escape(t)
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Code spans first, so a `*` inside one (`policy/*.hcl`) can't end a bold
+  // run; bold may then wrap code and other text.
+  const inline = (t: string) => {
+    const codes: string[] = [];
+    const held = t.replaceAll("\u0000", "").replace(/`([^`]+)`/g, (_m, code: string) => `\u0000${codes.push(code) - 1}\u0000`);
+    return escape(held)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\u0000(\d+)\u0000/g, (_m, i: string) => `<code>${escape(codes[Number(i)] ?? "")}</code>`);
+  };
   const lines = raw.split(/\r?\n/);
   const out: string[] = [];
   let list: string[] = [];
@@ -1238,7 +1243,13 @@ export function changelogToHtml(raw: string): string {
   };
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+    const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      // Release notes sit under the version heading: every level renders as
+      // one small section heading.
+      flushList();
+      out.push(`<h4>${inline((heading[1] ?? "").replace(/\s+#+$/, ""))}</h4>`);
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
       list.push(inline(trimmed.slice(2)));
     } else if (trimmed.length === 0) {
       flushList();

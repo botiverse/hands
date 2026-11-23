@@ -645,6 +645,7 @@ function renderLatestLandingPage(
     main { max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; }
     .actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
     .notes { margin-top: 28px; }
+    .notes h4 { margin: 14px 0 4px; font-size: 15px; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -737,6 +738,7 @@ function renderHistoryPage(
     .date { margin-top: 2px; }
     .dl { color: var(--fg); font-weight: 600; font-size: 14px; white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-hairline); }
     .notes { margin-top: 10px; }
+    .notes h4 { margin: 14px 0 4px; font-size: 15px; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -863,6 +865,7 @@ function renderReleaseNotesPage(
     .title strong { font-size: 17px; line-height: 22px; font-weight: 700; }
     .meta, .date { font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--fg-hint); white-space: nowrap; }
     .notes { margin: 10px 0 0; }
+    .notes h4 { margin: 14px 0 4px; font-size: 15px; font-weight: 700; }
     .empty { color: var(--fg-muted); font-size: 15px; }
   </style>
 </head>
