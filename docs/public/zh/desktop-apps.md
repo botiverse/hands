@@ -217,9 +217,11 @@ fun main() = application {
 
 | 调用 | 时机 | 作用 |
 | --- | --- | --- |
+| `installBlocker()` | 检查更新之前（不联网） | 返回为什么无法就地更新：`TRANSLOCATED`（macOS 把未移动的应用放在随机只读路径里运行）、`READ_ONLY_VOLUME`（从 DMG 等只读卷运行）、`NOT_WRITABLE`（所在目录不可写）、`MISSING`；可以更新时返回 `null`。前两种应提示用户先把应用拖到「应用程序」。`prepare` 和 `installAndRestart` 遇到这些情况会抛出 `InstallBlockedException` |
 | `checkForUpdate()` | 启动时及定期，在 UI 线程之外 | 即[检查更新](#check-for-an-update)；返回 `NoUpdate` 或 `Available`（含 `forceUpdate`） |
 | `prepare(update, progress)` | 拿到 `Available` 后立即调用（其 URL 会过期） | 用已安装的未变文件加下载的文件构建并校验 `stateDir/staging/<version_code>/<root>`；失败时删除它并抛出异常，已安装的应用不受影响 |
 | `installAndRestart(prepared)` | 用户同意重启时；随后退出应用 | 启动一个独立的辅助脚本：等应用退出，把安装目录移到 `stateDir/backup/`，移入新目录树并重新启动；新版本 60 秒内未确认则回滚 |
+| `ProgressListener` | 传给 `prepare` | 在工作线程上收到 `PrepareProgress`（阶段、该阶段已完成和总字节数）。`progress.fraction` 把整个 `prepare()` 折算成 0.0–1.0，直接绑一个进度条即可，例如切回 UI 线程后 `LinearProgressIndicator(progress = { fraction.toFloat() })` |
 | `markLaunchSucceeded()` | 每次启动、应用确认可用后（首个窗口显示时） | 向辅助脚本确认启动成功；清理旧的暂存目录和备份 |
 
 `stateDir` 归应用所有，存放暂存的目录树、上一版本的一份备份、辅助脚本及其日志：macOS 上用 `~/Library/Application Support/<App>/hands-updates`，Linux 上用 `~/.local/state/<app>/hands-updates`；它必须在安装目录之外，最好与安装目录在同一卷上，这样替换只是一次重命名。用户必须有权重命名安装目录。在 Linux 上，除非正在运行的可执行文件位于安装目录内，否则需要给 `installAndRestart` 传入 `launcher`（例如 `bin/Raft`）。Windows 上可以检查和准备更新，但 `installAndRestart` 尚未实现。

@@ -31,6 +31,7 @@ class HandsDesktopUpdater(
     parallelism: Int = 4,
 )
 
+fun installBlocker(): InstallBlocker?            // TRANSLOCATED | READ_ONLY_VOLUME | NOT_WRITABLE | MISSING, or null
 fun checkForUpdate(): UpdateCheck                 // NoUpdate(latestVersionCode) | Available(release, manifest, fullArchive, installer, ...)
 fun prepare(update: UpdateCheck.Available, progress: ProgressListener? = null): PreparedUpdate
 fun loadPrepared(): PreparedUpdate?               // a tree an earlier prepare() left staged
