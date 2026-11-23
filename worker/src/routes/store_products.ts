@@ -8,17 +8,18 @@ import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_
 import { sniffImage } from "../lib/play_images";
 import { insertAuditLog } from "../lib/permissions";
 import { AppStoreReleaseError, ascAppIdFor, loadCredentials, type AdminContext } from "./app_store_release";
+import { upstreamFromPlayCause, type UpstreamDetail } from "../lib/upstream_error";
 
 const MAX_REQUEST = 8 * 1024 * 1024;
 const MAX_SCREENSHOT = 5 * 1024 * 1024;
 const hash = (input: string | Uint8Array) => bytesToHex(sha256(typeof input === "string" ? new TextEncoder().encode(input) : input));
 class RequestError extends Error { constructor(readonly status: 400 | 409 | 413, readonly code: string, message: string) { super(message); } }
-type GoogleProductDiagnostic = { provider_http_status?: number; provider_body_empty?: boolean; provider_json_parsed?: boolean };
+type GoogleProductDiagnostic = { provider_http_status?: number; provider_body_empty?: boolean; provider_json_parsed?: boolean; upstream?: UpstreamDetail };
 class GoogleProductError extends Error {
   constructor(readonly code: string, readonly diagnostic: GoogleProductDiagnostic = {}) { super("Store request failed; inspect provider state before retrying"); }
 }
-// Only adapter-defined categories cross the boundary; unknown codes and all
-// provider messages, URLs, and metadata remain private.
+// Only adapter-defined categories cross the boundary, plus Google's message after
+// redaction (`upstream`); URLs and metadata remain private.
 const GOOGLE_PRODUCT_ERRORS = new Set([
   "play_credentials_invalid", "play_binding_invalid", "package_name_invalid",
   "play_token_unavailable", "play_token_rejected", "play_token_malformed",
@@ -147,6 +148,8 @@ export async function handleApplyStoreProduct(c: AdminContext) {
             diagnostic.provider_body_empty = shape.body_empty;
             diagnostic.provider_json_parsed = shape.json_parsed;
           }
+          const upstream = upstreamFromPlayCause(reply.error.cause);
+          if (upstream) diagnostic.upstream = upstream;
           throw new GoogleProductError(code, diagnostic);
         }
         if (reply.value.product_id !== productId || reply.value.mode !== mode || !["planned", "committed", "no_changes", "failed", "pending"].includes(reply.value.outcome)) throw new AscApiError(502, "google_response_malformed");

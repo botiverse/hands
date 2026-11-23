@@ -5,6 +5,7 @@ import { getGooglePlayBinding, hasGooglePlayConfiguration } from "./google_play_
 import { playDeliveryStatement, playStateLabel } from "./play_notifications";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 import { saveTrackSnapshot } from "./play_track_snapshots";
+import { upstreamFromPlayCause, type UpstreamDetail } from "./upstream_error";
 
 type Summary = { releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string };
 /** A changed observation and its deliveries commit atomically. The nonce and
@@ -73,6 +74,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
       if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") continue;
       const seenTracks = new Set<string>();
       let failureCode: string | null = null;
+      let failureUpstream: UpstreamDetail | undefined;
       let quotaExhausted = false;
       for (const handsTrack of HANDS_PLAY_TRACKS) {
         const track = binding.tracks[handsTrack];
@@ -84,7 +86,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           console.warn("hands_play_poll_failure", JSON.stringify({ code: reply.error.code }));
           // Quota is not access: no alert, and no further reads this round.
           if (reply.error.code === "play_quota_exceeded") { quotaExhausted = true; break; }
-          failureCode ??= reply.error.code;
+          if (!failureCode) { failureCode = reply.error.code; failureUpstream = upstreamFromPlayCause(reply.error.cause); }
           continue;
         }
         await saveTrackSnapshot(env.DB, row.app_id, binding.package_name, track, reply.value, now).catch(() => undefined);
@@ -104,7 +106,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
             version, binding.updated_at, now);
       }
       if (quotaExhausted && !failureCode) continue;
-      if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now, settingsOrigin(env)).catch(() => undefined);
+      if (failureCode) await recordPlayAccessFailure(env.DB, row.app_id, "publishing", failureCode, now, settingsOrigin(env), failureUpstream).catch(() => undefined);
       else await recordPlayAccessSuccess(env.DB, row.app_id, "publishing", now).catch(() => undefined);
     } catch {
       // No credential, URL, provider message or release content in logs.

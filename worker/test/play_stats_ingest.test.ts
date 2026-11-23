@@ -24,6 +24,8 @@ import { handleGetPlayStatsBucket, handleIngestPlayStats, handlePutPlayStatsBuck
 import { handleAppStats } from "../src/routes/stats";
 import { createPlayAdapterService } from "../../play-adapter/src/index";
 
+const GCS_DENIED = "hands-play@example.test does not have storage.objects.list access to the Google Cloud Storage bucket.";
+
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 const PKG = "build.raft.app";
 const BUCKET = "pubsite_prod_8345658214806586934";
@@ -88,7 +90,7 @@ function googleFetch(g: Google): typeof fetch {
     expect(headers.get("authorization")).toBe("Bearer gcs-access-token");
     const list = url.pathname.match(/^\/storage\/v1\/b\/([^/]+)\/o$/);
     if (list) {
-      if (g.listStatus) return Response.json({ error: { message: "secret provider text" } }, { status: g.listStatus });
+      if (g.listStatus) return Response.json({ error: { message: GCS_DENIED } }, { status: g.listStatus });
       expect(decodeURIComponent(list[1]!)).toBe(BUCKET);
       const prefix = url.searchParams.get("prefix") ?? "";
       const names = Object.keys(g.objects).filter((n) => n.startsWith(prefix)).sort();
@@ -415,7 +417,9 @@ describe("Google Play statistics ingest", () => {
     const body = await res.json() as any;
     expect(body).toMatchObject({ code: "PLAY_STATS_LIST_FAILED", provider_code: "play_reports_bucket_forbidden" });
     expect(body.hint).toMatch(/pubsite_prod_rev_<digits>/);
-    expect(JSON.stringify(body)).not.toContain("secret provider text");
+    // Google's own words come back, under `upstream`, for the person who ran it.
+    expect(body.upstream).toEqual({ service: "google_cloud_storage", http_status: 403,
+      message: "[redacted] does not have storage.objects.list access to the Google Cloud Storage bucket." });
     // Every listing went to the configured bucket only.
     for (const c of h.g.calls.filter((c) => new URL(c.url).origin === "https://storage.googleapis.com")) {
       expect(new URL(c.url).pathname).toBe(`/storage/v1/b/${BUCKET}/o`);

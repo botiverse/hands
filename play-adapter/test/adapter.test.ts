@@ -805,8 +805,8 @@ describe("Google Play adapter RPC service", () => {
     expect(result.error.code).toBe("play_upload_rejected");
     expect(result.error.message).toContain("upload_bundle");
     expect(result.error.cause).toMatchObject({ stage: "upload_bundle", provider_cause: "DUPLICATE_VERSION" });
-    // Google's own text never travels.
-    expect(JSON.stringify(result)).not.toContain("already been used");
+    // Google's own words travel (redacted) so the caller can read them.
+    expect(result.error.cause).toMatchObject({ provider_message: "Version code 11500010 has already been used.", provider_http_status: 403 });
   });
 
   it("keeps the live completed release beside a staged rollout", async () => {
@@ -1065,7 +1065,7 @@ describe("changesNotSentForReview and sendForReview", () => {
     const service = createPlayAdapterService({ fetchImpl: fixture.fetchImpl, nowSeconds: () => NOW });
     const result = await service.promote(promotion({ changesNotSentForReview: true }), body(), null, environment());
     expect(result).toMatchObject({ ok: false, error: { status: 502, code: "play_edit_state_unknown", cause: { stage: "commit_edit", provider_cause: "OTHER" } } });
-    expect(JSON.stringify(result)).not.toContain("schiefgelaufen");
+    expect(result).toMatchObject({ error: { cause: { provider_message: "Etwas ist schiefgelaufen." } } });
   });
 
   it("without the flag, the same in-review rejection keeps today's play_api_rejected error", async () => {

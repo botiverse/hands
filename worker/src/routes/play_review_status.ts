@@ -20,6 +20,7 @@ import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_
 import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
 import { playStateLabel } from "../lib/play_notifications";
 import { loadTrackSnapshots, saveTrackSnapshot, type SnapshotRelease, type TrackSnapshot } from "../lib/play_track_snapshots";
+import { upstreamDetail, upstreamFromPlayCause, type UpstreamDetail } from "../lib/upstream_error";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 type HandsTrack = HandsPlayTrack;
@@ -35,6 +36,8 @@ type TrackStatus = {
   read_at?: number;
   releases: ReleaseRow[];
   error_code?: string;
+  /** What Google said when the live read failed (lib/upstream_error.ts). */
+  upstream?: UpstreamDetail;
   /** Only when the release-state read was refused and the edit read worked. */
   track_contents?: TrackContent[];
 };
@@ -70,6 +73,7 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
       continue;
     }
     let errorCode = service ? null : "play_service_unavailable";
+    let upstream: UpstreamDetail | undefined;
     if (service) {
       const reply = await listReleaseStatesWithRetry(service, { credential: binding.credential, packageName, tracks: binding.tracks, handsTrack });
       if (reply.ok) {
@@ -79,11 +83,12 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
         continue;
       }
       errorCode = reply.error.code;
+      upstream = upstreamFromPlayCause(reply.error.cause);
     }
     if (snapshot) {
       // The live read failed; the last answer Play gave is still the best one.
       tracks.push({ hands_track: handsTrack, play_track: playTrack, source: "cached", read_at: snapshot.read_at,
-        error_code: errorCode ?? "play_unavailable", releases: rows(snapshot.releases, playTrack) });
+        error_code: errorCode ?? "play_unavailable", ...(upstream ? { upstream } : {}), releases: rows(snapshot.releases, playTrack) });
       continue;
     }
     const { results: observed } = await c.env.DB.prepare(
@@ -112,6 +117,7 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
       play_track: playTrack,
       source: results.length ? "stored" : "unavailable",
       error_code: errorCode ?? "play_unavailable",
+      ...(upstream ? { upstream } : {}),
       releases: results.map((r) => ({
         release_name: null, state: r.state, state_label: playStateLabel(r.state), version_codes: [r.version_code], observed_at: r.observed_at,
       })),
@@ -123,14 +129,21 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
   const production = tracks.find((t) => t.hands_track === "production");
   const publishedProduction = production?.releases.filter((r) => isPublished(r.state)).flatMap((r) => r.version_codes) ?? [];
   const access = await c.env.DB.prepare(
-    "SELECT failing_since, last_error_code FROM google_play_access_state WHERE app_id = ?1 AND access = 'publishing'",
-  ).bind(appId).first<{ failing_since: number; last_error_code: string }>().catch(() => null);
+    "SELECT failing_since, last_error_code, last_upstream_json FROM google_play_access_state WHERE app_id = ?1 AND access = 'publishing'",
+  ).bind(appId).first<{ failing_since: number; last_error_code: string; last_upstream_json: string | null }>().catch(() => null);
+  const accessUpstream = (() => {
+    try {
+      const u = access?.last_upstream_json ? JSON.parse(access.last_upstream_json) as Partial<UpstreamDetail> : null;
+      return u?.service ? upstreamDetail(u.service, u.message, u.http_status) : undefined;
+    } catch { return undefined; }
+  })();
   return c.json({
     package_name: packageName,
     read_at: Date.now(),
     tracks,
     in_review: inReview,
     production_version_code: publishedProduction.length ? Math.max(...publishedProduction) : null,
-    publishing_access: access ? { failing_since: access.failing_since, last_error_code: access.last_error_code } : null,
+    publishing_access: access ? { failing_since: access.failing_since, last_error_code: access.last_error_code,
+      ...(accessUpstream ? { upstream: accessUpstream } : {}) } : null,
   });
 }

@@ -3,8 +3,40 @@ import { currentLocale, type Locale } from "./localePreference";
 
 const errorTranslations: Readonly<Record<string, string>> = translations;
 
+const UPSTREAM_LABELS: Readonly<Record<string, string>> = {
+  google_play: "Google Play",
+  google_oauth: "Google sign-in",
+  google_cloud_storage: "Google Cloud Storage",
+  app_store_connect: "App Store Connect",
+  appgallery_connect: "AppGallery Connect",
+};
+
+/**
+ * What Google / Apple / Huawei said, as Hands relays it in an error body
+ * (`upstream: { service, http_status, message }`, top level or under `error`).
+ * Hands has already redacted the text; this only bounds it for display.
+ */
+export function upstreamSaid(error: unknown, locale: Locale = currentLocale()): string | null {
+  const body = error && typeof error === "object" && "body" in error ? (error as { body?: unknown }).body : null;
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  const nested = b.error && typeof b.error === "object" ? (b.error as Record<string, unknown>).upstream : undefined;
+  const upstream = (b.upstream ?? nested) as { service?: unknown; http_status?: unknown; message?: unknown } | undefined;
+  if (!upstream || typeof upstream !== "object" || typeof upstream.message !== "string" || !upstream.message.trim()) return null;
+  const who = (typeof upstream.service === "string" && UPSTREAM_LABELS[upstream.service]) || (locale === "zh-CN" ? "上游服务" : "The upstream service");
+  const status = typeof upstream.http_status === "number" ? ` (HTTP ${upstream.http_status})` : "";
+  const text = upstream.message.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300);
+  return locale === "zh-CN" ? `${who} 返回${status}：${text}` : `${who} said${status}: ${text}`;
+}
+
 /** Translate known Hands errors for display only; keep the Error and body intact. */
 export function errorMessage(error: unknown, locale: Locale = currentLocale()): string {
+  const said = upstreamSaid(error, locale);
+  const message = handsMessage(error, locale);
+  return said && !message.includes(said) ? `${message} · ${said}` : message;
+}
+
+function handsMessage(error: unknown, locale: Locale): string {
   const raw = error instanceof Error ? error.message : typeof error === "string" ? error : String(error);
   if (locale !== "zh-CN") {
     // The credentials form moved; keep the API response untouched while the

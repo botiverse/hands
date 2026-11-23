@@ -55,12 +55,12 @@ it("logs Google's validation reasons, which is the case the whitelist drops", as
   expect(logged).toContain("INVALID_ARGUMENT");
   // The caller now also gets Google's identifiers (per source field, identifier-shaped
   // only), because a coarse provider_cause alone left a real failure undiagnosable
-  // without log access (2026-10-29, upload_mapping 400 "version code"). Prose still
-  // never reaches the caller.
+  // without log access (2026-10-29, upload_mapping 400 "version code"). Google's
+  // envelope message travels too (redacted), so the person who hit it reads it.
   expect(result).toMatchObject({ ok: false, error: { code: "play_api_rejected", cause: { provider_identifiers: {
     status: "INVALID_ARGUMENT", errors_reasons: ["badRequest"], details: [{ reason: "releaseValidationError" }],
-  } } } });
-  expect(JSON.stringify(result)).not.toContain("Track has more than one completed release");
+  }, provider_message: "Track has more than one completed release", provider_http_status: 400 } } });
+  // Only the envelope message: per-item prose stays in the log.
   expect(JSON.stringify(result)).not.toContain("one completed per track");
   // Provider prose is logged (redacted, clipped): it is often the only diagnostic.
   expect(logged).toContain("Track has more than one completed release");
@@ -176,8 +176,8 @@ it("returns the classified cause to the caller so a receipt can carry it", async
       cause: { stage: "create_edit", provider_cause: "MULTIPLE_COMPLETED" },
     },
   });
-  // The Google text itself must not travel with it.
-  expect(JSON.stringify(result)).not.toContain("more than one completed");
+  // Google's own words travel with it, so the caller can read them.
+  expect(result).toMatchObject({ error: { cause: { provider_message: "Track has more than one completed release." } } });
 });
 
 // commit_edit rejections must be classified, not left as OTHER.
@@ -241,11 +241,38 @@ it("keeps Google's structured identifiers per field and drops prose", async () =
     errors_reasons: ["apkNotFound"],
     details: [{ type: "type.googleapis.com/google.rpc.ErrorInfo", reason: "APK_NOT_FOUND", domain: "androidpublisher.googleapis.com" }],
   });
-  const serialised = JSON.stringify(error.cause_detail);
+  // The envelope message is the one piece of prose that travels; per-item prose,
+  // metadata and non-identifier types do not.
+  expect(error.cause_detail?.provider_message).toBe("APK specified version code 11700009 hidden-secret prose");
+  const { provider_message: _said, ...rest } = error.cause_detail ?? {};
+  const serialised = JSON.stringify(rest);
   expect(serialised).not.toContain("hidden-secret");
   expect(serialised).not.toContain("hidden-refresh");
   expect(serialised).not.toContain("prose");
   expect(serialised).not.toContain("evil.example");
+});
+
+it("redacts credential-shaped text in the message it hands to the caller", async () => {
+  const { playRejection } = await import("../src/provider_errors");
+  const error = playRejection(403, { error: { code: 403, status: "PERMISSION_DENIED",
+    message: "Caller ya29.a0AfB_byC-token for owner@example.com lacks access; key AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456 \u0007" } }, "list_tracks");
+  const said = error.cause_detail?.provider_message ?? "";
+  expect(said).toContain("lacks access");
+  for (const secret of ["ya29.", "owner@example.com", "AIzaSy", "\u0007"]) expect(said).not.toContain(secret);
+  expect(error.cause_detail?.provider_http_status).toBe(403);
+});
+
+it("redacts before clipping, decodes percent-encoding, and drops URL queries and PEM blocks", async () => {
+  const { redactProviderText } = await import("../src/provider_errors");
+  // A 40-character key straddling the 300-character clip must not leave a tail.
+  const edge = redactProviderText(`${"a ".repeat(140)}x ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ tail`);
+  expect(edge).not.toMatch(/Z{3,}/);
+  expect(redactProviderText("token ya29%2Ea0AfBsecret and me%40proj.iam.gserviceaccount.com")).toBe("token [redacted] and [redacted]");
+  expect(redactProviderText("Enable it at https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview?project=123456 then retry"))
+    .toBe("Enable it at https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview then retry");
+  expect(redactProviderText("key -----BEGIN PRIVATE KEY-----\nMIIEv\nabc\n-----END PRIVATE KEY----- end")).toBe("key [redacted] end");
+  expect(redactProviderText("secret GOCSPX-short and AIzaSyShort here")).toBe("secret [redacted] and [redacted] here");
+  expect(redactProviderText("100% of quota")).toBe("100% of quota");
 });
 
 it("omits provider_identifiers when the body carries none", async () => {

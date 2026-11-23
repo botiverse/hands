@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises";
 import type { Command } from "commander";
 import { apiRequest, QuiverApiError } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
+import { upstreamLine, type Upstream } from "../lib/upstream.js";
 
 type AppRow = { id: string; slug: string };
 const METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
@@ -261,12 +262,13 @@ type PlayReviewStatus = {
     source: "live" | "cached" | "stored" | "unavailable";
     read_at?: number;
     error_code?: string;
+    upstream?: Upstream;
     releases: Array<{ release_name: string | null; state: string; state_label: string; version_codes: number[]; observed_at?: number }>;
     track_contents?: Array<{ release_name: string | null; status: string; version_codes: number[]; user_fraction?: number }>;
   }>;
   in_review: Array<{ hands_track: string; play_track: string; version_codes: number[]; release_name: string | null; source: string }>;
   production_version_code: number | null;
-  publishing_access: { failing_since: number; last_error_code: string } | null;
+  publishing_access: { failing_since: number; last_error_code: string; upstream?: Upstream } | null;
 };
 
 const shortState = (state: string) => state.replace(/^RELEASE_LIFECYCLE_STATE_/, "");
@@ -285,11 +287,15 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
     const head = `${track.hands_track} (${track.play_track})`;
     if (track.source === "unavailable") {
       lines.push(`${head}: ${readFailure(track.error_code)} and Hands has no stored state`);
+      const said = upstreamLine(track.upstream);
+      if (said) lines.push(`  ${said}`);
     } else {
       const readAt = track.read_at ? new Date(track.read_at).toISOString() : "";
       lines.push(track.source === "live" ? `${head}: live`
         : track.source === "cached" ? `${head}: ${track.error_code ? `${readFailure(track.error_code)}; ` : ""}as Play answered at ${readAt}`
         : `${head}: ${readFailure(track.error_code)}; last states the poll observed`);
+      const saidHere = upstreamLine(track.upstream);
+      if (saidHere) lines.push(`  ${saidHere}`);
       if (track.releases.length === 0) lines.push("  (no releases)");
       for (const r of track.releases) {
         const when = r.observed_at ? ` (observed ${new Date(r.observed_at).toISOString()})` : "";
@@ -307,6 +313,8 @@ export function formatPlayReviewStatus(res: PlayReviewStatus): string {
   }
   if (res.publishing_access) {
     lines.push(`Warning: Hands' Play status poll has been failing since ${new Date(res.publishing_access.failing_since).toISOString()} (${res.publishing_access.last_error_code}).`);
+    const said = upstreamLine(res.publishing_access.upstream);
+    if (said) lines.push(`  ${said}`);
   }
   return lines.join("\n");
 }

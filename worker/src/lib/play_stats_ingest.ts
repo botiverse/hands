@@ -23,6 +23,7 @@ import { settingsOrigin } from "./play_access_origin";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 import { createHash } from "node:crypto";
 import { getGooglePlayBinding, getGooglePlayReportsCredential, hasGooglePlayConfiguration } from "./google_play_bindings";
+import { upstreamFromPlayCause, type UpstreamDetail } from "./upstream_error";
 
 export const PLAY_STATS_BUCKET = /^pubsite_prod_(rev_)?[0-9]{1,30}$/;
 
@@ -115,7 +116,7 @@ export function blockingPlayWarning(w: PlayStatsWarning): boolean {
 }
 
 export class PlayStatsError extends Error {
-  constructor(public code: string) {
+  constructor(public code: string, public upstream?: UpstreamDetail) {
     super(code);
   }
 }
@@ -442,7 +443,7 @@ export async function ingestGooglePlayStatsForApp(
   for (const kind of ["installs_overview", "store_performance_overview"] as const) {
     const report = PLAY_STATS_REPORTS[kind].report;
     const listed = await service.listStatsObjects({ credential, packageName, bucket, report });
-    if (!listed.ok) throw new PlayStatsError(errorCode(listed.error.code));
+    if (!listed.ok) throw new PlayStatsError(errorCode(listed.error.code), upstreamFromPlayCause(listed.error.cause));
     if (listed.value.truncated) summary.more_pending = true;
     for (const o of listed.value.objects) {
       const month = overviewMatch(o.name, report, packageName);
@@ -488,7 +489,7 @@ export async function ingestGooglePlayStatsForApp(
       const read = await service.readStatsObject({
         credential, packageName, bucket, name: file.name, generation: file.generation, maxBytes: budget.maxFileBytes,
       });
-      if (!read.ok) throw new PlayStatsError(errorCode(read.error.code));
+      if (!read.ok) throw new PlayStatsError(errorCode(read.error.code), upstreamFromPlayCause(read.error.cause));
       const bytes = read.value.bytes instanceof Uint8Array ? read.value.bytes : new Uint8Array(read.value.bytes as ArrayBufferLike);
       runBytes += bytes.byteLength;
       if (read.value.name !== file.name || read.value.generation !== file.generation) throw new PlayStatsError("object_identity_mismatch");
@@ -609,7 +610,7 @@ export async function pollGooglePlayStats(env: Env, now = Date.now()) {
       code = err instanceof PlayStatsError ? err.code : "unexpected";
       logFailure(row.app_id, code);
       if (err instanceof PlayStatsError) {
-        await recordPlayAccessFailure(env.DB, row.app_id, "statistics", err.code, now, settingsOrigin(env)).catch(() => undefined);
+        await recordPlayAccessFailure(env.DB, row.app_id, "statistics", err.code, now, settingsOrigin(env), err.upstream).catch(() => undefined);
       }
     }
     await env.DB.prepare(`UPDATE google_play_stats_ingest_schedule SET next_run_at = ?1, last_run_at = ?2, last_error_code = ?3

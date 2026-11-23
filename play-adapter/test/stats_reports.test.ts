@@ -156,17 +156,17 @@ describe("Play statistics: request restrictions", () => {
       .toMatchObject({ ok: false, error: { code: "play_reports_object_too_large" } });
   });
 
-  it("never follows a redirect, and maps 403/404 to bucket codes without Google's text", async () => {
+  it("never follows a redirect, and maps 403/404 to bucket codes with Google's redacted text", async () => {
     const redirect = google(() => new Response(null, { status: 302, headers: { location: "https://attacker.example/x" } }));
     expect(await redirect.service.listStatsObjects({ credential: oauth, packageName: PKG, bucket: BUCKET, report: "installs" }))
       .toMatchObject({ ok: false, error: { code: "play_reports_redirect_refused" } });
     expect(redirect.calls.map((c) => c.url.origin)).toEqual(["https://oauth2.googleapis.com", "https://storage.googleapis.com"]);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     for (const [status, code] of [[403, "play_reports_bucket_forbidden"], [401, "play_reports_bucket_forbidden"], [404, "play_reports_bucket_not_found"]] as const) {
-      const g = google(() => Response.json({ error: { message: "provider secret text" } }, { status }));
+      const g = google(() => Response.json({ error: { message: "provider text for owner@example.com" } }, { status }));
       const result = await g.service.listStatsObjects({ credential: oauth, packageName: PKG, bucket: BUCKET, report: "store_performance" });
-      expect(result).toMatchObject({ ok: false, error: { status: 403, code } });
-      expect(JSON.stringify(result)).not.toContain("provider secret text");
+      expect(result).toMatchObject({ ok: false, error: { status: 403, code,
+        cause: { stage: "reports_storage", provider_http_status: status, provider_message: "provider text for [redacted]" } } });
     }
   });
 });

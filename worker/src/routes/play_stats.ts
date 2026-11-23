@@ -89,13 +89,14 @@ export async function handleIngestPlayStats(c: AdminContext) {
     return c.json({ ...summary, note: PLAY_STATS_NOTE });
   } catch (err) {
     if (err instanceof PlayStatsError) {
-      await recordPlayAccessFailure(c.env.DB, appId, "statistics", err.code, Date.now(), settingsOrigin(c.env)).catch(() => undefined);
+      await recordPlayAccessFailure(c.env.DB, appId, "statistics", err.code, Date.now(), settingsOrigin(c.env), err.upstream).catch(() => undefined);
       const bucket = await getPlayStatsBucket(c.env.DB, appId).catch(() => null);
       return c.json({
         error: "Google Play statistics reports could not be listed",
         code: "PLAY_STATS_LIST_FAILED",
         provider_code: err.code,
         hint: playStatsBucketHint(bucket, err.code),
+        ...(err.upstream ? { upstream: err.upstream } : {}),
       }, 502);
     }
     throw err;

@@ -9,6 +9,17 @@ import { errorMessage } from "./errorMessage";
 const catalog: Readonly<Record<string, string>> = translations;
 
 describe("error display localization", () => {
+  it("adds what the upstream service said after Hands' own message", () => {
+    const failure = Object.assign(new Error("Google Play rejected the binding"), {
+      body: { code: "play_api_rejected", upstream: { service: "google_play", http_status: 403, message: "The caller does not have permission" } },
+    });
+    expect(errorMessage(failure, "en")).toBe("Google Play rejected the binding · Google Play said (HTTP 403): The caller does not have permission");
+    expect(errorMessage(failure, "zh-CN")).toContain("Google Play 返回 (HTTP 403)：The caller does not have permission");
+    const nested = Object.assign(new Error("Play edit failed"), { body: { error: { upstream: { service: "mystery", message: "no\nway" } } } });
+    expect(errorMessage(nested, "en")).toBe("Play edit failed · The upstream service said: no way");
+    expect(errorMessage(Object.assign(new Error("x"), { body: { upstream: { message: " " } } }), "en")).toBe("x");
+  });
+
   it("translates known errors without changing their original message, body, or diagnostic code", () => {
     const error = Object.assign(new Error("release revision conflict"), {
       body: { code: "RELEASE_REVISION_CONFLICT", revision: 8 },

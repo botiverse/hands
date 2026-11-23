@@ -220,7 +220,7 @@ describe("Google Play store listing RPC", () => {
     const google = googleFixture([EN], { commitError: { status: 400, message: "Changes are currently in review and ERROR_IF_IN_REVIEW was set" } });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
     expect(result).toMatchObject({ ok: false, error: { status: 409, code: "play_edit_in_review", cause: { stage: "commit_edit", provider_cause: "EDIT_IN_REVIEW" } } });
-    expect(JSON.stringify(result)).not.toContain("currently in review");
+    expect((result as any).error.cause.provider_message).toContain("currently in review");
     expect(realEdits(google.edits)).toEqual([]);
     expect(google.live().get("en-US")).toEqual(EN);
   });
@@ -273,7 +273,7 @@ describe("Google Play store listing RPC", () => {
     }
   });
 
-  it("reports an unmatched (German) commit rejection as play_edit_state_unknown with the patterns tried, never Google's text", async () => {
+  it("reports an unmatched (German) commit rejection as play_edit_state_unknown with the patterns tried and Google's text", async () => {
     const message = "Für diese App werden derzeit Änderungen geprüft.";
     const google = googleFixture([EN], { commitErrorBody: { status: 400, body: { error: { code: 400, status: "FAILED_PRECONDITION", message, errors: [{ reason: "badRequest" }] } } } });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
@@ -291,7 +291,8 @@ describe("Google Play store listing RPC", () => {
       "text:/changesNotSentForReview|not ?sent for review|unreviewed/i -> CHANGES_NOT_SENT_FOR_REVIEW",
       "text:/in review|under review|review.*in progress|ERROR_IF_IN_REVIEW/i -> EDIT_IN_REVIEW",
     ]);
-    expect(JSON.stringify(result)).not.toContain("geprüft");
+    // Hands does not recognise it, so Google's own words are exactly what the caller needs.
+    expect(result.error.cause).toMatchObject({ provider_message: message, provider_http_status: 400 });
     expect(google.live().get("en-US")).toEqual(EN);
   });
 
@@ -318,13 +319,15 @@ describe("Google Play store listing RPC", () => {
     expect(google.requests.filter((r) => r.method === "DELETE")).toEqual([]);
   });
 
-  it("fails closed on a validate rejection, deletes the edit, and keeps Google's text out", async () => {
+  it("fails closed on a validate rejection, deletes the edit, and redacts a credential Google echoes", async () => {
     const google = googleFixture([EN], { validateStatus: 400 });
     const result = await createPlayAdapterService({ fetchImpl: google.fetchImpl }).pushStoreListings(push({ mode: "commit" }), env);
     // The message matches no known pattern: unknown state, never a generic rejection.
     expect(result).toMatchObject({ ok: false, error: { code: "play_edit_state_unknown", cause: { stage: "validate_edit", provider_cause: "OTHER" } } });
-    expect(JSON.stringify(result)).not.toContain("BEGIN PRIVATE KEY");
-    expect(JSON.stringify(result)).not.toContain("secret");
+    // Google echoed the whole credential: the message travels, the credential does not.
+    expect(JSON.stringify(result)).not.toContain("PRIVATE KEY");
+    expect(JSON.stringify(result)).not.toContain("gserviceaccount");
+    expect((result as any).error.cause.provider_message).toContain('"private_key":"[redacted]');
     expect(google.requests.some((r) => r.path.includes(":commit"))).toBe(false);
     expect(realEdits(google.edits)).toEqual([]);
   });
