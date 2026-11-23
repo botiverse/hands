@@ -26,6 +26,18 @@ describe("hands quota output", () => {
     expect(out).toContain("google_play tracks.releases.list: Google said the quota is used up; Hands makes no calls until 2026-11-22T14:10:00.000Z.");
   });
 
+  it("prints App Store Connect's quota as Apple reported it", () => {
+    const asc = { key: "app_store_connect:api", service: "app_store_connect", operation: "api", scope: "api_key", scope_key: "KEY123",
+      window: "rolling_hour" as const, limit: 3600, remaining: 1234, observed_at: RESET, exhausted_until: null, source: "reported by Apple (X-Rate-Limit)" };
+    expect(formatQuota({ quotas: [asc] }).split("\n")).toEqual([
+      "app_store_connect API key KEY123: 1234/3600 requests left in Apple's rolling hour (reported 2026-11-22T14:10:00.000Z).",
+      "Limit source: reported by Apple (X-Rate-Limit).",
+    ]);
+    const stale = formatQuota({ quotas: [{ ...asc, limit: null, remaining: null, exhausted_until: RESET }] });
+    expect(stale).toContain("app_store_connect API key KEY123: no report from Apple in the last hour (last 2026-11-22T14:10:00.000Z).");
+    expect(stale).toContain("Apple refused for quota (429); only writes call it until 2026-11-22T14:10:00.000Z.");
+  });
+
   it("explains an empty list", () => {
     expect(formatQuota({ quotas: [] })).toMatch(/^No rationed upstream calls apply to this app/);
   });

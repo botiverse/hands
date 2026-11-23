@@ -520,6 +520,26 @@ check, for requested reads, and for the poll. `--json` prints the API answer
 are listed: an Android app with a verified Google Play connection. Viewer role
 is enough; the command never calls Google.
 
+### App Store Connect quota
+
+Apple allows each App Store Connect API key a number of requests per rolling
+hour (3,600 by default) and reports what is left on every response. That count
+includes calls made with the same key outside Hands, so Hands records what
+Apple reports rather than counting its own calls. For an app with an ASC key,
+`hands quota` adds a line:
+
+```text
+app_store_connect API key ABC123DEFG: 3412/3600 requests left in Apple's rolling hour (reported 2026-11-23T19:40:00.000Z).
+```
+
+In `--json` it is a `quotas[]` entry with `window: "rolling_hour"`, `limit`,
+`remaining` and `observed_at` (`limit` and `remaining` are null when Apple has
+not reported in the last hour). The scheduled App Store Analytics import waits
+while less than 10% is left, or for 5 minutes after Apple refuses for quota
+(HTTP 429, `exhausted_until`), and tries again 30 minutes later. Requests
+people and agents make are not held back; when Apple refuses one, its error
+carries what Apple said.
+
 ## Google Play: when a Play write gets no response
 
 A Play write can finish on Google Play after the CLI has given up waiting

@@ -260,6 +260,32 @@ describe("App Store analytics ingest", () => {
     }
   });
 
+  it("a background run waits when Apple's quota for the key is low; a manual run still goes", async () => {
+    const h = await harness();
+    const now = Date.now();
+    h.sqlite.prepare(`INSERT INTO upstream_quota_observations (quota_key, scope_key, limit_value, remaining, observed_at, exhausted_until)
+      VALUES ('app_store_connect:api', 'KEY123', 3600, 100, ?, NULL)`).run(now - 60_000);
+    const fetch = apple(world());
+    const waited = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, now, "background");
+    expect(waited).toMatchObject({ status: "quota_low", more_pending: true, instances_processed: 0 });
+    expect(fetch).not.toHaveBeenCalled();
+    const manual = await ingestAscAnalyticsForApp(h.env, "app", BUDGET, now);
+    expect(manual.status).toBe("ok");
+  });
+
+  it("GET /quota shows Apple's last report for the app's key", async () => {
+    const h = await harness();
+    const { handleGetAppQuota } = await import("../src/routes/upstream_quota");
+    const app = new Hono<{ Bindings: Env }>();
+    app.get("/api/apps/:appId/quota", handleGetAppQuota as any);
+    const get = async () => (await app.fetch(new Request("https://hands.test/api/apps/app/quota"), h.env)).json() as Promise<any>;
+    expect((await get()).quotas).toEqual([expect.objectContaining({ key: "app_store_connect:api", scope_key: "KEY123", limit: null, remaining: null, observed_at: null })]);
+    const now = Date.now();
+    h.sqlite.prepare(`INSERT INTO upstream_quota_observations (quota_key, scope_key, limit_value, remaining, observed_at, exhausted_until)
+      VALUES ('app_store_connect:api', 'KEY123', 3600, 1234, ?, NULL)`).run(now - 60_000);
+    expect((await get()).quotas[0]).toMatchObject({ limit: 3600, remaining: 1234, observed_at: now - 60_000, window: "rolling_hour", exhausted_until: null });
+  });
+
   it("is idempotent: a second run downloads nothing and adds nothing", async () => {
     const h = await harness();
     apple(world());

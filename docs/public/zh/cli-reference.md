@@ -379,6 +379,16 @@ google_play tracks.releases.list  build.raft.app  5/12  7     3            0    
 
 `GATE`、`INTERACTIVE` 和 `BACKGROUND` 分别是推送检查、主动发起的读取和轮询还剩的次数。`--json` 输出 API 的原始回答（`GET /api/apps/:appId/quota`）：`quotas[]`，包含 `key`、`service`、`operation`、`scope`、`scope_key`、`limit`、`used`、`remaining.{gate,interactive,background}`、`reset_at`、`exhausted_until` 和 `source`。只列出适用于该应用的配额：已验证 Google Play 连接的 Android 应用。viewer 角色即可；这个命令不会调用 Google。
 
+### App Store Connect 配额
+
+Apple 给每个 App Store Connect API 密钥一个「滚动一小时内」的请求上限（默认 3,600 次），并在每次响应里告诉还剩多少。这个数字包含用同一个密钥在 Hands 之外发出的请求，所以 Hands 记录的是 Apple 报告的剩余量，而不是自己数。配置了 ASC 密钥的应用，`hands quota` 会多一行：
+
+```text
+app_store_connect API key ABC123DEFG: 3412/3600 requests left in Apple's rolling hour (reported 2026-11-23T19:40:00.000Z).
+```
+
+`--json` 里是 `quotas[]` 中 `window: "rolling_hour"` 的一项，带 `limit`、`remaining` 和 `observed_at`（Apple 最近一小时没有报告时，`limit` 和 `remaining` 为 null）。剩余不足 10%，或 Apple 因配额拒绝（HTTP 429，`exhausted_until`）后的 5 分钟内，定时导入 App Store 分析报表会暂停，30 分钟后再试。人或 agent 发起的请求不受限制；Apple 拒绝时，错误里会带上 Apple 的原话。
+
 ## Google Play：Play 写操作没有响应时
 
 CLI 放弃等待（`fetch failed`）之后，Play 写操作仍可能在 Google Play 上完成。此时 CLI 会报告 `no response from Hands`，且不会自动重试。再次运行前，先用 `hands releases receipts <app> <release>` 和 `hands releases play-status <app> <release>` 检查，并与 Play Console 对照。
