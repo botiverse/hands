@@ -197,6 +197,9 @@ export async function readLiveRaftRole(
       role = await memberRole(env, await installationToken(env, installation, now, true), sub);
     }
     cacheSet(roleCache, key, role, now + ROLE_CACHE_MS);
+    // One line per fresh read (at most one per person and server a minute),
+    // so production shows the read working before the mode turns on.
+    console.log(JSON.stringify({ event: "raft_live_role_read", server_id: serverId, role }));
     return { ok: true, role };
   } catch (error) {
     if (error instanceof RoleReadError) {
