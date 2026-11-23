@@ -28,7 +28,7 @@ data class Tree(val files: Map<String, Pair<ByteArray, String>>, val links: Map<
             val file = root.resolve(path)
             Files.createDirectories(file.parent)
             Files.write(file, v.first)
-            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString(Stager.modeString(v.second)))
+            if (Platform.posix) Files.setPosixFilePermissions(file, PosixFilePermissions.fromString(Stager.modeString(v.second)))
         }
         links.forEach { (path, target) ->
             val link = root.resolve(path)
@@ -75,7 +75,7 @@ fun snapshot(root: Path): Map<String, String> {
             out[rel] = when {
                 Files.isSymbolicLink(p) -> "-> " + Files.readSymbolicLink(p)
                 Files.isDirectory(p, LinkOption.NOFOLLOW_LINKS) -> "dir"
-                else -> sha256Of(p) + " " + PosixFilePermissions.toString(Files.getPosixFilePermissions(p, LinkOption.NOFOLLOW_LINKS))
+                else -> sha256Of(p) + if (Platform.posix) " " + PosixFilePermissions.toString(Files.getPosixFilePermissions(p, LinkOption.NOFOLLOW_LINKS)) else ""
             }
         }
     }
