@@ -4,6 +4,8 @@ export interface R2PresignAsset {
   key: string;
   filetype: string;
   contentDisposition: string;
+  /** Overrides the content type derived from `filetype` (e.g. a stored attachment's own type). */
+  contentType?: string;
 }
 
 export function canPresignR2Download(env: Env): boolean {
@@ -26,7 +28,7 @@ export async function presignR2DownloadUrl(
   const expires = String(Math.max(1, Math.min(Math.floor(ttlSeconds), 604800)));
   const url = new URL(`${r2Endpoint(env)}/${encodeURIComponent(env.R2_BUCKET_NAME!)}/${asset.key.split("/").map(encodeURIComponent).join("/")}`);
   url.searchParams.set("X-Amz-Expires", expires);
-  url.searchParams.set("response-content-type", contentTypeForPresignedAsset(asset.filetype));
+  url.searchParams.set("response-content-type", asset.contentType ?? contentTypeForPresignedAsset(asset.filetype));
   url.searchParams.set("response-content-disposition", asset.contentDisposition);
 
   const aws = new AwsClient({
@@ -99,4 +101,27 @@ function contentTypeForPresignedAsset(filetype: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+/**
+ * Hands does not stream stored files through the Worker: a download is a 302 to a
+ * short-lived signed R2 URL carrying the response headers Hands would have sent.
+ * That keeps large files off the Worker's time and memory limits, and R2 answers
+ * Range itself. The bucket's CORS rules (worker/r2-cors.json, applied on deploy)
+ * let browser fetches follow the redirect. Returns null when R2 signing is not
+ * configured (local development), so the caller may stream as a fallback.
+ * worker/test/no_r2_proxy.test.ts fails the build if a route streams a stored file
+ * any other way.
+ */
+export async function redirectToR2(
+  env: Env,
+  asset: R2PresignAsset,
+  method: "GET" | "HEAD" = "GET",
+  ttlSeconds?: number,
+): Promise<Response | null> {
+  const configured = Number(env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS ?? env.SIGNED_URL_TTL_SECONDS ?? "3600");
+  const ttl = ttlSeconds ?? (Number.isFinite(configured) ? configured : 3600);
+  const url = await presignR2DownloadUrl(env, asset, ttl, method);
+  // The signature expires; no cache may keep this redirect.
+  return url ? new Response(null, { status: 302, headers: { location: url, "cache-control": "no-store" } }) : null;
 }

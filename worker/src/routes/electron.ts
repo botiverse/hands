@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { resolvePublicChannelSlug } from "../lib/public_channel";
 import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
 import { readR2WithRetry } from "../lib/r2_read_retry";
-import { canPresignR2Download, presignR2DownloadUrl } from "../lib/r2_presign";
+import { redirectToR2 } from "../lib/r2_presign";
 import { currentElectronMetadataOverride } from "../lib/electron_metadata_overrides";
 
 export type ElectronAssetRow = {
@@ -118,17 +118,13 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
   // differential download relies on, and each request gets a fresh 302. Update
   // metadata stays here: it is small, may be overridden after publishing, and
   // electron-updater resolves files relative to it.
-  if (!isElectronMetadataAsset(asset) && canPresignR2Download(c.env)) {
-    const ttl = Number(c.env.R2_PRESIGNED_DOWNLOAD_TTL_SECONDS ?? c.env.SIGNED_URL_TTL_SECONDS ?? "3600");
-    const directUrl = await presignR2DownloadUrl(c.env, {
+  if (!isElectronMetadataAsset(asset)) {
+    const direct = await redirectToR2(c.env, {
       key: asset.r2_key,
       filetype: asset.filetype,
       contentDisposition: contentDispositionForElectronAsset(file, asset, c.req.query("name")),
-    }, Number.isFinite(ttl) ? ttl : 3600, c.req.method === "HEAD" ? "HEAD" : "GET");
-    if (directUrl) {
-      // The signature expires; never let a cache keep this redirect.
-      return new Response(null, { status: 302, headers: { location: directUrl, "cache-control": "no-store" } });
-    }
+    }, c.req.method === "HEAD" ? "HEAD" : "GET");
+    if (direct) return direct;
   }
 
   const object = await readR2WithRetry("get", () => c.env.APK_BUCKET.get(asset.r2_key));
