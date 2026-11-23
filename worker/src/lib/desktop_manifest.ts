@@ -10,6 +10,8 @@
  * See docs/public/desktop-apps.md for the public contract.
  */
 
+import { BundlePathError, checkBundleEntries, segmentProblem } from "./desktop_paths";
+
 export const DESKTOP_MANIFEST_KIND = "desktop-manifest";
 export const DESKTOP_ARCHIVE_KIND = "desktop-archive";
 export const DESKTOP_MANIFEST_FILETYPE = "json";
@@ -108,11 +110,11 @@ function checkRelativePath(value: unknown, field: string, index: number | null):
 }
 
 /**
- * A symlink target is relative to the link's own directory and must resolve inside the
- * bundle. Absolute targets and targets that climb out of the root are refused: an
- * updater that materialised them would write or read outside the install directory.
+ * A symlink target is relative to the link's own directory. Its shape is checked
+ * here; whether it resolves inside the bundle, following any other links on the way,
+ * is checked against the whole manifest in checkBundleEntries.
  */
-function checkLinkTarget(path: string, value: unknown, index: number): string {
+function checkLinkTarget(value: unknown, index: number): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new DesktopManifestError("link must be a non-empty string", index);
   }
@@ -123,22 +125,13 @@ function checkLinkTarget(path: string, value: unknown, index: number): string {
   if (value.startsWith("/") || /^[A-Za-z]:/.test(value)) {
     throw new DesktopManifestError("link must be relative", index);
   }
-  const resolved = path.split("/").slice(0, -1);
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (resolved.length === 0) throw new DesktopManifestError("link escapes the bundle root", index);
-      resolved.pop();
-    } else {
-      resolved.push(segment);
-    }
-  }
   return value;
 }
 
 function checkMode(value: unknown, index: number): string {
-  if (typeof value !== "string" || !/^[0-7]{3,4}$/.test(value)) {
-    throw new DesktopManifestError("mode must be an octal permission string such as \"644\" or \"755\"", index);
+  // Exactly the permission bits: no setuid, setgid or sticky bit from a manifest.
+  if (typeof value !== "string" || !/^[0-7]{3}$/.test(value)) {
+    throw new DesktopManifestError("mode must be three octal digits such as \"644\" or \"755\"", index);
   }
   return value;
 }
@@ -164,6 +157,8 @@ export function validateDesktopManifest(raw: unknown, expectedTarget: string | n
   }
   const root = checkRelativePath(doc.root, "root", null);
   if (root.includes("/")) throw new DesktopManifestError("root must be a single path segment");
+  const rootProblem = segmentProblem(root, doc.target);
+  if (rootProblem) throw new DesktopManifestError(`root ${rootProblem}`);
   if (!Array.isArray(doc.files) || doc.files.length === 0) {
     throw new DesktopManifestError("files must be a non-empty array");
   }
@@ -188,7 +183,7 @@ export function validateDesktopManifest(raw: unknown, expectedTarget: string | n
       if (item.sha256 !== undefined && item.sha256 !== null) {
         throw new DesktopManifestError("a symlink entry carries no sha256", index);
       }
-      links.push({ path, link: checkLinkTarget(path, item.link, index) });
+      links.push({ path, link: checkLinkTarget(item.link, index) });
       return;
     }
     if (!isSha256(item.sha256)) {
@@ -207,18 +202,17 @@ export function validateDesktopManifest(raw: unknown, expectedTarget: string | n
     files.push({ path, sha256: item.sha256, size, mode: checkMode(item.mode, index) });
   });
 
-  // No entry may sit under another entry: under a file it cannot exist, and under a
-  // symlink it would be written through the link, to wherever the link points.
-  doc.files.forEach((entry, index) => {
-    const path = (entry as { path: string }).path;
-    const segments = path.split("/");
-    for (let depth = 1; depth < segments.length; depth += 1) {
-      const ancestor = segments.slice(0, depth).join("/");
-      if (seen.has(ancestor)) {
-        throw new DesktopManifestError(`'${path}' is nested under the file or symlink '${ancestor}'`, index);
-      }
-    }
-  });
+  // Case/Unicode collisions, names the target cannot hold, nesting under a file or
+  // link, and links that resolve (through other links) outside the root.
+  try {
+    checkBundleEntries(doc.target, doc.files.map((entry) => {
+      const item = entry as { path: string; link?: string | null };
+      return { path: item.path, link: item.link ?? null };
+    }));
+  } catch (error) {
+    if (error instanceof BundlePathError) throw new DesktopManifestError(error.message, error.index);
+    throw error;
+  }
 
   if (doc.total_size !== undefined && doc.total_size !== totalSize) {
     throw new DesktopManifestError(`total_size ${String(doc.total_size)} does not equal the sum of file sizes ${totalSize}`);

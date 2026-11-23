@@ -16,6 +16,7 @@ import { lstat, readdir, readlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { checkBundleEntries, segmentProblem } from "./desktop_paths.js";
 
 export const DESKTOP_TARGETS = [
   "darwin-arm64",
@@ -79,20 +80,13 @@ function checkSegment(name: string, at: string): void {
   }
 }
 
-/** The link must be relative and, resolved from the link's directory, stay in the bundle. */
+/**
+ * The link must be relative and '/'-separated. Whether it resolves inside the bundle,
+ * following other links on the way, needs every entry: see checkBundleEntries.
+ */
 export function checkLinkTarget(relativePath: string, target: string): void {
   if (!target || target.startsWith("/") || /^[A-Za-z]:/.test(target) || target.includes("\\") || target.includes("\0")) {
     throw new Error(`symlink ${relativePath} -> ${target} must be a relative '/'-separated path inside the bundle`);
-  }
-  const resolved = relativePath.split("/").slice(0, -1);
-  for (const segment of target.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      if (resolved.length === 0) throw new Error(`symlink ${relativePath} -> ${target} points outside the bundle`);
-      resolved.pop();
-    } else {
-      resolved.push(segment);
-    }
   }
 }
 
@@ -143,7 +137,19 @@ export async function walkDesktopBundle(bundlePath: string): Promise<WalkedBundl
   return { root, entries, pathsByDigest };
 }
 
+/**
+ * Build the manifest for one target, refusing what Hands would refuse: names the
+ * target cannot hold, paths that collide there (case, Unicode form), and symlinks
+ * that resolve outside the bundle, through other links included.
+ */
 export function buildDesktopManifest(target: string, walked: WalkedBundle): DesktopManifest {
+  const rootProblem = segmentProblem(walked.root, target);
+  if (rootProblem) throw new Error(`bundle name '${walked.root}' ${rootProblem}`);
+  try {
+    checkBundleEntries(target, walked.entries.map((entry) => ({ path: entry.path, link: isFileEntry(entry) ? null : entry.link })));
+  } catch (error) {
+    throw new Error(`bundle cannot be published for ${target}: ${(error as Error).message}`, { cause: error });
+  }
   const totalSize = walked.entries.reduce((sum, entry) => sum + (isFileEntry(entry) ? entry.size : 0), 0);
   return { schema: 1, target, root: walked.root, files: walked.entries, total_size: totalSize };
 }
