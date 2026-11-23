@@ -73,11 +73,17 @@ a promotion receipt remain API errors rather than release notifications.
 
 Hands reads Google's live release lifecycle for enabled, verified connections
 on the configured tracks. Google limits how often an app's release states can be
-listed (about 12 calls an hour, one per track), so each app is read once an
-hour; the cron runs every five
+listed (about 12 calls an hour, one per track, resetting around minute :10), so
+each app is read once an hour; the cron runs every five
 minutes and handles at most four apps per run; larger sets rotate through
-subsequent runs. When the limit is used up, Hands stops reading for that round
-and does not report it as an access failure. The first observation is a
+subsequent runs. Hands keeps one count of these calls per app, shared by the
+poll, review-status, the stats page, the in-review check before a promotion and
+send-for-review. The poll may use 4 of the 12, reads a person or agent asked
+for up to 8, and the check before a promotion all 12, so promotions keep 4
+reads in reserve. When the poll has no room, or Google says the limit is used up,
+Hands skips the app without reporting an access failure and reads it again
+just after the reset. `hands quota <app>` shows what is used and left
+([CLI reference](cli-reference.md#google-play-read-quota)). The first observation is a
 current-state snapshot (`observation: initial_snapshot`); later changed states
 are transitions. Unchanged states produce no new notification. State and pending
 delivery records commit together. Provider failures leave the previous
