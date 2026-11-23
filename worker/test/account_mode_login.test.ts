@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { raftLoginIdentities, signInRaftIdentities, type RaftUserinfo } from "../src/routes/auth";
 import { requireHandsAdmin } from "../src/middleware/hands_admin";
-import type { AdminAccount, AdminEnv } from "../src/middleware/auth";
+import { accountForRequestedOrg, type AdminAccount, type AdminEnv } from "../src/middleware/auth";
 
 const migrationDir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -115,6 +115,48 @@ describe("raftLoginIdentities", () => {
   it("fails the login when Raft refuses the servers list", async () => {
     mockServers([], 401);
     await expect(raftLoginIdentities({} as Env, API, "tok", accountUserinfo)).rejects.toThrow(/Raft servers failed \(401\)/);
+  });
+});
+
+describe("server isolation (RFC 079 §8.2 item 1)", () => {
+  it("a person on server A only cannot switch into server B's organization or reach its apps", async () => {
+    const { sqlite, db } = openDb();
+    // Someone else signs in to B first, so B's organization and an app in it exist.
+    await signInRaftIdentities(db, [{ identity: { ...accountUserinfo, sub: "user-b", server_id: "srv-b", server_slug: "beta", server_role: "owner" }, serverName: "Beta Co", accountMode: true }]);
+    sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app-b', 'raft_srv-b', 'beta-app', 'Beta App', 'android', 1)").run();
+    // user-1 is on A only.
+    const account = await signInRaftIdentities(db, [{ identity: { ...accountUserinfo, server_id: "srv-a", server_slug: "alpha", server_role: "owner" }, serverName: "Alpha Co", accountMode: true }]);
+    expect(account?.org_id).toBe("raft_srv-a");
+    const switched = await accountForRequestedOrg({ DB: db } as Env, account!, "raft_srv-b");
+    // The switch to an organization of a server the person is not on is ignored.
+    expect(switched.org_id).toBe("raft_srv-a");
+    expect(switched.server_id).toBe("srv-a");
+    const { requireAppRole } = await import("../src/lib/permissions");
+    const app = new Hono<AdminEnv & { Bindings: Env }>();
+    app.use("*", async (c, next) => {
+      c.set("admin_account", switched);
+      c.set("authenticated_account", account!);
+      c.set("admin_actor", "raft:user-1@alpha");
+      if (switched.org_id) c.set("org_id", switched.org_id);
+      if (switched.org_role) c.set("org_role", switched.org_role);
+      await next();
+    });
+    app.get("/api/apps/:appId", requireAppRole("viewer"), (c) => c.json({ ok: true }));
+    const res = await app.fetch(new Request("https://hands.test/api/apps/app-b"), { DB: db } as unknown as Env);
+    expect(res.status).toBe(403);
+    // Control: B's own member reaches the same app through the same gate.
+    const owner = (await signInRaftIdentities(db, [{ identity: { ...accountUserinfo, sub: "user-b", server_id: "srv-b", server_slug: "beta", server_role: "owner" }, serverName: "Beta Co", accountMode: true }]))!;
+    const ownerApp = new Hono<AdminEnv & { Bindings: Env }>();
+    ownerApp.use("*", async (c, next) => {
+      c.set("admin_account", owner);
+      c.set("authenticated_account", owner);
+      c.set("admin_actor", "raft:user-b@beta");
+      if (owner.org_id) c.set("org_id", owner.org_id);
+      if (owner.org_role) c.set("org_role", owner.org_role);
+      await next();
+    });
+    ownerApp.get("/api/apps/:appId", requireAppRole("viewer"), (c) => c.json({ ok: true }));
+    expect((await ownerApp.fetch(new Request("https://hands.test/api/apps/app-b"), { DB: db } as unknown as Env)).status).toBe(200);
   });
 });
 
