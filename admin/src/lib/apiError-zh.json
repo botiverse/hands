@@ -542,5 +542,7 @@
   "file not found": "文件不存在",
   "matched release has no desktop manifest for this target": "匹配到的版本没有该目标平台的桌面清单",
   "target must be one of darwin-arm64, darwin-x64, win32-x64, win32-arm64, linux-x64, linux-arm64": "target 必须是 darwin-arm64、darwin-x64、win32-x64、win32-arm64、linux-x64、linux-arm64 之一",
-  "unsupported app runtime": "不支持的应用运行时"
+  "unsupported app runtime": "不支持的应用运行时",
+  "Could not confirm your current role on this Raft server. Try again in a minute.": "暂时无法确认你在这个 Raft 服务器上的当前角色，请一分钟后再试。",
+  "You are no longer a member of this Raft server, so its Hands organization is no longer available to you.": "你已不是这个 Raft 服务器的成员，所以无法再使用它在 Hands 里的组织。"
 }
