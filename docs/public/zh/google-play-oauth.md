@@ -57,7 +57,7 @@ Google 拒绝请求时，Hands 会在自己的说明下面显示 Google 的原�
 
 应用 Webhook（以及 [Raft 频道通知](store-release-notifications.md)）可以订阅 `google_play:submission_succeeded`、`google_play:submission_failed` 和 `google_play:release_state_changed`。提交事件来自不可修改的 Hands 推送回执，包含包名、版本号、Hands 轨道和回执 ID。提交成功并不代表审核通过或已可下载。使用 `--changes-not-sent-for-review` 上传的版本包含 `action: "promote"` 和 `review_requested: false`；`hands releases play-send-for-review` 对应 `action: "send-for-review"` 和 `review_requested: true`。普通推送不包含这两个字段。Hands 在创建推送回执之前发生的失败仍是 API 错误，不会生成发布通知。
 
-对于已启用且经过验证的连接，Hands 会读取所配置轨道的 Google 实时发布生命周期。每个应用每小时查询一次（Google 限制了读取发布状态的频率，约每小时 12 次，每条轨道算一次，在每小时第 10 分钟左右重置），定时任务每次最多处理四个应用；应用更多时，会在后续轮次依次处理。Hands 为每个应用维护一份这类调用的共同计数，由轮询、review-status、统计页面、推送前的审核检查和 send-for-review 共用：轮询最多用 12 次中的 4 次，由人或 agent 发起的读取最多用到 8 次，推送前的检查可以用满 12 次，因此始终为推送保留 4 次。轮询没有余量或 Google 表示已用完时，Hands 跳过该应用，不报告为访问失败，并在重置后不久再读取。`hands quota <app>` 可查看已用和剩余的次数（[CLI 参考](cli-reference.md#google-play读取配额)）。第一次观察是当前状态快照（`observation: initial_snapshot`），此后状态变化才生成转换事件。状态不变不会产生新通知。状态与待投递记录一同提交；服务商请求失败时会保留上一次观察结果，并在后续定时运行中重试。
+对于已启用且经过验证的连接，Hands 会读取所配置轨道的 Google 实时发布生命周期。每个应用每小时查询一次（Google 限制了读取发布状态的频率，约每小时 12 次，每条轨道算一次，在每小时第 10 分钟左右重置），定时任务每次最多处理四个应用；应用更多时，会在后续轮次依次处理。Hands 为每个应用维护一份这类调用的共同计数，由轮询、review-status、统计页面、推送前的审核检查和 send-for-review 共用：轮询最多用 12 次中的 4 次，由人或 agent 发起的读取最多用到 8 次，推送前的检查可以用满 12 次，因此始终为推送保留 4 次。轮询没有余量或 Google 表示已用完时，Hands 跳过该应用，不报告为访问失败，并在重置后不久再读取。`hands quota <app>` 可查看已用和剩余的次数（[CLI 参考](cli-reference.md#google-play-读取配额)）。第一次观察是当前状态快照（`observation: initial_snapshot`），此后状态变化才生成转换事件。状态不变不会产生新通知。状态与待投递记录一同提交；服务商请求失败时会保留上一次观察结果，并在后续定时运行中重试。
 
 `RELEASE_LIFECYCLE_STATE_PUBLISHED` 表示版本在该轨道上可用；它可能仍处于部分发布或暂停状态，并不表示已全量发布。未知状态原样保留。连接被移除或修改后，不会发布先前尚未完成请求的响应。这里使用只读 API，而不是 Google Webhook；不会上传文件、提交编辑或发布版本。
 
