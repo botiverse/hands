@@ -120,7 +120,7 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
   headers.set("cache-control", cacheControlForElectronAsset(asset));
   headers.set("content-type", contentTypeForElectronAsset(asset));
   headers.set("content-length", String(asset.size_bytes));
-  headers.set("content-disposition", contentDispositionForElectronAsset(file, asset));
+  headers.set("content-disposition", contentDispositionForElectronAsset(file, asset, c.req.query("name")));
 
   // electron-updater fetches only the blocks whose checksums changed (differential
   // download) by sending `Range`. Without a 206 it falls back to the whole file, which
@@ -307,9 +307,33 @@ function cacheControlForElectronAsset(asset: ElectronAssetRow): string {
 function contentDispositionForElectronAsset(
   file: string,
   asset: ElectronAssetRow,
+  nameToken?: string,
 ): string {
-  const disposition = isElectronMetadataAsset(asset) ? "inline" : "attachment";
-  return `${disposition}; filename="${asciiFilename(file)}"; filename*=UTF-8''${encodeURIComponent(file)}`;
+  const metadata = isElectronMetadataAsset(asset);
+  const disposition = metadata ? "inline" : "attachment";
+  // Update metadata keeps its exact name: electron-updater resolves files by it.
+  const name = metadata ? file : downloadFileName(file, nameToken);
+  return `${disposition}; filename="${asciiFilename(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+/** `?name=` value accepted as a filename suffix: exactly eight lowercase letters or digits. */
+const DOWNLOAD_NAME_TOKEN = /^[a-z0-9]{8}$/;
+/** Extensions of two parts, kept together so the token goes before both. */
+const DOUBLE_EXTENSIONS = [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst"];
+
+/**
+ * The name a browser saves an installer under. With a valid `?name=` token it is
+ * inserted before the extension (Raft-1.36.0-universal.dmg ->
+ * Raft-1.36.0-universal-k3x9a2pq.dmg), so an app can read where it was
+ * downloaded from out of its own installer's name. The bytes, length and etag
+ * are the same; only the suggested file name differs. Anything else is ignored.
+ */
+export function downloadFileName(file: string, token: string | undefined): string {
+  if (!token || !DOWNLOAD_NAME_TOKEN.test(token)) return file;
+  const lower = file.toLowerCase();
+  const double = DOUBLE_EXTENSIONS.find((ext) => lower.endsWith(ext) && lower.length > ext.length);
+  const dot = double ? file.length - double.length : file.lastIndexOf(".");
+  return dot > 0 ? `${file.slice(0, dot)}-${token}${file.slice(dot)}` : `${file}-${token}`;
 }
 
 function asciiFilename(value: string): string {

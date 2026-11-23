@@ -257,6 +257,8 @@ GET /electron/:appSlug/:channel/:installerFile.blockmap
 
 Hands 从该渠道的活动 `desktop-installer` 版本提供这些文件（旧名称 `electron-installer` 也同样接受）。Hands 有意原样托管 electron-builder 生成的文件：将 `latest*.yml`、安装程序和 `.blockmap` 文件作为构建文件上传。`latest*.yml` 使用 `artifact_kind = electron-metadata`；在 `variant` 或 `metadata_json.filename` 中使用原始文件名，以保持 yml 中的相对 URL 可解析。
 
+安装包下载支持 `?name=<令牌>`。令牌恰好是 8 位小写字母或数字（`^[a-z0-9]{8}$`）时，保存的文件名会在扩展名前加 `-<令牌>`，例如 `Raft-Desktop-1.36.0-universal.dmg?name=k3x9a2pq` 保存为 `Raft-Desktop-1.36.0-universal-k3x9a2pq.dmg`，安装后的应用可以由此知道它从哪里下载。文件内容、长度和 etag 不变。其他取值一律忽略，`latest*.yml` 不改名。
+
 文件约定示例：
 
 | 文件 | `platform` | `arch` | `filetype` | `artifact_kind` |
