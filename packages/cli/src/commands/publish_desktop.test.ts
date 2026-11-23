@@ -64,10 +64,36 @@ describe("desktop bundle walk", () => {
   it("refuses a symlink that points outside the bundle or is absolute", async () => {
     const app = makeBundle(dir);
     symlinkSync("../../../etc", join(app, "Contents/escape"));
-    await expect(walkDesktopBundle(app)).rejects.toThrow(/outside the bundle/);
+    const walked = await walkDesktopBundle(app);
+    expect(() => buildDesktopManifest("darwin-arm64", walked)).toThrow(/outside the bundle root/);
     expect(() => checkLinkTarget("a/b", "/usr/lib")).toThrow(/relative/);
-    expect(() => checkLinkTarget("a/b", "../c")).not.toThrow();
-    expect(() => checkLinkTarget("a/b", "../../c")).toThrow(/outside/);
+  });
+
+  it("refuses a link chain that climbs out through another link", async () => {
+    const app = makeBundle(dir);
+    // Contents/d/up -> .. is harmless alone; Contents/l -> d/up/../.. leaves the bundle once d/up is followed.
+    mkdirSync(join(app, "Contents/d"));
+    symlinkSync("..", join(app, "Contents/d/up"));
+    symlinkSync("d/up/../..", join(app, "Contents/l"));
+    const walked = await walkDesktopBundle(app);
+    expect(() => buildDesktopManifest("darwin-arm64", walked)).toThrow(/outside the bundle root/);
+  });
+
+  it("refuses names a Windows target cannot hold and case collisions on macOS", async () => {
+    const win = join(dir, "win");
+    mkdirSync(join(win, "App"), { recursive: true });
+    writeFileSync(join(win, "App", "aux.txt"), "x");
+    expect(() => buildDesktopManifest("win32-x64", { root: "App", entries: [
+      { path: "aux.txt", sha256: sha("x"), size: 1, mode: "644", link: null },
+    ], pathsByDigest: new Map() })).toThrow(/reserved Windows device name/);
+    expect(() => buildDesktopManifest("darwin-arm64", { root: "App", entries: [
+      { path: "Readme", sha256: sha("x"), size: 1, mode: "644", link: null },
+      { path: "readme", sha256: sha("x"), size: 1, mode: "644", link: null },
+    ], pathsByDigest: new Map() })).toThrow(/same path/);
+    expect(() => buildDesktopManifest("linux-x64", { root: "App", entries: [
+      { path: "Readme", sha256: sha("x"), size: 1, mode: "644", link: null },
+      { path: "readme", sha256: sha("x"), size: 1, mode: "644", link: null },
+    ], pathsByDigest: new Map() })).not.toThrow();
   });
 
   it("refuses a bundle that is not a directory", async () => {
@@ -84,6 +110,9 @@ describe("builds publish-desktop", () => {
   let staged: Map<string, Buffer>;
   let assetUploads: Map<string, Buffer>;
   let failPutOnce: Set<string>;
+  let releases: Array<{ id: string; build_id: string; status: string; version_name: string; version_code: number }>;
+  let builds: Map<string, any>;
+  let forbidPutOnce: Set<string>;
   let originalApi: string | undefined;
   let originalToken: string | undefined;
 
@@ -94,6 +123,9 @@ describe("builds publish-desktop", () => {
     staged = new Map();
     assetUploads = new Map();
     failPutOnce = new Set();
+    forbidPutOnce = new Set();
+    releases = [];
+    builds = new Map();
     let nextAsset = 1;
     let nextBuild = 1;
     server = createServer(async (req, res) => {
@@ -108,7 +140,10 @@ describe("builds publish-desktop", () => {
       if (url === "/api/apps" && req.method === "POST") return res.end(JSON.stringify({ id: "app-2", org_id: "org", ...body }));
       if (url === "/api/apps") return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-desktop" }] }));
       if (url === "/api/apps/app-1/channels") return res.end(JSON.stringify({ channels: [{ id: "channel-1", slug: "main", name: "Main" }] }));
-      if (req.method === "GET" && url.startsWith("/api/apps/app-1/releases?")) return res.end(JSON.stringify({ releases: [] }));
+      if (req.method === "GET" && url.startsWith("/api/apps/app-1/releases?")) {
+        const code = Number(new URL(url, host).searchParams.get("version_code"));
+        return res.end(JSON.stringify({ releases: releases.filter((r) => r.version_code === code) }));
+      }
       if (url === "/api/apps/app-1/desktop/files/missing") {
         const missing = (body.files as Array<{ sha256: string; size: number }>)
           .filter((f) => !stored.has(f.sha256))
@@ -117,6 +152,10 @@ describe("builds publish-desktop", () => {
       }
       if (url.startsWith("/r2-files/") && req.method === "PUT") {
         const digest = url.split("/").at(-1)!;
+        if (forbidPutOnce.delete(digest)) {
+          res.statusCode = 403;
+          return res.end();
+        }
         if (failPutOnce.delete(digest)) {
           res.statusCode = 503;
           return res.end();
@@ -135,7 +174,11 @@ describe("builds publish-desktop", () => {
         });
         return res.end(JSON.stringify({ ok: true, results }));
       }
-      if (url === "/api/apps/app-1/builds" && req.method === "POST") return res.end(JSON.stringify({ id: `build-${nextBuild++}` }));
+      if (url === "/api/apps/app-1/builds" && req.method === "POST") {
+        const id = `build-${nextBuild++}`;
+        builds.set(id, body);
+        return res.end(JSON.stringify({ id }));
+      }
       const declare = /^\/api\/apps\/app-1\/builds\/(build-\d+)\/assets\/uploads$/.exec(url);
       if (declare) {
         const assetId = `asset-${nextAsset++}`;
@@ -151,7 +194,12 @@ describe("builds publish-desktop", () => {
         return res.end(JSON.stringify({ asset_id: complete[1], state: "ready", file_hash: sha(bytes), size_bytes: bytes.length }));
       }
       if (/^\/api\/apps\/app-1\/builds\/build-\d+$/.test(url) && req.method === "PATCH") return res.end(JSON.stringify({ ok: true }));
-      if (url === "/api/apps/app-1/releases" && req.method === "POST") return res.end(JSON.stringify({ id: "release-1" }));
+      if (url === "/api/apps/app-1/releases" && req.method === "POST") {
+        const build = builds.get(body.build_id);
+        const id = `release-${releases.length + 1}`;
+        releases.push({ id, build_id: body.build_id, status: body.status, version_name: build.version_name, version_code: build.version_code });
+        return res.end(JSON.stringify({ id }));
+      }
       res.statusCode = 404;
       return res.end(JSON.stringify({ error: "not found" }));
     });
@@ -229,12 +277,13 @@ describe("builds publish-desktop", () => {
       status: "pending",
       asset_ingest_protocol_version: 1,
       required_asset_slots_json: [
-        { artifact_kind: "desktop-manifest", platform: "darwin", arch: "arm64", variant: null, filetype: "json" },
-        { artifact_kind: "desktop-archive", platform: "darwin", arch: "arm64", variant: null, filetype: "zip" },
         { artifact_kind: "installable", platform: "darwin", arch: "arm64", variant: null, filetype: "dmg" },
+        { artifact_kind: "desktop-archive", platform: "darwin", arch: "arm64", variant: null, filetype: "zip" },
+        { artifact_kind: "desktop-manifest", platform: "darwin", arch: "arm64", variant: null, filetype: "json" },
       ],
     });
-    const manifest = JSON.parse(assetUploads.get("asset-1")!.toString("utf8"));
+    // The manifest is uploaded last: sealing it is what makes a target live.
+    const manifest = JSON.parse(assetUploads.get("asset-3")!.toString("utf8"));
     expect(manifest).toMatchObject({ schema: 1, target: "darwin-arm64", root: "Raft.app" });
     expect(manifest.files).toHaveLength(7);
 
@@ -252,11 +301,44 @@ describe("builds publish-desktop", () => {
     await run(makeBundle(dir));
     requests = [];
     const v2 = mkdtempSync(join(dir, "v2-"));
-    const result = await run(makeBundle(v2, "binary-v2"), ["--draft"]);
+    const result = await run(makeBundle(v2, "binary-v2"), ["--version-name", "1.3.0", "--version-code", "1003000", "--draft"]);
     expect(result.files).toMatchObject({ unique: 4, uploaded: 1, reused: 3 });
     const puts = requests.filter((r) => r.method === "PUT" && r.url.startsWith("/r2-files/"));
     expect(puts.map((r) => r.url)).toEqual([`/r2-files/${sha("binary-v2")}`]);
     expect(requests.find((r) => r.method === "POST" && r.url === "/api/apps/app-1/releases")!.body.status).toBe("draft");
+  });
+
+  it("adds a second target to the existing build and release of the same version", async () => {
+    await run(makeBundle(dir), ["--draft"]);
+    requests = [];
+    const win = mkdtempSync(join(dir, "win-"));
+    const winBundle = makeBundle(win, "win-binary");
+    const result = await run(winBundle, ["--target", "win32-x64", "--draft"]);
+    expect(result).toMatchObject({ appended: true, build_id: "build-1", release_id: "release-1", target: "win32-x64" });
+    // No new build, no status change, no second release.
+    expect(requests.some((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds")).toBe(false);
+    expect(requests.some((r) => r.method === "PATCH")).toBe(false);
+    expect(requests.some((r) => r.method === "POST" && r.url === "/api/apps/app-1/releases")).toBe(false);
+    const declared = requests.filter((r) => r.method === "POST" && r.url === "/api/apps/app-1/builds/build-1/assets/uploads").map((r) => r.body);
+    expect(declared.map((d) => [d.artifact_kind, d.platform, d.arch])).toEqual([
+      ["installable", "win32", "x64"], ["desktop-archive", "win32", "x64"], ["desktop-manifest", "win32", "x64"],
+    ]);
+    expect(releases).toHaveLength(1);
+  });
+
+  it("refuses a second target whose version name differs, or a draft run against an active release", async () => {
+    await run(makeBundle(dir));
+    const other = makeBundle(mkdtempSync(join(dir, "o-")));
+    await expect(run(other, ["--target", "win32-x64", "--version-name", "1.2.1"])).rejects.toThrow(/already belongs to version 1.2.0/);
+    await expect(run(other, ["--target", "win32-x64", "--draft"])).rejects.toThrow(/already active/);
+  });
+
+  it("asks for a fresh upload URL when one has expired", async () => {
+    forbidPutOnce.add(sha("framework"));
+    await run(makeBundle(dir));
+    const missingCalls = requests.filter((r) => r.url === "/api/apps/app-1/desktop/files/missing");
+    expect(missingCalls.at(-1)!.body).toEqual({ files: [{ sha256: sha("framework"), size: 9 }] });
+    expect(stored.has(sha("framework"))).toBe(true);
   });
 
   it("stops before creating a build when Hands refuses an uploaded file", async () => {

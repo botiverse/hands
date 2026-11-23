@@ -36,8 +36,11 @@ import {
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
-/** Entries one `/missing` call may ask about. A large bundle has a few thousand files. */
-export const MISSING_MAX_ENTRIES = 20_000;
+/**
+ * Entries one `/missing` call may ask about. Each missing entry costs a presigned URL,
+ * so a large bundle is asked about in chunks (the CLI sends exactly this many).
+ */
+export const MISSING_MAX_ENTRIES = 1000;
 /**
  * Entries one `/complete` call may verify. Each file costs up to five R2 operations
  * (head staging, head final, get, put, delete), so this keeps a request well inside
@@ -191,7 +194,8 @@ async function verifyOne(env: Env, appId: string, file: FileRef): Promise<Deskto
       // The content-addressed key is only ever written by a digest-checked put, so
       // an object there with the declared size is the verified file.
       const sealed = await env.APK_BUCKET.head(finalKey);
-      if (sealed && sealed.size === file.size) {
+      const sealedDigest = sealed?.checksums?.sha256 ? hex(sealed.checksums.sha256) : null;
+      if (sealed && sealed.size === file.size && (sealedDigest === null || sealedDigest === file.sha256)) {
         await recordStored(env.DB, appId, file);
         return result("stored");
       }
@@ -242,6 +246,10 @@ async function verifyOne(env: Env, appId: string, file: FileRef): Promise<Deskto
   } catch {
     return result("storage_error");
   }
+}
+
+function hex(buffer: ArrayBuffer): string {
+  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function mapBounded<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

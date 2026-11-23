@@ -443,8 +443,9 @@ GET /public/v2/apps/:appSlug/files/:sha256
 ```
 
 Redirects (`302`) to a short-lived signed URL for one content-addressed file
-of the app. It answers only for a digest referenced by a validated manifest of
-an active or superseded, non-hidden release of that app; otherwise `404`.
+of the app. It answers only for a digest referenced by a validated manifest on
+a succeeded build whose release is active or superseded, not hidden, not QA,
+and already available; otherwise `404`.
 Verify each file against the `sha256` and `size` in the manifest.
 
 ## Submit Feedback

@@ -1206,9 +1206,14 @@ hands builds publish-desktop raft-desktop \
 The command refuses a bundle with a symlink that is absolute or points outside
 it, and stops before creating a build if Hands refuses an uploaded file. It
 prints how many files the bundle has, how many were uploaded and their size,
-and how many were reused. Run it once per target. The manifest format, the
-update check and the file route are described in
-[Ship a desktop app](desktop-apps.md).
+and how many were reused.
+
+Run it once per target with the same `--version-name` and `--version-code`.
+The first run creates the build and the release; each later run adds its
+target to that build and keeps the release (a target already on it is not
+replaced). Agents and deploy tokens add targets only while the release is a
+draft. The manifest format, multi-target rules, the update check and the file
+route are described in [Ship a desktop app](desktop-apps.md).
 
 ## Review and Publish (draft flow)
 

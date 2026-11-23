@@ -8,7 +8,8 @@ import {
   handleCompleteBuildAssetUpload,
   handleDeclareBuildAssetUpload,
 } from "../src/routes/build_asset_uploads";
-import { createBuildAsset } from "../src/routes/builds";
+import { createBuildAsset, handleCreateBuild, handleUpdateBuild } from "../src/routes/builds";
+import { handleCreateRelease } from "../src/routes/releases";
 import { handleCreateApp, handleUpdateApp } from "../src/routes/apps";
 import { handleDesktopFilesComplete, handleDesktopFilesMissing } from "../src/routes/desktop_files";
 import { handlePublicDesktopFile, handlePublicDesktopUpdate } from "../src/routes/desktop_public";
@@ -63,10 +64,15 @@ function d1(sqlite: Database.Database) {
 
 class MemoryR2 {
   readonly objects = new Map<string, Uint8Array>();
+  /** sha256 checksums R2 reports on head(), when the test sets one. */
+  readonly checksums = new Map<string, string>();
 
   async head(key: string) {
     const bytes = this.objects.get(key);
-    return bytes ? { key, size: bytes.byteLength } : null;
+    const digest = this.checksums.get(key);
+    return bytes
+      ? { key, size: bytes.byteLength, checksums: digest ? { sha256: Uint8Array.from(Buffer.from(digest, "hex")).buffer } : {} }
+      : null;
   }
 
   async get(key: string) {
@@ -116,6 +122,7 @@ describe("desktop apps", () => {
   let bucket: MemoryR2;
   let env: any;
   let app: Hono<any>;
+  let principal: "none" | "human" | "token";
 
   beforeEach(() => {
     sqlite = migratedDb();
@@ -131,7 +138,16 @@ describe("desktop apps", () => {
       R2_S3_SECRET_ACCESS_KEY: "test-secret",
     };
     app = new Hono<any>();
-    app.use("*", async (c, next) => { c.set("admin_actor", "test:publisher"); await next(); });
+    principal = "none";
+    app.use("*", async (c, next) => {
+      c.set("admin_actor", "test:publisher");
+      if (principal === "human") c.set("admin_account", { id: "acct-1", principal_type: "human" } as any);
+      if (principal === "token") c.set("admin_deploy_token", { id: "tok-1", app_id: APP, name: "ci", app_role: "publisher", scopes: null } as any);
+      await next();
+    });
+    app.post("/api/apps/:appId/builds", handleCreateBuild as any);
+    app.patch("/api/apps/:appId/builds/:buildId", handleUpdateBuild as any);
+    app.post("/api/apps/:appId/releases", handleCreateRelease as any);
     app.post("/api/apps", handleCreateApp as any);
     app.patch("/api/apps/:appId", handleUpdateApp as any);
     app.post("/api/apps/:appId/desktop/files/missing", handleDesktopFilesMissing as any);
@@ -143,11 +159,13 @@ describe("desktop apps", () => {
     app.get("/public/r2/:key", handlePublicR2Download as any);
   });
 
-  const post = (path: string, body: unknown) => app.request(`http://hands.test${path}`, {
-    method: "POST",
+  const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {}, props: {} } as any;
+  const send = (method: string, path: string, body: unknown) => app.request(`http://hands.test${path}`, {
+    method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  }, env);
+  }, env, executionCtx);
+  const post = (path: string, body: unknown) => send("POST", path, body);
 
   /** Upload content-addressed files the way the CLI does: /missing, PUT, /complete. */
   async function storeFiles(appId: string, contents: Array<Uint8Array | string>, putOverride?: (sha256: string) => Uint8Array) {
@@ -192,7 +210,7 @@ describe("desktop apps", () => {
   async function uploadAsset(buildId: string, kind: string, filetype: string, bytes: Uint8Array, target = "darwin-arm64") {
     const [platform, arch] = target.split("-");
     const declared = await post(`/api/apps/${APP}/builds/${buildId}/assets/uploads`, {
-      idempotency_key: `${buildId}-${kind}-${filetype}`, artifact_kind: kind, platform, arch,
+      idempotency_key: `${buildId}-${kind}-${filetype}-${target}-${sha(bytes).slice(0, 8)}`, artifact_kind: kind, platform, arch,
       filetype, sha256: sha(bytes), size_bytes: bytes.byteLength, filename: `asset.${filetype}`,
     });
     const declaredBody = await declared.json() as any;
@@ -206,20 +224,32 @@ describe("desktop apps", () => {
   function publishRelease(opts: {
     id: string; versionCode: number; target?: string; channel?: string; hidden?: number;
     availabilityAt?: number | null; rollout?: number | null; status?: string; manifest?: boolean;
-    manifestFiles?: string[]; activatedAt?: number; appId?: string;
+    manifestFiles?: string[]; activatedAt?: number; appId?: string; sealed?: boolean;
   }) {
     const appId = opts.appId ?? APP;
-    const [platform, arch] = (opts.target ?? "darwin-arm64").split("-");
+    const [platform, arch] = (opts.target ?? "darwin-arm64").split("-") as [string, string];
     const buildId = `build-${opts.id}`;
     sqlite.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, version_name, version_code, status, created_at, updated_at, completed_at)
        VALUES (?, ?, ?, 'desktop-installer', ?, ?, 'succeeded', 1, 1, 5)`,
     ).run(buildId, appId, opts.channel ?? "ch-main", `1.0.${opts.versionCode}`, opts.versionCode);
     const ready = JSON.stringify({ upload_state: "ready" });
-    const asset = sqlite.prepare(
+    const insertAsset = sqlite.prepare(
       `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, metadata_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     );
+    // Served assets must be sealed by the direct upload protocol, so seed the ingest row too.
+    const sealed = sqlite.prepare(
+      `INSERT INTO build_asset_ingest_attempt (asset_id, attempt, declared_sha256, declared_size, staging_key,
+         committed_final_key, upload_expires_at, state, created_at)
+       VALUES (?, 1, ?, ?, 'staging', ?, 0, 'ready', 1)`,
+    );
+    const asset = {
+      run: (id: string, build: string, kind: string, p: string, a: string, filetype: string, key: string, hash: string, size: number, meta: string) => {
+        insertAsset.run(id, build, kind, p, a, filetype, key, hash, size, meta);
+        if (opts.sealed !== false) sealed.run(id, hash, size, key);
+      },
+    };
     if (opts.manifest !== false) {
       asset.run(`${buildId}-manifest`, buildId, "desktop-manifest", platform, arch, "json", `k/${buildId}/manifest.json`, "a".repeat(64), 10, ready);
       for (const digest of opts.manifestFiles ?? []) {
@@ -317,6 +347,17 @@ describe("desktop apps", () => {
       expect(await res.json()).toMatchObject({ ok: false, results: [{ status: "missing_upload" }] });
     });
 
+    it("recovers a sealed object only when R2's recorded digest matches", async () => {
+      const digest = sha("recovered");
+      bucket.objects.set(`apps/${APP}/files/sha256/${digest}`, new TextEncoder().encode("recovered"));
+      bucket.checksums.set(`apps/${APP}/files/sha256/${digest}`, sha("something else"));
+      const bad = await post(`/api/apps/${APP}/desktop/files/complete`, { files: [{ sha256: digest, size: 9 }] });
+      expect((await bad.json() as any).results[0].status).toBe("missing_upload");
+      bucket.checksums.set(`apps/${APP}/files/sha256/${digest}`, digest);
+      const good = await post(`/api/apps/${APP}/desktop/files/complete`, { files: [{ sha256: digest, size: 9 }] });
+      expect((await good.json() as any).results[0].status).toBe("stored");
+    });
+
     it("accepts empty files", async () => {
       const result = await storeFiles(APP, [new Uint8Array(0)]);
       expect(result.complete).toMatchObject({ ok: true, stored: 1 });
@@ -328,6 +369,8 @@ describe("desktop apps", () => {
       const many = Array.from({ length: 101 }, (_, i) => ({ sha256: sha(`f${i}`), size: 1 }));
       expect((await post(`/api/apps/${APP}/desktop/files/complete`, { files: many })).status).toBe(400);
       expect((await post(`/api/apps/${APP}/desktop/files/missing`, { files: many })).status).toBe(200);
+      const tooMany = Array.from({ length: 1001 }, (_, i) => ({ sha256: sha(`m${i}`), size: 1 }));
+      expect((await post(`/api/apps/${APP}/desktop/files/missing`, { files: tooMany })).status).toBe(400);
       expect((await post(`/api/apps/nope/desktop/files/missing`, { files: [{ sha256: sha("a"), size: 1 }] })).status).toBe(404);
     });
 
@@ -365,6 +408,45 @@ describe("desktop apps", () => {
       ["escaping link", { path: "a/x", link: "../../outside" }],
     ])("rejects %s", (_label, entry) => {
       expect(() => validateDesktopManifest(base([entry]), "darwin-arm64")).toThrow();
+    });
+
+    it("follows link chains: a link that leaves the root through another link is refused", () => {
+      expect(() => validateDesktopManifest(base([
+        { path: "a", ...file, mode: "644" },
+        { path: "d/up", link: ".." },
+        { path: "l", link: "d/up/../.." },
+      ]), "darwin-arm64")).toThrow(/outside the bundle root/);
+      expect(() => validateDesktopManifest(base([
+        { path: "a", ...file, mode: "644" },
+        { path: "loop1", link: "loop2/x" },
+        { path: "loop2", link: "loop1" },
+      ]), "darwin-arm64")).toThrow(/too long or loops/);
+      // A chain that stays inside is fine.
+      expect(() => validateDesktopManifest(base([
+        { path: "a", ...file, mode: "644" },
+        { path: "d/up", link: ".." },
+        { path: "l", link: "d/up/a" },
+      ]), "darwin-arm64")).not.toThrow();
+    });
+
+    it("compares paths the way the target filesystem does", () => {
+      const f = (path: string) => ({ path, ...file, mode: "644" });
+      expect(() => validateDesktopManifest(base([f("Readme"), f("README")]), "darwin-arm64")).toThrow(/same path/);
+      expect(() => validateDesktopManifest(base([f("caf\u00e9"), f("cafe\u0301")]), "darwin-arm64")).toThrow(/same path/);
+      expect(() => validateDesktopManifest(base([f("Lib"), f("lib/x")]), "darwin-arm64")).toThrow(/nested/);
+      const linux = { ...base([f("Readme"), f("README")]), target: "linux-x64" };
+      expect(() => validateDesktopManifest(linux, "linux-x64")).not.toThrow();
+    });
+
+    it.each(["CON", "nul.txt", "Com1.dll", "LPT9", "a:b", "name.", "name ", "tab\there"])("rejects %j on a Windows target", (name) => {
+      const doc = { ...base([{ path: `dir/${name}`, ...file, mode: "644" }]), target: "win32-x64" };
+      expect(() => validateDesktopManifest(doc, "win32-x64")).toThrow();
+    });
+
+    it("accepts those names on macOS except control characters, and only three-digit modes", () => {
+      expect(() => validateDesktopManifest(base([{ path: "CON", ...file, mode: "644" }]), "darwin-arm64")).not.toThrow();
+      expect(() => validateDesktopManifest(base([{ path: "a\u0001", ...file, mode: "644" }]), "darwin-arm64")).toThrow(/control/);
+      expect(() => validateDesktopManifest(base([{ path: "a", ...file, mode: "4755" }]), "darwin-arm64")).toThrow(/three octal digits/);
     });
 
     it("rejects duplicates, nesting under a file or link, a wrong target and a wrong total", () => {
@@ -432,12 +514,94 @@ describe("desktop apps", () => {
       expect(wrongTarget.declared.status).toBe(400);
     });
 
-    it("refuses to register a manifest through the legacy key path", async () => {
+    it.each(["desktop-manifest", "desktop-archive"])("refuses to register a %s through the legacy key path", async (kind) => {
       createPendingBuild("b-legacy", manifestSlots);
       await expect(createBuildAsset(env.DB, APP, "b-legacy", {
-        artifact_kind: "desktop-manifest", platform: "darwin", arch: "arm64", filetype: "json",
-        r2_key: "k", file_hash: "a".repeat(64), size_bytes: 2,
+        artifact_kind: kind, platform: "darwin", arch: "arm64", filetype: kind === "desktop-manifest" ? "json" : "zip",
+        r2_key: "k", file_hash: "a".repeat(64), size_bytes: 2, metadata_json: { upload_state: "ready" },
       } as any, "test")).rejects.toThrow(/direct asset upload/);
+    });
+  });
+
+  describe("one version, every target", () => {
+    const slots = (target: string) => {
+      const [platform, arch] = target.split("-");
+      return [
+        { artifact_kind: "desktop-archive", platform, arch, variant: null, filetype: "zip" },
+        { artifact_kind: "desktop-manifest", platform, arch, variant: null, filetype: "json" },
+      ];
+    };
+
+    /** Upload a target's archive and manifest (manifest last) to a build, through the real routes. */
+    async function uploadTarget(buildId: string, target: string, content: string) {
+      const stored = await storeFiles(APP, [`${target}-${content}`]);
+      const archive = await uploadAsset(buildId, "desktop-archive", "zip", new TextEncoder().encode(`zip-${target}-${content}`), target);
+      const manifest = await uploadAsset(buildId, "desktop-manifest", "json",
+        new TextEncoder().encode(JSON.stringify(manifestFor(target, stored.files))), target);
+      return { archive, manifest };
+    }
+
+    beforeEach(() => { principal = "human"; });
+
+    async function publishFirstTarget(target: string, status: "active" | "draft") {
+      const created = await post(`/api/apps/${APP}/builds`, {
+        channel_id: "ch-main", product_type: "desktop-installer", version_name: "2.0.0", version_code: 2000000,
+        source: "cli", status: "pending", asset_ingest_protocol_version: 1, required_asset_slots_json: slots(target),
+      });
+      expect(created.status).toBe(201);
+      const buildId = (await created.json() as any).id as string;
+      const first = await uploadTarget(buildId, target, "v2");
+      expect(first.manifest.completed?.status).toBe(200);
+      expect((await send("PATCH", `/api/apps/${APP}/builds/${buildId}`, { status: "succeeded" })).status).toBe(200);
+      const release = await post(`/api/apps/${APP}/releases`, {
+        build_id: buildId, channel_id: "ch-main", product_type: "desktop-installer", release_type: "stable",
+        status, scopes: [{ scope_type: "full", scope_value: "all" }],
+      });
+      expect(release.status).toBe(201);
+      return { buildId, releaseId: (await release.json() as any).id as string };
+    }
+
+    it("serves darwin-arm64 and win32-x64 from one release published through the real routes", async () => {
+      const { buildId, releaseId } = await publishFirstTarget("darwin-arm64", "active");
+      // The second CI job adds its target to the same, already published build.
+      const second = await uploadTarget(buildId, "win32-x64", "v2");
+      expect(second.archive.declared.status).toBe(201);
+      expect(second.manifest.completed?.status).toBe(200);
+      expect(second.manifest.completedBody.state).toBe("ready");
+      expect((sqlite.prepare("SELECT COUNT(*) AS n FROM releases WHERE app_id = ?").get(APP) as any).n).toBe(1);
+      for (const target of ["darwin-arm64", "win32-x64"]) {
+        const body = await (await check(`target=${target}&current_version_code=1`)).json() as any;
+        expect(body).toMatchObject({ update_available: true, target, release: { id: releaseId, version_code: 2000000 } });
+        expect(body.full_archive).not.toBeNull();
+      }
+    });
+
+    it("refuses to change a target the build already publishes", async () => {
+      const { buildId } = await publishFirstTarget("darwin-arm64", "active");
+      const again = await uploadAsset(buildId, "desktop-archive", "zip", new TextEncoder().encode("other-zip"), "darwin-arm64");
+      expect(again.declared.status).toBe(409);
+      expect(again.declaredBody.code).toBe("DESKTOP_TARGET_EXISTS");
+    });
+
+    it("lets a deploy token add a target to a draft release but not to an active one", async () => {
+      principal = "token";
+      const draft = await publishFirstTarget("darwin-arm64", "draft");
+      const added = await uploadTarget(draft.buildId, "win32-x64", "v2");
+      expect(added.manifest.completed?.status).toBe(200);
+      sqlite.prepare("UPDATE releases SET status = 'active', activated_at = 1 WHERE id = ?").run(draft.releaseId);
+      const refused = await uploadAsset(draft.buildId, "desktop-archive", "zip", new TextEncoder().encode("linux-zip"), "linux-x64");
+      expect(refused.declared.status).toBe(403);
+      expect(refused.declaredBody.code).toBe("AGENT_ACTIVE_RELEASE_FORBIDDEN");
+    });
+
+    it("refuses a target append on a superseded release and on a non-desktop app's build", async () => {
+      const { buildId, releaseId } = await publishFirstTarget("darwin-arm64", "active");
+      sqlite.prepare("UPDATE releases SET status = 'superseded' WHERE id = ?").run(releaseId);
+      const late = await uploadAsset(buildId, "desktop-archive", "zip", new TextEncoder().encode("late"), "win32-x64");
+      expect(late.declaredBody.code).toBe("DESKTOP_RELEASE_NOT_APPENDABLE");
+      sqlite.prepare("UPDATE apps SET platform = 'electron' WHERE id = ?").run(APP);
+      const electron = await uploadAsset(buildId, "desktop-archive", "zip", new TextEncoder().encode("late2"), "linux-x64");
+      expect(electron.declaredBody.code).toBe("BUILD_NOT_UPLOADABLE");
     });
   });
 
@@ -460,6 +624,19 @@ describe("desktop apps", () => {
       bucket.objects.set("k/build-r1/manifest.json", new TextEncoder().encode("{}"));
       const download = await app.request(body.manifest.url, {}, env);
       expect(download.status).toBe(302);
+    });
+
+    it("ignores assets that were not sealed by the direct upload protocol", async () => {
+      // Metadata claiming upload_state=ready is caller-supplied; only a sealed ingest counts.
+      publishRelease({ id: "r-unsealed", versionCode: 100, sealed: false });
+      expect(await (await check("target=darwin-arm64&current_version_code=1")).json()).toMatchObject({ update_available: false, latest_version_code: null });
+    });
+
+    it("treats an empty product_type as the default", async () => {
+      publishRelease({ id: "r1", versionCode: 100 });
+      const res = await check("target=darwin-arm64&current_version_code=1&product_type=");
+      expect(res.status).toBe(200);
+      expect((await res.json() as any).release.id).toBe("r1");
     });
 
     it("answers update_available false when the client is current or ahead", async () => {
@@ -549,6 +726,15 @@ describe("desktop apps", () => {
       publishRelease({ id: "r-draft", versionCode: 100, status: "draft", manifestFiles: [stored.files[0]!.sha256] });
       publishRelease({ id: "r-hidden", versionCode: 200, hidden: 1, manifestFiles: [stored.files[0]!.sha256] });
       expect((await file("raft-desktop", stored.files[0]!.sha256)).status).toBe(404);
+    });
+
+    it("404s a file whose only release is not yet available", async () => {
+      const stored = await storeFiles(APP, ["scheduled"]);
+      const digest = stored.files[0]!.sha256;
+      publishRelease({ id: "r-future", versionCode: 100, availabilityAt: Date.now() + 86_400_000, manifestFiles: [digest] });
+      expect((await file("raft-desktop", digest)).status).toBe(404);
+      sqlite.prepare("UPDATE releases SET availability_at = NULL WHERE id = 'r-future'").run();
+      expect((await file("raft-desktop", digest)).status).toBe(302);
     });
 
     it("serves a superseded release's files", async () => {

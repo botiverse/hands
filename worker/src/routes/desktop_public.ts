@@ -10,8 +10,8 @@
  * reached) and whose build carries a ready desktop manifest for the requested target.
  *
  * The file route serves one content-addressed bundle file. It answers only for a
- * digest that a validated manifest of an active or superseded, non-hidden release of
- * the same app references; anything else is a 404, so the route cannot be used to
+ * digest that a validated manifest of an active or superseded, non-hidden, already
+ * available, non-QA release of a succeeded build of the same app references; anything else is a 404, so the route cannot be used to
  * probe for bytes that were uploaded but never published.
  */
 
@@ -68,7 +68,8 @@ export async function handlePublicDesktopUpdate(c: PublicContext) {
   const slug = c.req.param("slug") ?? "";
   const target = c.req.query("target") ?? "";
   const requestedChannel = c.req.query("channel") ?? "main";
-  const productTypes = equivalentsOf(c.req.query("product_type") ?? DESKTOP_INSTALLER);
+  // An empty `product_type=` means the default, never an empty IN ().
+  const productTypes = equivalentsOf(c.req.query("product_type") || DESKTOP_INSTALLER);
   const currentRaw = c.req.query("current_version_code")
     ?? c.req.header("X-Hands-Current-Version-Code") ?? null;
   const currentVersionCode = Number(currentRaw);
@@ -116,9 +117,10 @@ export async function handlePublicDesktopUpdate(c: PublicContext) {
         AND r.product_type IN (${productParams})
         AND EXISTS (
           SELECT 1 FROM build_assets ba
+            JOIN build_asset_ingest_attempt i
+              ON i.asset_id = ba.id AND i.state = 'ready' AND i.committed_final_key = ba.r2_key
            WHERE ba.build_id = b.id AND ba.artifact_kind = 'desktop-manifest'
              AND ba.platform = ?4 AND ba.arch = ?5
-             AND json_extract(ba.metadata_json, '$.upload_state') = 'ready'
         )
       ORDER BY COALESCE(r.activated_at, r.created_at) DESC, r.id ASC`,
   ).bind(app.id, channel.id, now, platform, arch, ...productTypes).all<DesktopCandidate>();
@@ -145,12 +147,16 @@ export async function handlePublicDesktopUpdate(c: PublicContext) {
   }
 
   const { results: assets } = await c.env.DB.prepare(
-    `SELECT artifact_kind, filetype, r2_key, file_hash, size_bytes
-       FROM build_assets
-      WHERE build_id = ?1 AND platform = ?2 AND arch = ?3
-        AND artifact_kind IN ('desktop-manifest', 'desktop-archive', 'installable')
-        AND json_extract(metadata_json, '$.upload_state') = 'ready'
-      ORDER BY created_at ASC, id ASC`,
+    // Only assets sealed by the direct upload protocol: their bytes were verified
+    // against the declared digest, and a manifest also against the stored files.
+    // Metadata alone is caller-supplied and proves nothing.
+    `SELECT ba.artifact_kind, ba.filetype, ba.r2_key, ba.file_hash, ba.size_bytes
+       FROM build_assets ba
+       JOIN build_asset_ingest_attempt i
+         ON i.asset_id = ba.id AND i.state = 'ready' AND i.committed_final_key = ba.r2_key
+      WHERE ba.build_id = ?1 AND ba.platform = ?2 AND ba.arch = ?3
+        AND ba.artifact_kind IN ('desktop-manifest', 'desktop-archive', 'installable')
+      ORDER BY ba.created_at ASC, ba.id ASC`,
   ).bind(winner.build_id, platform, arch).all<DesktopAssetRow>();
   const manifest = assets.find((a) => a.artifact_kind === DESKTOP_MANIFEST_KIND);
   if (!manifest) {
@@ -254,13 +260,16 @@ export async function handlePublicDesktopFile(c: PublicContext) {
           SELECT 1
             FROM desktop_manifest_files m
             JOIN build_assets ba ON ba.id = m.build_asset_id
+            JOIN builds b ON b.id = ba.build_id AND b.status = 'succeeded' AND b.release_type != 'qa'
             JOIN releases r ON r.build_id = ba.build_id
            WHERE m.app_id = a.id AND m.sha256 = f.sha256
              AND r.app_id = a.id
              AND r.status IN ('active', 'superseded') AND r.hidden = 0
+             AND r.release_type != 'qa'
+             AND (r.availability_at IS NULL OR r.availability_at <= ?3)
         )
       LIMIT 1`,
-  ).bind(slug, sha256).first<{ app_id: string; size_bytes: number }>();
+  ).bind(slug, sha256, Date.now()).first<{ app_id: string; size_bytes: number }>();
   if (!row) return c.json({ error: "file not found", code: "file_not_found" }, 404);
   const key = desktopFileKey(row.app_id, sha256);
   const ttl = Number(c.env.SIGNED_URL_TTL_SECONDS ?? "3600");

@@ -548,10 +548,10 @@ export async function createBuildAsset(
   if (!Number.isFinite(Number(input.size_bytes))) {
     throw new Error("size_bytes required");
   }
-  if (input.artifact_kind === "desktop-manifest") {
-    // A desktop manifest is validated against the app's stored files when its
-    // upload is sealed. Registering one by key would skip that check.
-    throw new Error("desktop-manifest assets must be uploaded through the direct asset upload protocol (assets/uploads)");
+  if (input.artifact_kind === "desktop-manifest" || input.artifact_kind === "desktop-archive") {
+    // Desktop update payloads are verified when their upload is sealed (digest, and
+    // for a manifest the stored files). Registering one by key would skip that check.
+    throw new Error(`${input.artifact_kind} assets must be uploaded through the direct asset upload protocol (assets/uploads)`);
   }
   const build = await getBuildForApp(db, appId, buildId);
   if (!build) throw new Error("build not found");

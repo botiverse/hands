@@ -40,7 +40,7 @@ import {
   uploadDirectBuildAsset,
 } from "./builds.js";
 
-/** Digests per `/missing` call. The server accepts more; smaller calls keep URLs fresh. */
+/** Digests per `/missing` call: the server's limit. */
 const MISSING_CHUNK = 1000;
 /** The server verifies at most this many files per `/complete` call. */
 const COMPLETE_CHUNK = 100;
@@ -76,7 +76,19 @@ async function mapBounded<T>(items: T[], limit: number, fn: (item: T) => Promise
   }));
 }
 
-async function putFile(file: MissingFile, path: string): Promise<void> {
+/**
+ * PUT one file to its presigned URL, retrying transient failures. A 403 means the
+ * URL expired (a long upload queue can outlive the hour it is valid): ask Hands for
+ * a fresh one, which also reports the file as no longer missing if another run
+ * stored it meanwhile.
+ */
+async function putFile(
+  initial: MissingFile,
+  path: string,
+  refresh: () => Promise<MissingFile | null>,
+): Promise<void> {
+  let file = initial;
+  let refreshed = false;
   let lastError: unknown;
   for (let attempt = 1; attempt <= PUT_ATTEMPTS; attempt += 1) {
     try {
@@ -92,6 +104,14 @@ async function putFile(file: MissingFile, path: string): Promise<void> {
       } as RequestInit & { duplex: "half" });
       if (response.ok) return;
       lastError = new Error(`upload of ${basename(path)} failed: HTTP ${response.status}`);
+      if (response.status === 403 && !refreshed) {
+        refreshed = true;
+        const fresh = await refresh();
+        if (!fresh) return;
+        file = fresh;
+        attempt -= 1;
+        continue;
+      }
       // 4xx other than a timeout or throttling will not improve on retry.
       if (response.status < 500 && response.status !== 408 && response.status !== 429) break;
     } catch (error) {
@@ -154,7 +174,13 @@ export async function uploadDesktopFiles(
     await mapBounded(missing, PUT_CONCURRENCY, async (file) => {
       const path = pathsByDigest.get(file.sha256);
       if (!path) throw new Error(`Hands asked for a file this bundle does not contain: ${file.sha256}`);
-      await putFile(file, path);
+      await putFile(file, path, async () => {
+        const again = await apiRequest<{ missing: MissingFile[] }>(`/api/apps/${appId}/desktop/files/missing`, {
+          method: "POST",
+          body: { files: [{ sha256: file.sha256, size: file.size }] },
+        });
+        return again.missing[0] ?? null;
+      });
       done += 1;
       onProgress?.(uploaded + done, digests.length);
     });
@@ -235,6 +261,13 @@ export function registerPublishDesktopCommand(builds: Command, program: Command)
       await assertActiveReleaseAllowed(opts.draft);
       const appId = await resolveAppId(appIdOrSlug);
       const channelId = await resolveChannelId(appId, opts.channel);
+      const versionQuery = {
+        appId, channelId, productType: opts.productType, releaseType: opts.releaseType,
+        versionName: opts.versionName, versionCode, draft: Boolean(opts.draft),
+      };
+      // One version is one build and one release carrying every target. Refuse early,
+      // before any upload, when this version exists in a state that cannot take a target.
+      const existing = await findVersionRelease(versionQuery);
 
       const walked = await walkDesktopBundle(opts.bundle);
       const manifest = buildDesktopManifest(opts.target, walked);
@@ -256,80 +289,90 @@ export function registerPublishDesktopCommand(builds: Command, program: Command)
       try {
         const manifestPath = join(work, `${walked.root}-${opts.target}.manifest.json`);
         await writeFile(manifestPath, JSON.stringify(manifest));
-        const planned = [
-          { path: manifestPath, artifact_kind: "desktop-manifest", filetype: "json" },
-          { path: opts.archive, artifact_kind: "desktop-archive", filetype: "zip" },
+        // The manifest goes last: once it is sealed the target is live on a published
+        // release, so the archive and installer it advertises must already be there.
+        const planned: PlannedAsset[] = [
           ...(opts.installer
             ? [{ path: opts.installer, artifact_kind: "installable", filetype: inferElectronFiletype(opts.installer) }]
             : []),
+          { path: opts.archive, artifact_kind: "desktop-archive", filetype: "zip" },
+          { path: manifestPath, artifact_kind: "desktop-manifest", filetype: "json" },
         ];
-        const build = await createAdmittedPublishBuild({
-          appId,
-          channelId,
-          productType: opts.productType,
-          releaseType: opts.releaseType,
-          versionName: opts.versionName,
-          versionCode,
-          buildBody: {
-            changelog,
-            source: "cli",
-            status: "pending",
-            asset_ingest_protocol_version: 1,
-            required_asset_slots_json: planned.map((entry) => ({
-              artifact_kind: entry.artifact_kind,
-              platform,
-              arch,
-              variant: null,
-              filetype: entry.filetype,
-            })),
-            build_metadata_json: {
-              desktop: { target: opts.target, root: walked.root, ...summary, total_size: manifest.total_size },
+        const slot = { platform, arch, target: opts.target };
+
+        let buildId: string;
+        let releaseId: string;
+        let appended: boolean;
+        let assets: UploadedAsset[];
+        if (existing) {
+          assets = await uploadTargetAssets(appId, existing.build_id, planned, slot);
+          buildId = existing.build_id;
+          releaseId = existing.id;
+          appended = true;
+        } else {
+          const build = await createAdmittedPublishBuild({
+            appId,
+            channelId,
+            productType: opts.productType,
+            releaseType: opts.releaseType,
+            versionName: opts.versionName,
+            versionCode,
+            buildBody: {
+              changelog,
+              source: "cli",
+              status: "pending",
+              asset_ingest_protocol_version: 1,
+              required_asset_slots_json: planned.map((entry) => ({
+                artifact_kind: entry.artifact_kind,
+                platform,
+                arch,
+                variant: null,
+                filetype: entry.filetype,
+              })),
+              build_metadata_json: {
+                desktop: { first_target: opts.target, root: walked.root },
+              },
+              should_force_update: Boolean(opts.forceUpdate),
             },
-            should_force_update: Boolean(opts.forceUpdate),
-          },
-        });
-        const assets = [];
-        for (const entry of planned) {
+          });
+          assets = await uploadTargetAssets(appId, build.id, planned, slot);
+          await apiRequest(`/api/apps/${appId}/builds/${build.id}`, { method: "PATCH", body: { status: "succeeded" } });
           try {
-            assets.push(await uploadDirectBuildAsset(appId, build.id, entry.path, {
-              artifact_kind: entry.artifact_kind,
-              platform,
-              arch,
-              filetype: entry.filetype,
-              metadata_json: { filename: basename(entry.path), target: opts.target },
-            }));
+            const release = await createReleaseOrTerminalizeVersionConflict({
+              appId,
+              buildId: build.id,
+              provenance: {},
+              releaseBody: {
+                build_id: build.id,
+                channel_id: channelId,
+                product_type: opts.productType,
+                release_type: opts.releaseType,
+                status: opts.draft ? "draft" : "active",
+                changelog,
+                should_force_update: Boolean(opts.forceUpdate),
+                scopes: [{ scope_type: "full", scope_value: "all" }],
+              },
+            });
+            buildId = build.id;
+            releaseId = release.id;
+            appended = false;
           } catch (error) {
-            const code = error instanceof QuiverApiError && error.body && typeof error.body === "object"
-              ? (error.body as { code?: unknown }).code
-              : undefined;
-            throw new Error(
-              `uploading ${entry.artifact_kind} failed${code ? ` (${String(code)})` : ""}; build ${build.id} left pending: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-              { cause: error },
-            );
+            // Another target's job created this version between our lookup and now.
+            // Our build was terminalized as failed; add this target to the winner.
+            const winner = await findVersionRelease(versionQuery).catch(() => null);
+            if (!winner || !isVersionConflict(error)) throw error;
+            assets = await uploadTargetAssets(appId, winner.build_id, planned, slot);
+            buildId = winner.build_id;
+            releaseId = winner.id;
+            appended = true;
           }
         }
-        await apiRequest(`/api/apps/${appId}/builds/${build.id}`, { method: "PATCH", body: { status: "succeeded" } });
-        const release = await createReleaseOrTerminalizeVersionConflict({
-          appId,
-          buildId: build.id,
-          provenance: {},
-          releaseBody: {
-            build_id: build.id,
-            channel_id: channelId,
-            product_type: opts.productType,
-            release_type: opts.releaseType,
-            status: opts.draft ? "draft" : "active",
-            changelog,
-            should_force_update: Boolean(opts.forceUpdate),
-            scopes: [{ scope_type: "full", scope_value: "all" }],
-          },
-        });
+
         const result = {
           app_id: appId,
-          build_id: build.id,
-          release_id: release.id,
+          build_id: buildId,
+          release_id: releaseId,
+          appended,
           channel: opts.channel,
           target: opts.target,
           version_name: opts.versionName,
@@ -342,14 +385,115 @@ export function registerPublishDesktopCommand(builds: Command, program: Command)
           console.log(JSON.stringify(result, null, 2));
           return;
         }
-        console.log(`Published desktop ${opts.target} ${opts.versionName} (${versionCode})${opts.draft ? " as a draft" : ""}`);
-        console.log(`  build:   ${build.id}`);
-        console.log(`  release: ${release.id}`);
+        console.log(appended
+          ? `Added desktop ${opts.target} to ${opts.versionName} (${versionCode})`
+          : `Published desktop ${opts.target} ${opts.versionName} (${versionCode})${opts.draft ? " as a draft" : ""}`);
+        console.log(`  build:   ${buildId}`);
+        console.log(`  release: ${releaseId}${appended ? " (existing)" : ""}`);
         console.log(`  channel: ${opts.channel}`);
         console.log(`  files:   ${summary.files} total; uploaded ${summary.uploaded} new (${formatMegabytes(summary.uploaded_bytes)}), reused ${summary.reused}`);
         console.log(`  assets:  ${assets.map((a) => `${a.artifact_kind}:${a.filetype}`).join(", ")}`);
+        if (appended && (changelog !== null || opts.forceUpdate)) {
+          console.error("note: --notes and --force-update apply when a version is first published; the existing release keeps its own. Use `hands releases update` to change them.");
+        }
       } finally {
         await rm(work, { recursive: true, force: true }).catch(() => {});
       }
     });
+}
+
+interface PlannedAsset {
+  path: string;
+  artifact_kind: string;
+  filetype: string;
+}
+
+type UploadedAsset = Awaited<ReturnType<typeof uploadDirectBuildAsset>>;
+
+interface VersionRelease {
+  id: string;
+  build_id: string;
+  status: string;
+  version_name: string;
+  version_code: number;
+}
+
+function isVersionConflict(error: unknown): boolean {
+  for (let current = error; current instanceof Error; current = current.cause) {
+    if (current instanceof QuiverApiError && (current.body as { code?: unknown } | null)?.code === "RELEASE_VERSION_ALREADY_EXISTS") return true;
+  }
+  return false;
+}
+
+/**
+ * The release that already owns this version on the channel, if any, after checking
+ * it can take another target: same version name, still a draft or active, and not
+ * active when the caller asked for a draft (adding a target to an active release
+ * makes it live at once).
+ */
+export async function findVersionRelease(args: {
+  appId: string; channelId: string; productType: string; releaseType: string;
+  versionName: string; versionCode: number; draft: boolean;
+}): Promise<VersionRelease | null> {
+  const { releases } = await apiRequest<{ releases: VersionRelease[] }>(`/api/apps/${args.appId}/releases`, {
+    query: {
+      channel: args.channelId,
+      product_type: args.productType,
+      release_type: args.releaseType,
+      version_code: args.versionCode,
+    },
+  });
+  const release = releases.find((r) => r.version_code === args.versionCode && r.status !== "cancelled");
+  if (!release) return null;
+  if (release.version_name !== args.versionName) {
+    throw new Error(
+      `version code ${args.versionCode} already belongs to version ${release.version_name} (release ${release.id}); ` +
+        "every target of a version must use the same --version-name and --version-code",
+    );
+  }
+  if (release.status !== "draft" && release.status !== "active") {
+    throw new Error(`release ${release.id} for ${args.versionName} is ${release.status}; publish a new version instead`);
+  }
+  if (release.status === "active" && args.draft) {
+    throw new Error(
+      `release ${release.id} for ${args.versionName} is already active, so adding a target publishes it immediately; ` +
+        "re-run without --draft (a person only), or publish every target to a draft before making it active",
+    );
+  }
+  return release;
+}
+
+/** Upload one target's slots to a build. Re-running with the same bytes replays. */
+async function uploadTargetAssets(
+  appId: string,
+  buildId: string,
+  planned: PlannedAsset[],
+  slot: { platform: string; arch: string; target: string },
+): Promise<UploadedAsset[]> {
+  const assets: UploadedAsset[] = [];
+  for (const entry of planned) {
+    try {
+      assets.push(await uploadDirectBuildAsset(appId, buildId, entry.path, {
+        artifact_kind: entry.artifact_kind,
+        platform: slot.platform,
+        arch: slot.arch,
+        filetype: entry.filetype,
+        metadata_json: { filename: basename(entry.path), target: slot.target },
+      }));
+    } catch (error) {
+      const code = error instanceof QuiverApiError && error.body && typeof error.body === "object"
+        ? (error.body as { code?: unknown }).code
+        : undefined;
+      const hint = code === "DESKTOP_TARGET_EXISTS" || code === "ASSET_APPEND_CONFLICT"
+        ? ` ${slot.target} is already on this version with different files; publish a new version instead.`
+        : "";
+      throw new Error(
+        `uploading ${entry.artifact_kind} for ${slot.target} to build ${buildId} failed${code ? ` (${String(code)})` : ""}:${hint} ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+  }
+  return assets;
 }

@@ -2,9 +2,12 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
+import { currentAccount, currentDeployToken } from "../lib/permissions";
+import { equivalentsOf, DESKTOP_INSTALLER } from "../lib/release_resolver";
 import { presignR2UploadUrl } from "../lib/r2_presign";
 import { recomputeInventoryAfterMappingUpload } from "./build_inventory";
 import {
+  DESKTOP_ARCHIVE_KIND,
   DESKTOP_MANIFEST_FILETYPE,
   DESKTOP_MANIFEST_KIND,
   DESKTOP_MANIFEST_MAX_BYTES,
@@ -173,6 +176,70 @@ const APPENDABLE_FILETYPES: Record<string, Set<string>> = {
 function isAppendableSymbolAsset(kind: string, filetype: string): boolean {
   const allowed = APPENDABLE_FILETYPES[kind];
   return allowed !== undefined && allowed.has(filetype);
+}
+
+/** A slot that carries one desktop target: its manifest, archive or installer. */
+function isDesktopTargetSlot(kind: string, filetype: string, platform: string, arch: string | null): boolean {
+  if (!isDesktopTarget(`${platform}-${arch ?? ""}`)) return false;
+  return (kind === DESKTOP_MANIFEST_KIND && filetype === DESKTOP_MANIFEST_FILETYPE)
+    || (kind === DESKTOP_ARCHIVE_KIND && filetype === "zip")
+    || kind === "installable";
+}
+
+function isHumanCaller(c: AdminContext): boolean {
+  if (currentDeployToken(c) !== null) return false;
+  const account = currentAccount(c);
+  return account !== null && account.principal_type === "human";
+}
+
+/**
+ * One desktop version is one build and one release carrying every target, and
+ * targets are published one CI job at a time. So a succeeded build of a desktop app
+ * may receive the slots of a target it does not have yet. It may not touch a target
+ * it already has (the sealed manifest is what makes a target live), may not change a
+ * superseded or cancelled release, and only a person may add a target to a release
+ * that is already active, the same rule as creating an active release.
+ */
+async function desktopTargetAppendRefusal(
+  c: AdminContext,
+  appId: string,
+  buildId: string,
+  platform: string,
+  arch: string,
+  completingAssetId: string | null,
+): Promise<{ status: 403 | 409; body: Record<string, unknown> } | null> {
+  const productTypes = equivalentsOf(DESKTOP_INSTALLER);
+  const row = await c.env.DB.prepare(
+    `SELECT a.platform AS app_platform, b.product_type,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id AND r.status = 'active') AS has_active,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id AND r.status = 'draft') AS has_draft,
+            EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id) AS has_release,
+            EXISTS (
+              SELECT 1 FROM build_assets ba
+                JOIN build_asset_ingest_attempt i ON i.asset_id = ba.id AND i.state = 'ready'
+               WHERE ba.build_id = b.id AND ba.artifact_kind = 'desktop-manifest'
+                 AND ba.platform = ?3 AND ba.arch = ?4 AND ba.id IS NOT ?5
+            ) AS target_sealed
+       FROM builds b JOIN apps a ON a.id = b.app_id
+      WHERE b.app_id = ?1 AND b.id = ?2`,
+  ).bind(appId, buildId, platform, arch, completingAssetId).first<{
+    app_platform: string; product_type: string; has_active: number; has_draft: number;
+    has_release: number; target_sealed: number;
+  }>();
+  const refuse = (status: 403 | 409, code: string, error: string) => ({ status, body: { error, code } });
+  if (!row || row.app_platform !== "desktop" || !productTypes.includes(row.product_type)) {
+    return refuse(409, "BUILD_NOT_UPLOADABLE", "a published build accepts another target only on a desktop app's desktop-installer build");
+  }
+  if (row.target_sealed === 1) {
+    return refuse(409, "DESKTOP_TARGET_EXISTS", `this build already publishes ${platform}-${arch}; a published target cannot be changed`);
+  }
+  if (row.has_release === 1 && row.has_active !== 1 && row.has_draft !== 1) {
+    return refuse(409, "DESKTOP_RELEASE_NOT_APPENDABLE", "the build's release is superseded or cancelled; publish a new version instead");
+  }
+  if (row.has_active === 1 && !isHumanCaller(c)) {
+    return refuse(403, "AGENT_ACTIVE_RELEASE_FORBIDDEN", "only a person can add a target to an active release; agents and deploy tokens add targets while the release is a draft");
+  }
+  return null;
 }
 
 function slotKey(slot: {
@@ -370,18 +437,28 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
     build.status === "succeeded" &&
     build.artifact_mode !== "external" &&
     isAppendableSymbolAsset(input.artifactKind, input.filetype);
-  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
+  // A published desktop build may gain another target (see desktopTargetAppendRefusal).
+  let desktopAppend = false;
+  if (!newBuildUpload && !migrationUpload && !symbolAppend
+    && build.status === "succeeded" && build.artifact_mode === "hands_r2"
+    && isDesktopTargetSlot(input.artifactKind, input.filetype, input.platform, input.arch)) {
+    const refusal = await desktopTargetAppendRefusal(c, appId, buildId, input.platform, input.arch!, null);
+    if (refusal) return c.json(refusal.body, refusal.status);
+    desktopAppend = true;
+  }
+  const appendOnly = symbolAppend || desktopAppend;
+  if (!newBuildUpload && !migrationUpload && !appendOnly) {
     return c.json({ error: "direct asset uploads require a pending Hands-hosted build or an initialized external-build migration; a published build accepts debug symbols only", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
   if (!migrationUpload && build.asset_ingest_protocol_version !== DIRECT_UPLOAD_PROTOCOL) {
     // A symbol append on an older build is still allowed: the protocol flag governs
     // whether the build waited for its required slots, which an append never changes.
-    if (!symbolAppend) {
+    if (!appendOnly) {
       return c.json({ error: "build does not use direct asset ingest protocol v1", code: "ASSET_INGEST_PROTOCOL_REQUIRED" }, 409);
     }
   }
   const declaredSlot = slotKey(input);
-  if (!symbolAppend) {
+  if (!appendOnly) {
     let required: Set<string>;
     try {
       required = requiredSlotKeys(build.required_asset_slots_json);
@@ -403,7 +480,7 @@ export async function handleDeclareBuildAssetUpload(c: AdminContext) {
       .bind(buildId, input.artifactKind, input.platform, input.arch ?? null, input.variant ?? null, input.filetype)
       .first<{ id: string }>();
     if (existing) {
-      return c.json({ error: "an asset for this slot already exists; appended debug symbols are add-only and cannot replace it", code: "ASSET_APPEND_CONFLICT", asset_id: existing.id }, 409);
+      return c.json({ error: "an asset for this slot already exists; appended assets are add-only and cannot replace it", code: "ASSET_APPEND_CONFLICT", asset_id: existing.id }, 409);
     }
   }
 
@@ -846,7 +923,17 @@ export async function handleCompleteBuildAssetUpload(c: AdminContext) {
     row.build_status === "succeeded" &&
     row.artifact_mode !== "external" &&
     isAppendableSymbolAsset(row.artifact_kind, row.filetype);
-  if (!newBuildUpload && !migrationUpload && !symbolAppend) {
+  let desktopAppend = false;
+  if (!newBuildUpload && !migrationUpload && !symbolAppend
+    && row.build_status === "succeeded" && row.artifact_mode === "hands_r2"
+    && isDesktopTargetSlot(row.artifact_kind, row.filetype, row.platform, row.arch)) {
+    // Re-evaluated at completion: the release may have been published or the
+    // target sealed by another upload since the declaration.
+    const refusal = await desktopTargetAppendRefusal(c, appId, buildId, row.platform, row.arch!, assetId);
+    if (refusal) return c.json(refusal.body, refusal.status);
+    desktopAppend = true;
+  }
+  if (!newBuildUpload && !migrationUpload && !symbolAppend && !desktopAppend) {
     return c.json({ error: "build is no longer uploadable", code: "BUILD_NOT_UPLOADABLE" }, 409);
   }
   const now = Date.now();

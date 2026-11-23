@@ -33,8 +33,10 @@ how the app is published or updated.
 hands apps create --slug raft-desktop --name "Raft" --platform desktop --runtime jvm
 ```
 
-A build is published one target at a time. Each target of a build holds two
-kinds of files.
+One version is one build and one release that carries every target. Targets
+are published one at a time, usually by one CI job per target: the first
+creates the build and the release, each later one adds its target to them.
+Each target of a build holds two kinds of files.
 
 **Installer.** A file for people: `dmg`, `pkg`, `msi`, `exe`, `AppImage`,
 `deb`, and so on. It is an ordinary build asset with `artifact_kind`
@@ -71,14 +73,27 @@ kinds of files.
 | `schema` | `1` |
 | `target` | One of the targets above; must equal the target the manifest asset was uploaded for |
 | `root` | Name of the bundle directory (`Raft.app`, `Raft`), a single path segment |
-| `files[].path` | Relative to `root`, `/`-separated, no empty, `.` or `..` segment, no leading `/`, no drive letter, no `\`; unique |
+| `files[].path` | Relative to `root`, `/`-separated, no empty, `.` or `..` segment, no leading `/`, no drive letter, no `\`, no control character; unique |
 | `files[].sha256`, `size` | Regular files only: lowercase hex digest and byte length |
-| `files[].mode` | Regular files only: permission bits as an octal string (`"644"`, `"755"`) |
-| `files[].link` | Symlinks only: the link target, relative to the link's directory, resolving inside the bundle; no `sha256` |
+| `files[].mode` | Regular files only: exactly three octal digits (`"644"`, `"755"`); no setuid, setgid or sticky bit |
+| `files[].link` | Symlinks only: the link target, relative to the link's directory; no `sha256` |
 | `total_size` | Optional; when present, the sum of all file sizes |
 
 Directories are implied by the paths under them. No entry may sit under a
 file or a symlink. The manifest is at most 8 MiB.
+
+Paths are compared the way the target's filesystem compares them: on
+`darwin-*` and `win32-*` targets, two paths that differ only in letter case or
+Unicode normalization are the same path and are refused as duplicates. On
+`win32-*` targets a name may not be a reserved device name (`CON`, `PRN`,
+`AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension),
+contain `< > : " | ? *`, or end with a dot or a space.
+
+Every symlink is resolved against the manifest the way the filesystem would
+resolve it, following any other symlinks on the way, and must stay inside
+the bundle at every step. So `d/up -> ..` is accepted, but
+`l -> d/up/../..` is refused, because once `d/up` is followed it climbs out
+of the root. Chains longer than 40 links, or loops, are refused.
 
 When the manifest upload is sealed, Hands parses it and checks that every
 `sha256` it names is already stored for the app with the same size. If any
@@ -115,11 +130,37 @@ The command:
    `--draft`).
 
 It prints the number of files, how many were uploaded and their size, and how
-many were reused. `--json` prints the result as JSON. Run it once per target;
-each run creates its own build and release. Create the archive with your
-build tooling, for example `ditto -c -k --keepParent Raft.app Raft.zip` on
-macOS. Agents and deploy tokens must pass `--draft`, as with every publish
-command.
+many were reused. `--json` prints the result as JSON (`appended` is `true`
+when the target was added to an existing release). Create the archive with
+your build tooling, for example `ditto -c -k --keepParent Raft.app Raft.zip`
+on macOS.
+
+### Several targets
+
+Run the command once per target with the same `--version-name` and
+`--version-code`. When that version already has a release on the channel,
+the command adds this target's installer, archive and manifest to the
+release's build and leaves the release as it is (its notes and force-update
+flag were set by the first target). The manifest is uploaded last: a target
+goes live on a published release the moment its manifest is sealed.
+
+- A target cannot be changed once its manifest is sealed. Publishing it again
+  with the same files is a no-op; with different files it fails with
+  `DESKTOP_TARGET_EXISTS`. Publish a new version instead.
+- Only a draft or active release takes a new target; a superseded or
+  cancelled one fails with `DESKTOP_RELEASE_NOT_APPENDABLE`.
+- Agents and deploy tokens must pass `--draft`, as with every publish
+  command, and can add targets only while the release is a draft. Adding a
+  target to an active release is for a person (`AGENT_ACTIVE_RELEASE_FORBIDDEN`
+  otherwise). The usual flow is: publish every target with `--draft`, review,
+  then `hands releases publish`.
+- Two jobs that start the same version at the same moment are reconciled: the
+  one that loses the race adds its target to the winner's release.
+
+Publishing a new version as active supersedes the previous one on the
+channel, so a target that the new version does not have yet gets no update
+until it is added. Publishing as a draft and activating after the last target
+avoids that gap.
 
 ## Check for an update
 
@@ -141,6 +182,9 @@ Hands chooses the release the same way as
 matching scope, then the newest activation, with staged rollouts admitted by
 device id. It considers only active releases that are not hidden, whose
 availability time has passed, and whose build has a manifest for the target.
+Only assets sealed by the direct upload protocol (their bytes verified, and a
+manifest's files checked) are offered; desktop manifests and archives cannot
+be registered any other way.
 
 When a newer version exists:
 
@@ -187,9 +231,9 @@ GET /public/v2/apps/:slug/files/:sha256
 ```
 
 Answers `302` to a short-lived signed URL for that file. Hands answers only
-for a digest that a validated manifest of an active or superseded, non-hidden
-release of this app references; any other digest, or a digest of another app,
-is `404`.
+for a digest that a validated manifest references, on a succeeded build of
+this app whose release is active or superseded, not hidden, not QA, and
+already available; any other digest, or a digest of another app, is `404`.
 
 ## Applying an update
 
@@ -222,10 +266,12 @@ POST /api/apps/:appId/desktop/files/missing
 {"files":[{"sha256":"…","size":123}]}
 ```
 
-Up to 20,000 entries. Answers
+Up to 1,000 entries; ask in chunks for a larger bundle. Answers
 `{"missing":[{"sha256","size","upload_url","headers","expires_at"}],"present_count":N}`;
 PUT each missing file to its `upload_url` with the given `content-type`
-header within an hour.
+header within an hour. When a URL has expired (`403`), ask again for that
+digest. An upload that is never completed stays in staging until the app is
+deleted, which removes it with the rest of the app's files.
 
 ```http
 POST /api/apps/:appId/desktop/files/complete
