@@ -385,6 +385,11 @@ lowercase letters or digits (`^[a-z0-9]{8}$`), the saved file name gets
 where it was downloaded from. The bytes, length and etag are unchanged. Any
 other value is ignored, and `latest*.yml` keeps its name.
 
+Installers, archives and `.blockmap` files are answered with a `302` to a
+short-lived signed R2 URL that carries the same file name, so large downloads
+go straight to storage. R2 serves `Range` requests itself, so electron-updater's
+differential download works unchanged. `latest*.yml` is served by Hands directly.
+
 Example asset conventions:
 
 | File | `platform` | `arch` | `filetype` | `artifact_kind` |

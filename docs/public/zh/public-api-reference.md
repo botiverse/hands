@@ -259,6 +259,8 @@ Hands 从该渠道的活动 `desktop-installer` 版本提供这些文件（旧�
 
 安装包下载支持 `?name=<令牌>`。令牌恰好是 8 位小写字母或数字（`^[a-z0-9]{8}$`）时，保存的文件名会在扩展名前加 `-<令牌>`，例如 `Raft-Desktop-1.36.0-universal.dmg?name=k3x9a2pq` 保存为 `Raft-Desktop-1.36.0-universal-k3x9a2pq.dmg`，安装后的应用可以由此知道它从哪里下载。文件内容、长度和 etag 不变。其他取值一律忽略，`latest*.yml` 不改名。
 
+安装包、压缩包和 `.blockmap` 文件以 `302` 跳转到短时有效的 R2 签名地址，文件名不变，大文件直接从存储下载。R2 自己处理 `Range` 请求，electron-updater 的差分下载照常工作。`latest*.yml` 仍由 Hands 直接返回。
+
 文件约定示例：
 
 | 文件 | `platform` | `arch` | `filetype` | `artifact_kind` |
