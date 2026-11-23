@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Publish Android SDK
+      - Publish desktop JVM updater
       - Publish CLI
       - Publish Electron SDK
       - Publish Hands Feedback React
