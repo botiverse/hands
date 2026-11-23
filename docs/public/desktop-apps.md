@@ -294,6 +294,7 @@ fun main() = application {
 
 | Call | When | What it does |
 | --- | --- | --- |
+| `installBlocker()` | Before checking (no network) | Why the app cannot be replaced in place: `TRANSLOCATED` (macOS runs an unmoved quarantined app from a randomized read-only path), `READ_ONLY_VOLUME` (running from the DMG or another read-only volume), `NOT_WRITABLE` (its directory is not writable), `MISSING`; `null` when it can. For the first two, ask the user to move the app to Applications. `prepare` and `installAndRestart` throw `InstallBlockedException` for the same reasons |
 | `checkForUpdate()` | At startup and periodically, off the UI thread | The [update check](#check-for-an-update); `NoUpdate` or `Available` (with `forceUpdate`) |
 | `prepare(update, progress)` | Right after an `Available` check (its URLs expire) | Builds and verifies `stateDir/staging/<version_code>/<root>` from unchanged installed files plus downloads; on failure removes it and throws, the install is untouched |
 | `installAndRestart(prepared)` | When the user agrees to restart; then exit | Starts a detached helper that waits for the app to exit, moves the install to `stateDir/backup/`, moves the new tree in, relaunches, and rolls back if the new version does not confirm within 60 s |

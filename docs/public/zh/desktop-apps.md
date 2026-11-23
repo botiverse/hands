@@ -217,6 +217,7 @@ fun main() = application {
 
 | 调用 | 时机 | 作用 |
 | --- | --- | --- |
+| `installBlocker()` | 检查更新之前（不联网） | 返回为什么无法就地更新：`TRANSLOCATED`（macOS 把未移动的应用放在随机只读路径里运行）、`READ_ONLY_VOLUME`（从 DMG 等只读卷运行）、`NOT_WRITABLE`（所在目录不可写）、`MISSING`；可以更新时返回 `null`。前两种应提示用户先把应用拖到「应用程序」。`prepare` 和 `installAndRestart` 遇到这些情况会抛出 `InstallBlockedException` |
 | `checkForUpdate()` | 启动时及定期，在 UI 线程之外 | 即[检查更新](#check-for-an-update)；返回 `NoUpdate` 或 `Available`（含 `forceUpdate`） |
 | `prepare(update, progress)` | 拿到 `Available` 后立即调用（其 URL 会过期） | 用已安装的未变文件加下载的文件构建并校验 `stateDir/staging/<version_code>/<root>`；失败时删除它并抛出异常，已安装的应用不受影响 |
 | `installAndRestart(prepared)` | 用户同意重启时；随后退出应用 | 启动一个独立的辅助脚本：等应用退出，把安装目录移到 `stateDir/backup/`，移入新目录树并重新启动；新版本 60 秒内未确认则回滚 |

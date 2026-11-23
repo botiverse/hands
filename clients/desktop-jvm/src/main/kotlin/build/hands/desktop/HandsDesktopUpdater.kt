@@ -108,8 +108,25 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
      */
     @Throws(HandsUpdateException::class)
     @JvmOverloads
-    public fun prepare(update: UpdateCheck.Available, progress: ProgressListener? = null): PreparedUpdate =
-        Stager(http, target, installRoot, stateDir, parallelism, archivePolicy).prepare(update, progress)
+    public fun prepare(update: UpdateCheck.Available, progress: ProgressListener? = null): PreparedUpdate {
+        // A missing root is only fatal at install time; staging can still build a full tree.
+        requireInstallable(allowMissing = true)
+        return Stager(http, target, installRoot, stateDir, parallelism, archivePolicy).prepare(update, progress)
+    }
+
+    /**
+     * Why this install cannot be replaced in place, or null when it can. Local checks only,
+     * no network: call it before [checkForUpdate] and, for TRANSLOCATED or
+     * READ_ONLY_VOLUME, ask the user to move the app to Applications first. [prepare] and
+     * [installAndRestart] refuse with [InstallBlockedException] for the same reasons.
+     */
+    public fun installBlocker(): InstallBlocker? = InstallCheck.blocker(installRoot)
+
+    private fun requireInstallable(allowMissing: Boolean = false) {
+        val blocker = installBlocker() ?: return
+        if (allowMissing && blocker == InstallBlocker.MISSING) return
+        throw InstallBlockedException(blocker, InstallCheck.describe(blocker, installRoot))
+    }
 
     /** A tree an earlier [prepare] left staged for a version newer than this one, if any. */
     public fun loadPrepared(): PreparedUpdate? {
@@ -177,11 +194,7 @@ public class HandsDesktopUpdater @JvmOverloads constructor(
         ) {
             throw HandsUpdateException("no prepared tree at ${prepared.stagedRoot}; call prepare() again")
         }
-        if (!Files.isDirectory(installRoot)) throw HandsUpdateException("install root $installRoot does not exist")
-        val parent = installRoot.parent ?: throw HandsUpdateException("install root has no parent directory")
-        if (!Files.isWritable(parent)) {
-            throw HandsUpdateException("cannot replace $installRoot: $parent is not writable by this user")
-        }
+        requireInstallable()
         val launcherPath = when (mode) {
             RelaunchMode.OPEN -> null
             RelaunchMode.EXEC -> {

@@ -78,6 +78,21 @@ public enum class InstallOutcome {
 public data class InstallResult(val outcome: InstallOutcome, val versionCode: Long)
 
 /** Every failure of a check or a prepare. Nothing under the install root has been changed when it is thrown. */
+/** Why the running app cannot be replaced where it is (see [HandsDesktopUpdater.installBlocker]). */
+public enum class InstallBlocker {
+    /** macOS App Translocation: the app was opened from a quarantined download without being moved, and runs from a randomized read-only path. Ask the user to move it to Applications. */
+    TRANSLOCATED,
+    /** The app runs from a read-only volume, such as the mounted DMG. Ask the user to copy it to Applications. */
+    READ_ONLY_VOLUME,
+    /** The directory holding the app is not writable by this user. */
+    NOT_WRITABLE,
+    /** The install root is missing or has no parent directory. */
+    MISSING,
+}
+
+/** The app cannot be updated in place; [blocker] says why. */
+public class InstallBlockedException(public val blocker: InstallBlocker, message: String) : HandsUpdateException(message)
+
 public open class HandsUpdateException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** The manifest breaks a rule Hands enforces when it is published (see docs/public/desktop-apps.md). */
