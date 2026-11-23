@@ -78,11 +78,22 @@ describe("readLiveRaftRole", () => {
     const failed = await readLiveRaftRole(env, "srv-1", "sub-2", 1_000);
     expect(failed).toEqual({ ok: false, reason: "role_401" });
     expect(tokenSerial).toBe(2);
+    resetLiveRoleCache();
     roleStatus = 503;
     expect(await readLiveRaftRole(env, "srv-1", "sub-3", 1_000)).toEqual({ ok: false, reason: "role_503" });
     lookupStatus = 404;
     resetLiveRoleCache();
     expect(await readLiveRaftRole(env, "srv-1", "sub-1", 1_000)).toEqual({ ok: false, reason: "lookup_404" });
+  });
+
+  it("remembers a failed read per server for 30 seconds", async () => {
+    roleStatus = 503;
+    await readLiveRaftRole(env, "srv-1", "sub-1", 1_000);
+    const made = calls.length;
+    roleStatus = 200;
+    expect(await readLiveRaftRole(env, "srv-1", "sub-2", 1_000 + 29_999)).toEqual({ ok: false, reason: "role_503" });
+    expect(calls.length).toBe(made);
+    expect(await readLiveRaftRole(env, "srv-1", "sub-2", 1_000 + 30_000)).toEqual({ ok: true, role: "member" });
   });
 
   it("does nothing without client credentials", async () => {

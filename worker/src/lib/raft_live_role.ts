@@ -44,6 +44,11 @@ type Cached<T> = { value: T; expiresAt: number };
 const roleCache = new Map<string, Cached<LiveRole>>();
 const installationCache = new Map<string, Cached<string>>();
 const tokenCache = new Map<string, Cached<string>>();
+// A failed read is remembered per server for a short while, so a Raft outage
+// or a missing installation group does not turn every Hands request into
+// Raft calls (they share Hands' per-client budget with notifications).
+const FAILURE_CACHE_MS = 30_000;
+const failureCache = new Map<string, Cached<string>>();
 
 function cacheGet<T>(cache: Map<string, Cached<T>>, key: string, now: number): T | undefined {
   const hit = cache.get(key);
@@ -70,6 +75,7 @@ export function resetLiveRoleCache(key?: { serverId: string; sub: string }) {
     return;
   }
   roleCache.clear();
+  failureCache.clear();
   installationCache.clear();
   tokenCache.clear();
 }
@@ -177,6 +183,8 @@ export async function readLiveRaftRole(
   const key = `${serverId}:${sub}`;
   const cached = roleCache.get(key);
   if (cached && cached.expiresAt > now) return { ok: true, role: cached.value };
+  const failed = cacheGet(failureCache, serverId, now);
+  if (failed) return { ok: false, reason: failed };
   try {
     const installation = await installationId(env, serverId, now);
     let role: LiveRole;
@@ -194,8 +202,10 @@ export async function readLiveRaftRole(
     if (error instanceof RoleReadError) {
       // The installation is gone from that server: forget it so the next read looks again.
       if (error.status === 404) installationCache.delete(serverId);
+      cacheSet(failureCache, serverId, error.reason, now + FAILURE_CACHE_MS);
       return { ok: false, reason: error.reason };
     }
+    cacheSet(failureCache, serverId, "role_read_failed", now + FAILURE_CACHE_MS);
     return { ok: false, reason: "role_read_failed" };
   }
 }
