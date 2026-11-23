@@ -1,0 +1,92 @@
+name: Publish desktop JVM updater
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Library version to publish, for example 0.1.0"
+        required: true
+      dry_run:
+        description: "Publish to the runner-local Maven repository only."
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "desktop-jvm-v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#desktop-jvm-v}"
+          else
+            VERSION="${INPUT_VERSION}"
+          fi
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Invalid library version: ${VERSION}" >&2
+            exit 1
+          }
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: gradle -p clients/desktop-jvm build "-PVERSION_NAME=$RESOLVED_VERSION"
+
+      - name: Publish dry run
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        env:
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: gradle -p clients/desktop-jvm publishToMavenLocal "-PVERSION_NAME=$RESOLVED_VERSION"
+
+      - name: Publish to Maven repositories
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAFT_ARTIFACTS_TOKEN: ${{ secrets.RAFT_ARTIFACTS_TOKEN }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          [[ -n "${RAFT_ARTIFACTS_TOKEN}" ]] || {
+            echo "RAFT_ARTIFACTS_TOKEN is required for publication" >&2
+            exit 1
+          }
+          gradle -p clients/desktop-jvm publish "-PVERSION_NAME=$RESOLVED_VERSION"
+
+      - name: Summary
+        shell: bash
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          RESOLVED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          {
+            echo "### Desktop JVM updater publish"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Package | \`build.hands:hands-desktop-updater\` |"
+            echo "| Version | \`${RESOLVED_VERSION}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
