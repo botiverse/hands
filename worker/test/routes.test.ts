@@ -13201,6 +13201,15 @@ describe("quiver public API v2 — scope resolution", () => {
     );
   });
 
+  it("changelogToHtml renders headings and bold around code with *", async () => {
+    const { changelogToHtml } = await import("../src/routes/public_v2");
+    expect(changelogToHtml("### Core <b> ###\n- **Policy (`policy/*.hcl`):** types\n- `a*b` and **x**\n#nospace")).toBe(
+      "<h4>Core &lt;b&gt;</h4><ul><li><strong>Policy (<code>policy/*.hcl</code>):</strong> types</li>"
+        + "<li><code>a*b</code> and <strong>x</strong></li></ul><p>#nospace</p>",
+    );
+    expect(changelogToHtml("`<i>` \u0000 0 \u0000")).toBe("<p><code>&lt;i&gt;</code>  0 </p>");
+  });
+
   it("apps: purge requires archived + slug confirm, deletes R2 + row", async () => {
     const env = makeEnv();
     const deleted: string[] = [];

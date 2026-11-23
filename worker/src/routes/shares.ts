@@ -1163,6 +1163,7 @@ function renderSharePage(
     .qr span { display: block; margin-top: 6px; color: var(--fg-muted); font-size: 12px; text-align: center; }
     @media (pointer: fine) and (min-width: 480px) { .qr { display: block; } }
     .notes { margin-top: 28px; }
+    .notes h4 { margin: 14px 0 4px; font-size: 15px; font-weight: 700; }
   </style>
 </head>
 <body>
