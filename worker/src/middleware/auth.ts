@@ -216,8 +216,8 @@ export async function liveMembershipRefusal(
     console.warn(JSON.stringify({ event: "raft_live_role_unavailable", mode, reason: result.reason, server_id: account.server_id }));
     const method = c.req.method.toUpperCase();
     if (enforce && method !== "GET" && method !== "HEAD") {
-      return c.json({ error: "raft_role_unavailable", code: "RAFT_ROLE_UNAVAILABLE",
-        message: "Could not confirm your current role on this Raft server. Try again in a minute." }, 503);
+      return c.json({ error: "Could not confirm your current role on this Raft server. Try again in a minute.",
+        code: "RAFT_ROLE_UNAVAILABLE" }, 503);
     }
     return null;
   }
@@ -227,8 +227,8 @@ export async function liveMembershipRefusal(
     await c.env.DB.prepare("DELETE FROM org_members WHERE org_id = ?1 AND account_id = ?2")
       .bind(account.org_id, account.id).run().catch(() => undefined);
     resetLiveRoleCache({ serverId: account.server_id, sub: account.provider_subject });
-    return c.json({ error: "raft_membership_ended", code: "RAFT_MEMBERSHIP_ENDED",
-      message: "You are no longer a member of this Raft server, so its Hands organization is no longer available to you." }, 403);
+    return c.json({ error: "You are no longer a member of this Raft server, so its Hands organization is no longer available to you.",
+      code: "RAFT_MEMBERSHIP_ENDED" }, 403);
   }
   if (enforce && result.role !== (account.server_role || "").toLowerCase()) {
     // Keep the stored role current: Hands admin checks read it.
