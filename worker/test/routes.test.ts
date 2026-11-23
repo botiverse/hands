@@ -157,7 +157,7 @@ function makeMockDb() {
       history_channels TEXT, history_show_downloads INTEGER NOT NULL DEFAULT 1,
       delta_updates_enabled INTEGER NOT NULL DEFAULT 0,
       release_requires_human_approval INTEGER NOT NULL DEFAULT 0,
-      -- Mirrors migrations/sql/0109_desktop_apps.sql.
+      -- Mirrors migrations/sql/0111_desktop_apps.sql.
       runtime TEXT
     );
       -- Mirrors migrations/sql/0076_release_human_approval.sql (task #239).
