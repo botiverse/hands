@@ -22,4 +22,11 @@ describe("release state read retry", () => {
     expect(await listReleaseStatesWithRetry(service as never, input, 0)).toEqual(rejected);
     expect(service.listReleaseStates).toHaveBeenCalledTimes(2);
   });
+  it("keeps the first answer when the ledger has no room for the retry", async () => {
+    const service = { listReleaseStates: vi.fn().mockResolvedValue(rejected) };
+    const mayRetry = vi.fn().mockResolvedValue(false);
+    expect(await listReleaseStatesWithRetry(service as never, input, 0, mayRetry)).toEqual(rejected);
+    expect(service.listReleaseStates).toHaveBeenCalledTimes(1);
+    expect(mayRetry).toHaveBeenCalledTimes(1);
+  });
 });

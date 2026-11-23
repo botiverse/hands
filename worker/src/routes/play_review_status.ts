@@ -8,7 +8,11 @@ import { HANDS_PLAY_TRACKS, type HandsPlayTrack } from "../lib/play_tracks";
  * (google_play_track_snapshots: the hourly poll or any live read), marked
  * `cached` with its `read_at`, because Google allows tracks.releases.list only
  * about 12 times per app per hour. `?live=1` reads Play (read-only) and stores
- * the answer; a track with no snapshot yet is read live too. A track Play refuses to list falls back to the
+ * the answer; a track with no snapshot yet is read live too. Each live read is
+ * paid for from the interactive tier of the shared quota ledger
+ * (lib/upstream_quota.ts); when that has no room Google is not called and the
+ * track falls back as if the read had failed, with error_code
+ * play_quota_exceeded and a `quota` note. A track Play refuses to list falls back to the
  * last states the poll stored, marked as such with when they were observed,
  * so a caller can tell a live answer from a remembered one. It also gets the
  * track's current contents read through an edit (`track_contents`): release
@@ -17,7 +21,7 @@ import { HANDS_PLAY_TRACKS, type HandsPlayTrack } from "../lib/play_tracks";
 import type { Context } from "hono";
 import type { AdminEnv } from "../middleware/auth";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
-import { listReleaseStatesWithRetry } from "../lib/play_release_poll";
+import { listReleaseStatesBudgeted, type PlayQuotaNote } from "../lib/play_release_poll";
 import { playStateLabel } from "../lib/play_notifications";
 import { loadTrackSnapshots, saveTrackSnapshot, type SnapshotRelease, type TrackSnapshot } from "../lib/play_track_snapshots";
 import { upstreamDetail, upstreamFromPlayCause, type UpstreamDetail } from "../lib/upstream_error";
@@ -38,6 +42,8 @@ type TrackStatus = {
   error_code?: string;
   /** What Google said when the live read failed (lib/upstream_error.ts). */
   upstream?: UpstreamDetail;
+  /** The read quota was used up: Hands' own budget ("hands_budget") or Google said so ("google"). */
+  quota?: PlayQuotaNote;
   /** Only when the release-state read was refused and the edit read worked. */
   track_contents?: TrackContent[];
 };
@@ -74,8 +80,12 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
     }
     let errorCode = service ? null : "play_service_unavailable";
     let upstream: UpstreamDetail | undefined;
+    let quota: PlayQuotaNote | undefined;
     if (service) {
-      const reply = await listReleaseStatesWithRetry(service, { credential: binding.credential, packageName, tracks: binding.tracks, handsTrack });
+      const read = await listReleaseStatesBudgeted(c.env.DB, service,
+        { credential: binding.credential, packageName, tracks: binding.tracks, handsTrack }, "interactive");
+      const reply = read.reply;
+      quota = read.quota;
       if (reply.ok) {
         const readAt = Date.now();
         await saveTrackSnapshot(c.env.DB, appId, packageName, playTrack, reply.value, readAt).catch(() => undefined);
@@ -88,7 +98,8 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
     if (snapshot) {
       // The live read failed; the last answer Play gave is still the best one.
       tracks.push({ hands_track: handsTrack, play_track: playTrack, source: "cached", read_at: snapshot.read_at,
-        error_code: errorCode ?? "play_unavailable", ...(upstream ? { upstream } : {}), releases: rows(snapshot.releases, playTrack) });
+        error_code: errorCode ?? "play_unavailable", ...(upstream ? { upstream } : {}), ...(quota ? { quota } : {}),
+        releases: rows(snapshot.releases, playTrack) });
       continue;
     }
     const { results: observed } = await c.env.DB.prepare(
@@ -118,6 +129,7 @@ export async function handleGetPlayReviewStatus(c: AdminContext) {
       source: results.length ? "stored" : "unavailable",
       error_code: errorCode ?? "play_unavailable",
       ...(upstream ? { upstream } : {}),
+      ...(quota ? { quota } : {}),
       releases: results.map((r) => ({
         release_name: null, state: r.state, state_label: playStateLabel(r.state), version_codes: [r.version_code], observed_at: r.observed_at,
       })),

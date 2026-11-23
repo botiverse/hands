@@ -1,4 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
+import { handleGetAppQuota } from "./routes/upstream_quota";
 import { serveConsolePage } from "./lib/raft_host_sign_in";
 import { handleApplyStoreProduct } from "./routes/store_products";
 import { pollAgcInvitations } from "./lib/agc_poll";
@@ -1257,6 +1258,8 @@ bindAdmin("post", "/api/apps/:appId/releases/:releaseId/receipts/acceptance",
 // App-wide Play release states (what is in review, per track) and the
 // production versionCode: live tracks.releases.list, else the poll's last states.
 bindAdmin("get", "/api/apps/:appId/distributions/play/review-status", requireAppRole("viewer"), handleGetPlayReviewStatus);
+// Rationed upstream calls (Google Play tracks.releases.list): spent and left per tier.
+bindAdmin("get", "/api/apps/:appId/quota", requireAppRole("viewer"), handleGetAppQuota);
 // Store listing text (edits.listings). App-scoped, not release-scoped.
 // Reading opens (and deletes) a Play edit with the app's credential: publisher, like the push.
 bindAdmin("get", "/api/apps/:appId/distributions/play/store-listing",

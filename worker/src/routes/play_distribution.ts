@@ -10,6 +10,7 @@ import { reclaimStalePlayEditLock } from "../lib/play_edit_lock";
 import { getGooglePlayBinding, hasGooglePlayConfiguration } from "../lib/google_play_bindings";
 import { playFailureNotificationFields } from "../lib/play_failure_notification";
 import { upstreamFromPlayCause, withPlayUpstream, type UpstreamDetail } from "../lib/upstream_error";
+import { PLAY_RELEASES_LIST, markExhausted, record, take } from "../lib/upstream_quota";
 import { PlayReleaseNotesError, playCharCount, playReleaseNotesFromChangelog, type PlayReleaseNotesResult } from "../lib/play_release_notes";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -84,6 +85,8 @@ interface GateFailure {
   failure_code?: string;
   /** What Google said, when the failure came from Google (lib/upstream_error.ts). */
   upstream?: UpstreamDetail;
+  /** A read quota was used up: when it resets (epoch ms). */
+  reset_at?: number;
 }
 
 function fail(c: Context<any>, status: 400 | 403 | 409 | 502, failure: GateFailure) {
@@ -146,28 +149,41 @@ export function normalizePlayPromotionInput(input: PlayPromotionInput): PlayProm
 
 export type InReviewRead =
   | { ok: true; releases: Array<{ track: string; release_name: string; version_codes: number[] }> }
-  | { ok: false; failed_tracks: string[] };
+  | { ok: false; failed_tracks: string[]; quota?: { reset_at: number; source: "hands_budget" | "google" } };
 
 /**
  * Every release currently IN_REVIEW on the bound tracks. tracks.releases.list
  * answers 403 intermittently, so each track is tried up to four times; a track
  * that never answers makes the whole read fail (never a partial "nothing in review").
+ *
+ * With `ledger`, every attempt is paid for from the gate tier of the shared
+ * quota ledger (lib/upstream_quota.ts). When the ledger has no room, or Google
+ * says the quota is used up, the read stops there and fails, carrying when the
+ * quota resets; the remaining tracks count as unread.
  */
 export async function readInReviewReleases(
   service: Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listReleaseStates">,
   binding: { credential: unknown; package_name: string; tracks: Record<HandsPlayTrack, string> },
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  ledger?: { db: D1Database; now?: () => number },
 ): Promise<InReviewRead> {
   const releases: Array<{ track: string; release_name: string; version_codes: number[] }> = [];
   const failed: string[] = [];
   const seen = new Set<string>();
+  const clock = ledger?.now ?? Date.now;
+  let quota: { reset_at: number; source: "hands_budget" | "google" } | undefined;
   for (const handsTrack of HANDS_PLAY_TRACKS) {
     const playTrack = binding.tracks[handsTrack];
     if (seen.has(playTrack)) continue;
     seen.add(playTrack);
+    if (quota) { failed.push(playTrack); continue; }
     let answered = false;
     for (let attempt = 0; attempt < 4 && !answered; attempt += 1) {
       if (attempt > 0) await sleep(500 * 2 ** (attempt - 1));
+      if (ledger) {
+        const budget = await take(ledger.db, PLAY_RELEASES_LIST, binding.package_name, "gate", 1, clock());
+        if (!budget.ok) { quota = { reset_at: budget.reset_at, source: "hands_budget" }; break; }
+      }
       try {
         const reply = await service.listReleaseStates({
           credential: binding.credential as never,
@@ -176,7 +192,16 @@ export async function readInReviewReleases(
           handsTrack,
         });
         // An exhausted quota does not come back within these retries; each one spends more.
-        if (!reply.ok) { if (reply.error.code === "play_quota_exceeded") break; continue; }
+        if (!reply.ok) {
+          if (reply.error.code === "play_quota_exceeded") {
+            const resetAt = ledger
+              ? await markExhausted(ledger.db, PLAY_RELEASES_LIST, binding.package_name, clock()).catch(() => null)
+              : null;
+            if (resetAt !== null) quota = { reset_at: resetAt, source: "google" };
+            break;
+          }
+          continue;
+        }
         answered = true;
         for (const release of reply.value) {
           if (release.releaseLifecycleState !== "RELEASE_LIFECYCLE_STATE_IN_REVIEW") continue;
@@ -192,7 +217,8 @@ export async function readInReviewReleases(
     }
     if (!answered) failed.push(playTrack);
   }
-  return failed.length > 0 ? { ok: false, failed_tracks: failed } : { ok: true, releases };
+  if (failed.length > 0) return { ok: false, failed_tracks: failed, ...(quota ? { quota } : {}) };
+  return { ok: true, releases };
 }
 
 export function normalizePlaySendForReviewInput(input: PlaySendForReviewInput): PlaySendForReviewInput {
@@ -977,7 +1003,15 @@ export async function handlePromotePlayDistribution(c: AdminContext) {
     // review now: a fresh read of every bound track, inside the edit lock.
     let inReviewBefore: Array<{ track: string; release_name: string; version_codes: number[] }> | null = null;
     if (cancelCodes) {
-      const read = await readInReviewReleases(playService, binding);
+      const read = await readInReviewReleases(playService, binding, undefined, { db: c.env.DB });
+      if (!read.ok && read.quota) {
+        const resets = new Date(read.quota.reset_at).toISOString();
+        return fail(c, 502, { code: "play_api_error", gate: "review_state", failure_code: "review_state_unreadable",
+          reset_at: read.quota.reset_at,
+          message: `Hands could not read which releases are in review: ${read.quota.source === "google"
+            ? "Google Play says this app's hourly release-read quota is used up"
+            : "this app's hourly Google Play release-read quota is used up in Hands' budget"}; it resets at ${resets}. Nothing was withdrawn. Try again after the reset.` });
+      }
       if (!read.ok) {
         return fail(c, 502, { code: "play_api_error", gate: "review_state", failure_code: "review_state_unreadable",
           message: `Hands could not read which releases are in review (tracks: ${read.failed_tracks.join(", ")}); nothing was withdrawn. Try again in a minute.` });
@@ -1370,6 +1404,11 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
       return fail(c, 409, { code: "version_conflict", gate: null, message: "release changed before the Play edit was reserved" });
     }
     let reply;
+    // The adapter lists the track's releases before and after the commit
+    // (lifecycle evidence). Hands cannot gate those calls, so it counts them:
+    // two when the operation completed, one when it stopped after the first.
+    const countLifecycleReads = (cost: number) =>
+      record(c.env.DB, PLAY_RELEASES_LIST, binding.package_name, cost, Date.now()).catch(() => undefined);
     try {
       reply = await playService.sendForReview({
         credential: binding.credential,
@@ -1381,9 +1420,11 @@ export async function handleSendPlayDistributionForReview(c: AdminContext) {
         operationId,
       });
     } catch {
+      await countLifecycleReads(1);
       const receiptId = await failedPromotionReceipt(c, artifact, actor, input.track, input.approval.note, "play_api_error", { request: "failed" }, options);
       return fail(c, 502, { code: "play_api_error", gate: null, message: "Play send-for-review request failed", receipt_id: receiptId });
     }
+    await countLifecycleReads(reply?.ok ? 2 : 1);
     if (!reply?.ok) {
       const code = typeof reply?.error?.code === "string" && IDENTIFIER_RE.test(reply.error.code) ? reply.error.code : "unknown";
       const cause = receiptCause(reply?.error?.cause);

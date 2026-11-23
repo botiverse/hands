@@ -6,6 +6,7 @@ import { playDeliveryStatement, playStateLabel } from "./play_notifications";
 import { recordPlayAccessFailure, recordPlayAccessSuccess } from "./play_access_alerts";
 import { saveTrackSnapshot } from "./play_track_snapshots";
 import { upstreamFromPlayCause, type UpstreamDetail } from "./upstream_error";
+import { PLAY_RELEASES_LIST, markExhausted, pruneQuotaUsage, take, type QuotaTier } from "./upstream_quota";
 
 type Summary = { releaseName: string; track: string; activeArtifacts: Array<{ versionCode: number }>; releaseLifecycleState: string };
 /** A changed observation and its deliveries commit atomically. The nonce and
@@ -45,17 +46,23 @@ export async function observePlayRelease(db: D1Database, appId: string, packageN
 
 /**
  * Google rations tracks.releases.list per app ("Listing releases quota
- * exceeded."): measured on 2026-11-22 at 12 calls an hour, resetting hourly.
- * A full read is one call per track (four), so the poll reads each app once an
- * hour and leaves two full reads an hour for interactive use (review-status,
- * the in-review gate before a promotion). The cron still ticks
- * every five minutes; at most four apps are claimed per tick. Persisted
- * scheduling rotates through tenants; outages never become state.
+ * exceeded."): measured on 2026-11-22 at 12 calls an hour, resetting around
+ * minute :10. A full read is one call per track (four), so the poll reads each
+ * app once an hour, within the background tier of the shared ledger
+ * (lib/upstream_quota.ts), which leaves the rest for interactive reads
+ * (review-status, stats) and the in-review gate before a promotion. When the
+ * ledger has no room, the app is skipped and polled again just after the
+ * window resets. The cron still ticks every five minutes; at most four apps
+ * are claimed per tick. Persisted scheduling rotates through tenants; outages
+ * never become state.
  */
 export const POLL_INTERVAL_MS = 60 * 60_000;
+/** How long after a quota window resets a skipped app is polled again. */
+export const QUOTA_RESET_OFFSET_MS = 60_000;
 
 export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
   if (!env.PLAY_RELEASE_SERVICE) return;
+  await pruneQuotaUsage(env.DB, now).catch(() => undefined);
   await env.DB.prepare(`INSERT OR IGNORE INTO google_play_poll_schedule(app_id,next_poll_at)
     SELECT app_id,0 FROM app_google_play_bindings WHERE enabled=1 AND verification_state='verified'
       AND package_name IS NOT NULL`).run();
@@ -72,24 +79,41 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
     try {
       const binding = await getGooglePlayBinding(env.DB, row.app_id, env.PLAY_CRED_ENC_KEYS);
       if (!binding || !hasGooglePlayConfiguration(binding) || binding.enabled !== 1 || binding.verification_state !== "verified") continue;
-      const seenTracks = new Set<string>();
+      const packageName = binding.package_name;
+      const reschedule = (resetAt: number) => env.DB.prepare(`UPDATE google_play_poll_schedule SET next_poll_at=?1
+        WHERE app_id=?2`).bind(resetAt + QUOTA_RESET_OFFSET_MS, row.app_id).run().catch(() => undefined);
+      const handsTracks = HANDS_PLAY_TRACKS.filter((handsTrack, index) =>
+        HANDS_PLAY_TRACKS.findIndex((other) => binding.tracks[other] === binding.tracks[handsTrack]) === index);
+      // The whole round is paid for up front: a partial read is not worth starting.
+      const budget = await take(env.DB, PLAY_RELEASES_LIST, packageName, "background", handsTracks.length, now);
+      if (!budget.ok) {
+        console.warn("hands_play_poll_skipped", JSON.stringify({ code: "play_quota_budget", reason: budget.reason }));
+        await reschedule(budget.reset_at);
+        continue;
+      }
+      const retryBudget = () => take(env.DB, PLAY_RELEASES_LIST, packageName, "background", 1, now).then((r) => r.ok, () => false);
       let failureCode: string | null = null;
       let failureUpstream: UpstreamDetail | undefined;
       let quotaExhausted = false;
-      for (const handsTrack of HANDS_PLAY_TRACKS) {
+      for (const handsTrack of handsTracks) {
         const track = binding.tracks[handsTrack];
-        if (seenTracks.has(track)) continue;
-        seenTracks.add(track);
         const reply = await listReleaseStatesWithRetry(env.PLAY_RELEASE_SERVICE, { credential: binding.credential,
-          packageName: binding.package_name, tracks: binding.tracks, handsTrack });
+          packageName, tracks: binding.tracks, handsTrack }, 1500, retryBudget);
         if (!reply.ok) {
           console.warn("hands_play_poll_failure", JSON.stringify({ code: reply.error.code }));
-          // Quota is not access: no alert, and no further reads this round.
-          if (reply.error.code === "play_quota_exceeded") { quotaExhausted = true; break; }
+          // Quota is not access: no alert, and no further reads this round. Google
+          // may count calls Hands did not make, so nothing in Hands reads again
+          // before the window resets.
+          if (reply.error.code === "play_quota_exceeded") {
+            quotaExhausted = true;
+            const resetAt = await markExhausted(env.DB, PLAY_RELEASES_LIST, packageName, now).catch(() => null);
+            if (resetAt !== null) await reschedule(resetAt);
+            break;
+          }
           if (!failureCode) { failureCode = reply.error.code; failureUpstream = upstreamFromPlayCause(reply.error.cause); }
           continue;
         }
-        await saveTrackSnapshot(env.DB, row.app_id, binding.package_name, track, reply.value, now).catch(() => undefined);
+        await saveTrackSnapshot(env.DB, row.app_id, packageName, track, reply.value, now).catch(() => undefined);
         // Duplicate version codes with conflicting states are ambiguous: omit
         // them, rather than guessing which release represents this artifact.
         const versions = new Map<number, Summary | null>();
@@ -102,7 +126,7 @@ export async function pollGooglePlayReleases(env: Env, now = Date.now()) {
           }
         }
         for (const [version, release] of versions) if (release)
-          await observePlayRelease(env.DB, row.app_id, binding.package_name, track, release,
+          await observePlayRelease(env.DB, row.app_id, packageName, track, release,
             version, binding.updated_at, now);
       }
       if (quotaExhausted && !failureCode) continue;
@@ -122,14 +146,59 @@ type ReleaseStateService = Pick<NonNullable<Env["PLAY_RELEASE_SERVICE"]>, "listR
 /**
  * A refusal (play_api_rejected) is retried once after a short pause; the read
  * has no side effects. An exhausted quota (play_quota_exceeded) is not retried.
+ * The retry spends quota too: `mayRetry` takes it from the ledger, and when it
+ * answers false the first answer stands.
  */
 export async function listReleaseStatesWithRetry(
   service: ReleaseStateService,
   input: Parameters<ReleaseStateService["listReleaseStates"]>[0],
   pauseMs = 1500,
+  mayRetry: () => Promise<boolean> = async () => true,
 ) {
   const first = await service.listReleaseStates(input);
   if (first.ok || first.error.code !== "play_api_rejected") return first;
+  if (!(await mayRetry())) return first;
   await new Promise((resolve) => setTimeout(resolve, pauseMs));
   return service.listReleaseStates(input);
+}
+
+/** Why a release-state read did not reach Google, or what Google said about quota. */
+export type PlayQuotaNote = { used: number; limit: number; reset_at: number; source: "hands_budget" | "google" };
+type ReleaseStatesReply = Awaited<ReturnType<ReleaseStateService["listReleaseStates"]>>;
+
+/**
+ * One track's release states, paid for from the shared ledger (one call, and
+ * one more for a retry). When the tier has no room Google is not called: the
+ * reply is a play_quota_exceeded failure with `quota.source = "hands_budget"`.
+ * When Google says the quota is used up, the ledger is marked exhausted until
+ * the window resets and `quota.source = "google"`.
+ */
+export async function listReleaseStatesBudgeted(
+  db: D1Database,
+  service: ReleaseStateService,
+  input: Parameters<ReleaseStateService["listReleaseStates"]>[0],
+  tier: QuotaTier,
+  clock: () => number = Date.now,
+  pauseMs = 1500,
+): Promise<{ reply: ReleaseStatesReply; quota?: PlayQuotaNote }> {
+  const scope = input.packageName;
+  const budget = await take(db, PLAY_RELEASES_LIST, scope, tier, 1, clock());
+  if (!budget.ok) {
+    return {
+      reply: { ok: false, error: { status: 429, code: "play_quota_exceeded",
+        message: `Hands' budget for Google Play release reads on this app is used up until ${new Date(budget.reset_at).toISOString()}` } },
+      quota: { used: budget.used, limit: budget.limit, reset_at: budget.reset_at, source: "hands_budget" },
+    };
+  }
+  let used = budget.used;
+  const reply = await listReleaseStatesWithRetry(service, input, pauseMs, async () => {
+    const more = await take(db, PLAY_RELEASES_LIST, scope, tier, 1, clock()).catch(() => null);
+    if (more?.ok) used = more.used;
+    return Boolean(more?.ok);
+  });
+  if (!reply.ok && reply.error.code === "play_quota_exceeded") {
+    const resetAt = await markExhausted(db, PLAY_RELEASES_LIST, scope, clock()).catch(() => budget.reset_at);
+    return { reply, quota: { used, limit: budget.limit, reset_at: resetAt, source: "google" } };
+  }
+  return { reply };
 }
