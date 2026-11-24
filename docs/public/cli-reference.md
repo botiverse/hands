@@ -1444,7 +1444,9 @@ hands feedback rules delete raft-android <rule-id>
 
 Conditions (all given ones must hold): `kinds`, `signatures` and `device_models`
 (exact, or a prefix ending in `*`), `crash_types`, `exit_reason_codes`,
-`exit_statuses`, `exit_importance_min` / `exit_importance_max`, `foreground`,
+`exit_statuses`, `exit_importance_min` / `exit_importance_max`,
+`exit_descriptions` (the Android exit description, whole string, case-sensitive),
+`foreground`,
 `channels`, `device_brands` (brand or manufacturer, any case),
 `version_code_min` / `version_code_max`. A rule needs at least one condition
 besides `kinds`. The preview scans the newest 5000 crash and error tickets of up

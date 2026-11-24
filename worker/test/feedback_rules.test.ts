@@ -69,6 +69,16 @@ describe("feedback rule matching", () => {
     expect(ruleMatches(loose, kill({ crash_exit_reason_code: 5 }))).toBe(false);
     expect(ruleMatches({ ...loose, protect_high_risk: false }, kill({ crash_exit_reason_code: 5 }))).toBe(true);
   });
+  it("matches the exit description exactly", () => {
+    const swipe = { match: { exit_reason_codes: [13], exit_descriptions: ["SwipeUpClean"] }, protect_high_risk: true };
+    expect(ruleMatches(swipe, kill({ crash_exit_reason_code: 13, crash_exit_description: "SwipeUpClean" }))).toBe(true);
+    expect(ruleMatches(swipe, kill({ crash_exit_reason_code: 13, crash_exit_description: "swipeupclean" }))).toBe(false);
+    expect(ruleMatches(swipe, kill({ crash_exit_reason_code: 13, crash_exit_description: "SwipeUpClean extra" }))).toBe(false);
+    expect(ruleMatches(swipe, kill({ crash_exit_reason_code: 13 }))).toBe(false);
+    expect(validateMatch({ exit_descriptions: ["SwipeUpClean"] })).toEqual({ match: { exit_descriptions: ["SwipeUpClean"] } });
+    expect(validateMatch({ exit_descriptions: [] })).toMatchObject({ error: expect.stringMatching(/exit_descriptions/) });
+    expect(validateMatch({ exit_descriptions: ["x".repeat(1001)] })).toMatchObject({ error: expect.stringMatching(/exit_descriptions/) });
+  });
   it("validates conditions", () => {
     expect(validateMatch({ kinds: ["crash"] })).toEqual({ error: "match needs at least one condition besides kinds" });
     expect(validateMatch({ nope: 1 })).toEqual({ error: "match has an unknown condition: nope" });

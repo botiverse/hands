@@ -922,7 +922,7 @@ hands feedback rules disable raft-android <rule-id>
 hands feedback rules delete raft-android <rule-id>
 ```
 
-可用条件（给出的条件需全部满足）：`kinds`、`signatures` 和 `device_models`（完全匹配，或以 `*` 结尾按前缀匹配）、`crash_types`、`exit_reason_codes`、`exit_statuses`、`exit_importance_min` / `exit_importance_max`、`foreground`、`channels`、`device_brands`（品牌或厂商，不区分大小写）、`version_code_min` / `version_code_max`。除 `kinds` 外至少要有一个条件。预览会检查最近最多 90 天内最新的 5000 张崩溃和错误工单，返回命中数、其中仍打开的数量、按崩溃分组的统计和示例。viewer 可以查看规则；预览和修改需要处理工单的权限（publisher 或 `feedback:triage`）。API：`GET/POST /api/apps/:appId/feedback/rules`、`PATCH/DELETE /api/apps/:appId/feedback/rules/:ruleId`、`POST /api/apps/:appId/feedback/rules/preview`。
+可用条件（给出的条件需全部满足）：`kinds`、`signatures` 和 `device_models`（完全匹配，或以 `*` 结尾按前缀匹配）、`crash_types`、`exit_reason_codes`、`exit_statuses`、`exit_importance_min` / `exit_importance_max`、`exit_descriptions`（Android 退出描述，整串完全相同，区分大小写）、`foreground`、`channels`、`device_brands`（品牌或厂商，不区分大小写）、`version_code_min` / `version_code_max`。除 `kinds` 外至少要有一个条件。预览会检查最近最多 90 天内最新的 5000 张崩溃和错误工单，返回命中数、其中仍打开的数量、按崩溃分组的统计和示例。viewer 可以查看规则；预览和修改需要处理工单的权限（publisher 或 `feedback:triage`）。API：`GET/POST /api/apps/:appId/feedback/rules`、`PATCH/DELETE /api/apps/:appId/feedback/rules/:ruleId`、`POST /api/apps/:appId/feedback/rules/preview`。
 
 ## 应用 Webhook
 

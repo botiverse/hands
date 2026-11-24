@@ -20,6 +20,8 @@ export type FeedbackRuleMatch = {
   exit_statuses?: number[];
   exit_importance_min?: number;
   exit_importance_max?: number;
+  /** Exact, case-sensitive match on the Android exit description (crash_exit_description). */
+  exit_descriptions?: string[];
   foreground?: boolean;
   channels?: string[];
   /** Case-insensitive; matches device_brand or device_manufacturer. */
@@ -67,7 +69,9 @@ export function ruleFromRow(row: Row): FeedbackRule {
 const STRING_LISTS = ["kinds", "signatures", "crash_types", "channels", "device_brands", "device_models"] as const;
 const NUMBER_LISTS = ["exit_reason_codes", "exit_statuses"] as const;
 const NUMBERS = ["exit_importance_min", "exit_importance_max", "version_code_min", "version_code_max"] as const;
-const KNOWN = new Set<string>([...STRING_LISTS, ...NUMBER_LISTS, ...NUMBERS, "foreground"]);
+const KNOWN = new Set<string>([...STRING_LISTS, ...NUMBER_LISTS, ...NUMBERS, "foreground", "exit_descriptions"]);
+/** Android exit descriptions are free text and can be longer than other condition values. */
+const MAX_DESCRIPTION_LENGTH = 1000;
 
 /** Validates a rule's match; at least one condition besides kinds is required. */
 export function validateMatch(value: unknown): { match: FeedbackRuleMatch } | { error: string } {
@@ -96,6 +100,14 @@ export function validateMatch(value: unknown): { match: FeedbackRuleMatch } | { 
     if (v === undefined) continue;
     if (!Number.isInteger(v)) return { error: `match.${key} must be an integer` };
     (out as Record<string, unknown>)[key] = v;
+  }
+  if (input.exit_descriptions !== undefined) {
+    const v = input.exit_descriptions;
+    if (!Array.isArray(v) || v.length === 0 || v.length > 50 ||
+        !v.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_DESCRIPTION_LENGTH)) {
+      return { error: "match.exit_descriptions must be a non-empty list of strings" };
+    }
+    out.exit_descriptions = v;
   }
   if (input.foreground !== undefined) {
     if (typeof input.foreground !== "boolean") return { error: "match.foreground must be true or false" };
@@ -155,6 +167,10 @@ export function ruleMatches(rule: Pick<FeedbackRule, "match" | "protect_high_ris
     if (importance === null) return false;
     if (m.exit_importance_min !== undefined && importance < m.exit_importance_min) return false;
     if (m.exit_importance_max !== undefined && importance > m.exit_importance_max) return false;
+  }
+  if (m.exit_descriptions) {
+    const description = facts.metadata.crash_exit_description;
+    if (typeof description !== "string" || !m.exit_descriptions.includes(description)) return false;
   }
   if (m.foreground !== undefined && facts.metadata.crash_foreground !== m.foreground) return false;
   if (m.channels && !(facts.channel && m.channels.includes(facts.channel))) return false;
