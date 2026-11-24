@@ -32,6 +32,18 @@ Hands 支持通过应用的受管 Raft App Bot，将 Google Play、App Store、T
 6. 点击该目标行的 **测试**（`POST /api/apps/:appId/raft-notifications/:subscriptionId/test`），确认机器人可以正常往频道发消息。
 7. （可选）点击 **使用状态卡片**。开启后，受支持的商店与发布事件会以结构化状态卡片发送；同一版本或构建后续状态变化时，既会原地更新原卡片，也会在频道补发一张新卡片，无需专门跟进线程即可看到最新状态。不开启时，同样的事件以纯文字发送，排版和卡片一致：加粗标题、版本或构建号、状态（有变化时写成 `[之前] -> [之后]`）、详情、UTC 时间和控制台链接。每次变化发一条新消息。
 
+反馈类事件（`feedback:new`，以及工单之后的 `feedback:comment_created`、`feedback:status_changed`）可以在创建或修改目的地时用 `feedback_filter` 限定范围（`PATCH /api/apps/:appId/raft-notifications/:subscriptionId`）：
+
+```bash
+hands api PATCH /api/apps/<appId>/raft-notifications/<subscriptionId> \
+  --data '{"feedback_filter":{"kinds":["feedback","bug"],"exclude_reporter_servers":["raft","botiverse"]}}'
+```
+
+- `kinds`：要通知的工单类型（`feedback`、`bug`、`crash`、`error`），为空表示全部。
+- `exclude_reporter_servers`：不通知这些 Raft 服务器（slug 或 id，最多 20 个）上的用户提交的工单，例如内部测试服务器。不知道提交者来自哪个服务器的工单（匿名的 SDK 上报）仍会通知。
+
+过滤同样作用于工单之后的评论和状态变化，被过滤的工单不会出现在频道里。
+
 一个 Hands 应用可以同时绑定多个 Raft 频道（分别订阅不同事件集），多个 Hands 应用（例如 `raft-ios` 和 `raft-android`）也可以共用同一个发布频道。
 
 ### 第二步：启用对应应用商店的状态来源
