@@ -561,5 +561,8 @@
   "match.foreground must be true or false": "match.foreground 必须是 true 或 false",
   "name is required (at most 120 characters)": "需要提供名称（最多 120 个字符）",
   "protect_high_risk must be true or false": "protect_high_risk 必须是 true 或 false",
-  "rule not found": "未找到规则"
+  "rule not found": "未找到规则",
+  "from_app must name another ohos app of this organization": "from_app 必须是本组织的另一个鸿蒙应用",
+  "copying AGC credentials needs the admin role on the app they come from": "复制 AGC 凭据需要你在来源应用上是管理员",
+  "that app has no AGC credentials": "该应用没有 AGC 凭据"
 }

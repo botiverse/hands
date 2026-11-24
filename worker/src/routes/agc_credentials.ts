@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { insertAuditLog } from "../lib/permissions";
+import { ensureAppRole, insertAuditLog } from "../lib/permissions";
 import { agcCredentialKind, deleteAgcCredentials, getAgcCredentials, getAgcCredentialsMeta, parseAgcCredential, storeAgcCredentials, type AgcApiClientCredential, type AgcServiceAccountCredential } from "../lib/agc_credentials";
 import { AgcApiError, createAgcServiceAccountJwt, exchangeAgcApiClientTokenUncached } from "../lib/agc_api";
 
@@ -19,12 +19,30 @@ export async function handleGetAgcCredentials(c: AdminContext) {
 export async function handleSetAgcCredentials(c: AdminContext) {
   const invalid = await requireOhosApp(c); if (invalid) return invalid;
   if (!c.env.AGC_CRED_ENC_KEY) return c.json({ error: "server is missing AGC_CRED_ENC_KEY; cannot store credentials" }, 500);
-  const body = await c.req.json().catch(() => ({})) as { credential_json?: unknown };
-  let credential;
-  try { credential = parseAgcCredential(body.credential_json); } catch (e) { return c.json({ error: (e as Error).message }, 400); }
+  const body = await c.req.json().catch(() => ({})) as { credential_json?: unknown; from_app?: unknown };
   const appId = c.req.param("appId") ?? "";
+  let credential;
+  let copiedFrom: string | null = null;
+  if (body.from_app !== undefined) {
+    // A HarmonyOS Developer Center service account is developer-level, not per
+    // app: another ohos app of the same organization can use the same one. The
+    // caller must be an admin of the app it is copied from too.
+    const ref = typeof body.from_app === "string" ? body.from_app.trim() : "";
+    const source = ref ? await c.env.DB.prepare(
+      `SELECT s.id, s.slug FROM apps s JOIN apps t ON t.id = ?2 AND t.org_id = s.org_id
+       WHERE (s.id = ?1 OR s.slug = ?1) AND s.platform = 'ohos' AND s.archived = 0 AND s.id <> ?2`,
+    ).bind(ref, appId).first<{ id: string; slug: string }>() : null;
+    if (!source) return c.json({ error: "from_app must name another ohos app of this organization" }, 400);
+    const allowed = await ensureAppRole(c, source.id, "admin");
+    if (!allowed.ok) return c.json({ error: "copying AGC credentials needs the admin role on the app they come from" }, 403);
+    credential = await getAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, source.id);
+    if (!credential) return c.json({ error: "that app has no AGC credentials" }, 409);
+    copiedFrom = source.slug;
+  } else {
+    try { credential = parseAgcCredential(body.credential_json); } catch (e) { return c.json({ error: (e as Error).message }, 400); }
+  }
   const meta = await storeAgcCredentials(c.env.DB, c.env.AGC_CRED_ENC_KEY, { app_id: appId, credential, actor: currentActor(c) });
-  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.set", payload: { credential_kind: meta.credential_kind, client_id: meta.client_id, key_id: meta.key_id, project_id: meta.project_id }, created_at: meta.updated_at });
+  await insertAuditLog(c.env.DB, c, { app_id: appId, action: "agc_credentials.set", payload: { credential_kind: meta.credential_kind, client_id: meta.client_id, key_id: meta.key_id, project_id: meta.project_id, ...(copiedFrom ? { copied_from_app: copiedFrom } : {}) }, created_at: meta.updated_at });
   return c.json({ agc_credentials: meta });
 }
 export async function handleDeleteAgcCredentials(c: AdminContext) {
