@@ -1011,6 +1011,36 @@ push of screenshots identical to Apple's (same MD5s, same order) writes
 nothing. A refused or failed push prints the per-set or per-locale plan
 before the error; `--json` prints the full response.
 
+## HarmonyOS signing managed by Hands
+
+Hands can set up HarmonyOS (5 and later) signing through AppGallery Connect,
+the way it does for iOS: it makes the ECDSA P-256 key itself (the key never
+leaves Hands), has AGC issue the debug or release certificate, registers debug
+devices and issues the app's profiles. It uses an app's stored AGC credential
+(`PUT /api/apps/<appId>/agc-credentials`); a service account is recommended,
+created in the HarmonyOS Developer Center with a role that may manage
+certificates and profiles. The app's package name is its main channel's bundle
+id.
+
+```bash
+# Org admin: a release identity, using raft-deck-ohos's AGC credential
+hands api POST /api/orgs/<orgId>/harmony-signing/identities \
+  --data '{"name":"Raft Deck release","kind":"release","agc_from_app":"raft-deck-ohos"}'
+
+# App admin: find or create the AGC app for the package name
+hands api POST /api/apps/<appId>/harmony-signing/agc-app
+
+# Debug devices (UDID, type 4 = phone) and the profile
+hands api POST /api/apps/<appId>/harmony-signing/devices --data '{"devices":[{"name":"Mate 60","udid":"<udid>","type":4}]}'
+hands api GET  /api/apps/<appId>/harmony-signing/devices
+hands api POST /api/apps/<appId>/harmony-signing/profiles --data '{"identity_id":"<id>"}'
+hands api POST /api/apps/<appId>/harmony-signing/profiles --data '{"identity_id":"<debug id>","device_ids":["<device id>"]}'
+```
+
+A new profile replaces the app's earlier profile of the same kind. AGC's own
+error text is passed through (`code: "agc_request_failed"`). Signing `.hap` and
+`.app` packages with these in Hands follows.
+
 ## Publish HarmonyOS / OHOS
 
 Use `builds publish-ohos` after CI has assembled and signed the App Pack. The

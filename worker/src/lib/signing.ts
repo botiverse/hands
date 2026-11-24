@@ -39,6 +39,9 @@ export type SigningSecret =
 /** A key made in Hands that waits for Apple to issue its certificate. */
 export type PendingKeySecret = { kind: "pending_apple_key"; key_pem: string; api_key: NotaryKey | null };
 
+/** A HarmonyOS signing key and the certificate chain AGC issued for it (routes/harmony_signing.ts). */
+export type HarmonySigningSecret = { kind: "harmony"; key_pem: string; chain_pem: string };
+
 /** Public facts reported by the container; never key material. */
 export type SigningMetadata = {
   subject?: string;
@@ -84,7 +87,7 @@ async function signingKey(master: string | undefined): Promise<CryptoKey> {
   );
 }
 
-export async function encryptSigningSecret(secret: SigningSecret | PendingKeySecret, master: string | undefined) {
+export async function encryptSigningSecret(secret: SigningSecret | PendingKeySecret | HarmonySigningSecret, master: string | undefined) {
   const key = await signingKey(master);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(secret)));

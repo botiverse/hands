@@ -526,6 +526,56 @@ async function appleCsr(dir: string, commonName: string) {
   return { key_pem: await readFile(key, "utf8"), csr_pem: await readFile(csr, "utf8") };
 }
 
+/** HarmonyOS signing keys are ECDSA P-256 (SHA256withECDSA); AGC issues the certificate for this CSR. */
+async function harmonyCsr(dir: string, commonName: string) {
+  const key = join(dir, "key.pem");
+  const csr = join(dir, "request.csr");
+  await run("openssl", ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key],
+    { failCode: "signing_generate_failed", failMessage: "openssl could not generate the key" });
+  await run("openssl", ["req", "-new", "-sha256", "-key", key, "-out", csr, "-subj", `/CN=${commonName}/O=Hands/C=CN`],
+    { failCode: "signing_generate_failed", failMessage: "openssl could not write the request" });
+  return { key_pem: await readFile(key, "utf8"), csr_pem: await readFile(csr, "utf8") };
+}
+
+/**
+ * Checks that the certificate AGC issued (PEM or DER, possibly a chain) is for
+ * this key, and reports its public facts. The chain is returned as PEM.
+ */
+async function harmonyCertificate(dir: string, keyPem: string, certificate: string) {
+  const key = await writeSecretFile(dir, "key.pem", keyPem);
+  const raw = Buffer.from(certificate, "base64");
+  const input = join(dir, "cert.in");
+  await writeFile(input, raw);
+  const text = raw.toString("utf8");
+  let chainPem: string;
+  if (text.includes("-----BEGIN CERTIFICATE-----")) {
+    chainPem = text.slice(text.indexOf("-----BEGIN CERTIFICATE-----"));
+  } else {
+    const pem = join(dir, "cert.pem");
+    await run("openssl", ["x509", "-inform", "DER", "-in", input, "-out", pem], {
+      failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
+    });
+    chainPem = await readFile(pem, "utf8");
+  }
+  const leaf = join(dir, "leaf.pem");
+  await writeFile(leaf, chainPem.slice(0, chainPem.indexOf("-----END CERTIFICATE-----") + "-----END CERTIFICATE-----".length) + "\n");
+  const certKey = (await run("openssl", ["x509", "-in", leaf, "-noout", "-pubkey"], { failCode: "signing_identity_invalid", failMessage: "certificate has no public key" })).stdout;
+  const ownKey = (await run("openssl", ["pkey", "-in", key, "-pubout"], { failCode: "signing_internal", failMessage: "stored key could not be read" })).stdout;
+  if (certKey.trim() !== ownKey.trim()) throw new SignError(400, "signing_certificate_mismatch", "AGC issued the certificate for a different key");
+  const { stdout } = await run("openssl", ["x509", "-in", leaf, "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256", "-nameopt", "RFC2253"], {
+    failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
+  });
+  const field = (name: string) => stdout.split("\n").find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1).trim();
+  return {
+    chain_pem: chainPem,
+    metadata: {
+      subject: field("subject"), issuer: field("issuer"), not_before: field("notBefore"), not_after: field("notAfter"),
+      sha256_fingerprint: stdout.split("\n").find((l) => l.toLowerCase().includes("fingerprint="))?.split("=")[1]?.trim(),
+      key_algorithm: "ECDSA P-256",
+    },
+  };
+}
+
 /** Join a key made here with the certificate Apple issued for it. */
 async function appleP12(dir: string, kind: AppleSecret["kind"], keyPem: string, certificate: string) {
   const key = await writeSecretFile(dir, "key.pem", keyPem);
@@ -711,6 +761,28 @@ export function registerSigningRoutes(app: Hono) {
       const body = await c.req.json() as { common_name?: unknown };
       const name = typeof body.common_name === "string" && /^[\p{L}\p{N} ,.&_()-]{1,64}$/u.test(body.common_name) ? body.common_name : "Hands";
       return c.json(await withWorkdir((dir) => appleCsr(dir, name)));
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/harmony-csr", async (c) => {
+    try {
+      const body = await c.req.json() as { common_name?: unknown };
+      const name = typeof body.common_name === "string" && /^[\p{L}\p{N} ,.&_()-]{1,64}$/u.test(body.common_name) ? body.common_name : "Hands";
+      return c.json(await withWorkdir((dir) => harmonyCsr(dir, name)));
+    } catch (error) {
+      return respondError(c, error);
+    }
+  });
+
+  app.post("/signing/harmony-certificate", async (c) => {
+    try {
+      const body = await c.req.json() as { key_pem?: unknown; certificate_b64?: unknown };
+      if (typeof body.key_pem !== "string" || typeof body.certificate_b64 !== "string") {
+        throw new SignError(400, "invalid_request", "key_pem and certificate_b64 are required");
+      }
+      return c.json(await withWorkdir((dir) => harmonyCertificate(dir, body.key_pem as string, body.certificate_b64 as string)));
     } catch (error) {
       return respondError(c, error);
     }
