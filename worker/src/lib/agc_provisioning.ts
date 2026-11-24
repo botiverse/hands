@@ -117,3 +117,15 @@ export async function downloadAgcFile(url: string, maxBytes = 256 * 1024, fetchI
   if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) throw new AgcApiError(502, "AGC file download had an unexpected size");
   return bytes;
 }
+
+export async function listHarmonyCertificates(auth: AgcAuth, kind: HarmonyCertKind, fetchImpl: typeof fetch = fetch) {
+  const body = await agcJson(auth, "/api/publish/v3/cert/list", { method: "POST", body: JSON.stringify({ certType: HARMONY_CERT_TYPES[kind] }) }, fetchImpl);
+  const list = Array.isArray(body?.certInfo) ? body.certInfo as Record<string, unknown>[] : [];
+  return list.map((c) => ({ id: str(c.id) ?? "", name: str(c.certName) ?? "", type: num(c.certType), created_at: num(c.createTime), expires_at: num(c.expireTime) }))
+    .filter((c) => c.id);
+}
+
+/** Deletes certificates in AGC (frees the account's limited certificate slots). */
+export async function deleteHarmonyCertificates(auth: AgcAuth, certIds: string[], fetchImpl: typeof fetch = fetch) {
+  await agcJson(auth, "/api/publish/v2/cert/delete", { method: "POST", body: JSON.stringify({ certIds }) }, fetchImpl);
+}

@@ -175,4 +175,29 @@ describe("Hands-managed HarmonyOS signing", () => {
     await call(h.handleRunHarmonySigningJob, env, { appId: "app", jobId: again });
     expect(sent).toHaveLength(1);
   });
+
+  it("gives a certificate back to AGC when Hands cannot use it, and cleans up unheld ones on request", async () => {
+    const { env, sqlite } = environment();
+    setSigningContainerForTests(async (path) => path === "/signing/harmony-csr"
+      ? Response.json({ key_pem: "KEY", csr_pem: "CSR" })
+      : Response.json({ error: "AGC issued the certificate for a different key", code: "signing_certificate_mismatch" }, { status: 400 }));
+    const calls = huawei({
+      "POST /api/publish/v3/cert": () => ({ ret: { code: 0 }, certInfo: { id: "777", certType: 2, certDownloadUrl: "https://download.agc.test/c.cer" } }),
+      "POST /api/publish/v2/cert/delete": () => ({ ret: { code: 0 } }),
+      "POST /api/publish/v3/cert/list": () => ({ ret: { code: 0 }, certInfo: [{ id: "777", certName: "x", certType: 2 }, { id: "888", certName: "held", certType: 2 }] }),
+    });
+    const res = await call(h.handleCreateHarmonyIdentity, env, { orgId: "org" }, { name: "Deck release", kind: "release", agc_from_app: "raft-deck-ohos" });
+    expect(res.body.code).toBe("signing_certificate_mismatch");
+    expect(calls.find((c) => c.url.endsWith("/v2/cert/delete"))?.body).toEqual({ certIds: ["777"] });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM harmony_signing_identities").get()).toEqual({ n: 0 });
+
+    sqlite.prepare(`INSERT INTO harmony_signing_identities (id, org_id, name, cert_kind, agc_cert_id, metadata_json, secret_ciphertext_b64, secret_iv_b64, created_by_actor, created_at)
+      VALUES ('id-held', 'org', 'held', 'release', '888', '{}', 'x', 'y', 't', 1)`).run();
+    const listed = await call(h.handleListHarmonyAgcCertificates, env, { orgId: "org" }, { kind: "release", agc_from_app: "raft-deck-ohos" });
+    expect(listed.body.certificates.map((c: any) => [c.id, c.identity_id])).toEqual([["777", null], ["888", "id-held"]]);
+    expect((await call(h.handleDeleteHarmonyAgcCertificates, env, { orgId: "org" }, { agc_from_app: "raft-deck-ohos", cert_ids: ["888"] })).body.code)
+      .toBe("harmony_certificate_in_use");
+    expect((await call(h.handleDeleteHarmonyAgcCertificates, env, { orgId: "org" }, { agc_from_app: "raft-deck-ohos", cert_ids: ["777"] })).body)
+      .toEqual({ deleted: ["777"] });
+  });
 });

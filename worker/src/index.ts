@@ -1,5 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
-import { handleCreateHarmonySigningJob, handleGetHarmonySigningJob, handleRunHarmonySigningJob, handleAddHarmonyDevices, handleCreateHarmonyIdentity, handleCreateHarmonyProfile, handleEnsureHarmonyAgcApp, handleListHarmonyDevices, handleListHarmonyIdentities, handleListHarmonyProfiles } from "./routes/harmony_signing";
+import { handleDeleteHarmonyAgcCertificates, handleListHarmonyAgcCertificates, handleCreateHarmonySigningJob, handleGetHarmonySigningJob, handleRunHarmonySigningJob, handleAddHarmonyDevices, handleCreateHarmonyIdentity, handleCreateHarmonyProfile, handleEnsureHarmonyAgcApp, handleListHarmonyDevices, handleListHarmonyIdentities, handleListHarmonyProfiles } from "./routes/harmony_signing";
 import { handleCreateFeedbackRule, handleDeleteFeedbackRule, handleListFeedbackRules, handlePreviewFeedbackRule, handleUpdateFeedbackRule } from "./routes/feedback_rules";
 import { jsonBodyLimit } from "./middleware/json_body_limit";
 import { handleGetAppQuota } from "./routes/upstream_quota";
@@ -1525,6 +1525,8 @@ bindAdmin("post", "/api/apps/:appId/signing/apple-app-id", requireAppRole("admin
 // HarmonyOS signing managed through AGC (routes/harmony_signing.ts).
 bindAdmin("get", "/api/orgs/:orgId/harmony-signing/identities", requireOrgRole("orgId", "admin"), handleListHarmonyIdentities);
 bindAdmin("post", "/api/orgs/:orgId/harmony-signing/identities", requireOrgRole("orgId", "admin"), handleCreateHarmonyIdentity);
+bindAdmin("post", "/api/orgs/:orgId/harmony-signing/agc-certificates/list", requireOrgRole("orgId", "admin"), handleListHarmonyAgcCertificates);
+bindAdmin("post", "/api/orgs/:orgId/harmony-signing/agc-certificates/delete", requireOrgRole("orgId", "admin"), handleDeleteHarmonyAgcCertificates);
 bindAdmin("post", "/api/apps/:appId/harmony-signing/agc-app", requireAppRole("admin"), handleEnsureHarmonyAgcApp);
 bindAdmin("get", "/api/apps/:appId/harmony-signing/devices", requireAppRole("admin"), handleListHarmonyDevices);
 bindAdmin("post", "/api/apps/:appId/harmony-signing/devices", requireAppRole("admin"), handleAddHarmonyDevices);
