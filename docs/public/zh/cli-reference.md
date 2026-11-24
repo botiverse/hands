@@ -566,6 +566,15 @@ hands builds testflight-status raft-ios <hands-build-id> \
 
 如果适合使用 `--wait` 且验收条件不要求 POST 操作回执，可用 `--poll-interval-seconds` 和 `--timeout-seconds` 调整有界轮询，默认分别为 15 和 3600 秒。终态失败、拒绝或过期会使命令失败。外部模式要求已有或提供测试说明的本地化内容；所有所选组 ID 必须符合请求的内部或外部模式。
 
+要让某个构建退出 TestFlight（例如卡在 Beta App 审核、导致同版本更新的构建无法送审），可以将其设为过期。不带 `--commit` 时命令只显示将要过期的准确 App Store Connect 构建以及要执行的命令；`--commit` 会提交确认过的版本号、构建号和 ASC 构建 ID，`--asc-build-id` 在 App Store Connect 解析出的构建不同时拒绝执行。需要 Hands 应用管理员权限。Apple 会保留构建记录，测试人员将无法再安装该构建。
+
+```bash
+hands builds testflight-expire raft-ios <hands-build-id>
+hands builds testflight-expire raft-ios <hands-build-id> \
+  --asc-build-id <预览显示的-asc-build-id> \
+  --commit
+```
+
 通知值包括 `not_requested`、`scheduled`、`sent` 和 `already_sent`。只有 `sent` / `already_sent` 加上重新读取的精确构建 `external_build_state=IN_BETA_TESTING`，才能证明通知完成。如果首次响应为 `scheduled`，等待该精确构建进入测试状态，不带 `--wait` 重放相同发布以保留 `already_sent`，然后再次重新读取状态。`VALID`、组分配、`BETA_APPROVED` 和 `auto_notify_enabled=false` 都不是通知回执。
 
 Hands 遵循 Apple 的角色边界：上传 IPA 和 TestFlight 测试组分发均需要 Hands 应用发布者权限。保存的 App Store Connect 密钥必须具有 Apple 允许执行所请求操作的角色：外部测试为 Account Holder、Admin 或 App Manager；内部测试也允许 Developer 或 Marketing。Apple 将测试构建限制为 90 天，并且每次只允许一个版本中的一个构建处于 Beta App 审核中。

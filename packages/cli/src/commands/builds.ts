@@ -493,6 +493,31 @@ async function withTimeoutMessage<T>(
   }
 }
 
+/**
+ * The exact confirmation body for POST .../testflight-expire, taken from a
+ * fresh status read. `expectedAscBuildId` pins the ASC build the caller
+ * previewed; a different build refuses before anything is sent to Apple.
+ */
+export function testflightExpireRequest(
+  status: Pick<TestflightPublishStatus, "asc_build_id" | "version" | "build_number">,
+  options: { expectedAscBuildId?: string; bundleId?: string } = {},
+): { asc_build_id: string; confirm_version: string; confirm_build_number: string; bundle_id?: string } {
+  if (!status.asc_build_id) {
+    throw new Error("App Store Connect has no build for this Hands build yet; nothing to expire");
+  }
+  if (options.expectedAscBuildId && options.expectedAscBuildId !== status.asc_build_id) {
+    throw new Error(
+      `--asc-build-id ${options.expectedAscBuildId} does not match the App Store Connect build ${status.asc_build_id} for this Hands build`,
+    );
+  }
+  return {
+    asc_build_id: status.asc_build_id,
+    confirm_version: status.version,
+    confirm_build_number: status.build_number,
+    ...(options.bundleId ? { bundle_id: options.bundleId } : {}),
+  };
+}
+
 async function getTestflightPublishStatus(
   appId: string,
   buildId: string,
@@ -1963,6 +1988,72 @@ export function registerBuildCommands(program: Command): void {
             `  groups: ${status.assigned_groups.map((group) => `${group.name ?? group.id} (${group.id})`).join(", ")}`,
           );
         }
+      },
+    );
+
+  builds
+    .command("testflight-expire <appIdOrSlug> <buildId>")
+    .description(
+      "Expire a TestFlight build in App Store Connect so testers can no longer install it (for example to free the review slot held by a build stuck in Beta App Review). Previews by default; --commit expires. Needs app admin. Apple keeps the build record; this never touches the App Store or a Hands release.",
+    )
+    .option("--commit", "Expire the build. Without it, only show what would be expired.", false)
+    .option(
+      "--asc-build-id <id>",
+      "Refuse unless App Store Connect resolves this exact build id (the one shown by the preview).",
+    )
+    .option(
+      "--bundle-id <id>",
+      "Bundle-id assertion; must match immutable build metadata, or acts as fallback when metadata is absent.",
+    )
+    .option("--json", "Output JSON.", false)
+    .action(
+      async (
+        appIdOrSlug: string,
+        buildId: string,
+        opts: { commit?: boolean; ascBuildId?: string; bundleId?: string; json?: boolean },
+      ) => {
+        const appId = await resolveAppId(appIdOrSlug);
+        const json = shouldOutputJson(program, jsonRequested(program, opts.json));
+        const status = await getTestflightPublishStatus(appId, buildId, {
+          ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+        });
+        const body = testflightExpireRequest(status, {
+          ...(opts.ascBuildId ? { expectedAscBuildId: opts.ascBuildId } : {}),
+          ...(opts.bundleId ? { bundleId: opts.bundleId } : {}),
+        });
+        if (!opts.commit) {
+          if (json) {
+            console.log(JSON.stringify({ preview: true, request: body, status }, null, 2));
+            return;
+          }
+          console.log(`Would expire TestFlight ${status.version} (${status.build_number}):`);
+          console.log(`  ASC build: ${status.asc_build_id}`);
+          console.log(`  state:     ${status.state}${status.expired ? " (already expired)" : ""}`);
+          if (status.beta_review?.state) console.log(`  beta review: ${status.beta_review.state}`);
+          if (status.assigned_groups && status.assigned_groups.length > 0) {
+            console.log(
+              `  groups: ${status.assigned_groups.map((group) => `${group.name ?? group.id} (${group.id})`).join(", ")}`,
+            );
+          }
+          console.log(
+            `Nothing changed. To expire: hands builds testflight-expire ${appIdOrSlug} ${buildId} --asc-build-id ${status.asc_build_id} --commit`,
+          );
+          return;
+        }
+        const result = await apiRequest<TestflightPublishStatus & { changed?: boolean }>(
+          `/api/apps/${appId}/builds/${buildId}/testflight-expire`,
+          { method: "POST", body },
+        );
+        if (json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        console.log(
+          result.changed === false
+            ? `TestFlight ${result.version} (${result.build_number}) was already expired; nothing changed.`
+            : `Expired TestFlight ${result.version} (${result.build_number}), ASC build ${result.asc_build_id}.`,
+        );
+        if (result.operation_id) console.log(`  operation: ${result.operation_id}`);
       },
     );
 

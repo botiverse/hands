@@ -879,6 +879,21 @@ Terminal failure/rejection/expiry states fail the command. External mode
 requires an existing or supplied What to Test localization; selected group ids
 must all match the requested internal/external mode.
 
+To take a build out of TestFlight (for example one stuck in Beta App Review,
+which blocks review of any newer build of that version), expire it. Without
+`--commit` the command only shows the exact App Store Connect build it would
+expire and the command to run; `--commit` sends the confirmed version, build
+number and ASC build id, and `--asc-build-id` refuses if App Store Connect now
+resolves a different build. It needs Hands app admin. Apple keeps the build
+record; testers can no longer install it.
+
+```bash
+hands builds testflight-expire raft-ios <hands-build-id>
+hands builds testflight-expire raft-ios <hands-build-id> \
+  --asc-build-id <asc-build-id-from-preview> \
+  --commit
+```
+
 Notification values are `not_requested`, `scheduled`, `sent`, and
 `already_sent`. Only `sent`/`already_sent`, paired with a fresh exact-build
 `external_build_state=IN_BETA_TESTING`, prove notification completion. If the

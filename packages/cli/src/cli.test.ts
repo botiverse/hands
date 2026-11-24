@@ -1827,6 +1827,84 @@ describe("iOS build helper contract", () => {
     }
   });
 
+  it("previews a TestFlight expire without POSTing, then commits the exact confirmation", async () => {
+    const requests: Array<{ method: string; url: string; body?: any }> = [];
+    const server = createServer(async (req, res) => {
+      let body: any = undefined;
+      if (req.headers["content-type"]?.includes("application/json")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      }
+      requests.push({ method: req.method ?? "GET", url: req.url ?? "", body });
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/api/apps") {
+        return res.end(JSON.stringify({ apps: [{ id: "app-1", slug: "raft-ios" }] }));
+      }
+      if (req.method === "GET" && req.url?.startsWith("/api/apps/app-1/builds/build-1/testflight-publish")) {
+        return res.end(JSON.stringify({
+          hands_build_id: "build-1", bundle_id: "build.raft.app", asc_app_id: "asc-app-1",
+          asc_build_id: "asc-build-1", version: "1.29.0", build_number: "12900004",
+          state: "waiting_for_review", distribution: "external", expired: false,
+          beta_review: { state: "WAITING_FOR_REVIEW" },
+        }));
+      }
+      if (req.method === "POST" && req.url === "/api/apps/app-1/builds/build-1/testflight-expire") {
+        return res.end(JSON.stringify({
+          operation_id: "op-1", changed: true, asc_build_id: "asc-build-1",
+          version: "1.29.0", build_number: "12900004", state: "expired", expired: true,
+        }));
+      }
+      res.statusCode = 404;
+      return res.end(JSON.stringify({ error: "not found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("bad address");
+    const originalApi = process.env.HANDS_API;
+    const originalToken = process.env.HANDS_BEARER_TOKEN;
+    process.env.HANDS_API = `http://127.0.0.1:${address.port}`;
+    process.env.HANDS_BEARER_TOKEN = "test-token";
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const { registerBuildCommands } = await import("../src/commands/builds.js");
+      const run = async (...args: string[]) => {
+        const program = new Command().version("0.5.12").option("--json", "JSON output", false);
+        registerBuildCommands(program);
+        await program.parseAsync(["node", "hands", "builds", "testflight-expire", "raft-ios", "build-1", ...args]);
+      };
+
+      await run();
+      expect(requests.some((r) => r.method === "POST")).toBe(false);
+
+      await expect(run("--asc-build-id", "asc-build-other", "--commit")).rejects.toThrow("does not match");
+      expect(requests.some((r) => r.method === "POST")).toBe(false);
+
+      await run("--asc-build-id", "asc-build-1", "--commit");
+      const posts = requests.filter((r) => r.method === "POST");
+      expect(posts).toHaveLength(1);
+      expect(posts[0].body).toEqual({
+        asc_build_id: "asc-build-1",
+        confirm_version: "1.29.0",
+        confirm_build_number: "12900004",
+      });
+    } finally {
+      log.mockRestore();
+      if (originalApi === undefined) delete process.env.HANDS_API;
+      else process.env.HANDS_API = originalApi;
+      if (originalToken === undefined) delete process.env.HANDS_BEARER_TOKEN;
+      else process.env.HANDS_BEARER_TOKEN = originalToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("refuses to expire when App Store Connect has no build yet", async () => {
+    const { testflightExpireRequest } = await import("../src/commands/builds.js");
+    expect(() =>
+      testflightExpireRequest({ asc_build_id: null, version: "1.0.0", build_number: "1" }),
+    ).toThrow("nothing to expire");
+  });
+
   it("sends the TestFlight publish action with stable groups and metadata", async () => {
     const requests: Array<{ method: string; url: string; body?: any }> = [];
     const server = createServer(async (req, res) => {
