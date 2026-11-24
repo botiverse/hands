@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.3")
+    implementation("build.hands:hands-android-sdk:0.14.4")
 }
 ```
 
@@ -34,7 +34,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.14.3")
+    implementation("com.github.botiverse:hands:android-sdk-v0.14.4")
 }
 ```
 
@@ -52,7 +52,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.3")
+    implementation("build.hands:hands-android-sdk:0.14.4")
 }
 ```
 
@@ -162,6 +162,16 @@ download URL or an auth secret. Structured `HandsUpdateEvent` records cover
 check, patch download/apply/validation/fallback, full download, content URI,
 installer open/reopen, resume state changes, failures, and cleanup so hosts can
 include the chain in Hands feedback rather than relying on Logcat alone.
+
+Delta patches only rebuild the new APK if the device recompresses every entry
+exactly as the server did. Android 12 and newer ship a different zlib, so
+before `0.14.4` deltas on those devices failed their SHA-256 check
+(`patch_fallback` / `sha256_mismatch`) and fell back to the full APK. Since
+`0.14.4` the SDK recompresses with its own copy of stock zlib 1.3.1, built
+into `libhandscrash.so`. Before downloading a patch it checks that this copy
+gives the expected output; if it does not, or the native library cannot load,
+it emits `patch_fallback` with `deflater_incompatible` and downloads the full
+APK.
 
 `languageTag` is an explicit BCP-47 tag. Valid values are sent as both
 `X-Hands-Lang` and `Accept-Language`; missing or malformed values send neither

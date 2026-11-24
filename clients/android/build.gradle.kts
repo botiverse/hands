@@ -52,6 +52,30 @@ val testNativeRecordIdentity by tasks.registering(Exec::class) {
     commandLine("bash", file("src/test/scripts/test_qnc2_record_identity.sh"))
 }
 
+// Host build of the bundled zlib + its JNI bridge, so JVM unit tests drive the
+// real BundledZlibDeflater against the exact sources shipped in the AAR.
+val hostBundledZlibDir = layout.buildDirectory.dir("host-bundled-zlib")
+val buildHostBundledZlib by tasks.registering(Exec::class) {
+    val cppDir = file("src/main/cpp")
+    val zlibSources = listOf("adler32.c", "crc32.c", "deflate.c", "trees.c", "zutil.c")
+        .map { File(cppDir, "zlib/$it") }
+    inputs.files(zlibSources + fileTree(File(cppDir, "zlib")) { include("*.h") } + File(cppDir, "hands_zlib_deflater.c"))
+    outputs.dir(hostBundledZlibDir)
+    // A ~1 s compile; always rebuild so tests never load a stale library.
+    outputs.upToDateWhen { false }
+    val javaHome = File(System.getProperty("java.home"))
+    val isMac = System.getProperty("os.name").lowercase().contains("mac")
+    val outFile = hostBundledZlibDir.get().file(if (isMac) "libhandscrash.dylib" else "libhandscrash.so").asFile
+    doFirst { outFile.parentFile.mkdirs() }
+    commandLine(
+        listOf(
+            "cc", "-shared", "-fPIC", "-O2", "-std=c11", "-DZ_PREFIX", "-fvisibility=hidden",
+            "-I${javaHome}/include", "-I${javaHome}/include/${if (isMac) "darwin" else "linux"}",
+            File(cppDir, "hands_zlib_deflater.c").path,
+        ) + zlibSources.map { it.path } + listOf("-o", outFile.path)
+    )
+}
+
 val testAndroidElfVerifier by tasks.registering(Exec::class) {
     group = "verification"
     description = "Runs deterministic unit tests for the Android ELF verifier."
@@ -156,6 +180,12 @@ tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
 
 tasks.withType<Test>().configureEach {
     if (!name.contains("UnitTest")) return@configureEach
+    dependsOn(buildHostBundledZlib)
+    // Track the library's bytes so a native change re-runs the tests.
+    inputs.files(buildHostBundledZlib).withPropertyName("hostBundledZlib")
+    val hostLibDir = hostBundledZlibDir.get().asFile.path
+    systemProperty("java.library.path", hostLibDir)
+    systemProperty("hands.hostBundledZlib", hostLibDir)
     // The mockable android.jar is earlier on the test classpath than Maven
     // dependencies, so put/has hit the stub. Move the real org.json jar first.
     doFirst {

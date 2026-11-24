@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.14.3")
+    implementation("com.github.botiverse:hands:android-sdk-v0.14.4")
 }
 ```
 
@@ -40,7 +40,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.3")
+    implementation("build.hands:hands-android-sdk:0.14.4")
 }
 ```
 
@@ -114,6 +114,8 @@ lifecycleScope.launch {
 SDK 会持久化一个绑定了包、来源、应用、渠道、产品、平台和架构的事务，包含目标、构建和文件身份、DownloadManager ID 及预期的应用专属文件。它有意不保存签名下载 URL 或认证材料。恢复核对会检查已安装版本、DownloadManager、路径归属、文件大小、提供时的 SHA-256、精确 APK 包和目标版本，以及签名证书。输入缺失、变化或不安全时以 `stale` / `failed` 拒绝，并返回稳定的 `errorCode`。
 
 `HandsUpdateEventListener` 接收结构化事件，覆盖检查、增量下载与应用、验证和回退、完整下载、内容 URI、安装器、恢复核对、失败与清理，可纳入宿主的反馈诊断；Logcat 并不是唯一遥测途径。显式提供的有效 BCP-47 `languageTag` 会通过 `X-Hands-Lang` 和 `Accept-Language` 发送。缺失或格式错误时两个请求头都不发送；不受支持的语言保留服务端英语回退。事件和状态包含请求及解析后的语言标签。
+
+增量补丁只有在设备对每个条目的重新压缩结果与服务端完全一致时才能还原出新 APK。Android 12 及更新版本自带的 zlib 不同，因此 `0.14.4` 之前这些设备上的增量更新会在 SHA-256 校验时失败（`patch_fallback` / `sha256_mismatch`），回退为完整 APK。从 `0.14.4` 起，SDK 使用内置在 `libhandscrash.so` 中的标准 zlib 1.3.1 重新压缩。下载补丁前会先校验这份 zlib 的输出；输出不符或原生库无法加载时，发出 `patch_fallback`（`deflater_incompatible`）并改为下载完整 APK。
 
 `0.12.4` 及更新版本的 AAR 为 64 位原生崩溃库使用兼容 16 KB 的 ELF `PT_LOAD` 对齐。发布前会同时验证 AAR 和与之匹配的未剥离原生符号压缩包。
 

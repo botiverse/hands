@@ -26,7 +26,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.14.3")
+    implementation("com.github.botiverse:hands:android-sdk-v0.14.4")
 }
 ```
 
@@ -44,7 +44,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.3")
+    implementation("build.hands:hands-android-sdk:0.14.4")
 }
 ```
 
@@ -163,6 +163,16 @@ is not the only telemetry path. Valid explicit BCP-47 `languageTag` values are
 sent as `X-Hands-Lang` and `Accept-Language`. Missing/malformed values send
 neither header, while unsupported languages retain the server's English
 fallback. Events/status include requested and resolved language tags.
+
+Delta patches only rebuild the new APK if the device recompresses every entry
+exactly as the server did. Android 12 and newer ship a different zlib, so
+before `0.14.4` deltas on those devices failed their SHA-256 check
+(`patch_fallback` / `sha256_mismatch`) and fell back to the full APK. Since
+`0.14.4` the SDK recompresses with its own copy of stock zlib 1.3.1, built
+into `libhandscrash.so`. Before downloading a patch it checks that this copy
+gives the expected output; if it does not, or the native library cannot load,
+it emits `patch_fallback` with `deflater_incompatible` and downloads the full
+APK.
 
 The `0.12.4` and newer AARs use 16 KB-compatible ELF `PT_LOAD` alignment for
 the 64-bit native crash library. Publication verifies the AAR and its matching
