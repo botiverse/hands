@@ -1,5 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
-import { handleAddHarmonyDevices, handleCreateHarmonyIdentity, handleCreateHarmonyProfile, handleEnsureHarmonyAgcApp, handleListHarmonyDevices, handleListHarmonyIdentities, handleListHarmonyProfiles } from "./routes/harmony_signing";
+import { handleCreateHarmonySigningJob, handleGetHarmonySigningJob, handleRunHarmonySigningJob, handleAddHarmonyDevices, handleCreateHarmonyIdentity, handleCreateHarmonyProfile, handleEnsureHarmonyAgcApp, handleListHarmonyDevices, handleListHarmonyIdentities, handleListHarmonyProfiles } from "./routes/harmony_signing";
 import { handleCreateFeedbackRule, handleDeleteFeedbackRule, handleListFeedbackRules, handlePreviewFeedbackRule, handleUpdateFeedbackRule } from "./routes/feedback_rules";
 import { jsonBodyLimit } from "./middleware/json_body_limit";
 import { handleGetAppQuota } from "./routes/upstream_quota";
@@ -1530,6 +1530,9 @@ bindAdmin("get", "/api/apps/:appId/harmony-signing/devices", requireAppRole("adm
 bindAdmin("post", "/api/apps/:appId/harmony-signing/devices", requireAppRole("admin"), handleAddHarmonyDevices);
 bindAdmin("get", "/api/apps/:appId/harmony-signing/profiles", requireAppRole("admin"), handleListHarmonyProfiles);
 bindAdmin("post", "/api/apps/:appId/harmony-signing/profiles", requireAppRole("admin"), handleCreateHarmonyProfile);
+bindAdmin("post", "/api/apps/:appId/harmony-signing/jobs", requireAppRole("publisher"), handleCreateHarmonySigningJob);
+bindAdmin("post", "/api/apps/:appId/harmony-signing/jobs/:jobId/sign", requireAppRole("publisher"), handleRunHarmonySigningJob);
+bindAdmin("get", "/api/apps/:appId/harmony-signing/jobs/:jobId", requireAppRole("publisher"), handleGetHarmonySigningJob);
 bindAdmin("get", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleListReporterIntegrations);
 bindAdmin("post", "/api/apps/:appId/reporter-integrations", requireAppRole("admin"), handleCreateReporterIntegration);
 bindAdmin("patch", "/api/apps/:appId/reporter-integrations/:integrationId",
