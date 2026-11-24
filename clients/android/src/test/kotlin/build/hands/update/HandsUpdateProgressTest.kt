@@ -161,4 +161,33 @@ class HandsUpdateProgressTest {
         assertTrue(reports.size in 4..6)
         assertEquals(reports.sorted(), reports)
     }
+
+    @Test
+    fun `a patching record with no patch running in this process is abandoned`() {
+        // Process killed mid-patch: the record survives, the patch does not.
+        assertTrue(isPatchingAbandoned(activeInThisProcess = false, expired = false))
+        assertTrue(isPatchingAbandoned(activeInThisProcess = true, expired = true))
+        assertFalse(isPatchingAbandoned(activeInThisProcess = true, expired = false))
+    }
+
+    @Test
+    fun `active patch registry tracks begin and end per authority`() {
+        val key = "test-authority-active-patch"
+        assertFalse(ActivePatchRegistry.isActive(key))
+        ActivePatchRegistry.begin(key)
+        assertTrue(ActivePatchRegistry.isActive(key))
+        assertFalse(ActivePatchRegistry.isActive("$key-other"))
+        assertTrue(ActivePatchRegistry.isAnyActive())
+        ActivePatchRegistry.end(key)
+        assertFalse(ActivePatchRegistry.isActive(key))
+    }
+
+    @Test
+    fun `delta temp file names cover patch downloads and rebuilt apks only`() {
+        assertTrue(isDeltaTempFileName("hands-delta-13000005-123456789.patch"))
+        assertTrue(isDeltaTempFileName("hands-delta-raft-android-13000005-123456789.apk"))
+        assertFalse(isDeltaTempFileName("hands-update-0f8fad5b-d9cb-469f-a165-70867728950e.apk"))
+        assertFalse(isDeltaTempFileName("hands-delta-13000005.patch.tmp"))
+        assertFalse(isDeltaTempFileName("other.patch"))
+    }
 }

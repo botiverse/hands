@@ -200,7 +200,7 @@ class UpdateChecker @JvmOverloads constructor(
     /** A status read that never waits behind a running patch. */
     private suspend fun liveStatus(): HandsUpdateStatus {
         val record = withContext(Dispatchers.IO) { transactionStore.read() }
-        if (record?.state == HandsUpdateState.PATCHING) {
+        if (record?.state == HandsUpdateState.PATCHING && ActivePatchRegistry.isActive(authorityKey)) {
             return record.status(withContext(Dispatchers.IO) { installedVersionCodeNow() })
                 .copy(progress = PatchProgressRegistry.get(authorityKey))
         }
@@ -647,6 +647,7 @@ class UpdateChecker @JvmOverloads constructor(
         val patch = response.patch
         if (patch != null) {
             val patching = baseRecord.copy(state = HandsUpdateState.PATCHING)
+            ActivePatchRegistry.begin(authorityKey)
             PatchProgressRegistry.set(
                 authorityKey,
                 HandsUpdateProgress(downloadedBytes = 0L, totalBytes = patch.size_bytes.takeIf { it > 0L }),
@@ -694,6 +695,7 @@ class UpdateChecker @JvmOverloads constructor(
                 }
             } finally {
                 PatchProgressRegistry.clear(authorityKey)
+                ActivePatchRegistry.end(authorityKey)
             }
             if (applied) {
                 durableReady?.takeIf {
@@ -829,7 +831,14 @@ class UpdateChecker @JvmOverloads constructor(
             }
 
             HandsUpdateState.PATCHING -> {
-                if (isExpired(record, PATCH_TIMEOUT_MS)) {
+                if (isPatchingAbandoned(
+                        activeInThisProcess = ActivePatchRegistry.isActive(authorityKey),
+                        expired = isExpired(record, PATCH_TIMEOUT_MS),
+                    )
+                ) {
+                    // Temp files are shared by name across authorities: only sweep
+                    // when no patch at all runs in this process.
+                    if (!ActivePatchRegistry.isAnyActive()) removeDeltaTempFiles()
                     cleanupTransition(
                         record,
                         HandsUpdateState.STALE,
@@ -1227,6 +1236,16 @@ class UpdateChecker @JvmOverloads constructor(
         state = HandsUpdateState.IDLE,
         installedVersionCode = installed,
     )
+
+    private fun removeDeltaTempFiles() {
+        try {
+            context.cacheDir.listFiles()
+                ?.filter { it.isFile && isDeltaTempFileName(it.name) }
+                ?.forEach { it.delete() }
+        } catch (_: Exception) {
+            // Best effort: a leftover temp file never blocks the next update.
+        }
+    }
 
     private fun isExpired(record: UpdateTransactionRecord, timeoutMs: Long): Boolean =
         System.currentTimeMillis() - record.updatedAt > timeoutMs
