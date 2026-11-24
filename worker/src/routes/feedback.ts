@@ -9,6 +9,7 @@
  */
 import { presignR2DownloadUrl, redirectToR2 } from "../lib/r2_presign";
 import type { Context } from "hono";
+import { enabledRules, firstMatch } from "../lib/feedback_rules";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
@@ -434,8 +435,8 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   const versionCode = parseVersionCode(metadata["version_code"]) ?? parseVersionCode(metadata["fallback_version_code"]);
   const backgroundSystemKill =
     (kind === "crash" || kind === "error") && isBackgroundSystemKill(metadata);
-  const initialStatus = backgroundSystemKill ? "closed" : "open";
-  const initialClosureReason = backgroundSystemKill ? "not_planned" : null;
+  let initialStatus = backgroundSystemKill ? "closed" : "open";
+  let initialClosureReason: string | null = backgroundSystemKill ? "not_planned" : null;
 
   // Direct SDK clients are rate-limited by client IP. A trusted server proxy
   // may instead provide a stable pseudonymous reporter id, but only while
@@ -678,6 +679,22 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
       ? (backgroundSystemKill ? BACKGROUND_SYSTEM_KILL_SIGNATURE : crashSignature(metadata))
       : null;
 
+  // The app's own noise rules (lib/feedback_rules.ts): the report is stored
+  // either way; a matching rule closes it or keeps it out of alerts, and the
+  // ticket's metadata names the rule.
+  const ruleHit = (kind === "crash" || kind === "error") && !backgroundSystemKill
+    ? firstMatch(await enabledRules(c.env.DB, app.id).catch(() => []), {
+      kind, signature, channel: meta("channel"), device_model: meta("device_model"), version_code: versionCode, metadata,
+    })
+    : null;
+  if (ruleHit) {
+    metadata["hands_rule"] = { id: ruleHit.id, name: ruleHit.name, action: ruleHit.action };
+    if (ruleHit.action === "close") {
+      initialStatus = "closed";
+      initialClosureReason = "not_planned";
+    }
+  }
+
   const now = Date.now();
   const ticketId = crypto.randomUUID();
   const submissionEventId = reporterIntegrationId ? crypto.randomUUID() : null;
@@ -686,7 +703,7 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
   // ticket's group (see decideCrashAlert). Background system kills skip
   // real-time alerts and are reported via a once-a-day summary instead.
   const crashAlertEligible = !externalBuild && (kind === "crash" || kind === "error")
-    && Boolean(signature) && Boolean(app.org_id) && !backgroundSystemKill;
+    && Boolean(signature) && Boolean(app.org_id) && !backgroundSystemKill && !ruleHit;
   // Same pseudonymous actor that reporter comments carry
   // (`reporter:<HMAC(app, integration, reporter)>`), so a webhook consumer can
   // correlate a ticket with its later comments without seeing the raw id.
@@ -891,6 +908,10 @@ export async function handlePublicFeedbackSubmit(c: Context<{ Bindings: Env }>) 
     // created (feedback:new generic + dedicated). Non-blocking; the cron reaper
     // remains the safety net.
     triggerDeliveryNow(c, c.env, now);
+    if (ruleHit) {
+      await c.env.DB.prepare("UPDATE feedback_rules SET hits = hits + 1, last_hit_at = ?1 WHERE id = ?2")
+        .bind(now, ruleHit.id).run().catch(() => undefined);
+    }
   } catch (error) {
     if (submissionId && submissionFingerprint) {
       const existing = await findFeedbackSubmission(

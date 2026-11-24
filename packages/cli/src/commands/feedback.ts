@@ -4,7 +4,7 @@
  * update/comment).
  */
 import type { Command } from "commander";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { apiRequest } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
 
@@ -50,6 +50,8 @@ export function registerFeedbackCommands(program: Command): void {
   const feedback = program
     .command("feedback")
     .description("Triage feedback/crash tickets.");
+
+  registerFeedbackRuleCommands(program, feedback);
 
   feedback
     .command("list <appIdOrSlug>")
@@ -274,4 +276,110 @@ export function reporterEventNote(event: unknown): string | null {
     return "Note: the reporter's integration is inactive, so their app is not notified of this reply.";
   }
   return null;
+}
+
+type FeedbackRule = {
+  id: string; name: string; enabled: boolean; action: "close" | "mute"; match: Record<string, unknown>;
+  protect_high_risk: boolean; hits: number; last_hit_at: number | null;
+};
+type RulePreview = {
+  days: number; scanned: number; scan_limit_reached: boolean; matched: number; matched_open: number;
+  by_signature: Array<{ signature: string; count: number }>;
+  sample: Array<{ id: string; status: string; signature: string | null; version_name: string | null; device_model: string | null }>;
+};
+
+async function readMatch(value: string): Promise<unknown> {
+  const text = value.startsWith("@") ? await readFile(value.slice(1), "utf8") : value;
+  try { return JSON.parse(text); } catch { throw new Error("--match must be JSON, or @file with JSON"); }
+}
+
+export function formatRulePreview(p: RulePreview): string {
+  const lines = [`Would match ${p.matched} of ${p.scanned} crash/error tickets in the last ${p.days} days (${p.matched_open} still open).`];
+  if (p.scan_limit_reached) lines.push("Only the newest 5000 tickets were checked.");
+  for (const s of p.by_signature) lines.push(`  ${String(s.count).padStart(5)}  ${s.signature}`);
+  if (p.sample.length) {
+    lines.push("Examples:");
+    for (const t of p.sample.slice(0, 10)) lines.push(`  ${t.id.slice(0, 8)}  ${t.status.padEnd(11)} ${t.version_name ?? "-"}  ${t.device_model ?? "-"}  ${t.signature ?? "-"}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatRules(rules: FeedbackRule[]): string {
+  if (rules.length === 0) return "No rules.";
+  return rules.map((r) => [
+    `${r.id.slice(0, 8)}  ${r.enabled ? "on " : "off"}  ${r.action.padEnd(5)}  ${r.name}`,
+    `          match ${JSON.stringify(r.match)}${r.protect_high_risk ? "" : "  (high-risk exits NOT protected)"}`,
+    `          hits ${r.hits}${r.last_hit_at ? `, last ${new Date(r.last_hit_at).toISOString()}` : ""}`,
+  ].join("\n")).join("\n");
+}
+
+function registerFeedbackRuleCommands(program: Command, feedback: Command): void {
+  const rules = feedback
+    .command("rules")
+    .description(
+      "Per-app rules that close crash/error reports as noise (not_planned) or keep them out of alerts. " +
+        "Reports are always stored; native crashes, ANRs and Java exceptions are protected unless --no-protect.",
+    );
+  const resolve = async (app: string, id: string) => {
+    const appId = await resolveAppId(app);
+    if (id.length === 36) return { appId, ruleId: id };
+    const { rules: list } = await apiRequest<{ rules: FeedbackRule[] }>(`/api/apps/${appId}/feedback/rules`);
+    const found = list.filter((r) => r.id.startsWith(id));
+    if (found.length !== 1) throw new Error(found.length ? `rule id ${id} is ambiguous` : `no rule ${id}`);
+    return { appId, ruleId: found[0]!.id };
+  };
+
+  rules.command("list <appIdOrSlug>").description("List the app's rules.").option("--json", "Output JSON.", false)
+    .action(async (app: string, opts: { json?: boolean }) => {
+      const res = await apiRequest<{ rules: FeedbackRule[] }>(`/api/apps/${await resolveAppId(app)}/feedback/rules`);
+      console.log(jsonRequested(program, opts.json) ? JSON.stringify(res, null, 2) : formatRules(res.rules));
+    });
+
+  rules.command("preview <appIdOrSlug>")
+    .description("Show what a rule would match among past tickets, changing nothing.")
+    .option("--match <json|@file>", "Conditions, e.g. '{\"exit_reason_codes\":[2],\"exit_importance_min\":200,\"foreground\":false}'.")
+    .option("--rule <id>", "Preview a saved rule instead.")
+    .option("--days <n>", "Look back this many days (1-90).", "14")
+    .option("--no-protect", "Let the rule match native crashes, ANRs and Java exceptions.")
+    .option("--json", "Output JSON.", false)
+    .action(async (app: string, opts: { match?: string; rule?: string; days: string; protect: boolean; json?: boolean }) => {
+      if (!opts.match && !opts.rule) throw new Error("pass --match or --rule");
+      const appId = await resolveAppId(app);
+      const body = opts.rule
+        ? { rule_id: (await resolve(app, opts.rule)).ruleId, days: Number(opts.days) }
+        : { match: await readMatch(opts.match!), protect_high_risk: opts.protect, days: Number(opts.days) };
+      const res = await apiRequest<RulePreview>(`/api/apps/${appId}/feedback/rules/preview`, { method: "POST", body });
+      console.log(jsonRequested(program, opts.json) ? JSON.stringify(res, null, 2) : formatRulePreview(res));
+    });
+
+  rules.command("add <appIdOrSlug>")
+    .description("Add a rule (disabled until --enable or 'rules enable').")
+    .requiredOption("--name <name>", "What the rule is for.")
+    .requiredOption("--action <action>", "close (as not_planned) | mute (stay open, no alerts).")
+    .requiredOption("--match <json|@file>", "Conditions (see 'rules preview').")
+    .option("--no-protect", "Let the rule match native crashes, ANRs and Java exceptions.")
+    .option("--enable", "Enable it right away.", false)
+    .option("--json", "Output JSON.", false)
+    .action(async (app: string, opts: { name: string; action: string; match: string; protect: boolean; enable?: boolean; json?: boolean }) => {
+      const appId = await resolveAppId(app);
+      const res = await apiRequest<{ rule: FeedbackRule }>(`/api/apps/${appId}/feedback/rules`, { method: "POST",
+        body: { name: opts.name, action: opts.action, match: await readMatch(opts.match), protect_high_risk: opts.protect, enabled: opts.enable === true } });
+      console.log(jsonRequested(program, opts.json) ? JSON.stringify(res, null, 2) : formatRules([res.rule]));
+    });
+
+  for (const [name, enabled] of [["enable", true], ["disable", false]] as const) {
+    rules.command(`${name} <appIdOrSlug> <ruleId>`).description(`${name === "enable" ? "Enable" : "Disable"} a rule.`)
+      .action(async (app: string, id: string) => {
+        const { appId, ruleId } = await resolve(app, id);
+        const res = await apiRequest<{ rule: FeedbackRule }>(`/api/apps/${appId}/feedback/rules/${ruleId}`, { method: "PATCH", body: { enabled } });
+        console.log(formatRules([res.rule]));
+      });
+  }
+
+  rules.command("delete <appIdOrSlug> <ruleId>").description("Delete a rule. Tickets it already closed stay closed.")
+    .action(async (app: string, id: string) => {
+      const { appId, ruleId } = await resolve(app, id);
+      await apiRequest(`/api/apps/${appId}/feedback/rules/${ruleId}`, { method: "DELETE" });
+      console.log(`Deleted rule ${ruleId.slice(0, 8)}.`);
+    });
 }

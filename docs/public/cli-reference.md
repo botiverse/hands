@@ -1371,6 +1371,43 @@ For iOS apps that enable external report separation, `--build-scope` accepts
 `standard`, `external`, or `all`; the default includes configured and unknown
 origins. Bundle IDs are client-reported and do not verify identity.
 
+### Noise rules for crash reports
+
+An app can close crash and error reports it knows are noise, for example a
+vendor's background kill, without hard-coding them in Hands. A rule matches on
+what a report carries and either closes the ticket as `not_planned` (`close`) or
+leaves it open but out of real-time crash alerts (`mute`). The report is always
+stored, and the ticket's metadata names the rule (`hands_rule`). Native crashes,
+ANRs and Java exceptions (including system exits that report them, exit reasons
+4, 5 and 6) never match unless the rule is added with `--no-protect`. Rules
+start disabled, apply to new reports only, and the first enabled rule that
+matches decides.
+
+```bash
+# What would it match? Changes nothing.
+hands feedback rules preview raft-android --days 30 \
+  --match '{"exit_reason_codes":[2],"exit_statuses":[9],"exit_importance_min":200,"foreground":false,"device_brands":["huawei"]}'
+
+hands feedback rules add raft-android --name "Huawei background SIGKILL" --action close --match @rule.json
+hands feedback rules list raft-android
+hands feedback rules enable raft-android <rule-id>
+hands feedback rules disable raft-android <rule-id>
+hands feedback rules delete raft-android <rule-id>
+```
+
+Conditions (all given ones must hold): `kinds`, `signatures` and `device_models`
+(exact, or a prefix ending in `*`), `crash_types`, `exit_reason_codes`,
+`exit_statuses`, `exit_importance_min` / `exit_importance_max`, `foreground`,
+`channels`, `device_brands` (brand or manufacturer, any case),
+`version_code_min` / `version_code_max`. A rule needs at least one condition
+besides `kinds`. The preview scans the newest 5000 crash and error tickets of up
+to the last 90 days and returns the count, how many are still open, the crash
+groups and examples. Viewers can list rules; previewing and changing them needs
+the role that triages tickets (publisher or `feedback:triage`). API:
+`GET/POST /api/apps/:appId/feedback/rules`, `PATCH/DELETE
+/api/apps/:appId/feedback/rules/:ruleId`, `POST
+/api/apps/:appId/feedback/rules/preview`.
+
 ## App Webhooks
 
 App admins can subscribe an endpoint to one app's events without org-admin
