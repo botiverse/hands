@@ -142,6 +142,16 @@ let the client take the full download. This keeps delta a strict win.
 - **P2 (SDK apply)** and **P3 (metrics)** follow once generation is live and
   the end-to-end path is verified.
 
+- **Patch sources (2026-11-24):** generation now runs in the Hands signing
+  container (`routes/delta.ts`, archive-patcher), not in CI. Sources are the
+  versions that devices on the new build's release channels ran most in the
+  last 30 days (Hands device pings), plus the channel's previous release, with
+  the nearest earlier releases filling the rest (default 5). Before this, the
+  sources were the 3 nearest lower version codes on any channel, so a main
+  release followed preview builds and main's devices were never offered a patch.
+- **Offer gate:** the `delta_updates` feature flag per app and device; it is off
+  for raft-android until a device test passes.
+
 ## Open questions for @artin / #245 owner
 1. N (how many previous versions to keep patches for) — 3 is a sane default.
 2. Do the client-side #245 wins (ABI filter) land first? They shrink the full

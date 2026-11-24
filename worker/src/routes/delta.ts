@@ -26,7 +26,7 @@ import { requestOrigin } from "../lib/origin";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
-const DEFAULT_KEEP_VERSIONS = 3;
+const DEFAULT_KEEP_VERSIONS = 5;
 // A single container generate-patch call must return within this budget;
 // includes container cold-start (Cloudflare containers cold-start ~1-2 min).
 const CONTAINER_TIMEOUT_MS = 180_000;
@@ -70,6 +70,69 @@ export interface DeltaParams {
   keep?: number | undefined;
   // Public origin the container uses to fetch source APKs.
   origin: string;
+}
+
+// How far back device activity counts when choosing patch sources.
+const SOURCE_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * The installed versions worth a patch to `newApk`: those that devices on the
+ * new build's release channels ran most in the last 30 days, plus the latest
+ * earlier release on those channels; the nearest earlier releases fill any
+ * remaining places (and stand in alone when there is no device activity).
+ *
+ * Nearest version codes alone are the wrong sources once a channel has
+ * previews: 1.29.0 on main got patches only from 1.29 previews while main's
+ * devices ran 1.26–1.28, so none of them could be offered a patch.
+ */
+export async function selectPatchSources(
+  db: D1Database, appId: string, newApk: ApkAssetRow, keep: number, now = Date.now(),
+): Promise<ApkAssetRow[]> {
+  // One APK per released version code, for the new APK's arch.
+  const released = (await db.prepare(
+    `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes,
+            MAX(CASE WHEN r.channel_id IN (SELECT channel_id FROM releases WHERE build_id = ?4) THEN 1 ELSE 0 END) AS same_channel
+     FROM build_assets ba
+     JOIN builds b ON b.id = ba.build_id
+     JOIN releases r ON r.build_id = b.id
+     WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
+       AND (ba.arch IS ?2 OR ba.arch = ?2)
+       AND b.version_code < ?3
+       AND r.status IN ('active', 'superseded')
+     GROUP BY b.version_code
+     ORDER BY b.version_code DESC
+     LIMIT 200`,
+  ).bind(appId, newApk.arch, newApk.version_code, newApk.build_id).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
+  if (released.length === 0) return [];
+  const byCode = new Map(released.map((row) => [row.version_code, row]));
+  const active = (await db.prepare(
+    `SELECT p.version_code, COUNT(*) AS devices
+     FROM device_pings p
+     WHERE p.app_id = ?1 AND p.last_seen > ?2 AND p.version_code < ?3
+       AND p.channel IN (SELECT c.slug FROM channels c JOIN releases r ON r.channel_id = c.id WHERE r.build_id = ?4)
+     GROUP BY p.version_code
+     ORDER BY devices DESC, p.version_code DESC
+     LIMIT 50`,
+  ).bind(appId, now - SOURCE_ACTIVITY_WINDOW_MS, newApk.version_code, newApk.build_id)
+    .all<{ version_code: number; devices: number }>()).results ?? [];
+  const chosen: ApkAssetRow[] = [];
+  const add = (row: ApkAssetRow | undefined) => {
+    if (row && !chosen.some((c) => c.version_code === row.version_code)) {
+      const { same_channel: _ignored, ...asset } = row as ApkAssetRow & { same_channel?: number };
+      chosen.push(asset);
+    }
+  };
+  for (const { version_code } of active) {
+    if (chosen.length >= keep) break;
+    add(byCode.get(version_code));
+  }
+  // The release a channel's up-to-date devices are on, even before any ping.
+  add(released.find((row) => row.same_channel === 1));
+  for (const row of released) {
+    if (chosen.length >= keep + 1) break;
+    add(row);
+  }
+  return chosen;
 }
 
 /** Create the delta-generate operation row (pending). Returns it so callers can
@@ -135,22 +198,7 @@ export async function runDeltaGeneration(
     }
     const newApk = target.results[0]!;
 
-    const priors = await env.DB.prepare(
-      `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes
-       FROM build_assets ba
-       JOIN builds b ON b.id = ba.build_id
-       JOIN releases r ON r.build_id = b.id
-       WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-         AND (ba.arch IS ?2 OR ba.arch = ?2)
-         AND b.version_code < ?3
-         AND r.status IN ('active', 'superseded')
-       GROUP BY b.version_code
-       ORDER BY b.version_code DESC
-       LIMIT ?4`,
-    )
-      .bind(appId, newApk.arch, newApk.version_code, keep)
-      .all<ApkAssetRow>();
-    const priorRows = priors.results ?? [];
+    const priorRows = await selectPatchSources(env.DB, appId, newApk, keep);
     meta = {
       to_version_code: newApk.version_code,
       arch: newApk.arch,
