@@ -66,7 +66,7 @@ export async function createAgcServiceAccountJwt(credential: AgcServiceAccountCr
 }
 
 export type AgcAuth = { clientId?: string; accessToken: string };
-async function agcJson(auth: AgcAuth, path: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch) {
+export async function agcJson(auth: AgcAuth, path: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch) {
   const response = await fetchImpl(`https://connect-api.cloud.huawei.com${path}`, {
     ...init,
     headers: { "content-type": "application/json", ...(auth.clientId ? { client_id: auth.clientId } : {}), authorization: `Bearer ${auth.accessToken}`, ...(init.headers ?? {}) },
