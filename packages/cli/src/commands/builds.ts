@@ -10,7 +10,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -141,6 +141,14 @@ export function normalizeAndroidArch(value: string | undefined): string | null {
 }
 
 export const ANDROID_DELTA_PATCH_ALGORITHM = "archive-patcher-v1+gzip";
+/** Same patch, xz-compressed: about 30% smaller; applied by Android SDK 0.15.0+. */
+export const ANDROID_DELTA_PATCH_XZ_ALGORITHM = "archive-patcher-v1+xz";
+/**
+ * xz settings shared with the server's patch generator: single-threaded so the
+ * output is deterministic, and a 16 MiB dictionary so the SDK decodes it in
+ * about 17 MiB (its limit is 20 MiB).
+ */
+export const ANDROID_DELTA_PATCH_XZ_ARGS = ["--threads=1", "--lzma2=preset=9e,dict=16MiB", "-c"];
 const ANDROID_DELTA_PATCH_MAGIC = Buffer.from("GFbFv1_0", "ascii");
 
 interface AndroidDeltaPatchSpec {
@@ -152,11 +160,12 @@ export function androidDeltaPatchMetadata(args: {
   fromVersionCode: number;
   toVersionCode: number;
   targetSha256: string;
+  algorithm?: string;
 }): Record<string, unknown> {
   return {
     from_version_code: args.fromVersionCode,
     to_version_code: args.toVersionCode,
-    algorithm: ANDROID_DELTA_PATCH_ALGORITHM,
+    algorithm: args.algorithm ?? ANDROID_DELTA_PATCH_ALGORITHM,
     target_sha256: args.targetSha256,
   };
 }
@@ -1294,7 +1303,7 @@ export function registerBuildCommands(program: Command): void {
     )
     .option(
       "--generate-deltas <N>",
-      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Clients on those versions download the small patch instead of the full APK.",
+      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Each patch is uploaded gzip-compressed and, when `xz` is on PATH, also xz-compressed (about 30% smaller, used by Android SDK 0.15.0+). Clients on those versions download the small patch instead of the full APK.",
     )
     .option(
       "--changelog <text>",
@@ -2836,6 +2845,43 @@ async function ensureArchivePatcher(dir: string): Promise<string> {
   return `${jarPath}:${dir}`;
 }
 
+/**
+ * Recompress a gzip PatchGen output as xz with the `xz` tool. Returns false
+ * (and leaves no usable output) when `xz` is not installed, so callers can
+ * keep the gzip patch alone.
+ */
+export async function compressAndroidDeltaPatchXz(
+  gzipPatchPath: string,
+  xzPatchPath: string,
+  xzCommand = "xz",
+): Promise<boolean> {
+  const { createWriteStream } = await import("node:fs");
+  const child = spawn(xzCommand, ANDROID_DELTA_PATCH_XZ_ARGS, { stdio: ["pipe", "pipe", "inherit"] });
+  let spawnError: NodeJS.ErrnoException | undefined;
+  const exited = new Promise<number | null>((resolve) => {
+    child.once("error", (error) => {
+      spawnError = error;
+      resolve(null);
+    });
+    child.once("close", resolve);
+  });
+  try {
+    await Promise.all([
+      pipeline(createReadStream(gzipPatchPath), createGunzip(), child.stdin),
+      pipeline(child.stdout, createWriteStream(xzPatchPath)),
+      exited.then((code) => {
+        if (spawnError) throw spawnError;
+        if (code !== 0) throw new Error(`xz exited with code ${code}`);
+      }),
+    ]);
+    return true;
+  } catch (error) {
+    await exited;
+    if (spawnError?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 interface DeltaSource {
   from_version_code: number;
   arch: string | null;
@@ -2875,6 +2921,7 @@ async function generateAndUploadAndroidDeltas(args: {
   const uploaded: Array<{ id: string; artifact_kind: string; filetype: string; file_hash: string; size_bytes: number }> = [];
   try {
     const cp = await ensureArchivePatcher(work);
+    let xzMissing = false;
     for (const src of sources) {
       const oldPath = join(work, `old-${src.from_version_code}.apk`);
       const patchPath = join(work, `from-${src.from_version_code}.patch.gz`);
@@ -2906,6 +2953,38 @@ async function generateAndUploadAndroidDeltas(args: {
           }),
         }),
       );
+      // The xz copy is an extra for SDK 0.15.0+; the gzip patch above is what
+      // older SDKs apply, so an xz failure never fails the publish.
+      const xzPath = join(work, `from-${src.from_version_code}.patch.xz`);
+      if (!xzMissing) try {
+        if (!(await compressAndroidDeltaPatchXz(patchPath, xzPath))) {
+          console.error(`[delta] xz not installed; uploaded gzip patches only.`);
+          xzMissing = true;
+        } else {
+          const xzSize = readFileSync(xzPath).length;
+          if (xzSize >= patchSize) {
+            console.error(`[delta] v${src.from_version_code}: xz ${xzSize}B not smaller than gzip; skipping xz.`);
+          } else {
+            console.error(`[delta] v${src.from_version_code} -> v${args.toVersionCode}: xz patch ${xzSize}B (${(xzSize / args.newApkSize * 100).toFixed(1)}% of full)`);
+            uploaded.push(
+              await uploadAndRegisterAsset(args.appId, args.buildId, xzPath, {
+                artifact_kind: "delta-patch",
+                platform: "android",
+                arch: args.arch,
+                filetype: "patch.xz",
+                metadata_json: androidDeltaPatchMetadata({
+                  fromVersionCode: src.from_version_code,
+                  toVersionCode: args.toVersionCode,
+                  targetSha256: args.targetSha256,
+                  algorithm: ANDROID_DELTA_PATCH_XZ_ALGORITHM,
+                }),
+              }),
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`[delta] v${src.from_version_code}: xz patch failed (${(error as Error).message}); gzip patch kept.`);
+      }
     }
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {});
