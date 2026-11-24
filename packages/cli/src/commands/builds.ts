@@ -2956,18 +2956,21 @@ export async function compressAndroidDeltaPatchXz(
     });
     child.once("close", resolve);
   });
+  const steps = [
+    pipeline(createReadStream(gzipPatchPath), createGunzip(), child.stdin),
+    pipeline(child.stdout, createWriteStream(xzPatchPath)),
+    exited.then((code) => {
+      if (spawnError) throw spawnError;
+      if (code !== 0) throw new Error(`xz exited with code ${code}`);
+    }),
+  ];
   try {
-    await Promise.all([
-      pipeline(createReadStream(gzipPatchPath), createGunzip(), child.stdin),
-      pipeline(child.stdout, createWriteStream(xzPatchPath)),
-      exited.then((code) => {
-        if (spawnError) throw spawnError;
-        if (code !== 0) throw new Error(`xz exited with code ${code}`);
-      }),
-    ]);
+    await Promise.all(steps);
     return true;
   } catch (error) {
-    await exited;
+    // Let every stream close (the output file included) before returning, so
+    // callers can delete the work directory right away.
+    await Promise.allSettled(steps);
     if (spawnError?.code === "ENOENT") return false;
     throw error;
   }
