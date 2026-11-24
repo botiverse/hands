@@ -9,7 +9,9 @@ import build.hands.update.installer.ApkInstaller
 import build.hands.update.models.LatestUpdate
 import build.hands.update.models.Patch
 import build.hands.update.models.UpdateAsset
+import build.hands.update.DeltaReadyAction
 import build.hands.update.DurableInstallerLaunchResult
+import build.hands.update.deltaReadyAction
 import build.hands.update.launchWithDurableInstallerAuthority
 import com.google.archivepatcher.applier.FileByFileV1DeltaApplier
 import com.google.archivepatcher.shared.IDeflater
@@ -68,8 +70,11 @@ class DeltaUpdater(
      * Attempt to apply [patch] on top of the installed base APK and install the
      * result.
      *
+     * With [openInstaller] false (prepare), the verified APK is persisted as
+     * READY_TO_INSTALL and the installer is not opened.
+     *
      * @return `true` if a verified reconstructed APK was handed to the installer
-     *         (caller should stop); `false` for ANY failure (caller must fall
+     *         or persisted as READY (caller should stop); `false` for ANY failure (caller must fall
      *         back to the full download). Never throws.
      */
     fun tryApplyAndInstall(
@@ -79,6 +84,7 @@ class DeltaUpdater(
         appSlug: String,
         persistReadyToInstall: (apk: File, sha256: String) -> Unit = { _, _ -> },
         persistInstallerOpened: () -> Unit = {},
+        openInstaller: Boolean = true,
     ): Boolean {
         if (!deltaEnabled()) {
             emit("patch_fallback", "flag_off")
@@ -181,7 +187,10 @@ class DeltaUpdater(
             // Without the "install unknown apps" permission the installer
             // cannot open. Keep the verified APK as READY: the host sends the
             // person to the permission screen and reopens it from there.
-            if (!installer.canRequestPackageInstalls()) {
+            // A prepare() caller stops here too: the verified APK stays READY
+            // until the host reopens it.
+            val action = deltaReadyAction(openInstaller, installer.canRequestPackageInstalls())
+            if (action != DeltaReadyAction.OPEN_INSTALLER) {
                 try {
                     persistReadyToInstall(reconstructed, actualSha)
                 } catch (_: Throwable) {
@@ -189,7 +198,10 @@ class DeltaUpdater(
                     return false
                 }
                 installed = true
-                emit("install_permission_required", "install_permission_required")
+                if (action == DeltaReadyAction.KEEP_READY_PERMISSION_REQUIRED) {
+                    emit("install_permission_required", "install_permission_required")
+                }
+                log("delta_applied bytes_saved=${asset.size_bytes - patch.size_bytes} installer=deferred")
                 return true
             }
             when (launchWithDurableInstallerAuthority(

@@ -306,6 +306,7 @@ class UpdateChecker @JvmOverloads constructor(
      */
     suspend fun install(languageTag: String? = this.languageTag): HandsUpdateStatus {
         return commandGate.run {
+            InstallerOpenIntent.request(authorityKey)
             val current = withContext(Dispatchers.IO) { reconcileTransaction() }
             when (current.state) {
                 HandsUpdateState.CHECKING,
@@ -340,6 +341,47 @@ class UpdateChecker @JvmOverloads constructor(
             }
         }
     }
+
+    /**
+     * Like [install], but stops at [HandsUpdateState.READY_TO_INSTALL]
+     * without opening the system installer: the patch is applied (or the
+     * full APK downloaded) and verified, then kept as the pending target.
+     * Call [reopenPendingInstaller] (or [install]) when the person chooses to
+     * install. Suited to background pre-download; the host decides when
+     * (for example only on unmetered Wi-Fi).
+     *
+     * A full download still runs through DownloadManager, which shows its
+     * own notification. A patch interrupted by process death is recovered
+     * by [status] exactly as for [install].
+     */
+    suspend fun prepare(languageTag: String? = this.languageTag): HandsUpdateStatus {
+        return commandGate.run {
+            val current = withContext(Dispatchers.IO) { reconcileTransaction() }
+            when (current.state) {
+                HandsUpdateState.CHECKING,
+                HandsUpdateState.PATCHING,
+                HandsUpdateState.DOWNLOADING,
+                -> current
+
+                else -> {
+                    InstallerOpenIntent.deferOpen(authorityKey)
+                    try {
+                        checkAndInstallUnlocked(languageTag, openInstaller = false)
+                    } catch (_: Exception) {
+                        // The command records the precise failure boundary.
+                    }
+                    withContext(Dispatchers.IO) { reconcileTransaction() }
+                }
+            }
+        }
+    }
+
+    /** [prepare] for Java hosts. Close the result to stop waiting (the work itself goes on). */
+    @JvmOverloads
+    fun prepareAsync(
+        languageTag: String? = this.languageTag,
+        callback: HandsUpdateCallback<HandsUpdateStatus>,
+    ): Closeable = scope.deliver(callback) { prepare(languageTag) }
 
     /** Reopen the same verified APK without checking or downloading again. */
     suspend fun reopenPendingInstaller(): HandsUpdateStatus = commandGate.run {
@@ -442,9 +484,15 @@ class UpdateChecker @JvmOverloads constructor(
      *         caller can display a "you are up to date" message.
      */
     suspend fun checkAndInstall(languageTag: String? = this.languageTag): UpdateCheckResponse =
-        commandGate.run { checkAndInstallUnlocked(languageTag) }
+        commandGate.run {
+            InstallerOpenIntent.request(authorityKey)
+            checkAndInstallUnlocked(languageTag)
+        }
 
-    private suspend fun checkAndInstallUnlocked(languageTag: String?): UpdateCheckResponse {
+    private suspend fun checkAndInstallUnlocked(
+        languageTag: String?,
+        openInstaller: Boolean = true,
+    ): UpdateCheckResponse {
         val requestedLanguage = normalizedLanguageTag(languageTag)
         var prior = transactionStore.read()
         if (prior?.downloadRequestId != null && prior.downloadId == null &&
@@ -519,7 +567,7 @@ class UpdateChecker @JvmOverloads constructor(
         val offeredUpdate = response.requireUpdate()
         if (offeredUpdate != null) {
             try {
-                installUpdate(response, requestedLanguage, resolvedLanguage)
+                installUpdate(response, requestedLanguage, resolvedLanguage, openInstaller)
             } catch (exception: Exception) {
                 transactionStore.read()?.takeIf {
                     (it.state == HandsUpdateState.CHECKING || it.state == HandsUpdateState.PATCHING) &&
@@ -586,6 +634,7 @@ class UpdateChecker @JvmOverloads constructor(
         response: UpdateCheckResponse,
         requestedLanguageTag: String?,
         resolvedLanguageTag: String?,
+        openInstaller: Boolean = true,
     ) {
         val (latest, asset) = response.requireUpdate() ?: return
         val existing = transactionStore.read()
@@ -604,7 +653,9 @@ class UpdateChecker @JvmOverloads constructor(
                         HandsUpdateState.READY_TO_INSTALL,
                         HandsUpdateState.INSTALLER_OPENED,
                         -> {
-                            withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
+                            if (openInstaller) {
+                                withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
+                            }
                             return
                         }
 
@@ -691,6 +742,7 @@ class UpdateChecker @JvmOverloads constructor(
                             HandsUpdateState.INSTALLER_OPENED,
                         )
                     },
+                    openInstaller = openInstaller,
                 )
                 }
             } finally {
@@ -699,7 +751,8 @@ class UpdateChecker @JvmOverloads constructor(
             }
             if (applied) {
                 durableReady?.takeIf {
-                    transactionStore.read()?.state == HandsUpdateState.READY_TO_INSTALL &&
+                    openInstaller &&
+                        transactionStore.read()?.state == HandsUpdateState.READY_TO_INSTALL &&
                         !installer.canRequestPackageInstalls()
                 }?.let { ready -> withContext(Dispatchers.IO) { requireInstallPermission(ready) } }
                 return
@@ -772,7 +825,8 @@ class UpdateChecker @JvmOverloads constructor(
             scope.launch {
                 commandGate.run {
                     val completed = withContext(Dispatchers.IO) { reconcileTransaction() }
-                    if (completed.state == HandsUpdateState.READY_TO_INSTALL) {
+                    if (completed.state == HandsUpdateState.READY_TO_INSTALL &&
+                        InstallerOpenIntent.shouldOpen(authorityKey)) {
                         withContext(Dispatchers.IO) { reopenPendingInstallerUnlocked() }
                     }
                 }

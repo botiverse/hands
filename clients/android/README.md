@@ -146,6 +146,19 @@ setting changes, start `checker.installPermissionSettingsIntent()`, and call
 `checker.reopenPendingInstaller()` when the app is back in the foreground.
 `checker.canInstallUpdates()` reports the current permission.
 
+### Preparing an update in the background
+
+`checker.prepare()` (0.15.1+) does the same check, patch or download and
+verification as `install()`, but stops at `ready_to_install` without opening the
+system installer. Use it for background pre-download, for example only on
+unmetered Wi-Fi (the host decides when to call it). When the person chooses to
+update, call `checker.reopenPendingInstaller()` (or `install()`) to open the
+installer for the same verified APK. If the person taps install while a prepared
+full download is still running, the installer opens when it finishes. A full
+download still shows DownloadManager's notification, and a patch interrupted by
+process death is recovered by `status()` as usual. Java hosts use
+`prepareAsync`.
+
 If the update check fails (offline, Hands unreachable) while a verified APK
 is ready, `install()` reopens that APK instead of doing nothing.
 
@@ -202,7 +215,7 @@ The server resolves release scope, rollout, version comparison, and APK asset se
 ### Java hosts
 
 Every suspending call has a callback twin that delivers on the main thread:
-`checkAsync`, `installAsync`, `statusAsync`, `reopenPendingInstallerAsync`,
+`checkAsync`, `installAsync`, `prepareAsync`, `statusAsync`, `reopenPendingInstallerAsync`,
 and `observeStatus(listener)` for `statusUpdates()`. Each returns a
 `Closeable`; close it to cancel (closing `installAsync` stops waiting, not the
 update). The constructor has Java overloads for its defaulted parameters.
