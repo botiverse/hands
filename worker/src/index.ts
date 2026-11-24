@@ -1,4 +1,5 @@
 import { handleGetPlayReviewStatus } from "./routes/play_review_status";
+import { handleCreateFeedbackRule, handleDeleteFeedbackRule, handleListFeedbackRules, handlePreviewFeedbackRule, handleUpdateFeedbackRule } from "./routes/feedback_rules";
 import { jsonBodyLimit } from "./middleware/json_body_limit";
 import { handleGetAppQuota } from "./routes/upstream_quota";
 import { serveConsolePage } from "./lib/raft_host_sign_in";
@@ -1305,6 +1306,13 @@ bindAdmin("put", "/api/apps/:appId/icon", requireAppRole("publisher"), handleUpl
 bindAdmin("get", "/api/apps/:appId/client-key", requireAppRole("admin"), handleGetClientKey);
 bindAdmin("post", "/api/apps/:appId/rotate-client-key", requireAppRole("admin"), handleRotateClientKey);
 bindAdmin("get", "/api/apps/:appId/feedback/crash-groups", requireAppRole("viewer"), handleListCrashGroups);
+// Noise rules for crash and error reports (routes/feedback_rules.ts): viewers
+// can list them; previewing and changing them needs the role that triages tickets.
+bindAdmin("get", "/api/apps/:appId/feedback/rules", requireAppRole("viewer"), handleListFeedbackRules);
+bindAdmin("post", "/api/apps/:appId/feedback/rules/preview", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handlePreviewFeedbackRule);
+bindAdmin("post", "/api/apps/:appId/feedback/rules", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleCreateFeedbackRule);
+bindAdmin("patch", "/api/apps/:appId/feedback/rules/:ruleId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedbackRule);
+bindAdmin("delete", "/api/apps/:appId/feedback/rules/:ruleId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleDeleteFeedbackRule);
 bindAdmin("get", "/api/apps/:appId/feedback/stats", requireAppRole("viewer"), handleFeedbackStats);
 bindAdmin("post", "/api/apps/:appId/feedback/background-system-kills/daily-summary", requireAppRole("admin"), handleSendBackgroundSystemKillDailySummary);
 bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"), handleDeviceAnalytics);

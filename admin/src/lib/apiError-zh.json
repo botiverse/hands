@@ -551,5 +551,15 @@
   "request body is larger than 8 MiB": "请求体超过 8 MiB",
   "Hands is no longer installed on this Raft server, so its Hands organization is not available.": "这个 Raft 服务器已不再安装 Hands，所以它在 Hands 里的组织暂时不可用。",
   "feedback_filter must be an object": "feedback_filter 必须是一个对象",
-  "feedback_filter.exclude_reporter_servers must list at most 20 Raft server ids or slugs": "feedback_filter.exclude_reporter_servers 最多列出 20 个 Raft 服务器的 id 或 slug"
+  "feedback_filter.exclude_reporter_servers must list at most 20 Raft server ids or slugs": "feedback_filter.exclude_reporter_servers 最多列出 20 个 Raft 服务器的 id 或 slug",
+  "action must be close or mute": "action 必须是 close 或 mute",
+  "an app has at most 50 rules": "一个应用最多 50 条规则",
+  "days must be 1-90": "days 必须在 1 到 90 之间",
+  "enabled must be true or false": "enabled 必须是 true 或 false",
+  "match must be an object": "match 必须是一个对象",
+  "match needs at least one condition besides kinds": "match 除 kinds 外至少需要一个条件",
+  "match.foreground must be true or false": "match.foreground 必须是 true 或 false",
+  "name is required (at most 120 characters)": "需要提供名称（最多 120 个字符）",
+  "protect_high_risk must be true or false": "protect_high_risk 必须是 true 或 false",
+  "rule not found": "未找到规则"
 }

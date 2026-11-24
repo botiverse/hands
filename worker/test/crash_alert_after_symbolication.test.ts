@@ -285,3 +285,33 @@ describe("crash alerts skip kills from outside the app", () => {
     expect(alerts(other.sqlite).map((a) => a.event_type)).toEqual(["crash:new_group"]);
   });
 });
+
+describe("per-app noise rules", () => {
+  it("closes a matching system kill as not_planned, names the rule, sends no alert, and never matches a native crash", async () => {
+    retraceGate = Promise.resolve();
+    const h = environment();
+    const appId = (h.sqlite.prepare("SELECT id FROM apps WHERE slug = 'raft-android'").get() as { id: string }).id;
+    h.sqlite.prepare(`INSERT INTO feedback_rules (id, app_id, name, enabled, action, match_json, protect_high_risk, created_at, updated_at)
+      VALUES ('rule-1', ?, 'Huawei background kill', 1, 'close', ?, 1, 1, 1)`)
+      .run(appId, JSON.stringify({ exit_reason_codes: [2, 5], exit_statuses: [9], exit_importance_min: 200, foreground: false }));
+    const id = await submitSystemKill(h, "192.0.2.200",
+      { crash_exit_reason_code: 2, crash_exit_status: 9, crash_exit_reason: "signaled", crash_exit_importance: 230, crash_foreground: false, device_id: "p1" });
+    await Promise.all(h.pending);
+    const row = h.sqlite.prepare("SELECT status, closure_reason, metadata_json FROM feedback_tickets WHERE id = ?").get(id) as
+      { status: string; closure_reason: string; metadata_json: string };
+    expect([row.status, row.closure_reason]).toEqual(["closed", "not_planned"]);
+    expect(JSON.parse(row.metadata_json).hands_rule).toEqual({ id: "rule-1", name: "Huawei background kill", action: "close" });
+    expect(alerts(h.sqlite)).toEqual([]);
+    expect(h.sqlite.prepare("SELECT hits FROM feedback_rules WHERE id = 'rule-1'").get()).toEqual({ hits: 1 });
+    // Exit reason 5 (CRASH_NATIVE) is in the rule's codes, but high-risk exits are protected.
+    const native = await submitSystemKill(h, "192.0.2.201",
+      { crash_exit_reason_code: 5, crash_exit_status: 9, crash_exit_reason: "crash_native", crash_exit_importance: 230, crash_foreground: false, device_id: "p2" });
+    await Promise.all(h.pending);
+    expect(h.sqlite.prepare("SELECT status FROM feedback_tickets WHERE id = ?").get(native)).toEqual({ status: "open" });
+    // A disabled rule does nothing.
+    h.sqlite.prepare("UPDATE feedback_rules SET enabled = 0").run();
+    const after = await submitSystemKill(h, "192.0.2.202",
+      { crash_exit_reason_code: 2, crash_exit_status: 9, crash_exit_reason: "signaled", crash_exit_importance: 230, crash_foreground: false, device_id: "p3" });
+    expect(h.sqlite.prepare("SELECT status FROM feedback_tickets WHERE id = ?").get(after)).toEqual({ status: "open" });
+  });
+});

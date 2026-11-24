@@ -906,6 +906,24 @@ hands feedback update raft-android <ticket-id> --closure-reason duplicate --dupl
 
 `--assignee none` 移除负责人。关闭工单时必须提供 `--closure-reason`（`completed`、`not_planned`、`cannot_reproduce` 或 `duplicate`），重复工单还需提供 `--duplicate-of <ticket-id>`；`no_longer_needed` 只出现在提交者自己关闭的工单上。所有子命令都接受 `--json`，便于编写脚本。对于启用外部报告分流的 iOS 应用，`--build-scope` 接受 `standard`、`external` 或 `all`；默认包含已配置和未知来源。Bundle ID 由客户端上报，不能用于验证身份。
 
+### 崩溃上报的噪音规则
+
+应用可以自己配置规则，把已知是噪音的崩溃和错误上报（例如某个厂商在后台杀进程）自动处理掉，不必在 Hands 里写死。规则按上报里的字段匹配，命中后二选一：以 `not_planned` 关闭工单（`close`），或保持打开但不触发实时崩溃告警（`mute`）。上报本身一律保留，工单的元数据里会写明命中的规则（`hands_rule`）。native 崩溃、ANR 和 Java 异常（包括报告它们的系统退出，退出原因 4、5、6）默认不会被匹配，除非添加规则时加 `--no-protect`。规则建好后默认关闭，只作用于新上报；多条规则都启用时，先建的先生效。
+
+```bash
+# 先看会命中什么，不做任何修改
+hands feedback rules preview raft-android --days 30 \
+  --match '{"exit_reason_codes":[2],"exit_statuses":[9],"exit_importance_min":200,"foreground":false,"device_brands":["huawei"]}'
+
+hands feedback rules add raft-android --name "华为后台 SIGKILL" --action close --match @rule.json
+hands feedback rules list raft-android
+hands feedback rules enable raft-android <rule-id>
+hands feedback rules disable raft-android <rule-id>
+hands feedback rules delete raft-android <rule-id>
+```
+
+可用条件（给出的条件需全部满足）：`kinds`、`signatures` 和 `device_models`（完全匹配，或以 `*` 结尾按前缀匹配）、`crash_types`、`exit_reason_codes`、`exit_statuses`、`exit_importance_min` / `exit_importance_max`、`foreground`、`channels`、`device_brands`（品牌或厂商，不区分大小写）、`version_code_min` / `version_code_max`。除 `kinds` 外至少要有一个条件。预览会检查最近最多 90 天内最新的 5000 张崩溃和错误工单，返回命中数、其中仍打开的数量、按崩溃分组的统计和示例。viewer 可以查看规则；预览和修改需要处理工单的权限（publisher 或 `feedback:triage`）。API：`GET/POST /api/apps/:appId/feedback/rules`、`PATCH/DELETE /api/apps/:appId/feedback/rules/:ruleId`、`POST /api/apps/:appId/feedback/rules/preview`。
+
 ## 应用 Webhook
 
 应用管理员可以为单个应用的事件订阅端点，无需组织管理员权限。服务端将这些 Webhook 限定于应用；组织范围的 Webhook（全部应用）仍仅限组织管理员管理，不列在这里。
