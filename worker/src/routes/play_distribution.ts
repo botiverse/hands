@@ -541,6 +541,45 @@ async function priorMappingReceipt(
     .first<{ id: string }>();
 }
 
+/**
+ * A successful earlier upload of this exact file for this exact release:
+ * a promote (its `mapping`/`symbols` entry) or an upload-symbols receipt.
+ * Google keeps the deobfuscation files attached when a version code's bundle
+ * was added and refuses to change them, so uploading the same file again
+ * fails with VERSION_CODE_CONFLICT; such a file is skipped instead.
+ */
+async function priorDeobfuscationUpload(
+  db: D1Database, appId: string, artifact: ReleaseArtifactRow,
+  type: PlayDeobfuscationKind, asset: ReleaseSymbolsRow,
+): Promise<{ id: string } | null> {
+  const field = type === "proguard" ? "$.mapping" : "$.symbols";
+  return db.prepare(
+    `SELECT id FROM release_receipts
+     WHERE app_id = ?1 AND release_id = ?2 AND artifact_id = ?3
+       AND kind = 'play-promotion' AND verdict = 'success'
+       AND artifact_sha256 = ?4 AND artifact_size = ?5 AND package_name = ?6
+       AND source_commit = ?7 AND version_code = ?8
+       AND json_extract(payload_json, '$.result.status') = 'success'
+       AND (
+         (action = 'promote'
+           AND json_extract(payload_json, ?9 || '.uploaded') = 1
+           AND json_extract(payload_json, ?9 || '.provider_ack') = ?10
+           AND json_extract(payload_json, ?9 || '.sha256') = ?11
+           AND json_extract(payload_json, ?9 || '.size_bytes') = ?12)
+         OR (action = 'upload-symbols' AND EXISTS (
+           SELECT 1 FROM json_each(payload_json, '$.files') f
+           WHERE json_extract(f.value, '$.type') = ?13
+             AND json_extract(f.value, '$.uploaded') = 1
+             AND json_extract(f.value, '$.sha256') = ?11
+             AND json_extract(f.value, '$.size_bytes') = ?12))
+       )
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).bind(appId, artifact.release_id, artifact.asset_id, artifact.file_hash, artifact.size_bytes,
+    artifact.package_name, artifact.source_commit, artifact.version_code,
+    field, `deobfuscationFile.symbolType=${type}`, asset.file_hash, asset.size_bytes, type)
+    .first<{ id: string }>();
+}
+
 async function insertReceipt(
   db: D1Database,
   args: {
@@ -1912,6 +1951,27 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
     }
     selected.push({ type, asset });
   }
+  // Files already on Google Play for this version code are not sent again.
+  const alreadyUploaded: { type: PlayDeobfuscationKind; sha256: string; size_bytes: number; prior_receipt_id: string }[] = [];
+  for (let i = selected.length - 1; i >= 0; i -= 1) {
+    const { type, asset } = selected[i]!;
+    const prior = await priorDeobfuscationUpload(c.env.DB, appId, artifact, type, asset);
+    if (prior) {
+      alreadyUploaded.unshift({ type, sha256: asset.file_hash, size_bytes: asset.size_bytes, prior_receipt_id: prior.id });
+      selected.splice(i, 1);
+    }
+  }
+  if (selected.length === 0 && alreadyUploaded.length > 0) {
+    // Nothing to send: no Play edit, no revision change, no receipt.
+    return c.json({
+      mode: input.mode,
+      version_code: artifact.version_code,
+      package_name: artifact.package_name,
+      files: [],
+      already_uploaded: alreadyUploaded,
+      revision: input.expected_revision,
+    });
+  }
   if (selected.length === 0) {
     if (!input.kinds && symbols.status === "missing" && symbols.attachedPresent) {
       return fail(c, 400, { code: "gate_failed", gate: "deobfuscation_files", failure_code: "native_symbols_selection_required", message: "attached native symbols require explicit nativeCode selection; uploading replaces the version's existing Play native symbols" });
@@ -1987,6 +2047,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
         version_code: artifact.version_code,
         package_name: artifact.package_name,
         files,
+        ...(alreadyUploaded.length ? { already_uploaded: alreadyUploaded } : {}),
         version_on_play: true,
       });
     }
@@ -2098,6 +2159,7 @@ export async function handleUploadPlaySymbols(c: AdminContext) {
       version_code: artifact.version_code,
       package_name: artifact.package_name,
       files: receiptFiles,
+      ...(alreadyUploaded.length ? { already_uploaded: alreadyUploaded } : {}),
       revision: input.expected_revision + 1,
     });
   });
