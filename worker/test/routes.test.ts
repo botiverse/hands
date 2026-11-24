@@ -30,6 +30,7 @@ import {
 import {
   handleUpdateFeedback,
   handleAddFeedbackComment,
+  handleMakeFeedbackCommentInternal,
   resetSymbolication,
   appendSymbolication,
   dispatchSymbolication,
@@ -1539,6 +1540,11 @@ describe("quiver route handlers — SQL smoke", () => {
       requireFeedbackTriageRole() as any,
       handleAddFeedbackComment as any,
     );
+    testApp.patch(
+      "/api/apps/:appId/feedback/:ticketId/comments/:commentId",
+      requireFeedbackTriageRole() as any,
+      handleMakeFeedbackCommentInternal as any,
+    );
 
     // Org viewer (read-only) cannot triage.
     const viewerResponse = await testApp.request(
@@ -1592,6 +1598,44 @@ describe("quiver route handlers — SQL smoke", () => {
       .first()) as { body: string; internal: number } | null;
     expect(comment?.body).toBe("fixed by mobile #999");
     expect(comment?.internal).toBe(1);
+
+    // A reply posted publicly by mistake can be made internal, one way only.
+    const publicReply = await testApp.request(
+      `https://quiver-worker.test/api/apps/fb-app/feedback/${ticketId}/comments`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ body: "engineering note posted publicly", internal: false }),
+      },
+      env as any,
+    );
+    expect(publicReply.status).toBe(201);
+    const publicId = ((await publicReply.json()) as { id: string }).id;
+    const patchComment = (token: string, commentId: string, internal: unknown) => testApp.request(
+      `https://quiver-worker.test/api/apps/fb-app/feedback/${ticketId.slice(0, 8)}/comments/${commentId}`,
+      {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ internal }),
+      },
+      env as any,
+    );
+    expect((await patchComment(viewerToken, publicId.slice(0, 8), true)).status).toBe(403);
+    expect((await patchComment(memberToken, publicId.slice(0, 8), false)).status).toBe(400);
+    const made = await patchComment(memberToken, publicId.slice(0, 8), true);
+    expect(made.status).toBe(200);
+    await expect(made.json()).resolves.toMatchObject({ comment: { id: publicId, internal: true }, changed: true });
+    await expect((await patchComment(memberToken, publicId, true)).json()).resolves.toMatchObject({ changed: false });
+    const flipped = (await env.DB
+      .prepare("SELECT internal FROM feedback_comments WHERE id = ?")
+      .bind(publicId)
+      .first()) as { internal: number } | null;
+    expect(flipped?.internal).toBe(1);
+    const audit = (await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM audit_logs WHERE action = 'feedback.comment_made_internal'")
+      .first()) as { n: number } | null;
+    expect(audit?.n).toBe(1);
+    expect((await patchComment(memberToken, "ffffffff", true)).status).toBe(404);
   });
 
   it("lets an app publisher set feature flags (was admin-only) but denies plain members", async () => {

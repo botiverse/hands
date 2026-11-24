@@ -3860,6 +3860,52 @@ async function resolveTicketId(
   return { id: results[0]!.id };
 }
 
+/**
+ * PATCH /api/apps/:appId/feedback/:ticketId/comments/:commentId — makes a
+ * staff reply internal ({"internal": true}), for a note posted publicly by
+ * mistake. One way only: an internal note is never made public afterwards,
+ * because that would send staff-only text to the reporter.
+ *
+ * The reporter's views and change feed read `internal` live, so the comment
+ * disappears from them; a reporter app that already fetched it keeps its copy.
+ */
+export async function handleMakeFeedbackCommentInternal(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const resolved = await resolveTicketId(c.env.DB, appId, c.req.param("ticketId"));
+  if ("error" in resolved) return ticketResolveError(c, resolved);
+  const ticketId = resolved.id;
+  const body = (await c.req.json().catch(() => ({}))) as { internal?: unknown };
+  if (body.internal !== true) {
+    return c.json({ error: "only {\"internal\": true} is supported: an internal note cannot be made public" }, 400);
+  }
+  const rawComment = (c.req.param("commentId") ?? "").trim().toLowerCase();
+  if (rawComment.length < 4 || !/^[0-9a-f-]+$/.test(rawComment)) return c.json({ error: "comment not found" }, 404);
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, author_type, internal FROM feedback_comments
+     WHERE ticket_id = ?1 AND (id = ?2 OR id LIKE ?3) ORDER BY id LIMIT 6`,
+  ).bind(ticketId, rawComment, `${rawComment}%`).all<{ id: string; author_type: string; internal: number }>();
+  const exact = results.find((row) => row.id === rawComment);
+  if (!exact && results.length > 1) {
+    return c.json({ error: `comment id prefix matches ${results.length} comments; use the full UUID` }, 409);
+  }
+  const comment = exact ?? results[0];
+  if (!comment) return c.json({ error: "comment not found" }, 404);
+  if (comment.author_type === "reporter") {
+    return c.json({ error: "a reporter's own comment cannot be made internal" }, 409);
+  }
+  if (comment.internal === 1) return c.json({ comment: { id: comment.id, internal: true }, changed: false });
+  const now = Date.now();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE feedback_comments SET internal = 1 WHERE id = ?1 AND ticket_id = ?2 AND internal = 0")
+      .bind(comment.id, ticketId),
+    c.env.DB.prepare(
+      `INSERT INTO audit_logs (id, app_id, action, actor, payload, created_at)
+       VALUES (?1, ?2, 'feedback.comment_made_internal', ?3, ?4, ?5)`,
+    ).bind(crypto.randomUUID(), appId, currentActor(c), JSON.stringify({ ticket_id: ticketId, comment_id: comment.id }), now),
+  ]);
+  return c.json({ comment: { id: comment.id, internal: true }, changed: true });
+}
+
 /** Map a failed ticket resolution to a JSON response. */
 function ticketResolveError(c: AdminContext, r: { error: "not_found" } | { error: "ambiguous"; count: number }) {
   if (r.error === "ambiguous") {

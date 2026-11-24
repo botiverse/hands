@@ -231,6 +231,25 @@ export function registerFeedbackCommands(program: Command): void {
     });
 
   feedback
+    .command("make-internal <appIdOrSlug> <ticketId> <commentId>")
+    .description("Make a reply posted publicly by mistake a staff-only internal note. One way: an internal note cannot be made public.")
+    .option("--json", "Output JSON.", false)
+    .action(async (appIdOrSlug: string, ticketId: string, commentId: string, opts: { json?: boolean }) => {
+      const appId = await resolveAppId(appIdOrSlug);
+      const res = await apiRequest<{ comment: { id: string }; changed: boolean }>(
+        `/api/apps/${appId}/feedback/${encodeURIComponent(ticketId)}/comments/${encodeURIComponent(commentId)}`,
+        { method: "PATCH", body: { internal: true } },
+      );
+      if (jsonRequested(program, opts.json)) {
+        console.log(JSON.stringify(res, null, 2));
+        return;
+      }
+      console.log(res.changed
+        ? `Comment ${res.comment.id.slice(0, 8)} is now internal. A reporter app that already fetched it keeps its copy.`
+        : `Comment ${res.comment.id.slice(0, 8)} was already internal.`);
+    });
+
+  feedback
     .command("download-attachment <appIdOrSlug> <ticketId> <attachmentId>")
     .alias("download")
     .description(

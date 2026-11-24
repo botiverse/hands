@@ -17,6 +17,10 @@ import {
 
 const AppTicketParams = AppIdParam.merge(TicketIdParam);
 const AttachmentParams = AppTicketParams.merge(AttachmentIdParam);
+const CommentParams = AppTicketParams.merge(z.object({ commentId: z.string().describe("Comment ID or an unambiguous prefix (4+ characters).") }));
+const FeedbackCommentInternalInput = z.object({
+  internal: z.literal(true).describe("Only true is accepted: an internal note cannot be made public."),
+});
 const BuildScope = z.enum(["standard", "external", "all"]).optional()
   .describe("For apps with bundle-origin filtering enabled: standard includes configured and unknown origins, external selects mismatches, all includes both.");
 
@@ -371,6 +375,24 @@ export const feedbackRoutes: Record<string, RouteConfigDef> = {
       400: error("Invalid comment payload."),
       403: error("Current principal cannot comment on feedback ticket."),
       404: error("Feedback ticket was not found."),
+    },
+  },
+  makeFeedbackCommentInternal: {
+    method: "patch",
+    path: "/api/apps/{appId}/feedback/{ticketId}/comments/{commentId}",
+    tags: ["Feedback"],
+    summary: "Make a public reply a staff-only internal note",
+    security: auth,
+    request: {
+      params: CommentParams,
+      body: { content: json(FeedbackCommentInternalInput), required: true },
+    },
+    responses: {
+      200: success("The comment is internal; `changed` is false when it already was.", GenericObject),
+      400: error("Only {\"internal\": true} is accepted."),
+      403: error("Current principal cannot triage feedback."),
+      404: error("Feedback ticket or comment was not found."),
+      409: error("Ambiguous comment prefix, or a reporter's own comment."),
     },
   },
   downloadFeedbackAttachment: {
