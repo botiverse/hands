@@ -215,6 +215,8 @@ interface NotificationApp {
   dashboardOrigin?: string | null;
   /** For feedback:new, who reported it and from which Raft server, read from the ticket. */
   feedbackReporter?: { handle: string | null; server: string | null } | null;
+  /** The ticket was filed before this destination saw it: an update starts its thread. */
+  earlierFeedback?: boolean;
 }
 
 function feedbackLink(origin: string | null | undefined, appId: string | null, ticketId: string | null): string | null {
@@ -226,6 +228,39 @@ function feedbackLink(origin: string | null | undefined, appId: string | null, t
   } catch {
     return null;
   }
+}
+
+/** The ticket fields an earlier ticket's root message is built from. */
+export interface EarlierFeedbackTicket {
+  id: string;
+  kind: string;
+  message: string;
+  version_name: string | null;
+  version_code: number | null;
+  created_at: number;
+}
+
+/**
+ * The first message of a thread that starts with an update to a ticket this
+ * destination never announced: laid out like a new ticket (app, preview,
+ * reporter, version, link), titled as earlier feedback, timed at filing.
+ */
+export function formatEarlierFeedbackRoot(
+  ticket: EarlierFeedbackTicket,
+  app: NotificationApp,
+): string {
+  return formatRaftNotificationMessage({
+    event: "feedback:new",
+    app_id: app.id,
+    payload: {
+      ticket_id: ticket.id,
+      kind: ticket.kind,
+      message: ticket.message.slice(0, 500),
+      version_name: ticket.version_name,
+      version_code: ticket.version_code,
+      occurred_at: new Date(ticket.created_at).toISOString(),
+    },
+  }, { ...app, earlierFeedback: true });
 }
 
 /** A deterministic, content-free root when a destination first sees a ticket update. */
@@ -594,15 +629,19 @@ function feedbackMessage(
   appId: string | null, cliApp: string | null, ticketId: string | null, occurred: string | null,
   dashboardOrigin: string | null | undefined,
   reporter?: NotificationApp["feedbackReporter"],
+  earlier = false,
 ): string {
   const kind = safeValue(payload.kind);
-  const names = new Map<string, string>([
+  const names = new Map<string, string>(earlier ? [
+    ["feedback", "Earlier feedback"], ["bug", "Earlier bug report"],
+    ["crash", "Earlier crash report"], ["error", "Earlier error report"],
+  ] : [
     ["feedback", "New feedback"], ["bug", "New bug report"],
     ["crash", "New crash report"], ["error", "New error report"],
   ]);
   const title = event === "feedback:comment_created" ? "New comment"
     : event === "feedback:status_changed" ? "Feedback status changed"
-    : names.get(kind ?? "") ?? "New feedback report";
+    : names.get(kind ?? "") ?? (earlier ? "Earlier feedback report" : "New feedback report");
   const icon = event === "feedback:comment_created" ? "💬" : event === "feedback:status_changed" ? "🔄" : "📮";
   const app = appName ?? safePreview(appId, 160);
   // A validated dashboard link keeps the details reachable even when a
@@ -665,7 +704,7 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
     ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
   if (isFeedbackThreadEvent(event)) {
     return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred, knownApp?.dashboardOrigin,
-      knownApp?.feedbackReporter);
+      knownApp?.feedbackReporter, knownApp?.earlierFeedback === true);
   }
   if (MARKET_EVENTS.has(event)) return marketMessage(event, payload, build, appName ?? appIdDisplay, cliApp, ticketId, occurred);
   if (PRESENTATIONS.has(event) && (event.startsWith("release:") || event.startsWith("build:"))) {

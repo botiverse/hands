@@ -94,7 +94,8 @@ async function harness() {
   `);
   sqlite.exec(readFileSync(new URL("../../migrations/sql/0087_raft_notification_cards.sql", import.meta.url), "utf8"));
   sqlite.exec(readFileSync(new URL("../../migrations/sql/0114_raft_notification_feedback_filter.sql", import.meta.url), "utf8"));
-  sqlite.exec("CREATE TABLE feedback_tickets (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, kind TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')");
+  sqlite.exec(readFileSync(new URL("../../migrations/sql/0118_raft_notification_root_content.sql", import.meta.url), "utf8"));
+  sqlite.exec("CREATE TABLE feedback_tickets (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, kind TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', message TEXT NOT NULL DEFAULT '', version_name TEXT, version_code INTEGER, created_at INTEGER NOT NULL DEFAULT 0)");
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
   sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, archived) VALUES (?, 'org-1', 'sample-app', 'Sample App', 0)").run(APP_ID);
   sqlite.prepare(
@@ -404,7 +405,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
     await updateConfig({ card_updates: true });
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?,?,?,?,?)")
       .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
@@ -431,7 +432,7 @@ describe("Hands-managed Raft notifications", () => {
       const { request, sqlite, updateConfig } = await harness();
       await updateConfig({ events: ["google_play:submission_failed"] });
       await updateConfig({ card_updates: true });
-      sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+      sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?,?,?,?,?)")
         .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
       const event = playFailureBody("11111111-1111-4111-8111-111111111111");
       const oldContent = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App" });
@@ -464,7 +465,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
     await updateConfig({ card_updates: true });
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?,?,?,?,?)")
       .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
@@ -494,7 +495,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
     await updateConfig({ card_updates: true });
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?,?,?,?,?)")
       .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
@@ -510,7 +511,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
     await updateConfig({ card_updates: true });
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?,?,?,?,?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?,?,?,?,?)")
       .run(SUBSCRIPTION_ID, "google_play:submission_failed:release-1", "old-parent-message", 1, 1);
     const copies: Array<Record<string, unknown>> = [];
     mockRaftFetch(async (_input, init) => {
@@ -1107,7 +1108,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite } = await harness();
     const event = body("REJECTED");
     const objectKey = await notificationObjectKey(event);
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, objectKey, "legacy-parent-1", 1, 1);
     const originalKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
     const content = formatRaftNotificationMessage(event, {
@@ -1145,7 +1146,7 @@ describe("Hands-managed Raft notifications", () => {
       const { request, sqlite } = await harness();
       const event = body("REJECTED");
       const objectKey = await notificationObjectKey(event);
-      sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+      sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
         .run(SUBSCRIPTION_ID, objectKey, "legacy-parent-1", 1, 1);
       sqlite.prepare("INSERT INTO raft_notification_cards (subscription_id, object_key, state, updated_at) VALUES (?, ?, 'retired', 1)")
         .run(SUBSCRIPTION_ID, objectKey);
@@ -1181,7 +1182,7 @@ describe("Hands-managed Raft notifications", () => {
   it("does not use a fresh key when the old threaded request cannot be verified", async () => {
     const { request, sqlite } = await harness();
     const event = body("REJECTED");
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
     const attempts: Array<{ target: string; idempotencyKey: string }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -1200,7 +1201,7 @@ describe("Hands-managed Raft notifications", () => {
     const { request, sqlite } = await harness();
     const event = body("REJECTED");
     const objectKey = await notificationObjectKey(event);
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, objectKey, "legacy-parent-1", 1, 1);
     const originalKey = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
     const content = formatRaftNotificationMessage(event, {
@@ -1449,7 +1450,7 @@ describe("Hands-managed Raft notifications", () => {
     } };
     const oldText = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
     const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
     const messages = new Map<string, { target: string; content: string; card?: unknown; messageId: string }>([
       [key, { target: "#releases:legacy-p", content: oldText, messageId: "old-thread-message" }],
@@ -1484,7 +1485,7 @@ describe("Hands-managed Raft notifications", () => {
     const event = { event: "testflight:upload_processing", payload: { build_id: "build-1", version: "1.20.0" } };
     const oldText = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
     const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     const messages = new Map<string, { target: string; content: string; messageId: string }>([
@@ -1522,7 +1523,7 @@ describe("Hands-managed Raft notifications", () => {
     const event = { event: "testflight:internal_distribution_ready", payload: { build_id: "build-1" } };
     const text = formatRaftNotificationMessage(event, { id: APP_ID, slug: "sample-app", name: "Sample App", dashboardOrigin: "https://hands.test" });
     const key = `hands-raft:${SUBSCRIPTION_ID}:${await sha256Hex(JSON.stringify(event))}`;
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -1549,7 +1550,7 @@ describe("Hands-managed Raft notifications", () => {
     await updateConfig({ events: ["testflight:upload_processing"] });
     await updateConfig({ card_updates: true });
     const event = { event: "testflight:upload_processing", payload: { build_id: "build-1" } };
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "legacy-parent-1", 1, 1);
     const attempts: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -1707,7 +1708,7 @@ describe("Hands-managed Raft notifications", () => {
     const event = { event: "appgallery:invitation_state_changed", payload: {
       submission_id: "submission-a", build_id: "same-build", state: "testing_review", occurred_at: "2026-11-05T11:00:00Z",
     } };
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)")
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(SUBSCRIPTION_ID, await notificationObjectKey(event), "old-parent", 1, 1);
     const calls: Array<Record<string, unknown>> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
@@ -2868,7 +2869,7 @@ describe("Hands-managed Raft notifications", () => {
   it("reuses a previously created comment-only thread for the ticket", async () => {
     const { request, sqlite } = await harness();
     sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:status_changed"]), SUBSCRIPTION_ID);
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "old-parent-123", 1, 1);
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "old-parent-123", 1, 1);
     const targets: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       targets.push((JSON.parse(String(init?.body)) as { target: string }).target);
@@ -2881,7 +2882,7 @@ describe("Hands-managed Raft notifications", () => {
   it("waits for a fresh legacy thread claim instead of creating a duplicate parent", async () => {
     const { request, sqlite } = await harness();
     sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:status_changed"]), SUBSCRIPTION_ID);
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "pending", Date.now(), Date.now());
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "pending", Date.now(), Date.now());
     const fetchMock = vi.spyOn(globalThis, "fetch");
     expect((await request(feedbackBody("feedback:status_changed"), "status")).status).toBe(503);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -2890,7 +2891,7 @@ describe("Hands-managed Raft notifications", () => {
   it("creates an existing-feedback root and threads an update when a legacy claim has expired", async () => {
     const { request, sqlite } = await harness();
     sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:status_changed"]), SUBSCRIPTION_ID);
-    sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "pending", 1, 1);
+    sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(SUBSCRIPTION_ID, `feedback:comment_created:${TICKET_ID}`, "pending", 1, 1);
     const raft = mockFeedbackRaft();
     expect((await request(feedbackBody("feedback:status_changed"), "status")).status).toBe(200);
     expect([...raft.committed.values()].map(({ target }) => target)).toEqual(["#releases", "#releases:00000001"]);
@@ -2914,6 +2915,36 @@ describe("Hands-managed Raft notifications", () => {
     expect(sent[0]!.content).not.toContain("SECRET COMMENT");
     expect(sent[1]!.content).not.toContain("SECRET COMMENT");
     expect(sqlite.prepare("SELECT COUNT(*) FROM raft_notification_threads").pluck().get()).toBe(1);
+  });
+
+  it("builds an earlier ticket's root from the ticket and keeps it across a lost response", async () => {
+    const { request, sqlite } = await harness();
+    sqlite.prepare("UPDATE raft_notification_subscriptions SET events_json = ? WHERE id = ?").run(JSON.stringify(["feedback:comment_created", "feedback:status_changed"]), SUBSCRIPTION_ID);
+    sqlite.prepare("INSERT INTO feedback_tickets (id, app_id, kind, metadata_json, message, version_name, version_code, created_at) VALUES (?, ?, 'bug', ?, ?, '1.28.0', 12800011, ?)")
+      .run(TICKET_ID, APP_ID, JSON.stringify({ reporter_attribution: { handle: "alice", server_slug: "acme" } }), "Voice drops after switching rooms\nmore detail", Date.UTC(2026, 10, 20, 8, 0, 0));
+    let loseRootResponse = true;
+    const raft = mockFeedbackRaft({ afterCommit: async ({ content }) => {
+      if (content.includes("Earlier bug report") && loseRootResponse) { loseRootResponse = false; throw new Error("lost response"); }
+    } });
+    const comment = feedbackBody("feedback:comment_created", { comment: { body: "SECRET COMMENT" } });
+    expect((await request(comment, "comment")).status).toBe(503);
+    // The ticket changes before the retry; the retry must repeat the first text.
+    sqlite.prepare("UPDATE feedback_tickets SET message = 'edited' WHERE id = ?").run(TICKET_ID);
+    sqlite.prepare("UPDATE raft_notification_threads SET updated_at=1").run();
+    expect((await request(comment, "retry")).status).toBe(200);
+    const sent = [...raft.committed.values()];
+    expect(sent.map(({ target }) => target)).toEqual(["#releases", "#releases:00000001"]);
+    const root = sent[0]!.content;
+    expect(root).toContain("Earlier bug report · Sample App");
+    expect(root).toContain("Feedback: Voice drops after switching rooms");
+    expect(root).toContain("Reporter: alice · acme");
+    expect(root).toContain("Version: 1.28.0 (12800011)");
+    expect(root).toContain("At: 2026-11-20 08:00:00.000 UTC");
+    expect(root).not.toContain("SECRET COMMENT");
+    expect(root).not.toContain("Existing feedback");
+    const rootCalls = raft.calls.filter((call) => String(call.idempotencyKey).startsWith("hands-raft-feedback-root:"));
+    expect(rootCalls).toHaveLength(2);
+    expect(rootCalls[0]).toEqual(rootCalls[1]);
   });
 
   it("isolates first updates for separate tickets and replays a pre-existing new-feedback root", async () => {
@@ -2993,7 +3024,7 @@ describe("Hands-managed Raft notifications", () => {
     // Raft only after the new root has been saved. Its old error handler also
     // deletes an unqualified pending row on failure.
     const oldWorker = (async () => {
-      sqlite.prepare("INSERT INTO raft_notification_threads VALUES (?, ?, 'pending', 1, 1)").run(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`);
+      sqlite.prepare("INSERT INTO raft_notification_threads (subscription_id, object_key, parent_message_id, created_at, updated_at) VALUES (?, ?, 'pending', 1, 1)").run(SUBSCRIPTION_ID, `feedback:new:${TICKET_ID}`);
       startOld();
       await oldDone;
       raft.committed.set(key, { target: "#releases", content: formatRaftNotificationMessage(old, {
