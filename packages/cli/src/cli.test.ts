@@ -843,6 +843,61 @@ describe("electron build helpers", () => {
   });
 });
 
+describe("Android delta patch xz copy", () => {
+  it("recompresses the gzip patch as xz with the shared settings and the same raw bytes", async () => {
+    const { execFileSync } = await import("node:child_process");
+    try {
+      execFileSync("xz", ["--version"]);
+    } catch {
+      return; // xz not installed on this machine; CI images have it.
+    }
+    const {
+      ANDROID_DELTA_PATCH_XZ_ALGORITHM,
+      ANDROID_DELTA_PATCH_XZ_ARGS,
+      androidDeltaPatchMetadata,
+      compressAndroidDeltaPatchXz,
+    } = await import("../src/commands/builds.js");
+    expect(ANDROID_DELTA_PATCH_XZ_ALGORITHM).toBe("archive-patcher-v1+xz");
+    expect(ANDROID_DELTA_PATCH_XZ_ARGS).toContain("--lzma2=preset=9e,dict=16MiB");
+    expect(ANDROID_DELTA_PATCH_XZ_ARGS).toContain("--threads=1");
+    expect(
+      androidDeltaPatchMetadata({
+        fromVersionCode: 1,
+        toVersionCode: 2,
+        targetSha256: "b".repeat(64),
+        algorithm: ANDROID_DELTA_PATCH_XZ_ALGORITHM,
+      }).algorithm,
+    ).toBe("archive-patcher-v1+xz");
+
+    const dir = mkdtempSync(join(tmpdir(), "hands-android-delta-xz-"));
+    try {
+      const raw = Buffer.concat([Buffer.from("GFbFv1_0", "ascii"), Buffer.alloc(200_000, 7)]);
+      const gz = join(dir, "p.patch.gz");
+      const xzPath = join(dir, "p.patch.xz");
+      writeFileSync(gz, gzipSync(raw));
+      expect(await compressAndroidDeltaPatchXz(gz, xzPath)).toBe(true);
+      const decoded = execFileSync("xz", ["-dc", xzPath], { maxBuffer: 1 << 24 });
+      expect(Buffer.compare(decoded, raw)).toBe(0);
+      const info = execFileSync("xz", ["-lvv", xzPath]).toString();
+      expect(info).toContain("dict=16MiB");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a missing xz tool instead of failing", async () => {
+    const { compressAndroidDeltaPatchXz } = await import("../src/commands/builds.js");
+    const dir = mkdtempSync(join(tmpdir(), "hands-android-delta-noxz-"));
+    try {
+      const gz = join(dir, "p.patch.gz");
+      writeFileSync(gz, gzipSync(Buffer.from("GFbFv1_0", "ascii")));
+      expect(await compressAndroidDeltaPatchXz(gz, join(dir, "p.patch.xz"), "hands-no-such-xz-binary")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Android delta patch metadata", () => {
   it("marks metadata as gzip and rejects raw or truncated PatchGen output", async () => {
     const {
