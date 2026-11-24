@@ -1017,7 +1017,10 @@ Hands can set up HarmonyOS (5 and later) signing through AppGallery Connect,
 the way it does for iOS: it makes the ECDSA P-256 key itself (the key never
 leaves Hands), has AGC issue the debug or release certificate, registers debug
 devices and issues the app's profiles. It uses an app's stored AGC credential
-(`PUT /api/apps/<appId>/agc-credentials`); a service account is recommended,
+(`PUT /api/apps/<appId>/agc-credentials`). A Developer Center service account
+is developer-level, so another ohos app of the organization can use the same
+one: `hands api PUT /api/apps/<appId>/agc-credentials --data '{"from_app":"raft-ohos"}'`
+copies it (you need the admin role on both apps). A service account is recommended,
 created in the HarmonyOS Developer Center with a role that may manage
 certificates and profiles. The app's package name is its main channel's bundle
 id.
