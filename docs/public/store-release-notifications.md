@@ -40,7 +40,7 @@ hands api PATCH /api/apps/<appId>/raft-notifications/<subscriptionId> \
 ```
 
 - `kinds`: the ticket kinds to announce (`feedback`, `bug`, `crash`, `error`); empty announces every kind.
-- `exclude_reporter_servers`: Raft servers (slug or id, at most 20) whose reporters' tickets are not announced, for example internal test servers. A ticket whose reporter's server is unknown (an anonymous SDK report) is still announced.
+- `exclude_reporter_servers`: Raft servers (slug or id, at most 20) whose reporters' tickets are not announced, for example internal test servers. An entry ending in `*` matches by prefix (`qa-pt*` for servers created per QA batch). A ticket whose reporter's server is unknown (an anonymous SDK report) is still announced.
 
 The filter covers the ticket's later comments and status changes too, so a filtered ticket never appears in the channel.
 

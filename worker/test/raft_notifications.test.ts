@@ -240,11 +240,11 @@ describe("Hands-managed Raft notifications", () => {
   it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
     const { request, sqlite, updateConfig, getConfig } = await harness();
     expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);
-    expect((await updateConfig({ feedback_filter: { kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse"] } })).status).toBe(200);
+    expect((await updateConfig({ feedback_filter: { kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse", "qa-pt*"] } })).status).toBe(200);
     expect((await updateConfig({ feedback_filter: { kinds: ["nope"] } })).status).toBe(400);
     expect((await updateConfig({ feedback_filter: { exclude_reporter_servers: ["bad slug!"] } })).status).toBe(400);
     expect(((await (await getConfig()).json()) as any).subscriptions[0].feedback_filter)
-      .toEqual({ kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse"] });
+      .toEqual({ kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse", "qa-pt*"] });
     const ticket = (id: string, kind: string, attribution?: Record<string, string>) => sqlite.prepare(
       "INSERT INTO feedback_tickets (id, app_id, kind, metadata_json) VALUES (?, ?, ?, ?)",
     ).run(id, APP_ID, kind, JSON.stringify(attribution ? { reporter_attribution: attribution } : {}));
@@ -253,6 +253,7 @@ describe("Hands-managed Raft notifications", () => {
     ticket("t-internal-id", "feedback", { server_id: "srv-botiverse", server_slug: "botiverse" });
     ticket("t-anonymous", "feedback");
     ticket("t-crash", "crash", { server_id: "srv-customer", server_slug: "acme" });
+    ticket("t-qa-batch", "bug", { server_id: "srv-qa", server_slug: "qa-pt35-dmrm-mvqnsx2w" });
     const posted: string[] = [];
     mockRaftFetch(async (_input, init) => {
       const call = JSON.parse(String(init?.body)) as { content: string };
@@ -261,14 +262,14 @@ describe("Hands-managed Raft notifications", () => {
     });
     const event = (name: string, ticketId: string) => ({ event: name, delivered_at: 1, payload: {
       ticket_id: ticketId, app_slug: "sample-app", kind: "bug", message: `report ${ticketId}`, ...(name === "feedback:comment_created" ? { comment: { body: "reply" } } : {}) } });
-    for (const id of ["t-external", "t-internal-slug", "t-internal-id", "t-anonymous", "t-crash"]) {
+    for (const id of ["t-external", "t-internal-slug", "t-internal-id", "t-anonymous", "t-crash", "t-qa-batch"]) {
       const res = await request(event("feedback:new", id), `new-${id}`);
       expect(res.status, id).toBe(200);
     }
     const skipped = await (await request(event("feedback:comment_created", "t-internal-slug"), "c-internal")).json() as { reason?: string };
     expect(skipped.reason).toBe("feedback_filter");
     expect(posted.filter((c) => c.includes("t-external") || c.includes("report t-external")).length).toBeGreaterThan(0);
-    expect(posted.some((c) => c.includes("t-internal") || c.includes("t-crash"))).toBe(false);
+    expect(posted.some((c) => c.includes("t-internal") || c.includes("t-crash") || c.includes("t-qa-batch"))).toBe(false);
     // An anonymous report (no reporter server) passes the server exclusion.
     expect(posted.some((c) => c.includes("t-anonymous"))).toBe(true);
     expect(posted).toHaveLength(2);
