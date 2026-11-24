@@ -12,7 +12,6 @@ import build.hands.update.models.UpdateAsset
 import build.hands.update.DurableInstallerLaunchResult
 import build.hands.update.launchWithDurableInstallerAuthority
 import com.google.archivepatcher.applier.FileByFileV1DeltaApplier
-import com.google.archivepatcher.shared.DefaultDeflater
 import com.google.archivepatcher.shared.IDeflater
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -43,6 +42,10 @@ import java.util.zip.GZIPInputStream
  *      1. sha256(reconstructed) == patch.target_sha256 (constant-time compare),
  *      2. the APK's package == this app and its versionCode >= the installed one,
  *      3. the APK's signing certificate(s) exactly match the installed app's.
+ *
+ * Entries are recompressed with the stock zlib bundled in the SDK
+ * ([BundledZlibDeflater]), checked by [DeflaterSelfCheck] before the patch is
+ * downloaded; if either is unavailable the update falls back to the full APK.
  *
  * The apply + signature/package checks require a real device/PackageManager and
  * the archive-patcher engine, so they are validated on-device, not by JVM unit
@@ -95,6 +98,16 @@ class DeltaUpdater(
             return false
         }
 
+        // The patch rebuilds the APK only if this device recompresses every
+        // entry exactly like the generator's stock zlib. Prove that before
+        // spending bandwidth on the patch.
+        val deflaters = compatibleDeflaterFactory()
+        if (deflaters == null) {
+            emit("patch_fallback", "deflater_incompatible")
+            log("delta_fallback reason=deflater_incompatible")
+            return false
+        }
+
         val stamp = System.nanoTime()
         val patchFile = File(context.cacheDir, "hands-delta-${latest.version_code}-$stamp.patch")
         val reconstructed =
@@ -130,7 +143,7 @@ class DeltaUpdater(
                     reconstructed.outputStream().buffered().use { out ->
                         // Use cacheDir as the applier's scratch dir explicitly
                         // rather than relying on java.io.tmpdir.
-                        FileByFileV1DeltaApplier(context.cacheDir, deflaterFactory())
+                        FileByFileV1DeltaApplier(context.cacheDir, deflaters)
                             .applyDelta(baseFile, stream, out)
                     }
                 }
@@ -145,7 +158,7 @@ class DeltaUpdater(
             val actualSha = sha256Hex(reconstructed)
             if (!constantTimeEquals(actualSha, expectedSha.lowercase())) {
                 emit("patch_fallback", "sha256_mismatch")
-                log("delta_fallback reason=sha_mismatch")
+                log("delta_fallback reason=sha_mismatch actual=$actualSha size=${reconstructed.length()}")
                 return false
             }
 
@@ -399,9 +412,31 @@ class DeltaUpdater(
         /** The `+gzip` suffix means the patch bytes are gzip-wrapped. */
         internal fun isGzipped(algorithm: String): Boolean = algorithm.endsWith("+gzip")
 
-        /** Same deflater factory the generator (CLI/CI) used; must match byte-for-byte. */
-        internal fun deflaterFactory(): BiFunction<Int, Boolean, IDeflater> =
-            BiFunction { level, nowrap -> DefaultDeflater(level, nowrap) }
+        /**
+         * Deflaters that recompress like the patch generator's stock zlib: the
+         * zlib bundled in the SDK, never the platform's (Chromium's fork on
+         * Android 12+, whose output differs). Null when the native library
+         * cannot be loaded, so the caller skips the delta.
+         */
+        internal fun deflaterFactory(): BiFunction<Int, Boolean, IDeflater>? =
+            if (BundledZlib.isAvailable) {
+                BiFunction { level, nowrap -> BundledZlibDeflater(level, nowrap) }
+            } else {
+                null
+            }
+
+        /** Checked once per process: the bundled zlib cannot change while it runs. */
+        private val compatibleDeflaters: BiFunction<Int, Boolean, IDeflater>? by lazy {
+            deflaterFactory()?.takeIf { DeflaterSelfCheck.passes(it) }
+        }
+
+        /** [deflaterFactory] if it passes [DeflaterSelfCheck], else null. Never throws. */
+        internal fun compatibleDeflaterFactory(): BiFunction<Int, Boolean, IDeflater>? =
+            try {
+                compatibleDeflaters
+            } catch (_: Throwable) {
+                null
+            }
 
         /** Lowercase hex encoding. */
         internal fun toHex(bytes: ByteArray): String {

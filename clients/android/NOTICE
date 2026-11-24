@@ -1,0 +1,9 @@
+Hands Android SDK
+Copyright (c) 2026 Oranix
+
+This product includes third-party software:
+
+zlib 1.3.1 (deflate sources, src/main/cpp/zlib/)
+  Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
+  zlib License: https://zlib.net/zlib_license.html
+  See src/main/cpp/zlib/LICENSE.
