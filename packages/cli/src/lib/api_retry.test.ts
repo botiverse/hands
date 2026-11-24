@@ -43,3 +43,43 @@ describe("agent-aware 401 retry", () => {
     expect(JSON.parse(String((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ name: "Test" });
   });
 });
+
+describe("transport retry", () => {
+  function connectFailure(code: string) {
+    const cause = Object.assign(new AggregateError([Object.assign(new Error(""), { code })], ""), { code });
+    return new TypeError("fetch failed", { cause });
+  }
+  it("resends a request that failed while connecting, a POST included", async () => {
+    auth.admit.mockReturnValue({ kind: "human" });
+    const { setTransportRetryDelayMs } = await import("./api.js");
+    setTransportRetryDelayMs(0);
+    let calls = 0;
+    const fetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw connectFailure("ETIMEDOUT");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch); setApiBase("https://hands.test");
+    await expect(apiRequest("/api/x", { method: "POST", body: { a: 1 } })).resolves.toEqual({ ok: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it("does not resend after a connection dropped mid-request", async () => {
+    auth.admit.mockReturnValue({ kind: "human" });
+    const { setTransportRetryDelayMs } = await import("./api.js");
+    setTransportRetryDelayMs(0);
+    const reset = new TypeError("fetch failed", { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) });
+    const fetch = vi.fn(async () => { throw reset; });
+    vi.stubGlobal("fetch", fetch); setApiBase("https://hands.test");
+    await expect(apiRequest("/api/x", { method: "POST", body: {} })).rejects.toBe(reset);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("gives up after three connect failures", async () => {
+    auth.admit.mockReturnValue({ kind: "human" });
+    const { setTransportRetryDelayMs } = await import("./api.js");
+    setTransportRetryDelayMs(0);
+    const fetch = vi.fn(async () => { throw connectFailure("ECONNREFUSED"); });
+    vi.stubGlobal("fetch", fetch); setApiBase("https://hands.test");
+    await expect(apiRequest("/api/x")).rejects.toThrow(/fetch failed/);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+});

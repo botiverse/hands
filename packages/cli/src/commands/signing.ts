@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { Command } from "commander";
-import { apiRequest } from "../lib/api.js";
+import { apiRequest, isTransportFailure, withTransportRetry } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
 import { resolveAppId } from "./deploy_tokens.js";
 
@@ -133,12 +133,14 @@ export async function signFile(opts: {
       },
     );
     opts.log(`Signing job ${created.job.id}: uploading ${size} bytes`);
-    const put = await fetch(created.upload_url, {
+    // The upload, the status reads and the download repeat safely, so they are
+    // retried after any dropped connection, not only a failed connect.
+    const put = await withTransportRetry(() => fetch(created.upload_url, {
       method: "PUT",
       headers: { ...created.upload_headers, "content-length": String(size) },
       body: Readable.toWeb(createReadStream(input)) as never,
       duplex: "half",
-    } as RequestInit);
+    } as RequestInit), isTransportFailure);
     if (!put.ok) throw new Error(`upload failed (${put.status})`);
     const entitlements = opts.entitlements ? (await readFile(opts.entitlements)).toString("base64") : undefined;
     let { job } = await apiRequest<{ job: SigningJob }>(`${base}/${created.job.id}/sign`, {
@@ -154,11 +156,12 @@ export async function signFile(opts: {
       lastStatus = status;
       if (Date.now() > deadline) throw new Error(`timed out waiting for signing job ${job.id} (${status})`);
       await sleep(job.status === "notarizing" ? 20_000 : 3_000);
-      ({ job } = await apiRequest<{ job: SigningJob }>(`${base}/${job.id}`));
+      ({ job } = await withTransportRetry(() => apiRequest<{ job: SigningJob }>(`${base}/${job.id}`), isTransportFailure));
     }
     if (job.status === "failed") throw new Error(`signing failed: ${job.error_code ?? "error"}: ${job.error_message ?? ""}`);
     if (!job.download_url) throw new Error("signed file has no download URL");
-    const response = await fetch(job.download_url);
+    const downloadUrl = job.download_url;
+    const response = await withTransportRetry(() => fetch(downloadUrl), isTransportFailure);
     if (!response.ok || !response.body) throw new Error(`download failed (${response.status})`);
     // Stream to a temporary file while hashing; only a verified file replaces the target.
     const downloaded = join(work, "signed.bin");
