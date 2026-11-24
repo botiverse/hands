@@ -213,6 +213,8 @@ interface NotificationApp {
   slug: string | null;
   name: string | null;
   dashboardOrigin?: string | null;
+  /** For feedback:new, who reported it and from which Raft server, read from the ticket. */
+  feedbackReporter?: { handle: string | null; server: string | null } | null;
 }
 
 function feedbackLink(origin: string | null | undefined, appId: string | null, ticketId: string | null): string | null {
@@ -591,6 +593,7 @@ function feedbackMessage(
   event: string, payload: Payload, build: Payload, appName: string | null,
   appId: string | null, cliApp: string | null, ticketId: string | null, occurred: string | null,
   dashboardOrigin: string | null | undefined,
+  reporter?: NotificationApp["feedbackReporter"],
 ): string {
   const kind = safeValue(payload.kind);
   const names = new Map<string, string>([
@@ -608,6 +611,9 @@ function feedbackMessage(
   const lines = [`${icon} **${title}${app ? ` · ${app}` : ""}**${link ? ` · [View feedback](${link})` : ""}`];
   if (event === "feedback:new") {
     lines.push(...feedbackPreview(payload));
+    const handle = safePreview(reporter?.handle, 80);
+    const server = safePreview(reporter?.server, 80);
+    if (handle || server) lines.push(`Reporter: ${[handle, server].filter(Boolean).join(" · ")}`);
     const version = safePreview(safeValue(payload.version_string) ?? safeValue(payload.version)
       ?? safeValue(payload.version_name) ?? safeValue(build.version), 160);
     const versionName = safePreview(safeValue(payload.version_name), 160);
@@ -658,7 +664,8 @@ export function formatRaftNotificationMessage(body: Payload, knownApp?: Notifica
   const cliApp = appSlug && CLI_APP_SLUG_RE.test(appSlug) && !slugLooksLikeId
     ? appSlug : appId && UUID_RE.test(appId) ? appId : null;
   if (isFeedbackThreadEvent(event)) {
-    return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred, knownApp?.dashboardOrigin);
+    return feedbackMessage(event, payload, build, appName, appId, cliApp, ticketId, occurred, knownApp?.dashboardOrigin,
+      knownApp?.feedbackReporter);
   }
   if (MARKET_EVENTS.has(event)) return marketMessage(event, payload, build, appName ?? appIdDisplay, cliApp, ticketId, occurred);
   if (PRESENTATIONS.has(event) && (event.startsWith("release:") || event.startsWith("build:"))) {

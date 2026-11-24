@@ -237,6 +237,26 @@ function mockFeedbackRaft(options: {
 }
 
 describe("Hands-managed Raft notifications", () => {
+  it("accepts a replay of a new-ticket message sent before reporters were named", async () => {
+    const { request, sqlite, updateConfig } = await harness();
+    expect((await updateConfig({ events: ["feedback:new"] })).status).toBe(200);
+    sqlite.prepare("INSERT INTO feedback_tickets (id, app_id, kind, metadata_json) VALUES ('t-old', ?, 'bug', ?)")
+      .run(APP_ID, JSON.stringify({ reporter_attribution: { server_slug: "acme", handle: "jane" } }));
+    const attempts: string[] = [];
+    mockRaftFetch(async (_input, init) => {
+      const call = JSON.parse(String(init?.body)) as { content: string };
+      attempts.push(call.content);
+      // An earlier Worker sent this event under the same key without the reporter line.
+      return call.content.includes("Reporter:")
+        ? Response.json({ code: "idempotency_key_reused" }, { status: 409 })
+        : Response.json({ state: "committed", messageId: "old-message" });
+    });
+    const res = await request({ event: "feedback:new", delivered_at: 1, payload: { ticket_id: "t-old", app_slug: "sample-app", kind: "bug", message: "x" } }, "replay");
+    expect(res.status).toBe(200);
+    expect(attempts[0]).toContain("Reporter: jane · acme");
+    expect(attempts.at(-1)).not.toContain("Reporter:");
+  });
+
   it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
     const { request, sqlite, updateConfig, getConfig } = await harness();
     expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);
@@ -248,7 +268,7 @@ describe("Hands-managed Raft notifications", () => {
     const ticket = (id: string, kind: string, attribution?: Record<string, string>) => sqlite.prepare(
       "INSERT INTO feedback_tickets (id, app_id, kind, metadata_json) VALUES (?, ?, ?, ?)",
     ).run(id, APP_ID, kind, JSON.stringify(attribution ? { reporter_attribution: attribution } : {}));
-    ticket("t-external", "bug", { server_id: "srv-customer", server_slug: "acme" });
+    ticket("t-external", "bug", { server_id: "srv-customer", server_slug: "acme", handle: "jane" });
     ticket("t-internal-slug", "bug", { server_id: "srv-raft", server_slug: "raft" });
     ticket("t-internal-id", "feedback", { server_id: "srv-botiverse", server_slug: "botiverse" });
     ticket("t-anonymous", "feedback");
@@ -273,6 +293,9 @@ describe("Hands-managed Raft notifications", () => {
     // An anonymous report (no reporter server) passes the server exclusion.
     expect(posted.some((c) => c.includes("t-anonymous"))).toBe(true);
     expect(posted).toHaveLength(2);
+    // A new ticket names its reporter and their server, read from the ticket.
+    expect(posted.find((c) => c.includes("t-external"))).toContain("Reporter: jane · acme");
+    expect(posted.find((c) => c.includes("t-anonymous"))).not.toContain("Reporter:");
   });
 
   it("sends each Play failure receipt as a separate channel card and deduplicates its replay", async () => {
