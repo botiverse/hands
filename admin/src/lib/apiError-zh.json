@@ -564,5 +564,8 @@
   "rule not found": "未找到规则",
   "from_app must name another ohos app of this organization": "from_app 必须是本组织的另一个鸿蒙应用",
   "copying AGC credentials needs the admin role on the app they come from": "复制 AGC 凭据需要你在来源应用上是管理员",
-  "that app has no AGC credentials": "该应用没有 AGC 凭据"
+  "that app has no AGC credentials": "该应用没有 AGC 凭据",
+  "comment not found": "未找到评论",
+  "only {\"internal\": true} is supported: an internal note cannot be made public": "只支持 {\"internal\": true}：内部备注不能改为公开",
+  "a reporter's own comment cannot be made internal": "反馈者自己的评论不能设为内部"
 }

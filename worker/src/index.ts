@@ -126,6 +126,7 @@ import {
   handleGetFeedback,
   handleUpdateFeedback,
   handleAddFeedbackComment,
+  handleMakeFeedbackCommentInternal,
   handleResymbolicateFeedback,
   handleDeleteFeedbackAttachments,
   sweepPendingCrashAlerts,
@@ -1332,6 +1333,8 @@ bindAdmin("get", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedback
 bindAdmin("patch", "/api/apps/:appId/feedback/:ticketId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleUpdateFeedback);
 // Both actions share this endpoint; handleAddFeedbackComment splits them on `internal`.
 bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/comments", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:comment", "feedback:triage"), handleAddFeedbackComment);
+// Making a reply internal is a triage action, like writing an internal note.
+bindAdmin("patch", "/api/apps/:appId/feedback/:ticketId/comments/:commentId", requireAppRoleOrFeedbackPermission("publisher", { orgMinimum: "member" }, "feedback:triage"), handleMakeFeedbackCommentInternal);
 bindAdmin("post", "/api/apps/:appId/feedback/:ticketId/symbolicate", requireFeedbackTriageRole(), handleResymbolicateFeedback);
 bindAdmin("delete", "/api/apps/:appId/feedback/:ticketId/attachments", requireAppRole("admin"), handleDeleteFeedbackAttachments);
 bindAdmin("get", "/api/apps/:appId/feedback/:ticketId/attachments/:attachmentId",
