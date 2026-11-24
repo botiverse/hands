@@ -1172,7 +1172,12 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   const idempotencyKey = `hands-raft:${subscriptionId}:${eventHash}`.slice(0, 240);
   // A pre-deploy worker can send the same event without its new diagnostic
   // fields. Keep that exact old rendering available for same-key replay.
-  const app = { id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null };
+  const plainApp = { id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin: c.env.DASHBOARD_ORIGIN ?? null };
+  // A new ticket's message names its reporter and their Raft server, read from
+  // the ticket (never from the webhook payload, which other consumers share).
+  const feedbackReporter = event === "feedback:new"
+    ? await ticketReporter(c.env.DB, row.app_id, parseJsonRecord(eventBody.payload).ticket_id) : null;
+  const app = feedbackReporter ? { ...plainApp, feedbackReporter } : plainApp;
 
   if (ownsParentClaim && thread.parent_message_id === FEEDBACK_ROOT_PENDING) {
     // The marker and root key belong to the ticket, not to this event. Another
@@ -1185,7 +1190,9 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
       // content; never create a second root if that proof fails.
       const prior = await reconcileBotMessage(c.env, bot, row.channel_target, idempotencyKey);
       const root = prior.state === "committed"
-        ? await sendBotMessage(c.env, bot, row.channel_target, formatRaftNotificationMessage(eventBody, app), idempotencyKey)
+        // A message sent before reporters were named carries the older text.
+        ? await sendKnownBotText(c.env, bot, row.channel_target, [...new Set([formatRaftNotificationMessage(eventBody, app),
+          formatRaftNotificationMessage(eventBody, plainApp)])], idempotencyKey)
         : await sendBotMessage(c.env, bot, row.channel_target, feedbackRoot, rootKey);
       const saved = await c.env.DB.prepare(
         `UPDATE raft_notification_threads SET parent_message_id = ?1, updated_at = ?2
@@ -1297,6 +1304,8 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     if (supportsRaftNotificationCards(event)) {
       legacyVariants.push(...unjoinedLayoutVariants(baseContent, cardLayoutText(eventBody, app, { rejoinPieces: false })));
     }
+    // Sent before reporters were named: the same event's older text is a replay.
+    if (app !== plainApp) legacyVariants.push(formatRaftNotificationMessage(eventBody, plainApp));
     let sent: { messageId: string };
     if (channelText) {
       sent = await sendChannelText(c.env, bot, row.channel_target, legacyFailureTarget ?? legacyStandaloneTarget ?? target, content,
@@ -1344,4 +1353,17 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     }
     return c.json({ error: "bot send failed" }, 503);
   }
+}
+
+/** The reporter's handle and Raft server for a ticket, from its reporter attribution. */
+async function ticketReporter(db: D1Database, appId: string, ticketId: unknown): Promise<{ handle: string | null; server: string | null } | null> {
+  if (typeof ticketId !== "string" || !ticketId) return null;
+  const row = await db.prepare("SELECT metadata_json FROM feedback_tickets WHERE id = ?1 AND app_id = ?2")
+    .bind(ticketId, appId).first<{ metadata_json: string | null }>().catch(() => null);
+  if (!row) return null;
+  let attribution: Record<string, unknown> = {};
+  try { attribution = parseJsonRecord(parseJsonRecord(JSON.parse(row.metadata_json || "{}")).reporter_attribution); } catch { return null; }
+  const handle = typeof attribution.handle === "string" && attribution.handle ? attribution.handle : null;
+  const server = typeof attribution.server_slug === "string" && attribution.server_slug ? attribution.server_slug : null;
+  return handle || server ? { handle, server } : null;
 }
