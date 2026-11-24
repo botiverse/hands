@@ -35,7 +35,13 @@ function environment() {
   sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app', 'org', 'raft-deck-ohos', 'Raft Deck', 'ohos', 1)`).run();
   sqlite.prepare(`INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('android', 'org', 'raft-deck-android', 'Deck', 'android', 1)`).run();
   sqlite.prepare(`INSERT INTO channels (id, app_id, slug, name, bundle_id, created_at) VALUES ('ch', 'app', 'main', 'Main', 'build.raft.deck', 1)`).run();
-  return { sqlite, env: { DB: d1(sqlite), ASC_CRED_ENC_KEY: "test-master-key", AGC_CRED_ENC_KEY: "k" } as unknown as Env };
+  const objects = new Map<string, number>();
+  const env = {
+    DB: d1(sqlite), ASC_CRED_ENC_KEY: "test-master-key", AGC_CRED_ENC_KEY: "k",
+    R2_ACCOUNT_ID: "acct", R2_BUCKET_NAME: "bucket", R2_S3_ACCESS_KEY_ID: "AKID", R2_S3_SECRET_ACCESS_KEY: "secret",
+    APK_BUCKET: { head: async (key: string) => (objects.has(key) ? { size: objects.get(key) } : null), delete: async (key: string) => { objects.delete(key); } },
+  } as unknown as Env;
+  return { sqlite, env, objects };
 }
 
 async function call(handler: (c: any) => Promise<Response>, env: Env, params: Record<string, string>, body: unknown = {}) {
@@ -135,5 +141,38 @@ describe("Hands-managed HarmonyOS signing", () => {
     const res = await call(h.handleCreateHarmonyIdentity, env, { orgId: "org" }, { name: "Deck release", kind: "release", agc_from_app: "raft-deck-ohos" });
     expect(res.status).toBe(502);
     expect(res.body).toMatchObject({ code: "agc_request_failed", error: expect.stringContaining("The number of certificates exceeds the upper limit.") });
+  });
+
+  it("signs an uploaded .hap with the app's current profile and its identity", async () => {
+    const { env, sqlite, objects } = environment();
+    const { encryptSigningSecret } = await import("../src/lib/signing");
+    const enc = await encryptSigningSecret({ kind: "harmony", key_pem: "KEY", chain_pem: "CHAIN" }, "test-master-key");
+    sqlite.prepare(`INSERT INTO harmony_signing_identities (id, org_id, name, cert_kind, agc_cert_id, metadata_json, secret_ciphertext_b64, secret_iv_b64, created_by_actor, created_at)
+      VALUES ('id-rel', 'org', 'Deck release', 'release', 'cert-r', '{}', ?, ?, 't', 1)`).run(enc.secret_ciphertext_b64, enc.secret_iv_b64);
+    const sha = "b".repeat(64);
+    const declare = (b: Record<string, unknown>) => call(h.handleCreateHarmonySigningJob, env, { appId: "app" }, b);
+    expect((await declare({ kind: "release", artifact_type: "hap", filename: "entry.hap", size: 10, sha256: sha })).body.code).toBe("harmony_profile_missing");
+    sqlite.prepare(`INSERT INTO harmony_signing_profiles (id, app_id, identity_id, kind, agc_app_id, agc_profile_id, profile_b64, created_by_actor, created_at)
+      VALUES ('prof-1', 'app', 'id-rel', 'release', 'agc-app-1', 'p1', 'UDdC', 't', 1)`).run();
+    expect((await declare({ kind: "release", artifact_type: "apk", filename: "x", size: 10, sha256: sha })).status).toBe(400);
+    const created = await declare({ kind: "release", artifact_type: "hap", filename: "entry.hap", size: 10, sha256: sha });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.upload_url).toMatch(/^https:\/\//);
+    const jobId = created.body.job.id;
+    expect((await call(h.handleRunHarmonySigningJob, env, { appId: "app", jobId })).body.job).toMatchObject({ status: "failed", error_code: "signing_input_missing" });
+
+    const again = (await declare({ kind: "release", artifact_type: "hap", filename: "entry.hap", size: 10, sha256: sha })).body.job.id;
+    objects.set(`signing/app/harmony/${again}/input`, 10);
+    const sent: any[] = [];
+    setSigningContainerForTests(async (path, b) => { sent.push({ path, b }); return Response.json({ output_size: 20, output_sha256: "c".repeat(64) }); });
+    const signed = await call(h.handleRunHarmonySigningJob, env, { appId: "app", jobId: again });
+    expect(signed.body.job).toMatchObject({ status: "succeeded", output_size: 20, output_sha256: "c".repeat(64) });
+    expect(signed.body.job.download_url).toMatch(/^https:\/\//);
+    expect(sent[0]).toMatchObject({ path: "/signing/sign", b: { artifact_type: "hap", secret: { kind: "harmony", key_pem: "KEY", chain_pem: "CHAIN" },
+      harmony_profile_b64: "UDdC", sign_code: true, expected_input_sha256: sha } });
+    expect(objects.has(`signing/app/harmony/${again}/input`)).toBe(false);
+    // Signing again returns the finished job; nothing is signed twice.
+    await call(h.handleRunHarmonySigningJob, env, { appId: "app", jobId: again });
+    expect(sent).toHaveLength(1);
   });
 });

@@ -88,6 +88,18 @@ RUN mkdir -p /opt/patchgen && \
 COPY patchgen/PatchGen.java /opt/patchgen/PatchGen.java
 RUN javac -encoding UTF-8 -cp /opt/patchgen/archive-patcher.jar -d /opt/patchgen /opt/patchgen/PatchGen.java
 
+# hap-sign-tool (OpenHarmony developtools_hapsigner, Apache-2.0): signs
+# HarmonyOS .hap/.app packages with the key and the AGC certificate and profile
+# Hands manages. The prebuilt jar from the project's dist/, pinned by commit
+# and checked by SHA-256.
+ARG HAPSIGNER_COMMIT=24ef0c843d94f68d16975cac42e377f31def48c6
+ARG HAPSIGNER_SHA256=9cee965bb292080a0d29fb48450091f5dcc9d010bb18da39175f581ffed7c4f4
+RUN mkdir -p /opt/hapsigner && \
+    wget -q "https://raw.githubusercontent.com/openharmony/developtools_hapsigner/${HAPSIGNER_COMMIT}/dist/hap-sign-tool.jar" \
+      -O /opt/hapsigner/hap-sign-tool.jar && \
+    echo "${HAPSIGNER_SHA256}  /opt/hapsigner/hap-sign-tool.jar" | sha256sum -c -
+ENV HAP_SIGN_TOOL=/opt/hapsigner/hap-sign-tool.jar
+
 WORKDIR /app
 
 # Install Node deps. We use --include=dev because tsx (a devDependency) is used to

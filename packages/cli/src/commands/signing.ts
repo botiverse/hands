@@ -47,8 +47,9 @@ interface SigningIdentity {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function inferType(path: string): "apk" | "aab" | "macos" | "ipa" | null {
+function inferType(path: string): "apk" | "aab" | "macos" | "ipa" | "hap" | null {
   if (path.endsWith(".apk")) return "apk";
+  if (path.endsWith(".hap")) return "hap";
   if (path.endsWith(".ipa")) return "ipa";
   if (path.endsWith(".aab")) return "aab";
   if (path.endsWith(".app") || path.endsWith(".app.zip")) return "macos";
@@ -92,14 +93,21 @@ export async function signFile(opts: {
   notarize?: boolean;
   entitlements?: string;
   out?: string;
+  /** HarmonyOS: which of the app's profiles to sign with (default release). */
+  kind?: "debug" | "release";
+  /** HarmonyOS: code signing (default on). */
+  signCode?: boolean;
   timeoutMs: number;
   log: (line: string) => void;
 }): Promise<SigningJob> {
   const appId = await resolveAppId(opts.app);
   const type = opts.type ?? inferType(opts.file);
-  if (type !== "apk" && type !== "aab" && type !== "macos" && type !== "ipa") {
-    throw new Error("Pass --type apk|aab|macos|ipa (could not infer it from the file name).");
+  if (type !== "apk" && type !== "aab" && type !== "macos" && type !== "ipa" && type !== "hap" && type !== "app") {
+    throw new Error("Pass --type apk|aab|macos|ipa|hap|app (could not infer it from the file name; a HarmonyOS .app needs --type app).");
   }
+  // HarmonyOS packages are signed with the app's AGC profile (harmony-signing).
+  const harmony = type === "hap" || type === "app";
+  const base = harmony ? `/api/apps/${appId}/harmony-signing/jobs` : `/api/apps/${appId}/signing/jobs`;
   const work = await mkdtemp(join(tmpdir(), "hands-sign-"));
   try {
     const input = await packInput(opts.file, work);
@@ -108,17 +116,19 @@ export async function signFile(opts: {
     await pipeline(createReadStream(input), inputHash);
     const sha256 = inputHash.digest("hex");
     const created = await apiRequest<{ job: SigningJob; upload_url: string; upload_headers: Record<string, string> }>(
-      `/api/apps/${appId}/signing/jobs`,
+      base,
       {
         method: "POST",
-        body: {
-          artifact_type: type,
-          filename: basename(input),
-          size,
-          sha256,
-          notarize: opts.notarize === true,
-          ...(opts.identity ? { identity_id: opts.identity } : {}),
-        },
+        body: harmony
+          ? { artifact_type: type, kind: opts.kind ?? "release", sign_code: opts.signCode !== false, filename: basename(input), size, sha256 }
+          : {
+            artifact_type: type,
+            filename: basename(input),
+            size,
+            sha256,
+            notarize: opts.notarize === true,
+            ...(opts.identity ? { identity_id: opts.identity } : {}),
+          },
         retryOnUnauthorized: false,
       },
     );
@@ -131,7 +141,7 @@ export async function signFile(opts: {
     } as RequestInit);
     if (!put.ok) throw new Error(`upload failed (${put.status})`);
     const entitlements = opts.entitlements ? (await readFile(opts.entitlements)).toString("base64") : undefined;
-    let { job } = await apiRequest<{ job: SigningJob }>(`/api/apps/${appId}/signing/jobs/${created.job.id}/sign`, {
+    let { job } = await apiRequest<{ job: SigningJob }>(`${base}/${created.job.id}/sign`, {
       method: "POST",
       body: entitlements ? { entitlements_b64: entitlements } : {},
       retryOnUnauthorized: false,
@@ -144,7 +154,7 @@ export async function signFile(opts: {
       lastStatus = status;
       if (Date.now() > deadline) throw new Error(`timed out waiting for signing job ${job.id} (${status})`);
       await sleep(job.status === "notarizing" ? 20_000 : 3_000);
-      ({ job } = await apiRequest<{ job: SigningJob }>(`/api/apps/${appId}/signing/jobs/${job.id}`));
+      ({ job } = await apiRequest<{ job: SigningJob }>(`${base}/${job.id}`));
     }
     if (job.status === "failed") throw new Error(`signing failed: ${job.error_code ?? "error"}: ${job.error_message ?? ""}`);
     if (!job.download_url) throw new Error("signed file has no download URL");
@@ -224,18 +234,21 @@ export function registerSigningCommands(program: Command): void {
   program
     .command("sign <file>")
     .description(
-      "Sign an APK, AAB, macOS .app (directory or .app.zip) or iOS .ipa with a signing identity held by Hands. " +
+      "Sign an APK, AAB, macOS .app (directory or .app.zip), iOS .ipa, or HarmonyOS .hap/.app with signing material held by Hands. " +
       "macOS apps can be notarized and stapled. The signed file replaces the input unless --out is given.",
     )
     .requiredOption("--app <appIdOrSlug>", "App whose granted signing identity to use.")
-    .option("--type <type>", "apk | aab | macos | ipa (inferred from the file name when omitted)")
+    .option("--type <type>", "apk | aab | macos | ipa | hap | app (inferred from the file name when omitted; a HarmonyOS .app needs --type app)")
+    .option("--kind <kind>", "HarmonyOS: sign with the app's release or debug profile.", "release")
+    .option("--no-sign-code", "HarmonyOS: skip code signing.")
     .option("--identity <id>", "Signing identity id, when several are granted to the app.")
     .option("--notarize", "macOS: notarize with Apple and staple the ticket.", false)
     .option("--entitlements <plist>", "macOS and iOS: entitlements plist for the main executable (iOS: each entry must be allowed by the App Store profile).")
     .option("--out <path>", "Write the signed file here instead of replacing the input.")
     .option("--timeout <duration>", "Give up after this long (e.g. 30m).", "45m")
     .option("--json", "Output JSON.", false)
-    .action(async (file: string, opts: { app: string; type?: string; identity?: string; notarize?: boolean; entitlements?: string; out?: string; timeout: string; json?: boolean }) => {
+    .action(async (file: string, opts: { app: string; type?: string; identity?: string; notarize?: boolean; entitlements?: string; out?: string; kind: string; signCode: boolean; timeout: string; json?: boolean }) => {
+      if (opts.kind !== "release" && opts.kind !== "debug") throw new Error("--kind must be release or debug");
       const json = jsonRequested(program, opts.json);
       const job = await signFile({
         app: opts.app,
@@ -245,6 +258,8 @@ export function registerSigningCommands(program: Command): void {
         notarize: opts.notarize === true,
         ...(opts.entitlements ? { entitlements: opts.entitlements } : {}),
         ...(opts.out ? { out: opts.out } : {}),
+        kind: opts.kind,
+        signCode: opts.signCode,
         timeoutMs: parseDuration(opts.timeout),
         log: (line) => (json ? console.error(line) : console.log(line)),
       });

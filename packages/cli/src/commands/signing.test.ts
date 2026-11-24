@@ -9,7 +9,7 @@ vi.mock("../lib/api.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/api.js")>(),
   apiRequest: async (path: string, opts: { method?: string; body?: unknown } = {}) => {
     state.calls.push({ path, method: opts.method ?? "GET", body: opts.body });
-    if (path.endsWith("/signing/jobs")) {
+    if (path.endsWith("/signing/jobs") || path.endsWith("/harmony-signing/jobs")) {
       return { job: { id: "job-1", status: "awaiting_upload" }, upload_url: "https://r2.example/upload", upload_headers: { "content-type": "application/octet-stream" } };
     }
     if (path.endsWith("/sign")) return { job: { id: "job-1", status: "signing" } };
@@ -53,6 +53,20 @@ describe("hands sign", () => {
     state.outputSha = "0".repeat(64);
     await expect(signFile({ app: APP_ID, file: apk, timeoutMs: 60_000, log: () => {} })).rejects.toThrow(/SHA-256/);
     expect(readFileSync(apk, "utf8")).toBe("unsigned-bytes");
+  }, 30_000);
+
+  it("signs a HarmonyOS .hap through the app's harmony-signing jobs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hands-sign-hap-"));
+    const hap = join(dir, "entry-default.hap");
+    writeFileSync(hap, "unsigned-hap");
+    const signed = Buffer.from("signed-hap");
+    state.outputSha = createHash("sha256").update(signed).digest("hex");
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => (init?.method === "PUT" ? new Response("", { status: 200 }) : new Response(signed))));
+    await signFile({ app: APP_ID, file: hap, kind: "debug", signCode: false, timeoutMs: 60_000, log: () => {} });
+    expect(state.calls[0]).toMatchObject({ path: `/api/apps/${APP_ID}/harmony-signing/jobs`, method: "POST",
+      body: { artifact_type: "hap", kind: "debug", sign_code: false, filename: "entry-default.hap", size: 12 } });
+    expect(state.calls[1]!.path).toBe(`/api/apps/${APP_ID}/harmony-signing/jobs/job-1/sign`);
+    expect(readFileSync(hap, "utf8")).toBe("signed-hap");
   }, 30_000);
 
   it("refuses files it cannot classify", async () => {

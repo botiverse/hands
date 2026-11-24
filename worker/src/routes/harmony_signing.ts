@@ -23,6 +23,7 @@ import {
   listHarmonyDevices, type HarmonyCertKind,
 } from "../lib/agc_provisioning";
 import { callSigningContainer, decryptSigningSecret, encryptSigningSecret, SigningError, type HarmonySigningSecret } from "../lib/signing";
+import { presignR2DownloadUrl, presignR2UploadUrl } from "../lib/r2_presign";
 import { resolveAgcAppAuth } from "./agc_testing";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -263,4 +264,119 @@ export async function harmonySigningMaterial(env: Env, appId: string, kind: Harm
   if (!identity) return null;
   const secret = await decryptSigningSecret<HarmonySigningSecret>(identity, env.ASC_CRED_ENC_KEY);
   return { identity: identityView(identity), profile_b64: profile.profile_b64, secret };
+}
+
+// ---------- Part 2: signing .hap / .app packages ----------
+
+const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024;
+const SIGN_TIMEOUT_MS = 25 * 60 * 1000;
+
+type JobRow = {
+  id: string; app_id: string; kind: HarmonyCertKind; artifact_type: "hap" | "app"; profile_id: string | null; sign_code: number;
+  status: "awaiting_upload" | "signing" | "succeeded" | "failed"; filename: string; input_r2_key: string; input_size: number;
+  input_sha256: string; output_r2_key: string | null; output_size: number | null; output_sha256: string | null;
+  error_code: string | null; error_message: string | null; actor: string; created_at: number; updated_at: number;
+};
+
+async function loadJob(db: D1Database, appId: string, jobId: string) {
+  return db.prepare("SELECT * FROM harmony_signing_jobs WHERE id = ?1 AND app_id = ?2").bind(jobId, appId).first<JobRow>();
+}
+
+async function jobView(env: Env, job: JobRow) {
+  const download = job.status === "succeeded" && job.output_r2_key
+    ? await presignR2DownloadUrl(env, { key: job.output_r2_key, filetype: "bin",
+      contentDisposition: `attachment; filename="${job.filename.replace(/["\\\r\n]/g, "_")}"` }, 3600)
+    : null;
+  return {
+    id: job.id, app_id: job.app_id, kind: job.kind, artifact_type: job.artifact_type, profile_id: job.profile_id,
+    sign_code: job.sign_code === 1, status: job.status, filename: job.filename, input_size: job.input_size, input_sha256: job.input_sha256,
+    output_size: job.output_size, output_sha256: job.output_sha256, error_code: job.error_code, error_message: job.error_message,
+    actor: job.actor, created_at: job.created_at, updated_at: job.updated_at, ...(download ? { download_url: download } : {}),
+  };
+}
+
+/** Declares an unsigned .hap/.app; returns the URL to upload it to. */
+export async function handleCreateHarmonySigningJob(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  try {
+    const input = await body(c);
+    const kind = input.kind === "debug" || input.kind === "release" ? input.kind : null;
+    if (!kind) throw new SigningError(400, "invalid_request", "kind must be debug or release");
+    const artifactType = input.artifact_type === "hap" || input.artifact_type === "app" ? input.artifact_type : null;
+    if (!artifactType) throw new SigningError(400, "invalid_request", "artifact_type must be hap or app");
+    const filename = typeof input.filename === "string" ? input.filename.trim() : "";
+    if (!/^[A-Za-z0-9 ._()+-]{1,200}$/.test(filename)) throw new SigningError(400, "invalid_request", "filename is required");
+    const size = input.size;
+    if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1 || size > MAX_PACKAGE_BYTES) {
+      throw new SigningError(400, "invalid_request", "size must be 1 byte to 2 GiB");
+    }
+    const sha256 = typeof input.sha256 === "string" ? input.sha256.toLowerCase() : "";
+    if (!/^[0-9a-f]{64}$/.test(sha256)) throw new SigningError(400, "invalid_request", "sha256 must be a hex SHA-256");
+    const profile = await c.env.DB.prepare(
+      "SELECT id FROM harmony_signing_profiles WHERE app_id = ?1 AND kind = ?2 AND replaced_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    ).bind(appId, kind).first<{ id: string }>();
+    if (!profile) throw new SigningError(409, "harmony_profile_missing", `this app has no ${kind} profile yet; issue one first`);
+    const id = crypto.randomUUID();
+    const inputKey = `signing/${appId}/harmony/${id}/input`;
+    const uploadUrl = await presignR2UploadUrl(c.env, inputKey, "application/octet-stream", 3600);
+    if (!uploadUrl) throw new SigningError(503, "signing_storage_unavailable", "direct upload is not configured");
+    const now = Date.now();
+    await c.env.DB.prepare(
+      `INSERT INTO harmony_signing_jobs (id, app_id, kind, artifact_type, profile_id, sign_code, status, filename, input_r2_key,
+         input_size, input_sha256, actor, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'awaiting_upload', ?7, ?8, ?9, ?10, ?11, ?12, ?12)`,
+    ).bind(id, appId, kind, artifactType, profile.id, input.sign_code === false ? 0 : 1, filename, inputKey, size, sha256, currentActor(c), now).run();
+    const job = (await loadJob(c.env.DB, appId, id))!;
+    return c.json({ job: await jobView(c.env, job), upload_url: uploadUrl, upload_headers: { "content-type": "application/octet-stream" } }, 201);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Signs the uploaded package with the app's current profile of the job's kind and that profile's identity. */
+export async function handleRunHarmonySigningJob(c: AdminContext) {
+  const appId = c.req.param("appId") ?? "";
+  const jobId = c.req.param("jobId") ?? "";
+  const job = await loadJob(c.env.DB, appId, jobId);
+  if (!job) return c.json({ error: "signing job not found" }, 404);
+  if (job.status !== "awaiting_upload") return c.json({ job: await jobView(c.env, job) });
+  const claim = await c.env.DB.prepare("UPDATE harmony_signing_jobs SET status = 'signing', updated_at = ?1 WHERE id = ?2 AND status = 'awaiting_upload'")
+    .bind(Date.now(), jobId).run();
+  if (Number(claim.meta?.changes ?? 0) !== 1) return c.json({ job: await jobView(c.env, (await loadJob(c.env.DB, appId, jobId))!) });
+  try {
+    const head = await c.env.APK_BUCKET.head(job.input_r2_key);
+    if (!head) throw new SigningError(409, "signing_input_missing", "upload the file before signing");
+    if (head.size !== job.input_size) throw new SigningError(409, "signing_input_mismatch", "uploaded size differs from the declared size");
+    const material = await harmonySigningMaterial(c.env, appId, job.kind);
+    if (!material) throw new SigningError(409, "harmony_profile_missing", `this app has no ${job.kind} profile with a valid identity`);
+    const outputKey = `signing/${appId}/harmony/${jobId}/output`;
+    const inputUrl = await presignR2DownloadUrl(c.env, { key: job.input_r2_key, filetype: "bin", contentDisposition: "attachment" }, 3600);
+    const outputUrl = await presignR2UploadUrl(c.env, outputKey, "application/octet-stream", 3600);
+    if (!inputUrl || !outputUrl) throw new SigningError(503, "signing_storage_unavailable", "direct storage is not configured");
+    const result = await callSigningContainer<{ output_size: number; output_sha256: string }>(c.env, "/signing/sign", {
+      artifact_type: job.artifact_type, secret: material.secret, harmony_profile_b64: material.profile_b64, sign_code: job.sign_code === 1,
+      input_url: inputUrl, output_url: outputUrl, expected_input_sha256: job.input_sha256,
+    }, SIGN_TIMEOUT_MS);
+    await c.env.DB.prepare(
+      `UPDATE harmony_signing_jobs SET status = 'succeeded', output_r2_key = ?1, output_size = ?2, output_sha256 = ?3, updated_at = ?4
+       WHERE id = ?5 AND status = 'signing'`,
+    ).bind(outputKey, result.output_size, result.output_sha256, Date.now(), jobId).run();
+    await c.env.APK_BUCKET.delete(job.input_r2_key).catch(() => undefined);
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "harmony_signing.signed",
+      payload: { job_id: jobId, kind: job.kind, artifact_type: job.artifact_type, identity_id: material.identity.id, input_sha256: job.input_sha256, output_sha256: result.output_sha256 } })
+      .catch(() => undefined);
+  } catch (error) {
+    const code = error instanceof SigningError ? error.code : "signing_internal";
+    const message = error instanceof SigningError ? error.message : "signing failed unexpectedly";
+    await c.env.DB.prepare("UPDATE harmony_signing_jobs SET status = 'failed', error_code = ?1, error_message = ?2, updated_at = ?3 WHERE id = ?4 AND status = 'signing'")
+      .bind(code, message.slice(0, 1000), Date.now(), jobId).run();
+    if (!(error instanceof SigningError)) throw error;
+  }
+  return c.json({ job: await jobView(c.env, (await loadJob(c.env.DB, appId, jobId))!) });
+}
+
+export async function handleGetHarmonySigningJob(c: AdminContext) {
+  const job = await loadJob(c.env.DB, c.req.param("appId") ?? "", c.req.param("jobId") ?? "");
+  if (!job) return c.json({ error: "signing job not found" }, 404);
+  return c.json({ job: await jobView(c.env, job) });
 }

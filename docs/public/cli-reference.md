@@ -1038,8 +1038,22 @@ hands api POST /api/apps/<appId>/harmony-signing/profiles --data '{"identity_id"
 ```
 
 A new profile replaces the app's earlier profile of the same kind. AGC's own
-error text is passed through (`code: "agc_request_failed"`). Signing `.hap` and
-`.app` packages with these in Hands follows.
+error text is passed through (`code: "agc_request_failed"`).
+
+Then CI builds unsigned packages and Hands signs them with the app's current
+profile and its identity (Huawei's hap-sign-tool, SHA256withECDSA; the signed
+package is verified before it is returned):
+
+```bash
+hands sign entry-default-unsigned.hap --app raft-deck-ohos --out entry-default.hap
+hands sign raft-deck-unsigned.app --app raft-deck-ohos --type app --out raft-deck.app
+hands sign entry-default-unsigned.hap --app raft-deck-ohos --kind debug   # debug profile
+```
+
+`--no-sign-code` turns code signing off. A deploy token with the publisher role
+can sign (`POST /api/apps/<appId>/harmony-signing/jobs`, upload, then
+`.../jobs/<jobId>/sign`). The signed `.app` and `.hap` then go to
+`hands builds publish-ohos` as before.
 
 ## Publish HarmonyOS / OHOS
 

@@ -576,6 +576,42 @@ async function harmonyCertificate(dir: string, keyPem: string, certificate: stri
   };
 }
 
+const HAP_SIGN_TOOL = process.env.HAP_SIGN_TOOL ?? "/opt/hapsigner/hap-sign-tool.jar";
+
+/**
+ * Signs a HarmonyOS .hap or .app with Huawei's hap-sign-tool: the key and the
+ * AGC certificate chain go into a one-use PKCS#12 store, the profile is the
+ * .p7b AGC issued. The signed file is verified before it is returned.
+ */
+async function signHarmony(dir: string, type: "hap" | "app", secret: { key_pem: string; chain_pem: string }, profileB64: string, input: string, output: string, signCode: boolean) {
+  // hap-sign-tool decides the format by the file name's suffix.
+  const named = join(dir, `unsigned.${type}`);
+  const signedNamed = join(dir, `signed.${type}`);
+  await rename(input, named);
+  const key = await writeSecretFile(dir, "key.pem", secret.key_pem);
+  const chain = join(dir, "chain.pem");
+  await writeFile(chain, secret.chain_pem);
+  const leaf = join(dir, "leaf.pem");
+  await writeFile(leaf, secret.chain_pem.slice(0, secret.chain_pem.indexOf("-----END CERTIFICATE-----") + 25) + "\n");
+  const profile = join(dir, "profile.p7b");
+  await writeFile(profile, Buffer.from(profileB64, "base64"));
+  const password = randomPassword();
+  const pass = await writeSecretFile(dir, "p12.pass", password);
+  const p12 = join(dir, "id.p12");
+  await run("openssl", ["pkcs12", "-export", "-inkey", key, "-in", leaf, "-name", "hands", "-passout", `file:${pass}`, "-out", p12], {
+    failCode: "signing_identity_invalid", failMessage: "the signing key does not match its certificate",
+  });
+  await run("java", [
+    "-jar", HAP_SIGN_TOOL, "sign-app", "-mode", "localSign", "-keyAlias", "hands", "-signAlg", "SHA256withECDSA",
+    "-appCertFile", chain, "-profileFile", profile, "-inFile", named, "-keystoreFile", p12, "-outFile", signedNamed,
+    "-keyPwd", password, "-keystorePwd", password, "-signCode", signCode ? "1" : "0",
+  ], { timeout: 20 * 60_000, failCode: "signing_failed", failMessage: "hap-sign-tool could not sign the package (does the profile's bundle name and certificate match?)" });
+  await run("java", ["-jar", HAP_SIGN_TOOL, "verify-app", "-inFile", signedNamed, "-outCertChain", join(dir, "verify.cer"), "-outProfile", join(dir, "verify.p7b")], {
+    timeout: 10 * 60_000, failCode: "signing_failed", failMessage: "the signed package did not verify",
+  });
+  await rename(signedNamed, output);
+}
+
 /** Join a key made here with the certificate Apple issued for it. */
 async function appleP12(dir: string, kind: AppleSecret["kind"], keyPem: string, certificate: string) {
   const key = await writeSecretFile(dir, "key.pem", keyPem);
@@ -665,7 +701,9 @@ export function registerSigningRoutes(app: Hono) {
   app.post("/signing/sign", async (c) => {
     try {
       const body = await c.req.json() as {
-        artifact_type: "apk" | "aab" | "macos" | "ipa";
+        artifact_type: "apk" | "aab" | "macos" | "ipa" | "hap" | "app";
+        harmony_profile_b64?: string;
+        sign_code?: boolean;
         secret: Secret;
         input_url: string;
         output_url: string;
@@ -689,6 +727,9 @@ export function registerSigningRoutes(app: Hono) {
           await signAndroid(dir, body.secret, body.artifact_type, input, output);
         } else if (body.artifact_type === "macos" && body.secret.kind === "apple_developer_id") {
           notarySubmissionId = await signMac(dir, body.secret, input, output, body.entitlements_b64, body.notarize === true);
+        } else if ((body.artifact_type === "hap" || body.artifact_type === "app") && (body.secret as { kind: string }).kind === "harmony") {
+          if (typeof body.harmony_profile_b64 !== "string") throw new SignError(400, "invalid_request", "harmony_profile_b64 is required");
+          await signHarmony(dir, body.artifact_type, body.secret as unknown as { key_pem: string; chain_pem: string }, body.harmony_profile_b64, input, output, body.sign_code !== false);
         } else if (body.artifact_type === "ipa" && body.secret.kind === "apple_ios_distribution") {
           ios = await signIos(dir, body.secret, input, output, body.entitlements_b64, body.provisioning_profile_b64);
         } else {
