@@ -50,12 +50,64 @@ interface NotificationSubscriptionRow {
   events_json: string;
   enabled: number;
   card_updates: number;
+  feedback_filter_json?: string | null;
   bot_installation_id: string;
   webhook_id: string;
   created_by: string | null;
   created_at: number;
   updated_at: number;
   archived_at: number | null;
+}
+
+/** Which feedback a destination announces (migration 0114). */
+export type FeedbackFilter = { kinds: string[]; exclude_reporter_servers: string[] };
+const FEEDBACK_KINDS = ["feedback", "bug", "crash", "error"];
+
+export function parseFeedbackFilter(raw: string | null | undefined): FeedbackFilter {
+  try {
+    const value = parseJsonRecord(JSON.parse(raw || "{}"));
+    const list = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    return { kinds: list(value.kinds), exclude_reporter_servers: list(value.exclude_reporter_servers) };
+  } catch {
+    return { kinds: [], exclude_reporter_servers: [] };
+  }
+}
+
+/** Validates the `feedback_filter` request field. */
+function validateFeedbackFilter(value: unknown): { filter: FeedbackFilter } | { error: string } {
+  const record = parseJsonRecord(value);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { error: "feedback_filter must be an object" };
+  const kinds = record.kinds ?? [];
+  const servers = record.exclude_reporter_servers ?? [];
+  if (!Array.isArray(kinds) || !kinds.every((k) => typeof k === "string" && FEEDBACK_KINDS.includes(k))) {
+    return { error: `feedback_filter.kinds must list kinds from ${FEEDBACK_KINDS.join(", ")}` };
+  }
+  if (!Array.isArray(servers) || servers.length > 20
+    || !servers.every((v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(v))) {
+    return { error: "feedback_filter.exclude_reporter_servers must list at most 20 Raft server ids or slugs" };
+  }
+  return { filter: { kinds: [...new Set(kinds as string[])], exclude_reporter_servers: [...new Set(servers as string[])] } };
+}
+
+/**
+ * Whether the destination's feedback filter lets a ticket's events through. A
+ * ticket whose reporter's server is unknown (anonymous SDK reports, crashes)
+ * passes the server exclusion; the kind filter still applies.
+ */
+export async function feedbackFilterAllows(db: D1Database, filter: FeedbackFilter, appId: string, ticketId: string): Promise<boolean> {
+  if (filter.kinds.length === 0 && filter.exclude_reporter_servers.length === 0) return true;
+  const ticket = await db.prepare("SELECT kind, metadata_json FROM feedback_tickets WHERE id = ?1 AND app_id = ?2")
+    .bind(ticketId, appId).first<{ kind: string; metadata_json: string | null }>().catch(() => null);
+  // A ticket Hands cannot read is announced rather than silently dropped.
+  if (!ticket) return true;
+  if (filter.kinds.length > 0 && !filter.kinds.includes(ticket.kind)) return false;
+  if (filter.exclude_reporter_servers.length > 0) {
+    let attribution: Record<string, unknown> = {};
+    try { attribution = parseJsonRecord(parseJsonRecord(JSON.parse(ticket.metadata_json || "{}")).reporter_attribution); } catch { attribution = {}; }
+    const ids = [attribution.server_id, attribution.server_slug].filter((v): v is string => typeof v === "string" && v !== "");
+    if (ids.some((id) => filter.exclude_reporter_servers.includes(id))) return false;
+  }
+  return true;
 }
 
 interface InternalSubscriptionRow extends NotificationSubscriptionRow {
@@ -166,6 +218,7 @@ function publicSubscription(row: NotificationSubscriptionRow) {
     events: parseStoredEvents(row.events_json),
     enabled: row.enabled === 1,
     card_updates: row.card_updates === 1,
+    feedback_filter: parseFeedbackFilter(row.feedback_filter_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -295,7 +348,7 @@ export async function handleGetRaftNotifications(c: AdminContext) {
   if (!app) return c.json({ error: "app not found" }, 404);
   const bot = await botForServer(c.env.DB, app.server_id);
   const { results } = await c.env.DB.prepare(
-    `SELECT id, app_id, server_id, channel_target, events_json, enabled, card_updates,
+    `SELECT id, app_id, server_id, channel_target, events_json, enabled, card_updates, feedback_filter_json,
             bot_installation_id,
             webhook_id, created_by, created_at, updated_at, archived_at
      FROM raft_notification_subscriptions
@@ -492,6 +545,8 @@ export async function handleCreateRaftNotification(c: AdminContext) {
   if (body.card_updates !== undefined && typeof body.card_updates !== "boolean") {
     return c.json({ error: "card_updates must be a boolean" }, 400);
   }
+  const feedbackFilter = body.feedback_filter === undefined ? { filter: parseFeedbackFilter("{}") } : validateFeedbackFilter(body.feedback_filter);
+  if ("error" in feedbackFilter) return c.json({ error: feedbackFilter.error }, 400);
 
   const id = crypto.randomUUID();
   const webhookSecret = `${crypto.randomUUID()}${crypto.randomUUID()}`;
@@ -509,15 +564,16 @@ export async function handleCreateRaftNotification(c: AdminContext) {
       c.env.DB.prepare(
         `INSERT INTO raft_notification_subscriptions
            (id, app_id, server_id, channel_target, events_json, enabled, card_updates,
-            bot_installation_id, webhook_id, created_by, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10, ?10)`,
-      ).bind(id, appId, targetServerId, channelTarget, JSON.stringify(parsed.events), body.card_updates === true ? 1 : 0, bot.id, id, actor.id, now),
+            bot_installation_id, webhook_id, created_by, created_at, updated_at, feedback_filter_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10, ?10, ?11)`,
+      ).bind(id, appId, targetServerId, channelTarget, JSON.stringify(parsed.events), body.card_updates === true ? 1 : 0, bot.id, id, actor.id, now,
+        JSON.stringify(feedbackFilter.filter)),
     ]);
   } catch {
     return c.json({ error: "notification destination already exists or could not be created" }, 409);
   }
   const saved = await c.env.DB.prepare(
-    `SELECT id, app_id, server_id, channel_target, events_json, enabled, card_updates,
+    `SELECT id, app_id, server_id, channel_target, events_json, enabled, card_updates, feedback_filter_json,
             bot_installation_id,
             webhook_id, created_by, created_at, updated_at, archived_at
      FROM raft_notification_subscriptions WHERE id = ?1`,
@@ -569,6 +625,11 @@ export async function handleUpdateRaftNotification(c: AdminContext) {
       `UPDATE webhooks SET events_json = ?1, updated_at = ?2
        WHERE id = (SELECT webhook_id FROM raft_notification_subscriptions WHERE id = ?3 AND app_id = ?4)`,
     ).bind(JSON.stringify(parsed.events), Date.now(), subscriptionId, appId).run();
+  }
+  if (body.feedback_filter !== undefined) {
+    const parsedFilter = validateFeedbackFilter(body.feedback_filter);
+    if ("error" in parsedFilter) return c.json({ error: parsedFilter.error }, 400);
+    updates.push("feedback_filter_json = ?"); binds.push(JSON.stringify(parsedFilter.filter));
   }
   if (body.enabled !== undefined) {
     if (typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
@@ -904,7 +965,7 @@ export async function handleTestRaftNotification(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   const subscriptionId = c.req.param("subscriptionId") ?? "";
   const row = await c.env.DB.prepare(
-    `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled, s.card_updates,
+    `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled, s.card_updates, s.feedback_filter_json,
             s.bot_installation_id,
             s.webhook_id, s.created_by, s.created_at, s.updated_at, s.archived_at
      FROM raft_notification_subscriptions s
@@ -949,7 +1010,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   const subscriptionId = c.req.param("subscriptionId") ?? "";
   const body = await c.req.text();
   const row = await c.env.DB.prepare(
-    `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled, s.card_updates,
+    `SELECT s.id, s.app_id, s.server_id, s.channel_target, s.events_json, s.enabled, s.card_updates, s.feedback_filter_json,
             s.bot_installation_id,
             s.webhook_id, s.created_by, s.created_at, s.updated_at, s.archived_at,
             w.secret AS webhook_secret, w.enabled AS webhook_enabled,
@@ -1030,6 +1091,15 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     try { pendingHash = prior?.pending_json ? parseJsonRecord(JSON.parse(prior.pending_json)).eventHash : null; }
     catch { return c.json({ error: "card_delivery_invalid_pending" }, 503); }
     if (pendingHash !== eventHash) return c.json({ ok: true, skipped: true });
+  }
+  // The destination's feedback filter (kinds, reporters' servers) covers the
+  // ticket's announcement and its later comments and status changes.
+  if (isFeedbackThreadEvent(event)) {
+    const ticketId = parseJsonRecord(eventBody.payload).ticket_id;
+    if (typeof ticketId === "string" && ticketId
+      && !(await feedbackFilterAllows(c.env.DB, parseFeedbackFilter(row.feedback_filter_json), row.app_id, ticketId))) {
+      return c.json({ ok: true, skipped: true, reason: "feedback_filter" });
+    }
   }
   // A release only device groups can get is a test build, not a release people
   // should read about; it is announced when it is widened to everyone.

@@ -32,6 +32,18 @@ Connecting a Hands app to a Raft channel requires three setup steps: granting th
 6. Click **Test** (`POST /api/apps/:appId/raft-notifications/:subscriptionId/test`) to verify that the bot can post to the channel.
 7. Optional: click **Use status cards** on the destination so supported store and release events render as rich status cards (and update in place when the same version or build changes state) while also posting a new card to the channel for visibility. Without status cards, the same events are posted as plain text laid out like the card: a bold title, the version or build, the state as `[before] -> [after]` when it changed, details, the time in UTC and the console link. Each change is one new message.
 
+For feedback events (`feedback:new`, and a ticket's `feedback:comment_created` and `feedback:status_changed`), a destination can be limited with `feedback_filter` when it is created or updated (`PATCH /api/apps/:appId/raft-notifications/:subscriptionId`):
+
+```bash
+hands api PATCH /api/apps/<appId>/raft-notifications/<subscriptionId> \
+  --data '{"feedback_filter":{"kinds":["feedback","bug"],"exclude_reporter_servers":["raft","botiverse"]}}'
+```
+
+- `kinds`: the ticket kinds to announce (`feedback`, `bug`, `crash`, `error`); empty announces every kind.
+- `exclude_reporter_servers`: Raft servers (slug or id, at most 20) whose reporters' tickets are not announced, for example internal test servers. A ticket whose reporter's server is unknown (an anonymous SDK report) is still announced.
+
+The filter covers the ticket's later comments and status changes too, so a filtered ticket never appears in the channel.
+
 A single Hands app can bind multiple Raft channels with different event sets, and multiple Hands apps (for example `raft-ios` and `raft-android`) can post into the same release channel.
 
 ### Step 2: Enable store event sources

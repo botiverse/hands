@@ -93,6 +93,8 @@ async function harness() {
     );
   `);
   sqlite.exec(readFileSync(new URL("../../migrations/sql/0087_raft_notification_cards.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../../migrations/sql/0114_raft_notification_feedback_filter.sql", import.meta.url), "utf8"));
+  sqlite.exec("CREATE TABLE feedback_tickets (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, kind TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')");
   sqlite.prepare("INSERT INTO organizations (id, external_provider, external_id) VALUES ('org-1', 'raft', 'server-1')").run();
   sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, archived) VALUES (?, 'org-1', 'sample-app', 'Sample App', 0)").run(APP_ID);
   sqlite.prepare(
@@ -235,6 +237,43 @@ function mockFeedbackRaft(options: {
 }
 
 describe("Hands-managed Raft notifications", () => {
+  it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
+    const { request, sqlite, updateConfig, getConfig } = await harness();
+    expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);
+    expect((await updateConfig({ feedback_filter: { kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse"] } })).status).toBe(200);
+    expect((await updateConfig({ feedback_filter: { kinds: ["nope"] } })).status).toBe(400);
+    expect((await updateConfig({ feedback_filter: { exclude_reporter_servers: ["bad slug!"] } })).status).toBe(400);
+    expect(((await (await getConfig()).json()) as any).subscriptions[0].feedback_filter)
+      .toEqual({ kinds: ["feedback", "bug"], exclude_reporter_servers: ["raft", "srv-botiverse"] });
+    const ticket = (id: string, kind: string, attribution?: Record<string, string>) => sqlite.prepare(
+      "INSERT INTO feedback_tickets (id, app_id, kind, metadata_json) VALUES (?, ?, ?, ?)",
+    ).run(id, APP_ID, kind, JSON.stringify(attribution ? { reporter_attribution: attribution } : {}));
+    ticket("t-external", "bug", { server_id: "srv-customer", server_slug: "acme" });
+    ticket("t-internal-slug", "bug", { server_id: "srv-raft", server_slug: "raft" });
+    ticket("t-internal-id", "feedback", { server_id: "srv-botiverse", server_slug: "botiverse" });
+    ticket("t-anonymous", "feedback");
+    ticket("t-crash", "crash", { server_id: "srv-customer", server_slug: "acme" });
+    const posted: string[] = [];
+    mockRaftFetch(async (_input, init) => {
+      const call = JSON.parse(String(init?.body)) as { content: string };
+      posted.push(call.content);
+      return Response.json({ state: "sent", messageId: `m-${posted.length}` });
+    });
+    const event = (name: string, ticketId: string) => ({ event: name, delivered_at: 1, payload: {
+      ticket_id: ticketId, app_slug: "sample-app", kind: "bug", message: `report ${ticketId}`, ...(name === "feedback:comment_created" ? { comment: { body: "reply" } } : {}) } });
+    for (const id of ["t-external", "t-internal-slug", "t-internal-id", "t-anonymous", "t-crash"]) {
+      const res = await request(event("feedback:new", id), `new-${id}`);
+      expect(res.status, id).toBe(200);
+    }
+    const skipped = await (await request(event("feedback:comment_created", "t-internal-slug"), "c-internal")).json() as { reason?: string };
+    expect(skipped.reason).toBe("feedback_filter");
+    expect(posted.filter((c) => c.includes("t-external") || c.includes("report t-external")).length).toBeGreaterThan(0);
+    expect(posted.some((c) => c.includes("t-internal") || c.includes("t-crash"))).toBe(false);
+    // An anonymous report (no reporter server) passes the server exclusion.
+    expect(posted.some((c) => c.includes("t-anonymous"))).toBe(true);
+    expect(posted).toHaveLength(2);
+  });
+
   it("sends each Play failure receipt as a separate channel card and deduplicates its replay", async () => {
     const { request, sqlite, updateConfig } = await harness();
     await updateConfig({ events: ["google_play:submission_failed"] });
