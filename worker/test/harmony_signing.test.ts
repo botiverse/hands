@@ -184,7 +184,7 @@ describe("Hands-managed HarmonyOS signing", () => {
     const calls = huawei({
       "POST /api/publish/v3/cert": () => ({ ret: { code: 0 }, certInfo: { id: "777", certType: 2, certDownloadUrl: "https://download.agc.test/c.cer" } }),
       "POST /api/publish/v2/cert/delete": () => ({ ret: { code: 0 } }),
-      "POST /api/publish/v3/cert/list": () => ({ ret: { code: 0 }, certInfo: [{ id: "777", certName: "x", certType: 2 }, { id: "888", certName: "held", certType: 2 }] }),
+      "POST /api/publish/v3/cert/list": () => ({ ret: { code: 0 }, certList: [{ id: "777", certName: "x", certType: 2 }, { id: "888", certName: "held", certType: 2 }] }),
     });
     const res = await call(h.handleCreateHarmonyIdentity, env, { orgId: "org" }, { name: "Deck release", kind: "release", agc_from_app: "raft-deck-ohos" });
     expect(res.body.code).toBe("signing_certificate_mismatch");

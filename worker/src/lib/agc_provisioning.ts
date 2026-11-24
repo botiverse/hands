@@ -120,7 +120,9 @@ export async function downloadAgcFile(url: string, maxBytes = 256 * 1024, fetchI
 
 export async function listHarmonyCertificates(auth: AgcAuth, kind: HarmonyCertKind, fetchImpl: typeof fetch = fetch) {
   const body = await agcJson(auth, "/api/publish/v3/cert/list", { method: "POST", body: JSON.stringify({ certType: HARMONY_CERT_TYPES[kind] }) }, fetchImpl);
-  const list = Array.isArray(body?.certInfo) ? body.certInfo as Record<string, unknown>[] : [];
+  // The reference names the field certInfo; its example and the service use certList.
+  const raw = Array.isArray(body?.certList) ? body.certList : Array.isArray(body?.certInfo) ? body.certInfo : [];
+  const list = raw as Record<string, unknown>[];
   return list.map((c) => ({ id: str(c.id) ?? "", name: str(c.certName) ?? "", type: num(c.certType), created_at: num(c.createTime), expires_at: num(c.expireTime) }))
     .filter((c) => c.id);
 }
