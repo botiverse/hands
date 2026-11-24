@@ -13,7 +13,7 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
-import { formatExistingFeedbackRoot, formatRaftNotificationMessage } from "../lib/raft_notification_content";
+import { formatEarlierFeedbackRoot, formatExistingFeedbackRoot, formatRaftNotificationMessage, type EarlierFeedbackTicket } from "../lib/raft_notification_content";
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
 import { renderStatusCardAsText } from "../lib/raft_card_text";
@@ -1139,11 +1139,15 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
   if (!thread) {
     const marker = needsFeedbackRoot ? FEEDBACK_ROOT_PENDING : "pending";
     const now = Date.now();
+    // Rendered once, with the claim: every later attempt sends exactly this.
+    const rootContent = needsFeedbackRoot
+      ? await earlierFeedbackRoot(c.env.DB, row, parseJsonRecord(eventBody.payload).ticket_id, c.env.DASHBOARD_ORIGIN ?? null)
+      : null;
     const claim = await c.env.DB.prepare(
       `INSERT OR IGNORE INTO raft_notification_threads
-         (subscription_id, object_key, parent_message_id, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?4)`,
-    ).bind(subscriptionId, objectKey, marker, now).run();
+         (subscription_id, object_key, parent_message_id, created_at, updated_at, root_content)
+       VALUES (?1, ?2, ?3, ?4, ?4, ?5)`,
+    ).bind(subscriptionId, objectKey, marker, now, rootContent).run();
     if (claim.meta.changes === 1) {
       ownsParentClaim = true;
       createdParentClaim = true;
@@ -1190,6 +1194,11 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
     // update can recover an uncertain first send without making a second root.
     if (!feedbackRoot) return c.json({ error: "notification thread claim unavailable" }, 503);
     const rootKey = `hands-raft-feedback-root:${subscriptionId}:${await sha256Hex(objectKey)}`.slice(0, 240);
+    // A claim made by an older worker has no saved content: it sends the older text.
+    const savedRoot = await c.env.DB.prepare(
+      `SELECT root_content FROM raft_notification_threads WHERE subscription_id = ?1 AND object_key = ?2 LIMIT 1`,
+    ).bind(subscriptionId, objectKey).first<{ root_content: string | null }>();
+    const rootContent = savedRoot?.root_content || feedbackRoot;
     try {
       // An old worker may already have sent this event before losing its DB
       // pointer. Replay the exact channel message to prove its target and
@@ -1199,7 +1208,7 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
         // A message sent before reporters were named carries the older text.
         ? await sendKnownBotText(c.env, bot, row.channel_target, [...new Set([formatRaftNotificationMessage(eventBody, app),
           formatRaftNotificationMessage(eventBody, plainApp)])], idempotencyKey)
-        : await sendBotMessage(c.env, bot, row.channel_target, feedbackRoot, rootKey);
+        : await sendBotMessage(c.env, bot, row.channel_target, rootContent, rootKey);
       const saved = await c.env.DB.prepare(
         `UPDATE raft_notification_threads SET parent_message_id = ?1, updated_at = ?2
          WHERE subscription_id = ?3 AND object_key = ?4 AND parent_message_id = ?5 AND updated_at = ?6`,
@@ -1362,6 +1371,29 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
 }
 
 /** The reporter's handle and Raft server for a ticket, from its reporter attribution. */
+/** An earlier ticket's root message, or null to use the plain one (ticket gone). */
+async function earlierFeedbackRoot(
+  db: D1Database,
+  row: { app_id: string; app_slug: string | null; app_name: string | null },
+  ticketId: unknown,
+  dashboardOrigin: string | null,
+): Promise<string | null> {
+  if (typeof ticketId !== "string" || !ticketId) return null;
+  let ticket: EarlierFeedbackTicket | null = null;
+  try {
+    ticket = await db.prepare(
+      `SELECT id, kind, message, version_name, version_code, created_at FROM feedback_tickets WHERE id = ?1 AND app_id = ?2`,
+    ).bind(ticketId, row.app_id).first<EarlierFeedbackTicket>();
+  } catch {
+    return null;
+  }
+  if (!ticket) return null;
+  const feedbackReporter = await ticketReporter(db, row.app_id, ticketId);
+  return formatEarlierFeedbackRoot(ticket, {
+    id: row.app_id, slug: row.app_slug, name: row.app_name, dashboardOrigin, feedbackReporter,
+  });
+}
+
 async function ticketReporter(db: D1Database, appId: string, ticketId: unknown): Promise<{ handle: string | null; server: string | null } | null> {
   if (typeof ticketId !== "string" || !ticketId) return null;
   const row = await db.prepare("SELECT metadata_json FROM feedback_tickets WHERE id = ?1 AND app_id = ?2")
