@@ -41,12 +41,26 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `filetype` | No | Desired installable file type. Defaults to `apk`. |
 | `lang` | No | Preferred changelog language, such as `zh-CN` or `en`. Also read from `X-Hands-Lang` or `Accept-Language`. |
 | `device_id` | No | Stable per-install identifier. Also read from `X-Hands-Device-Id`. Required to participate in staged rollouts. |
+| `delta_algorithms` | No | Comma-separated delta patch algorithms the client can apply, such as `archive-patcher-v1+xz,archive-patcher-v1+gzip`. Also read from `X-Hands-Delta-Algorithms`. Unknown values are ignored. |
 
 When `arch` is supplied, Hands first selects an asset with the exact
 platform and architecture. If no exact architecture asset exists, it falls
 back to the platform's generic asset (`arch: null`), such as a universal
 Android APK. This lets ABI-reporting clients use releases published as a
 single universal package.
+
+### Delta patches
+
+When the app's `delta_updates` flag is on and Hands holds a patch from the
+installed `current_version_code` to the offered build, the response carries a
+`patch` object beside `asset` (`from_version_code`, `algorithm`,
+`download_url`, `size_bytes`, `target_sha256`). Hands stores each patch as
+`archive-patcher-v1+gzip` and as `archive-patcher-v1+xz` (about 30% smaller;
+LZMA2 dictionary of at most 16 MiB) and offers the smallest one whose algorithm
+the client declared in `delta_algorithms`. A client that declares nothing is
+offered only `archive-patcher-v1+gzip` (or an uncompressed
+`archive-patcher-v1` patch). A patch is offered only when it is under 70% of
+the full asset; `asset` always stays the fallback.
 
 ### Staged rollouts
 

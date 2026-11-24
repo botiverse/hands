@@ -165,6 +165,8 @@ dependencies {
     // Delta (incremental) APK apply. Maintained fork of Google's Play-Store
     // file-by-file engine; the CLI/CI side generates patches with the SAME jar.
     implementation("com.eidu:archive-patcher:3.0.0")
+    // Decompresses archive-patcher-v1+xz patches (XZ for Java, 0BSD).
+    implementation("org.tukaani:xz:1.12")
     testImplementation("junit:junit:4.13.2")
     // JVM unit tests otherwise load the mockable android.jar stub, whose
     // org.json.JSONObject throws "not mocked". This jar is the real implementation.

@@ -878,5 +878,9 @@
   "Only {\"internal\": true} is accepted.": "只接受 {\"internal\": true}。",
   "Current principal cannot triage feedback.": "当前主体无权分拣反馈。",
   "Feedback ticket or comment was not found.": "未找到反馈工单或评论。",
-  "Ambiguous comment prefix, or a reporter's own comment.": "评论前缀有歧义，或是反馈者自己的评论。"
+  "Ambiguous comment prefix, or a reporter's own comment.": "评论前缀有歧义，或是反馈者自己的评论。",
+  "Delta patch algorithms the client can apply, comma-separated, e.g. `archive-patcher-v1+xz,archive-patcher-v1+gzip`. Unknown values are ignored. Without it the server offers only patches older SDKs understand (`archive-patcher-v1+gzip`, `archive-patcher-v1`).": "客户端可应用的增量补丁算法，逗号分隔，例如 `archive-patcher-v1+xz,archive-patcher-v1+gzip`。未知值会被忽略。未提供时，服务端只提供旧版 SDK 能识别的补丁（`archive-patcher-v1+gzip`、`archive-patcher-v1`）。",
+  "Same as the X-Hands-Delta-Algorithms header.": "与 X-Hands-Delta-Algorithms 请求头相同。",
+  "Delta patch from the installed version, present only when one exists for a supported algorithm and is much smaller than the full APK. The smallest supported patch is offered; `asset` stays the fallback.": "从已安装版本升级的增量补丁。仅当存在客户端支持算法的补丁且明显小于完整 APK 时返回；返回其中最小的补丁，`asset` 仍作为回退。",
+  "`archive-patcher-v1+gzip` (gzip-wrapped), `archive-patcher-v1+xz` (xz, LZMA2 dictionary at most 16 MiB) or `archive-patcher-v1` (uncompressed).": "`archive-patcher-v1+gzip`（gzip 压缩）、`archive-patcher-v1+xz`（xz 压缩，LZMA2 字典不超过 16 MiB）或 `archive-patcher-v1`（未压缩）。"
 }

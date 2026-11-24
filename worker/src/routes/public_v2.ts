@@ -708,6 +708,9 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
           ttl: latest.expires_in,
           deviceId,
           platform: requestedPlatform,
+          algorithms: parseDeltaAlgorithms(
+            c.req.header("X-Hands-Delta-Algorithms") ?? c.req.query("delta_algorithms"),
+          ),
         })
       : null;
 
@@ -1128,11 +1131,44 @@ export async function handlePublicCliBinaryVersions(c: Context<{ Bindings: Env }
 /** Fraction of the full APK a patch must beat to be worth offering. */
 const DELTA_MAX_SIZE_RATIO = 0.7;
 
+/** Patch algorithms the server knows how to offer. */
+const KNOWN_DELTA_ALGORITHMS = new Set([
+  "archive-patcher-v1",
+  "archive-patcher-v1+gzip",
+  "archive-patcher-v1+xz",
+]);
+
+/**
+ * What a client that sends no X-Hands-Delta-Algorithms understands: SDKs up to
+ * 0.14.x gunzip a `+gzip` patch and apply anything else as raw, so an xz patch
+ * must never reach them.
+ */
+const LEGACY_DELTA_ALGORITHMS: ReadonlySet<string> = new Set([
+  "archive-patcher-v1",
+  "archive-patcher-v1+gzip",
+]);
+
+/**
+ * Delta algorithms the client declared (X-Hands-Delta-Algorithms header or
+ * `delta_algorithms` query, comma-separated). Absent or blank means a legacy
+ * client; unknown values are ignored.
+ */
+export function parseDeltaAlgorithms(raw: string | null | undefined): ReadonlySet<string> {
+  const declared = (raw ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  if (declared.length === 0) return LEGACY_DELTA_ALGORITHMS;
+  return new Set(declared.filter((value) => KNOWN_DELTA_ALGORITHMS.has(value)));
+}
+
 /**
  * Find a delta-patch asset on the target build that upgrades the client's
  * installed version for its arch, returning a signed offer only when the patch
  * is small enough to be a win. Patch assets carry
  * metadata_json = {from_version_code, to_version_code, algorithm, target_sha256}.
+ * A build may hold one patch per algorithm; the smallest one the client
+ * supports is offered.
  */
 async function findDeltaPatch(
   c: Context<{ Bindings: Env }>,
@@ -1145,6 +1181,7 @@ async function findDeltaPatch(
     ttl: number;
     deviceId: string | null;
     platform: string | null;
+    algorithms: ReadonlySet<string>;
   },
 ): Promise<{
   from_version_code: number;
@@ -1174,7 +1211,10 @@ async function findDeltaPatch(
   });
   if (!enabled) return null;
 
-  const row = await c.env.DB.prepare(
+  if (args.algorithms.size === 0) return null;
+
+  // An exact-arch patch wins over a universal one; then the smallest.
+  const rows = (await c.env.DB.prepare(
     `SELECT r2_key, size_bytes, arch,
             json_extract(metadata_json, '$.algorithm') AS algorithm,
             json_extract(metadata_json, '$.target_sha256') AS target_sha256
@@ -1183,17 +1223,17 @@ async function findDeltaPatch(
        AND artifact_kind = 'delta-patch'
        AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
        AND (arch = ?3 OR arch IS NULL)
-     ORDER BY (arch = ?4) DESC
-     LIMIT 1`,
+     ORDER BY (arch = ?4) DESC, size_bytes ASC`,
   )
     .bind(args.buildId, args.fromVersionCode, args.arch, args.arch)
-    .first<{
+    .all<{
       r2_key: string;
       size_bytes: number;
       arch: string | null;
       algorithm: string | null;
       target_sha256: string | null;
-    }>();
+    }>()).results ?? [];
+  const row = rows.find((candidate) => args.algorithms.has(candidate.algorithm ?? "archive-patcher-v1"));
   if (!row) return null;
   // Only a win if it's meaningfully smaller than the full download.
   if (row.size_bytes > args.fullSizeBytes * DELTA_MAX_SIZE_RATIO) return null;
@@ -1537,7 +1577,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      WHERE ba.r2_key = ?1
        AND (
          ba.artifact_kind IN ('installable', 'desktop-manifest', 'desktop-archive')
-         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype = 'patch')
+         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype IN ('patch', 'patch.xz'))
        )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND r.product_type != 'ios-simulator-qa' AND r.release_type != 'qa'

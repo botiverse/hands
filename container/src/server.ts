@@ -40,6 +40,7 @@ import { computeInventory } from "./inventory/index.js";
 import { withRequestMapping } from "./inventory/mapping.js";
 import { selectNativeSymbolCandidate } from "./native-symbols.js";
 import { registerSigningRoutes } from "./signing.js";
+import { parsePatchCompression, xzArgs } from "./patch-compression.js";
 import { downloadMapping, filterMapping, indexMapping, openMapping, RetraceError, traceNames } from "./retrace.js";
 import { Readable } from "node:stream";
 
@@ -86,8 +87,10 @@ app.get("/health", (c) =>
 // them itself and returns the archive-patcher file-by-file patch that upgrades
 // old → new. URLs (not a multipart body) keep the worker→container request tiny
 // — pushing tens of MB of APK bytes through container.fetch hangs.
+// Optional `compression`: "gzip" (default, archive-patcher-v1+gzip) or "xz"
+// (archive-patcher-v1+xz; see patch-compression.ts for the xz settings).
 app.post("/generate-patch", async (c) => {
-  let body: { old_url?: string; new_url?: string };
+  let body: { old_url?: string; new_url?: string; compression?: unknown };
   try {
     body = await c.req.json();
   } catch {
@@ -97,6 +100,10 @@ app.post("/generate-patch", async (c) => {
   const newUrl = body.new_url;
   if (typeof oldUrl !== "string" || typeof newUrl !== "string") {
     return c.json({ error: "old_url and new_url are required" }, 400);
+  }
+  const compression = parsePatchCompression(body.compression);
+  if (!compression) {
+    return c.json({ error: 'compression must be "gzip" or "xz"' }, 400);
   }
   const dir = join(tmpdir(), `patchgen-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
@@ -139,16 +146,25 @@ app.post("/generate-patch", async (c) => {
     ]);
     await execFileAsync(
       "java",
-      ["-cp", "/opt/patchgen/archive-patcher.jar:/opt/patchgen", "PatchGen", oldPath, newPath, outPath],
+      [
+        "-cp", "/opt/patchgen/archive-patcher.jar:/opt/patchgen", "PatchGen", oldPath, newPath, outPath,
+        ...(compression === "xz" ? ["raw"] : []),
+      ],
       { maxBuffer: 16 * 1024 * 1024, timeout: 180_000 },
     );
-    const patch = await readFile(outPath);
+    let patchPath = outPath;
+    if (compression === "xz") {
+      await execFileAsync("xz", xzArgs(outPath), { maxBuffer: 1024 * 1024, timeout: 180_000 });
+      patchPath = `${outPath}.xz`;
+    }
+    const patch = await readFile(patchPath);
     return new Response(patch, {
       headers: {
         "content-type": "application/octet-stream",
         "content-length": String(patch.length),
         "x-old-bytes": String(oldLen),
         "x-new-bytes": String(newLen),
+        "x-patch-compression": compression,
       },
     });
   } catch (err) {

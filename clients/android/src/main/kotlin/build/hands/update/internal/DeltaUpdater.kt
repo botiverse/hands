@@ -22,6 +22,7 @@ import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.function.BiFunction
 import java.util.zip.GZIPInputStream
+import org.tukaani.xz.XZInputStream
 
 /**
  * Applies a server-offered incremental (delta) APK update on-device and, only
@@ -49,8 +50,8 @@ import java.util.zip.GZIPInputStream
  *
  * The apply + signature/package checks require a real device/PackageManager and
  * the archive-patcher engine, so they are validated on-device, not by JVM unit
- * tests. The pure helpers ([isGzipped], [toHex], [constantTimeEquals]) are unit
- * testable in isolation.
+ * tests. The pure helpers ([compressionFor], [openDeltaStream], [toHex],
+ * [constantTimeEquals]) are unit testable in isolation.
  */
 class DeltaUpdater(
     private val context: Context,
@@ -125,18 +126,21 @@ class DeltaUpdater(
                 return false
             }
 
-            // 2. Open the delta stream, gunzipping first when the algorithm asks
-            //    for it. A corrupt gzip header surfaces here as `gunzip`.
+            // 2. Open the delta stream, decompressing as the algorithm says
+            //    (validateOffer accepted it, so it is known). A corrupt gzip or
+            //    xz header surfaces here.
+            val compression = compressionFor(patch.algorithm) ?: PatchCompression.NONE
             val deltaStream: InputStream = try {
-                openDeltaStream(patchFile, isGzipped(patch.algorithm))
+                openDeltaStream(patchFile.inputStream().buffered(), compression)
             } catch (e: Throwable) {
-                emit("patch_fallback", "patch_gunzip_failed")
-                log("delta_fallback reason=gunzip err=${e.message}")
+                val code = if (compression == PatchCompression.XZ) "patch_decompress_failed" else "patch_gunzip_failed"
+                emit("patch_fallback", code)
+                log("delta_fallback reason=${compression.name.lowercase()} err=${e.message}")
                 return false
             }
 
-            // 3. Apply the patch onto the base APK. A mid-stream gunzip fault or
-            //    any patch error surfaces here as `apply`.
+            // 3. Apply the patch onto the base APK. A mid-stream decompression
+            //    fault or any patch error surfaces here as `apply`.
             try {
                 emit("patch_apply_started")
                 deltaStream.use { stream ->
@@ -242,7 +246,7 @@ class DeltaUpdater(
      */
     private fun validateOffer(patch: Patch): Boolean {
         if (patch.from_version_code != installedVersionCode) return false
-        if (!patch.algorithm.startsWith("archive-patcher-v1")) return false
+        if (compressionFor(patch.algorithm) == null) return false
         if (patch.target_sha256.isNullOrBlank()) return false
         return true
     }
@@ -263,20 +267,6 @@ class DeltaUpdater(
                     copyWithProgress(input, out) { done -> reportProgress(done, total) }
                 }
             }
-        }
-    }
-
-    private fun openDeltaStream(patchFile: File, gzipped: Boolean): InputStream {
-        val raw = patchFile.inputStream().buffered()
-        return if (gzipped) {
-            try {
-                GZIPInputStream(raw)
-            } catch (e: Throwable) {
-                raw.close()
-                throw e
-            }
-        } else {
-            raw
         }
     }
 
@@ -409,8 +399,48 @@ class DeltaUpdater(
 
         private val HEX = "0123456789abcdef".toCharArray()
 
-        /** The `+gzip` suffix means the patch bytes are gzip-wrapped. */
-        internal fun isGzipped(algorithm: String): Boolean = algorithm.endsWith("+gzip")
+        /**
+         * Patch algorithms this SDK applies, best first. Sent as
+         * `X-Hands-Delta-Algorithms` so the server only offers these; a server
+         * that sees no header offers `+gzip` (what SDKs before 0.15.0 apply).
+         */
+        internal val SUPPORTED_ALGORITHMS: List<String> = listOf(
+            "archive-patcher-v1+xz",
+            "archive-patcher-v1+gzip",
+        )
+
+        /**
+         * XZInputStream memory limit in KiB. The server compresses with a
+         * 16 MiB LZMA2 dictionary (container/src/patch-compression.ts), which
+         * needs about 16.1 MiB to decode; 20 MiB leaves margin but refuses a
+         * stream that would need far more memory than any patch we generate.
+         */
+        internal const val XZ_MEMORY_LIMIT_KIB = 20 * 1024
+
+        /**
+         * How the patch bytes for [algorithm] are compressed, or null for an
+         * algorithm this SDK cannot apply (the caller falls back to the full
+         * APK).
+         */
+        internal fun compressionFor(algorithm: String): PatchCompression? = when (algorithm) {
+            "archive-patcher-v1" -> PatchCompression.NONE
+            "archive-patcher-v1+gzip" -> PatchCompression.GZIP
+            "archive-patcher-v1+xz" -> PatchCompression.XZ
+            else -> null
+        }
+
+        /** Wraps [raw] in the decompressor for [compression]; closes [raw] if that fails. */
+        internal fun openDeltaStream(raw: InputStream, compression: PatchCompression): InputStream =
+            try {
+                when (compression) {
+                    PatchCompression.NONE -> raw
+                    PatchCompression.GZIP -> GZIPInputStream(raw)
+                    PatchCompression.XZ -> XZInputStream(raw, XZ_MEMORY_LIMIT_KIB)
+                }
+            } catch (e: Throwable) {
+                raw.close()
+                throw e
+            }
 
         /**
          * Deflaters that recompress like the patch generator's stock zlib: the
@@ -472,3 +502,6 @@ class DeltaUpdater(
         }
     }
 }
+
+/** Compression wrapped around an archive-patcher patch. */
+internal enum class PatchCompression { NONE, GZIP, XZ }

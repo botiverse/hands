@@ -27,20 +27,25 @@ import java.util.zip.GZIPOutputStream;
  * So we GZIP the patch here; the stored artifact and the < full-APK size guard
  * must both use this compressed form, and the applier (P2) must GUNZIP before
  * FileByFileV1DeltaApplier.applyDelta. algorithm id: archive-patcher-v1+gzip.
+ *
+ * An optional 4th argument `raw` writes the uncompressed patch instead; the
+ * container server compresses it with the `xz` CLI for the
+ * archive-patcher-v1+xz variant (about 30% smaller than gzip on real APKs).
  */
 public final class PatchGen {
   static final BiFunction<Integer, Boolean, IDeflater> DEFLATER_FACTORY =
       (level, nowrap) -> new DefaultDeflater(level, nowrap);
 
   public static void main(String[] args) throws Exception {
-    if (args.length != 3) {
-      System.err.println("usage: PatchGen <old.apk> <new.apk> <out.patch.gz>");
+    boolean raw = args.length == 4 && args[3].equals("raw");
+    if (args.length != 3 && !raw) {
+      System.err.println("usage: PatchGen <old.apk> <new.apk> <out.patch.gz> [raw]");
       System.exit(2);
     }
     File oldFile = new File(args[0]);
     File newFile = new File(args[1]);
-    try (OutputStream out =
-        new GZIPOutputStream(new BufferedOutputStream(new FileOutputStream(args[2])))) {
+    OutputStream file = new BufferedOutputStream(new FileOutputStream(args[2]));
+    try (OutputStream out = raw ? file : new GZIPOutputStream(file)) {
       new FileByFileV1DeltaGenerator(DEFLATER_FACTORY, new RecommendationModifier[0])
           .generateDelta(oldFile, newFile, out);
     }

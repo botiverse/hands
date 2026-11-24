@@ -39,8 +39,13 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `filetype` | 否 | 需要的可安装文件类型，默认为 `apk`。 |
 | `lang` | 否 | 首选更新说明语言，例如 `zh-CN` 或 `en`。也可从 `X-Hands-Lang` 或 `Accept-Language` 读取。 |
 | `device_id` | 否 | 每次安装稳定的标识符，也可从 `X-Hands-Device-Id` 读取。参与分阶段发布时必填。 |
+| `delta_algorithms` | 否 | 客户端可应用的增量补丁算法，逗号分隔，例如 `archive-patcher-v1+xz,archive-patcher-v1+gzip`。也可从 `X-Hands-Delta-Algorithms` 读取。未知值会被忽略。 |
 
 提供 `arch` 时，Hands 首先选择平台和架构完全匹配的文件；没有精确架构文件时，回退到该平台的通用文件（`arch: null`），例如通用 Android APK。这样上报 ABI 的客户端也可以使用仅以单个通用包发布的版本。
+
+### 增量补丁
+
+应用的 `delta_updates` 功能开关开启、且 Hands 存有从已安装的 `current_version_code` 到所提供版本的补丁时，响应在 `asset` 旁附带 `patch` 对象（`from_version_code`、`algorithm`、`download_url`、`size_bytes`、`target_sha256`）。Hands 为每个补丁分别保存 `archive-patcher-v1+gzip` 和 `archive-patcher-v1+xz`（约小 30%，LZMA2 字典不超过 16 MiB）两种格式，并提供客户端在 `delta_algorithms` 中声明的算法里最小的一个。未声明的客户端只会收到 `archive-patcher-v1+gzip`（或未压缩的 `archive-patcher-v1`）补丁。补丁小于完整文件的 70% 时才会提供；`asset` 始终作为回退。
 
 ### 分阶段发布
 

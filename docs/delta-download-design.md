@@ -46,6 +46,12 @@ versions** to the new one, per arch (matching how we already split assets by
   `metadata_json = {from_version_code, to_version_code, algorithm:
   "archive-patcher-v1+gzip"}`; store `file_hash` (patch sha256) and the **target
   APK sha256** so the client can verify the reconstructed file.
+- Server-side generation (`worker/src/routes/delta.ts`) stores two variants per
+  `(from_version_code, arch)`: `archive-patcher-v1+gzip` (filetype `patch`) and
+  `archive-patcher-v1+xz` (filetype `patch.xz`, `xz -9e` with a 16 MiB LZMA2
+  dictionary so phones decode in ~17 MiB). Each variant is replaced on its own.
+  `/updates/check` offers the smallest variant whose algorithm the client lists
+  in `X-Hands-Delta-Algorithms`; no header means gzip only (SDKs before 0.15.0).
 
 ### 2. Server (`/updates/check`)
 Response is unchanged for clients with no applicable patch (full `download_url`

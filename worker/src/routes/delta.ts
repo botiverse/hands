@@ -47,8 +47,22 @@ interface ApkAssetRow {
   size_bytes: number;
 }
 
+/**
+ * Each prior version gets one patch per compression. `+gzip` is what every SDK
+ * understands; `+xz` is about 30% smaller and is offered only to SDKs that
+ * declare it (X-Hands-Delta-Algorithms, see public_v2.ts findDeltaPatch).
+ * The variants differ in filetype because build_assets' canonical slot
+ * (build, kind, platform, arch, variant, from-version, filetype) must keep
+ * them apart; the filetype is also the R2 key and download-name extension.
+ */
+export const DELTA_PATCH_VARIANTS = [
+  { compression: "gzip", algorithm: "archive-patcher-v1+gzip", filetype: "patch" },
+  { compression: "xz", algorithm: "archive-patcher-v1+xz", filetype: "patch.xz" },
+] as const;
+
 export interface DeltaPatchResult {
   from_version_code: number;
+  algorithm: string;
   status: string;
   size_bytes?: number;
   ratio?: number;
@@ -221,88 +235,101 @@ export async function runDeltaGeneration(
     let done = 0;
     for (const prior of priorRows) {
       const oldUrl = await generateInternalR2Url(env, prior.r2_key, URL_TTL_SECONDS, params.origin);
-      await mark(`v${prior.version_code}: calling container (url mode)`);
+      // Every variant is generated and stored on its own: an xz failure keeps
+      // the gzip patch old SDKs need, and the reverse.
+      let stored = 0;
+      for (const variant of DELTA_PATCH_VARIANTS) {
+        const label = `v${prior.version_code} ${variant.compression}`;
+        const base = { from_version_code: prior.version_code, algorithm: variant.algorithm };
+        await mark(`${label}: calling container (url mode)`);
 
-      const container = await getRandom(env.APK_PARSER, 1);
-      const callStart = Date.now();
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), CONTAINER_TIMEOUT_MS);
-      let res: Response;
-      try {
-        res = await container.fetch(
-          new Request("http://container/generate-patch", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ old_url: oldUrl, new_url: newUrl }),
-            signal: ac.signal,
-          }),
-        );
-      } catch (err) {
+        const container = await getRandom(env.APK_PARSER, 1);
+        const callStart = Date.now();
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), CONTAINER_TIMEOUT_MS);
+        let res: Response;
+        try {
+          res = await container.fetch(
+            new Request("http://container/generate-patch", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ old_url: oldUrl, new_url: newUrl, compression: variant.compression }),
+              signal: ac.signal,
+            }),
+          );
+        } catch (err) {
+          clearTimeout(timer);
+          const ms = Date.now() - callStart;
+          const reason = ac.signal.aborted ? `timeout after ${CONTAINER_TIMEOUT_MS}ms` : String(err);
+          results.push({ ...base, status: `fail:container-call (${reason})`, ms });
+          await mark(`${label}: container call FAILED in ${ms}ms — ${reason}`);
+          continue;
+        }
         clearTimeout(timer);
         const ms = Date.now() - callStart;
-        const reason = ac.signal.aborted ? `timeout after ${CONTAINER_TIMEOUT_MS}ms` : String(err);
-        results.push({ from_version_code: prior.version_code, status: `fail:container-call (${reason})`, ms });
-        await mark(`v${prior.version_code}: container call FAILED in ${ms}ms — ${reason}`);
-        continue;
-      }
-      clearTimeout(timer);
-      const ms = Date.now() - callStart;
 
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        results.push({ from_version_code: prior.version_code, status: `fail:container-${res.status}`, ms });
-        await mark(`v${prior.version_code}: container ${res.status} in ${ms}ms — ${body.slice(0, 200)}`);
-        continue;
-      }
-      const patchBytes = await res.arrayBuffer();
-      const ratio = patchBytes.byteLength / newApk.size_bytes;
-      await mark(`v${prior.version_code}: container OK in ${ms}ms, patch ${patchBytes.byteLength}b (ratio ${ratio.toFixed(4)})`);
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          results.push({ ...base, status: `fail:container-${res.status}`, ms });
+          await mark(`${label}: container ${res.status} in ${ms}ms — ${body.slice(0, 200)}`);
+          continue;
+        }
+        const patchBytes = await res.arrayBuffer();
+        const ratio = patchBytes.byteLength / newApk.size_bytes;
+        await mark(`${label}: container OK in ${ms}ms, patch ${patchBytes.byteLength}b (ratio ${ratio.toFixed(4)})`);
 
-      if (patchBytes.byteLength >= newApk.size_bytes) {
-        results.push({ from_version_code: prior.version_code, status: "skip:not-smaller", ratio, ms });
-        continue;
-      }
+        if (patchBytes.byteLength >= newApk.size_bytes) {
+          results.push({ ...base, status: "skip:not-smaller", ratio, ms });
+          continue;
+        }
 
-      const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${newApk.arch ?? "any"}.patch`;
-      await env.APK_BUCKET.put(patchKey, patchBytes);
-      const patchHash = await sha256Hex(patchBytes);
+        const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${newApk.arch ?? "any"}.${variant.filetype}`;
+        await env.APK_BUCKET.put(patchKey, patchBytes);
+        const patchHash = await sha256Hex(patchBytes);
 
-      await env.DB.prepare(
-        `DELETE FROM build_assets
-         WHERE build_id = ?1 AND artifact_kind = 'delta-patch'
-           AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
-           AND (arch IS ?3 OR arch = ?3)`,
-      )
-        .bind(newApk.build_id, prior.version_code, newApk.arch)
-        .run();
-      await env.DB.prepare(
-        `INSERT INTO build_assets
-         (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
-         size_bytes, signing_credential_id, metadata_json, download_count, created_at)
-         VALUES (?1, ?2, 'delta-patch', 'android', ?3, NULL, 'patch', ?4, ?5, ?6, NULL, ?7, 0, ?8)`,
-      )
-        .bind(
-          crypto.randomUUID(),
-          newApk.build_id,
-          newApk.arch,
-          patchKey,
-          patchHash,
-          patchBytes.byteLength,
-          JSON.stringify({
-            from_version_code: prior.version_code,
-            to_version_code: newApk.version_code,
-            // Gzipped archive-patcher file-by-file bsdiff stream; the applier
-            // must gunzip before FileByFileV1DeltaApplier.applyDelta.
-            algorithm: "archive-patcher-v1+gzip",
-            target_sha256: newApk.file_hash,
-          }),
-          Date.now(),
+        // Replace only this variant: the gzip and xz patches for the same
+        // from-version + arch live side by side.
+        await env.DB.prepare(
+          `DELETE FROM build_assets
+           WHERE build_id = ?1 AND artifact_kind = 'delta-patch'
+             AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
+             AND (arch IS ?3 OR arch = ?3)
+             AND json_extract(metadata_json, '$.algorithm') = ?4`,
         )
-        .run();
+          .bind(newApk.build_id, prior.version_code, newApk.arch, variant.algorithm)
+          .run();
+        await env.DB.prepare(
+          `INSERT INTO build_assets
+           (id, build_id, artifact_kind, platform, arch, variant, filetype, r2_key, file_hash,
+           size_bytes, signing_credential_id, metadata_json, download_count, created_at)
+           VALUES (?1, ?2, 'delta-patch', 'android', ?3, NULL, ?9, ?4, ?5, ?6, NULL, ?7, 0, ?8)`,
+        )
+          .bind(
+            crypto.randomUUID(),
+            newApk.build_id,
+            newApk.arch,
+            patchKey,
+            patchHash,
+            patchBytes.byteLength,
+            JSON.stringify({
+              from_version_code: prior.version_code,
+              to_version_code: newApk.version_code,
+              // Compressed archive-patcher file-by-file bsdiff stream; the
+              // applier decompresses before FileByFileV1DeltaApplier.applyDelta.
+              algorithm: variant.algorithm,
+              target_sha256: newApk.file_hash,
+            }),
+            Date.now(),
+            variant.filetype,
+          )
+          .run();
 
-      done += 1;
-      results.push({ from_version_code: prior.version_code, status: "ok", size_bytes: patchBytes.byteLength, ratio, ms });
-      await mark(`v${prior.version_code}: stored delta-patch`, {
+        stored += 1;
+        results.push({ ...base, status: "ok", size_bytes: patchBytes.byteLength, ratio, ms });
+        await mark(`${label}: stored delta-patch`);
+      }
+      if (stored > 0) done += 1;
+      await mark(`v${prior.version_code}: ${stored}/${DELTA_PATCH_VARIANTS.length} variants stored`, {
         progress: done / Math.max(1, priorRows.length),
       });
     }

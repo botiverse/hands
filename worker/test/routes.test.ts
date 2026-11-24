@@ -10576,6 +10576,96 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(notDenied.patch).toMatchObject({ from_version_code: 10 });
   });
 
+  it("delta offer picks the smallest patch among the algorithms the client declares", async () => {
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-xz", "build-xz", [["full", "all"]], {
+      versionCode: 20,
+      versionName: "1.0.20",
+    });
+    await seedAsset(env, "build-xz", "asset-xz-full", { arch: "arm64-v8a", sizeBytes: 1000 });
+    const patch = (id: string, algorithm: string, sizeBytes: number, r2Key: string) =>
+      seedAsset(env, "build-xz", id, {
+        artifactKind: "delta-patch",
+        arch: "arm64-v8a",
+        filetype: algorithm.endsWith("+xz") ? "patch.xz" : "patch",
+        sizeBytes,
+        r2Key,
+        metadata: { from_version_code: 10, to_version_code: 20, algorithm, target_sha256: "abc123" },
+      });
+    await patch("asset-xz-gzip", "archive-patcher-v1+gzip", 300, "apps/app-scope/from-10.patch");
+    await patch("asset-xz-xz", "archive-patcher-v1+xz", 200, "apps/app-scope/from-10.patch.xz");
+
+    const call = (headers: Record<string, string> = {}, query: Record<string, string> = {}) =>
+      handlePublicV2UpdateCheck(
+        makePublicContext(
+          env,
+          {
+            channel: "production",
+            product_type: "android-apk",
+            current_version_code: "10",
+            platform: "android",
+            arch: "arm64-v8a",
+            ...query,
+          },
+          headers,
+        ),
+      ).then((response) => responseJson<any>(response));
+    const both = { "X-Hands-Delta-Algorithms": "archive-patcher-v1+xz,archive-patcher-v1+gzip" };
+
+    // Flag off: no patch, whatever the client supports.
+    expect((await call(both)).patch).toBeUndefined();
+
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-xz', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
+
+    // No header: a shipped SDK that only gunzips gets the gzip patch, never xz.
+    const legacy = await call();
+    expect(legacy.patch).toMatchObject({ algorithm: "archive-patcher-v1+gzip", size_bytes: 300 });
+    expect(legacy.patch.download_url).toContain("from-10.patch?");
+
+    // Declares xz and gzip: the smaller xz patch.
+    const modern = await call(both);
+    expect(modern.patch).toMatchObject({ algorithm: "archive-patcher-v1+xz", size_bytes: 200 });
+    expect(modern.patch.download_url).toContain("from-10.patch.xz");
+    // The xz patch is served by the public download like the gzip one.
+    const { handlePublicR2Download } = await import("../src/routes/public_v2");
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => requestedKey === "apps/app-scope/from-10.patch.xz"
+        ? { body: new Blob(["xz"]).stream(), httpEtag: '"xz"', writeHttpMetadata: () => undefined }
+        : null,
+    };
+    const xzUrl = new URL(modern.patch.download_url);
+    const xzDownload = await handlePublicR2Download(
+      makePublicDownloadContext(env, decodeURIComponent(xzUrl.pathname.replace("/public/r2/", "")), {
+        expires: xzUrl.searchParams.get("expires") ?? undefined,
+        sig: xzUrl.searchParams.get("sig") ?? undefined,
+      }),
+    );
+    expect(xzDownload.status).toBe(200);
+    expect(xzDownload.headers.get("content-disposition")).toContain(".patch.xz");
+    expect(await xzDownload.text()).toBe("xz");
+
+    // Query parameter works like the header; unknown values are ignored.
+    const viaQuery = await call({}, { delta_algorithms: "zstd, archive-patcher-v1+xz" });
+    expect(viaQuery.patch).toMatchObject({ algorithm: "archive-patcher-v1+xz" });
+
+    // Declares gzip only: gzip.
+    const gzipOnly = await call({ "X-Hands-Delta-Algorithms": "archive-patcher-v1+gzip" });
+    expect(gzipOnly.patch).toMatchObject({ algorithm: "archive-patcher-v1+gzip" });
+
+    // Declares only algorithms the server does not know: nothing to offer.
+    const unknownOnly = await call({ "X-Hands-Delta-Algorithms": "bsdiff-v9" });
+    expect(unknownOnly.update_available).toBe(true);
+    expect(unknownOnly.patch).toBeUndefined();
+
+    // The size ratio applies to the chosen patch: a too-large xz patch is not offered.
+    await env.DB.prepare("UPDATE build_assets SET size_bytes = 800 WHERE id IN ('asset-xz-xz', 'asset-xz-gzip')").run();
+    expect((await call(both)).patch).toBeUndefined();
+  });
+
   it("public R2 download serves active release assets with a valid signature", async () => {
     const env = makeEnv();
     const { handlePublicR2Download, handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");

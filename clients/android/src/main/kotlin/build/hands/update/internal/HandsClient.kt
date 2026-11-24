@@ -56,6 +56,9 @@ class HandsClient(
         val requestBuilder = Request.Builder()
             .url(url)
             .header("accept", "application/json")
+            // Patch algorithms this SDK can apply; without it the server
+            // offers only gzip patches.
+            .header("X-Hands-Delta-Algorithms", DeltaUpdater.SUPPORTED_ALGORITHMS.joinToString(","))
         if (!deviceId.isNullOrBlank()) {
             // Stable per-install id; the server uses it to bucket staged rollouts.
             requestBuilder.header("X-Hands-Device-Id", deviceId)
