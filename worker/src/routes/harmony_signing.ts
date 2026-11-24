@@ -19,7 +19,7 @@ import { currentActor, type AdminEnv } from "../middleware/auth";
 import { insertAuditLog } from "../lib/permissions";
 import { AgcApiError, resolveAgcAppId } from "../lib/agc_api";
 import {
-  addHarmonyDevices, createHarmonyApp, downloadAgcFile, HARMONY_DEVICE_TYPES, issueHarmonyCertificate, issueHarmonyProfile,
+  addHarmonyDevices, createHarmonyApp, deleteHarmonyCertificates, downloadAgcFile, listHarmonyCertificates, HARMONY_DEVICE_TYPES, issueHarmonyCertificate, issueHarmonyProfile,
   listHarmonyDevices, type HarmonyCertKind,
 } from "../lib/agc_provisioning";
 import { callSigningContainer, decryptSigningSecret, encryptSigningSecret, SigningError, type HarmonySigningSecret } from "../lib/signing";
@@ -105,13 +105,21 @@ export async function handleCreateHarmonyIdentity(c: AdminContext) {
     const made = await callSigningContainer<{ key_pem?: string; csr_pem?: string }>(c.env, "/signing/harmony-csr", { common_name: name }, 60_000);
     if (!made.key_pem || !made.csr_pem) throw new SigningError(502, "signing_generate_failed", "container returned no key");
     const cert = await issueHarmonyCertificate(auth, { csrPem: made.csr_pem, name, kind });
-    const certBytes = await downloadAgcFile(cert.download_url);
-    let b64 = "";
-    for (const byte of certBytes) b64 += String.fromCharCode(byte);
-    const checked = await callSigningContainer<{ chain_pem?: string; metadata?: Record<string, unknown> }>(
-      c.env, "/signing/harmony-certificate", { key_pem: made.key_pem, certificate_b64: btoa(b64) }, 60_000,
-    );
-    if (!checked.chain_pem) throw new SigningError(502, "signing_generate_failed", "container could not read the certificate");
+    let checked: { chain_pem?: string; metadata?: Record<string, unknown> };
+    try {
+      const certBytes = await downloadAgcFile(cert.download_url);
+      let b64 = "";
+      for (const byte of certBytes) b64 += String.fromCharCode(byte);
+      checked = await callSigningContainer<{ chain_pem?: string; metadata?: Record<string, unknown> }>(
+        c.env, "/signing/harmony-certificate", { key_pem: made.key_pem, certificate_b64: btoa(b64) }, 60_000,
+      );
+      if (!checked.chain_pem) throw new SigningError(502, "signing_generate_failed", "container could not read the certificate");
+    } catch (error) {
+      // Without its key the certificate is useless and takes one of the
+      // account's few certificate slots: give it back.
+      await deleteHarmonyCertificates(auth, [cert.id]).catch(() => undefined);
+      throw error;
+    }
     const secret: HarmonySigningSecret = { kind: "harmony", key_pem: made.key_pem, chain_pem: checked.chain_pem };
     const encrypted = await encryptSigningSecret(secret, c.env.ASC_CRED_ENC_KEY);
     const id = crypto.randomUUID();
@@ -127,6 +135,50 @@ export async function handleCreateHarmonyIdentity(c: AdminContext) {
       .catch(() => undefined);
     const row = await c.env.DB.prepare("SELECT * FROM harmony_signing_identities WHERE id = ?1").bind(id).first<IdentityRow>();
     return c.json({ identity: identityView(row!) }, 201);
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+async function credentialApp(c: AdminContext, orgId: string, ref: unknown) {
+  const slug = typeof ref === "string" ? ref : "";
+  const source = await c.env.DB.prepare("SELECT id FROM apps WHERE (slug = ?1 OR id = ?1) AND org_id = ?2 AND archived = 0")
+    .bind(slug, orgId).first<{ id: string }>();
+  if (!source) throw new SigningError(400, "invalid_request", "agc_from_app must name an app of this organization with AGC credentials");
+  return source.id;
+}
+
+/** AGC's certificates of a kind for the account behind an app's credential, marked when a Hands identity holds the key. */
+export async function handleListHarmonyAgcCertificates(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  try {
+    const input = await body(c);
+    const kind = input.kind === "debug" || input.kind === "release" ? input.kind : null;
+    if (!kind) throw new SigningError(400, "invalid_request", "kind must be debug or release");
+    const certs = await listHarmonyCertificates(await resolveAgcAppAuth(c.env, await credentialApp(c, orgId, input.agc_from_app)), kind);
+    const { results } = await c.env.DB.prepare("SELECT agc_cert_id, id FROM harmony_signing_identities WHERE revoked_at IS NULL").all<{ agc_cert_id: string; id: string }>();
+    const held = new Map(results.map((r) => [r.agc_cert_id, r.id]));
+    return c.json({ certificates: certs.map((cert) => ({ ...cert, identity_id: held.get(cert.id) ?? null })) });
+  } catch (error) {
+    return fail(c, error);
+  }
+}
+
+/** Deletes AGC certificates no Hands identity holds (e.g. one left by an interrupted setup). */
+export async function handleDeleteHarmonyAgcCertificates(c: AdminContext) {
+  const orgId = c.req.param("orgId") ?? "";
+  try {
+    const input = await body(c);
+    const ids = Array.isArray(input.cert_ids) ? input.cert_ids.filter((v): v is string => typeof v === "string" && /^[0-9]{1,32}$/.test(v)) : [];
+    if (ids.length === 0 || ids.length > 20) throw new SigningError(400, "invalid_request", "cert_ids must list 1-20 AGC certificate ids");
+    for (const id of ids) {
+      const held = await c.env.DB.prepare("SELECT 1 FROM harmony_signing_identities WHERE agc_cert_id = ?1 AND revoked_at IS NULL").bind(id).first();
+      if (held) throw new SigningError(409, "harmony_certificate_in_use", `certificate ${id} belongs to a Hands signing identity`);
+    }
+    const appId = await credentialApp(c, orgId, input.agc_from_app);
+    await deleteHarmonyCertificates(await resolveAgcAppAuth(c.env, appId), ids);
+    await insertAuditLog(c.env.DB, c, { app_id: appId, action: "harmony_signing.agc_certificates_deleted", payload: { cert_ids: ids } }).catch(() => undefined);
+    return c.json({ deleted: ids });
   } catch (error) {
     return fail(c, error);
   }

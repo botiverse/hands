@@ -45,6 +45,14 @@ test("makes a HarmonyOS ECDSA P-256 key, checks the certificate AGC issued for i
   assert.match(checked.body.metadata.issuer, /Huawei CBG Developer Relations CA G2/);
   assert.equal(checked.body.metadata.key_algorithm, "ECDSA P-256");
 
+  // AGC can list the chain CA first: the key's own certificate still leads.
+  const pems = Buffer.from(chain, "base64").toString("utf8").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g)!;
+  const reversed = Buffer.from(`${pems[1]}\n${pems[0]}\n`).toString("base64");
+  const reordered = await post("/signing/harmony-certificate", { key_pem: csr.body.key_pem, certificate_b64: reversed });
+  assert.equal(reordered.status, 200, JSON.stringify(reordered.body));
+  assert.equal(reordered.body.chain_pem, checked.body.chain_pem);
+  assert.equal(reordered.body.metadata.chain_length, 2);
+
   const other = await post("/signing/harmony-csr", { common_name: "Other" });
   const mismatch = await post("/signing/harmony-certificate", { key_pem: other.body.key_pem, certificate_b64: chain });
   assert.equal(mismatch.body.code, "signing_certificate_mismatch");

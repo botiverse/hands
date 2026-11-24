@@ -546,31 +546,52 @@ async function harmonyCertificate(dir: string, keyPem: string, certificate: stri
   const raw = Buffer.from(certificate, "base64");
   const input = join(dir, "cert.in");
   await writeFile(input, raw);
-  const text = raw.toString("utf8");
-  let chainPem: string;
-  if (text.includes("-----BEGIN CERTIFICATE-----")) {
-    chainPem = text.slice(text.indexOf("-----BEGIN CERTIFICATE-----"));
-  } else {
+  let text = raw.toString("utf8");
+  if (!text.includes("-----BEGIN CERTIFICATE-----")) {
+    // DER: one certificate, or a PKCS#7 bundle of several.
     const pem = join(dir, "cert.pem");
-    await run("openssl", ["x509", "-inform", "DER", "-in", input, "-out", pem], {
-      failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
-    });
-    chainPem = await readFile(pem, "utf8");
+    try {
+      await run("openssl", ["x509", "-inform", "DER", "-in", input, "-out", pem], { failCode: "x", failMessage: "x" });
+    } catch {
+      await run("openssl", ["pkcs7", "-inform", "DER", "-in", input, "-print_certs", "-out", pem], {
+        failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
+      });
+    }
+    text = await readFile(pem, "utf8");
   }
-  const leaf = join(dir, "leaf.pem");
-  await writeFile(leaf, chainPem.slice(0, chainPem.indexOf("-----END CERTIFICATE-----") + "-----END CERTIFICATE-----".length) + "\n");
-  const certKey = (await run("openssl", ["x509", "-in", leaf, "-noout", "-pubkey"], { failCode: "signing_identity_invalid", failMessage: "certificate has no public key" })).stdout;
-  const ownKey = (await run("openssl", ["pkey", "-in", key, "-pubout"], { failCode: "signing_internal", failMessage: "stored key could not be read" })).stdout;
-  if (certKey.trim() !== ownKey.trim()) throw new SignError(400, "signing_certificate_mismatch", "AGC issued the certificate for a different key");
-  const { stdout } = await run("openssl", ["x509", "-in", leaf, "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256", "-nameopt", "RFC2253"], {
-    failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
-  });
-  const field = (name: string) => stdout.split("\n").find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1).trim();
+  const blocks = text.replace(/\r\n/g, "\n").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
+  if (blocks.length === 0) throw new SignError(400, "signing_identity_invalid", "certificate could not be read");
+  const ownKey = (await run("openssl", ["pkey", "-in", key, "-pubout"], { failCode: "signing_internal", failMessage: "stored key could not be read" })).stdout.trim();
+  // AGC may list the chain in any order: find this key's certificate, then
+  // follow issuer to subject so the chain is end-entity first, as
+  // hap-sign-tool requires.
+  const certs: Array<{ pem: string; subject: string; issuer: string; pubkey: string; facts: string }> = [];
+  for (const [i, block] of blocks.entries()) {
+    const path = join(dir, `c${i}.pem`);
+    await writeFile(path, `${block}\n`);
+    const facts = (await run("openssl", ["x509", "-in", path, "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256", "-nameopt", "RFC2253"], {
+      failCode: "signing_identity_invalid", failMessage: "certificate could not be read",
+    })).stdout;
+    const pubkey = (await run("openssl", ["x509", "-in", path, "-noout", "-pubkey"], { failCode: "signing_identity_invalid", failMessage: "certificate has no public key" })).stdout.trim();
+    const line = (name: string) => facts.split("\n").find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1).trim() ?? "";
+    certs.push({ pem: block, subject: line("subject"), issuer: line("issuer"), pubkey, facts });
+  }
+  const leaf = certs.find((c) => c.pubkey === ownKey);
+  if (!leaf) throw new SignError(400, "signing_certificate_mismatch", "AGC issued the certificate for a different key");
+  const ordered = [leaf];
+  const rest = certs.filter((c) => c !== leaf);
+  for (let next = rest.find((c) => c.subject === leaf.issuer); next; next = rest.find((c) => c.subject === ordered.at(-1)!.issuer && !ordered.includes(c))) {
+    ordered.push(next);
+    if (next.subject === next.issuer) break;
+  }
+  for (const c of rest) if (!ordered.includes(c)) ordered.push(c);
+  const field = (name: string) => leaf.facts.split("\n").find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1).trim();
   return {
-    chain_pem: chainPem,
+    chain_pem: ordered.map((c) => `${c.pem}\n`).join(""),
     metadata: {
       subject: field("subject"), issuer: field("issuer"), not_before: field("notBefore"), not_after: field("notAfter"),
-      sha256_fingerprint: stdout.split("\n").find((l) => l.toLowerCase().includes("fingerprint="))?.split("=")[1]?.trim(),
+      sha256_fingerprint: leaf.facts.split("\n").find((l) => l.toLowerCase().includes("fingerprint="))?.split("=")[1]?.trim(),
+      chain_length: ordered.length,
       key_algorithm: "ECDSA P-256",
     },
   };
