@@ -83,7 +83,7 @@ function validateFeedbackFilter(value: unknown): { filter: FeedbackFilter } | { 
     return { error: `feedback_filter.kinds must list kinds from ${FEEDBACK_KINDS.join(", ")}` };
   }
   if (!Array.isArray(servers) || servers.length > 20
-    || !servers.every((v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(v))) {
+    || !servers.every((v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\*?$/.test(v))) {
     return { error: "feedback_filter.exclude_reporter_servers must list at most 20 Raft server ids or slugs" };
   }
   return { filter: { kinds: [...new Set(kinds as string[])], exclude_reporter_servers: [...new Set(servers as string[])] } };
@@ -105,7 +105,10 @@ export async function feedbackFilterAllows(db: D1Database, filter: FeedbackFilte
     let attribution: Record<string, unknown> = {};
     try { attribution = parseJsonRecord(parseJsonRecord(JSON.parse(ticket.metadata_json || "{}")).reporter_attribution); } catch { attribution = {}; }
     const ids = [attribution.server_id, attribution.server_slug].filter((v): v is string => typeof v === "string" && v !== "");
-    if (ids.some((id) => filter.exclude_reporter_servers.includes(id))) return false;
+    // An entry ending in "*" matches by prefix (servers created per QA batch, e.g. "qa-pt*").
+    const excluded = (id: string) => filter.exclude_reporter_servers.some((entry) =>
+      entry.endsWith("*") ? id.startsWith(entry.slice(0, -1)) : entry === id);
+    if (ids.some(excluded)) return false;
   }
   return true;
 }

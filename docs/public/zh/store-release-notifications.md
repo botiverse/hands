@@ -40,7 +40,7 @@ hands api PATCH /api/apps/<appId>/raft-notifications/<subscriptionId> \
 ```
 
 - `kinds`：要通知的工单类型（`feedback`、`bug`、`crash`、`error`），为空表示全部。
-- `exclude_reporter_servers`：不通知这些 Raft 服务器（slug 或 id，最多 20 个）上的用户提交的工单，例如内部测试服务器。不知道提交者来自哪个服务器的工单（匿名的 SDK 上报）仍会通知。
+- `exclude_reporter_servers`：不通知这些 Raft 服务器（slug 或 id，最多 20 个）上的用户提交的工单，例如内部测试服务器。以 `*` 结尾的项按前缀匹配（例如 `qa-pt*`，匹配按批次创建的 QA 服务器）。不知道提交者来自哪个服务器的工单（匿名的 SDK 上报）仍会通知。
 
 过滤同样作用于工单之后的评论和状态变化，被过滤的工单不会出现在频道里。
 
