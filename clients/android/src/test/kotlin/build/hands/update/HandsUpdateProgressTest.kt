@@ -190,4 +190,26 @@ class HandsUpdateProgressTest {
         assertFalse(isDeltaTempFileName("hands-delta-13000005.patch.tmp"))
         assertFalse(isDeltaTempFileName("other.patch"))
     }
+
+    @Test
+    fun `prepare keeps a verified patch ready instead of opening the installer`() {
+        assertEquals(DeltaReadyAction.KEEP_READY, deltaReadyAction(openInstaller = false, canRequestInstalls = true))
+        assertEquals(DeltaReadyAction.KEEP_READY, deltaReadyAction(openInstaller = false, canRequestInstalls = false))
+        assertEquals(
+            DeltaReadyAction.KEEP_READY_PERMISSION_REQUIRED,
+            deltaReadyAction(openInstaller = true, canRequestInstalls = false),
+        )
+        assertEquals(DeltaReadyAction.OPEN_INSTALLER, deltaReadyAction(openInstaller = true, canRequestInstalls = true))
+    }
+
+    @Test
+    fun `an install tap during a prepared download still opens the installer`() {
+        val key = "test-authority-open-intent"
+        assertTrue(InstallerOpenIntent.shouldOpen(key))
+        InstallerOpenIntent.deferOpen(key)
+        assertFalse(InstallerOpenIntent.shouldOpen(key))
+        assertTrue(InstallerOpenIntent.shouldOpen("$key-other"))
+        InstallerOpenIntent.request(key)
+        assertTrue(InstallerOpenIntent.shouldOpen(key))
+    }
 }

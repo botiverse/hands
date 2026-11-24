@@ -171,3 +171,26 @@ private val DELTA_TEMP_NAME = Regex("^hands-delta-.+\\.(patch|apk)$")
  * when no patch runs and no verified delta APK is the current authority.
  */
 internal fun isDeltaTempFileName(name: String): Boolean = DELTA_TEMP_NAME.matches(name)
+
+/**
+ * Per-authority intent to open the installer when a full download finishes.
+ * Shared across [UpdateChecker] instances, so a tap on a different instance
+ * than the one that started a prepared download still opens the installer.
+ */
+internal object InstallerOpenIntent {
+    private val defer = ConcurrentHashMap.newKeySet<String>()
+    /** install(): a finished download opens the installer. */
+    fun request(key: String) { defer.remove(key) }
+    /** prepare(): a finished download stays READY_TO_INSTALL. */
+    fun deferOpen(key: String) { defer.add(key) }
+    fun shouldOpen(key: String): Boolean = !defer.contains(key)
+}
+
+internal enum class DeltaReadyAction { KEEP_READY, KEEP_READY_PERMISSION_REQUIRED, OPEN_INSTALLER }
+
+/** What to do with a verified reconstructed APK. */
+internal fun deltaReadyAction(openInstaller: Boolean, canRequestInstalls: Boolean): DeltaReadyAction = when {
+    !openInstaller -> DeltaReadyAction.KEEP_READY
+    !canRequestInstalls -> DeltaReadyAction.KEEP_READY_PERMISSION_REQUIRED
+    else -> DeltaReadyAction.OPEN_INSTALLER
+}

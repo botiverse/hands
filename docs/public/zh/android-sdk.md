@@ -107,6 +107,10 @@ lifecycleScope.launch {
 
 当 Android 不允许应用安装软件包（"安装未知应用"未开启）时，已验证的下载保持 `ready_to_install`，`errorCode` 为 `install_permission_required`，不会打开注定被拦截的安装器。先向用户说明更改该设置后 Android 可能重启应用，再启动 `checker.installPermissionSettingsIntent()`，应用回到前台时调用 `checker.reopenPendingInstaller()`。`checker.canInstallUpdates()` 返回当前权限状态。
 
+### 后台预下载更新
+
+`checker.prepare()`（0.15.1+）与 `install()` 一样完成检查、补丁合成或下载及校验，但停在 `ready_to_install`，不打开系统安装器。适合后台预下载，例如仅在不计费 Wi-Fi 下调用（何时调用由宿主决定）。用户选择更新时调用 `checker.reopenPendingInstaller()`（或 `install()`）打开同一已验证 APK 的安装器。如果预下载的整包仍在下载时用户点了安装，下载完成后会打开安装器。整包下载仍会显示 DownloadManager 通知；补丁过程中进程被杀，照常由 `status()` 恢复。Java 宿主使用 `prepareAsync`。
+
 如果在已有验证过的 APK 时检查更新失败（离线、无法连接 Hands），`install()` 会重新打开该 APK，而不是什么都不做。
 
 下载通知以应用名称和版本为标题。进程内第一次调用 `status()` 时，会移除版本已安装的 SDK 下载记录，同时清掉系统残留的"已下载"通知。无论传入哪个 context，下载完成监听都注册在 Application context 上。
@@ -131,7 +135,7 @@ SDK 上报 `Build.SUPPORTED_ABIS` 的第一个值。存在针对该 ABI 的 APK 
 
 ### Java 宿主
 
-每个挂起调用都有在主线程回调的对应方法：`checkAsync`、`installAsync`、`statusAsync`、`reopenPendingInstallerAsync`，以及对应 `statusUpdates()` 的 `observeStatus(listener)`。它们都返回 `Closeable`，关闭即取消（关闭 `installAsync` 只是不再等待，更新本身继续）。构造函数为有默认值的参数提供了 Java 重载。
+每个挂起调用都有在主线程回调的对应方法：`checkAsync`、`installAsync`、`prepareAsync`、`statusAsync`、`reopenPendingInstallerAsync`，以及对应 `statusUpdates()` 的 `observeStatus(listener)`。它们都返回 `Closeable`，关闭即取消（关闭 `installAsync` 只是不再等待，更新本身继续）。构造函数为有默认值的参数提供了 Java 重载。
 
 ```java
 UpdateChecker checker = new UpdateChecker(context, "https://hands.build", "my-app", BuildConfig.VERSION_CODE, "main");
