@@ -119,6 +119,8 @@ SDK 会持久化一个绑定了包、来源、应用、渠道、产品、平台�
 
 从 `0.15.0` 起，SDK 也能应用 xz 压缩的补丁（`archive-patcher-v1+xz`，比 gzip 约小 30%），并通过 `X-Hands-Delta-Algorithms` 声明支持的算法；Hands 会提供其中最小的补丁。旧版 SDK 不发送该请求头，继续收到 gzip 补丁。无法读取 xz 补丁头时发出 `patch_fallback`（`patch_decompress_failed`）；SDK 不认识的算法一律回退为完整 APK。
 
+`0.15.0` 还能从补丁下载或合成途中进程被杀的情况恢复：下次读取状态或安装时，遗留的 `patching` 事务会被判为中断（`stale`，`patch_interrupted`），缓存里残缺的补丁和 APK 会被删除，下次安装重新开始。此前更新会一直停在 `patching`，直到 30 分钟的补丁超时。
+
 `0.12.4` 及更新版本的 AAR 为 64 位原生崩溃库使用兼容 16 KB 的 ELF `PT_LOAD` 对齐。发布前会同时验证 AAR 和与之匹配的未剥离原生符号压缩包。
 
 SDK 发送每次安装稳定的 ID（通过 `HandsDeviceId` 生成的 `X-Hands-Device-Id`；服务端仍接受旧版 `X-Quiver-Device-Id`），以便服务端为**分阶段发布**分桶。发布比例为 25% 的版本只会安装到匹配的设备；提高比例时，每台设备保留原来的分桶。

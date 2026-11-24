@@ -134,3 +134,40 @@ internal object PatchProgressRegistry {
         entries.remove(key)
     }
 }
+
+/**
+ * Update authorities with a patch running in this process. A PATCHING
+ * transaction is only real while its patch is in here: the record is written
+ * to disk, the patch itself is not, so a process killed mid-patch leaves a
+ * PATCHING record that nothing will ever finish.
+ */
+internal object ActivePatchRegistry {
+    private val keys = ConcurrentHashMap.newKeySet<String>()
+
+    fun begin(key: String) {
+        keys.add(key)
+    }
+
+    fun end(key: String) {
+        keys.remove(key)
+    }
+
+    fun isActive(key: String): Boolean = keys.contains(key)
+
+    fun isAnyActive(): Boolean = keys.isNotEmpty()
+}
+
+/**
+ * Whether a persisted PATCHING transaction must be given up: no patch for it
+ * runs in this process (it died mid-patch), or it ran past the patch timeout.
+ */
+internal fun isPatchingAbandoned(activeInThisProcess: Boolean, expired: Boolean): Boolean =
+    !activeInThisProcess || expired
+
+private val DELTA_TEMP_NAME = Regex("^hands-delta-.+\\.(patch|apk)$")
+
+/**
+ * Patch downloads and half-built APKs a dead patch left behind. Only call
+ * when no patch runs and no verified delta APK is the current authority.
+ */
+internal fun isDeltaTempFileName(name: String): Boolean = DELTA_TEMP_NAME.matches(name)

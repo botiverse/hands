@@ -181,6 +181,12 @@ patches. A patch whose xz header cannot be read emits `patch_fallback` with
 `patch_decompress_failed`, and any algorithm the SDK does not know falls back
 to the full APK.
 
+`0.15.0` also recovers from a process killed while a patch downloads or
+applies: the next status read or install treats the left-over `patching`
+transaction as interrupted (`stale`, `patch_interrupted`), deletes the
+partial patch and APK from the cache, and the next install starts over.
+Before, the update stayed on `patching` until the 30-minute patch timeout.
+
 `languageTag` is an explicit BCP-47 tag. Valid values are sent as both
 `X-Hands-Lang` and `Accept-Language`; missing or malformed values send neither
 header, and unsupported values retain the server's English fallback.
