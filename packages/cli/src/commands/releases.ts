@@ -108,6 +108,8 @@ interface PlayUploadSymbolsResult {
   version_on_play?: boolean;
   revision?: number;
   files?: Array<{ type: string; sha256: string; size_bytes: number; uploaded?: boolean }>;
+  /** Files an earlier receipt already put on Google Play for this version code; not sent again. */
+  already_uploaded?: Array<{ type: string; sha256: string; size_bytes: number; prior_receipt_id: string }>;
 }
 
 const DEOBFUSCATION_KINDS = ["proguard", "nativeCode"] as const;
@@ -1010,6 +1012,14 @@ export function registerReleaseCommands(program: Command): void {
         console.log(JSON.stringify(res, null, 2));
         return;
       }
+      const already = res.already_uploaded ?? [];
+      if ((res.files ?? []).length === 0 && already.length > 0) {
+        console.log(`Nothing to upload: Google Play already has these files for versionCode ${res.version_code ?? "unavailable"} (no Play edit opened).`);
+        for (const file of already) {
+          console.log(`  already uploaded: ${file.type}  ${file.size_bytes} bytes  sha256=${file.sha256}  receipt=${file.prior_receipt_id}`);
+        }
+        return;
+      }
       if (!opts.commit) {
         console.log(`Dry run: no file uploaded or receipt written; temporary Play edit deleted. Opening it may invalidate another edit by the same user.`);
         console.log(`  package:     ${res.package_name ?? "unavailable"}`);
@@ -1022,6 +1032,9 @@ export function registerReleaseCommands(program: Command): void {
       }
       for (const file of res.files ?? []) {
         console.log(`  ${opts.commit ? "uploaded" : "would upload"}: ${file.type}  ${file.size_bytes} bytes  sha256=${file.sha256}`);
+      }
+      for (const file of already) {
+        console.log(`  already uploaded, skipped: ${file.type}  sha256=${file.sha256}  receipt=${file.prior_receipt_id}`);
       }
       if (!opts.commit) {
         console.log(`Run again with --commit to upload: hands releases play-upload-symbols ${appIdOrSlug} ${releaseId}${opts.kinds ? ` --kinds ${kinds!.join(",")}` : ""} --note <note> --commit`);

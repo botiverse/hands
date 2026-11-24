@@ -3093,6 +3093,30 @@ describe("Play upload-symbols (backfill deobfuscation files for a versionCode al
     expect(h.sqlite.prepare("SELECT * FROM play_distribution_state").all()).toEqual(before);
   });
 
+  it("skips files a successful receipt already uploaded for this version code, without opening a Play edit", async () => {
+    const h = await readyRelease("agent", "publisher", 42, true);
+    const mapping = attachSealedMapping(h);
+    const calls: Parameters<typeof recordingAdapter>[0] = [];
+    h.env.PLAY_RELEASE_SERVICE = recordingAdapter(calls);
+    const first = await uploadSymbols(h, { mode: "commit" });
+    expect(first.status).toBe(200);
+    const firstReceipt = (await first.json() as { receipt_id: string }).receipt_id;
+    // Google refuses to replace a version code's deobfuscation files; a repeat must not try.
+    const again = await uploadSymbols(h, { mode: "commit", expected_revision: 2 });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({
+      mode: "commit", version_code: 42, package_name: "build.raft.app", files: [], revision: 2,
+      already_uploaded: [
+        { type: "proguard", sha256: sha(mapping), size_bytes: mapping.byteLength, prior_receipt_id: firstReceipt },
+        { type: "nativeCode", sha256: sha(h.symbols), size_bytes: h.symbols.byteLength, prior_receipt_id: firstReceipt },
+      ],
+    });
+    expect(calls).toHaveLength(1);
+    expect(receipts(h)).toHaveLength(1);
+    expect(revision(h)).toBe(2);
+    expect(locks(h)).toEqual({ n: 0 });
+  });
+
   it("default backfill excludes a generic native attachment even when a mapping exists", async () => {
     const h = await readyRelease();
     attachNativeSymbols(h);
