@@ -237,6 +237,22 @@ function mockFeedbackRaft(options: {
 }
 
 describe("Hands-managed Raft notifications", () => {
+  it("sends each test as its own message naming the app and channel", async () => {
+    const { testDestination, updateConfig } = await harness();
+    const calls: Array<{ content: string; idempotencyKey: string; target: string }> = [];
+    mockRaftFetch(async (_input, init) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return Response.json({ state: "sent", messageId: `t-${calls.length}` });
+    });
+    expect((await testDestination()).status).toBe(200);
+    expect((await updateConfig({ channel_target: "#customer-support" })).status).toBe(200);
+    expect((await testDestination()).status).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.content).toContain("**Hands test notification · Sample App**");
+    expect(calls[1]!.content).toContain("(#customer-support)");
+    expect(calls[0]!.idempotencyKey).not.toBe(calls[1]!.idempotencyKey);
+  });
+
   it("accepts a replay of a new-ticket message sent before reporters were named", async () => {
     const { request, sqlite, updateConfig } = await harness();
     expect((await updateConfig({ events: ["feedback:new"] })).status).toBe(200);

@@ -978,6 +978,9 @@ export async function handleTestRaftNotification(c: AdminContext) {
   if (row.enabled !== 1) return c.json({ error: "notification destination is disabled" }, 409);
   const bot = await botForServer(c.env.DB, row.server_id);
   if (!bot || bot.state !== "active") return c.json({ error: "RAFT_BOT_NOT_CONNECTED" }, 409);
+  const testApp = await c.env.DB.prepare("SELECT slug, name FROM apps WHERE id = ?1").bind(appId)
+    .first<{ slug: string | null; name: string | null }>().catch(() => null);
+  const testAppName = (testApp?.name || testApp?.slug || appId).replace(/[*_`@#\[\]]/g, "");
   try {
     const testCard = row.card_updates === 1 ? formatRaftNotificationCard({
       event: "hands:test", payload: { status: "Test notification" }, delivered_at: Date.now(),
@@ -986,8 +989,11 @@ export async function handleTestRaftNotification(c: AdminContext) {
       c.env,
       bot,
       row.channel_target,
-      testCard?.content ?? "**Hands test notification**\nThis destination is configured and the App Bot can send here.",
-      testCard ? `hands-raft-card-test:${subscriptionId}:${crypto.randomUUID()}` : `hands-raft-test:${subscriptionId}`,
+      // Each test is its own message and names its app, so several apps tested
+      // into one channel (or one destination tested again after it moved) can
+      // be told apart and never collide on the idempotency key.
+      testCard?.content ?? `**Hands test notification · ${testAppName}**\nThis destination (${row.channel_target}) is configured and the App Bot can send here.`,
+      testCard ? `hands-raft-card-test:${subscriptionId}:${crypto.randomUUID()}` : `hands-raft-test:${subscriptionId}:${crypto.randomUUID()}`,
       testCard?.card,
     );
     if (testCard) {
