@@ -97,6 +97,20 @@ const PublicUpdateAvailableResponse = z
       page_url: z.string().optional(),
     }),
     asset: PublicAsset,
+    patch: z
+      .object({
+        from_version_code: z.number().int(),
+        algorithm: z.string().openapi({
+          description: "`archive-patcher-v1+gzip` (gzip-wrapped), `archive-patcher-v1+xz` (xz, LZMA2 dictionary at most 16 MiB) or `archive-patcher-v1` (uncompressed).",
+        }),
+        download_url: z.string().url(),
+        size_bytes: z.number().int(),
+        target_sha256: z.string().nullable(),
+      })
+      .optional()
+      .openapi({
+        description: "Delta patch from the installed version, present only when one exists for a supported algorithm and is much smaller than the full APK. The smallest supported patch is offered; `asset` stays the fallback.",
+      }),
     scoped: PublicScope,
     expires_in: z.number().int(),
   })
@@ -280,6 +294,9 @@ export function registerPublicRoutes(): RouteConfigList {
         filetype: z.string().default("apk").optional(),
         lang: z.string().optional(),
         device_id: z.string().optional(),
+        delta_algorithms: z.string().optional().openapi({
+          description: "Same as the X-Hands-Delta-Algorithms header.",
+        }),
       }),
       headers: z.object({
         "X-Hands-Client-Platform": z.string().optional(),
@@ -287,6 +304,9 @@ export function registerPublicRoutes(): RouteConfigList {
         "X-Hands-Cohort": z.string().optional(),
         "X-Hands-Lang": z.string().optional(),
         "X-Hands-Device-Id": z.string().optional(),
+        "X-Hands-Delta-Algorithms": z.string().optional().openapi({
+          description: "Delta patch algorithms the client can apply, comma-separated, e.g. `archive-patcher-v1+xz,archive-patcher-v1+gzip`. Unknown values are ignored. Without it the server offers only patches older SDKs understand (`archive-patcher-v1+gzip`, `archive-patcher-v1`).",
+        }),
       }),
     },
     responses: {

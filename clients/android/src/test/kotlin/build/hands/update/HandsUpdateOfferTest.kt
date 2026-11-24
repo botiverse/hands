@@ -83,9 +83,16 @@ class HandsUpdateOfferTest {
         assertFalse(patchApplies(goodPatch, 100, deltaEnabled = false))
         assertFalse(patchApplies(goodPatch.copy(from_version_code = 99), 100, true))
         assertFalse(patchApplies(goodPatch.copy(algorithm = "bsdiff"), 100, true))
+        assertFalse(patchApplies(goodPatch.copy(algorithm = "archive-patcher-v1+zstd"), 100, true))
         assertFalse(patchApplies(goodPatch.copy(target_sha256 = null), 100, true))
         assertFalse(patchApplies(goodPatch.copy(size_bytes = 0), 100, true))
         assertEquals(9_000L, updateOffer(response(patch = goodPatch), 99, true, null)!!.downloadSizeBytes)
+    }
+
+    @Test
+    fun `an xz patch applies like a gzip one`() {
+        assertTrue(patchApplies(goodPatch.copy(algorithm = "archive-patcher-v1+xz"), 100, true))
+        assertTrue(patchApplies(goodPatch.copy(algorithm = "archive-patcher-v1"), 100, true))
     }
 
     @Test

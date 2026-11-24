@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.4")
+    implementation("build.hands:hands-android-sdk:0.15.0")
 }
 ```
 
@@ -34,7 +34,7 @@ repositories {
 }
 
 dependencies {
-    implementation("com.github.botiverse:hands:android-sdk-v0.14.4")
+    implementation("com.github.botiverse:hands:android-sdk-v0.15.0")
 }
 ```
 
@@ -52,7 +52,7 @@ repositories {
 }
 
 dependencies {
-    implementation("build.hands:hands-android-sdk:0.14.4")
+    implementation("build.hands:hands-android-sdk:0.15.0")
 }
 ```
 
@@ -172,6 +172,14 @@ into `libhandscrash.so`. Before downloading a patch it checks that this copy
 gives the expected output; if it does not, or the native library cannot load,
 it emits `patch_fallback` with `deflater_incompatible` and downloads the full
 APK.
+
+Since `0.15.0` the SDK also applies xz-compressed patches
+(`archive-patcher-v1+xz`, about 30% smaller than gzip) and declares the
+algorithms it supports in `X-Hands-Delta-Algorithms`; Hands then offers the
+smallest supported patch. Older SDKs send no header and keep receiving gzip
+patches. A patch whose xz header cannot be read emits `patch_fallback` with
+`patch_decompress_failed`, and any algorithm the SDK does not know falls back
+to the full APK.
 
 `languageTag` is an explicit BCP-47 tag. Valid values are sent as both
 `X-Hands-Lang` and `Accept-Language`; missing or malformed values send neither

@@ -1,5 +1,6 @@
 package build.hands.update
 
+import build.hands.update.internal.DeltaUpdater
 import build.hands.update.models.Patch
 import build.hands.update.models.UpdateCheckResponse
 import kotlinx.serialization.Serializable
@@ -40,7 +41,7 @@ internal fun patchApplies(patch: Patch?, installedVersionCode: Long, deltaEnable
         deltaEnabled &&
         installedVersionCode > 0L &&
         patch.from_version_code == installedVersionCode &&
-        patch.algorithm.startsWith("archive-patcher-v1") &&
+        DeltaUpdater.compressionFor(patch.algorithm) != null &&
         !patch.target_sha256.isNullOrBlank() &&
         patch.size_bytes > 0L
 

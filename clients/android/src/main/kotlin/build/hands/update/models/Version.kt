@@ -65,9 +65,10 @@ data class UpdateAsset(
  *
  *  - [from_version_code] MUST equal the installed version_code (the patch is
  *    built against that exact base APK).
- *  - [algorithm] identifies the delta engine; today `archive-patcher-v1` or
- *    `archive-patcher-v1+gzip` (the `+gzip` suffix means the patch bytes are
- *    gzip-wrapped and must be gunzipped before applying).
+ *  - [algorithm] identifies the delta engine and its compression:
+ *    `archive-patcher-v1` (raw), `archive-patcher-v1+gzip` (gzip-wrapped) or
+ *    `archive-patcher-v1+xz` (xz-wrapped); the patch bytes are decompressed
+ *    before applying. Any other value is not applied.
  *  - [target_sha256] is the SHA-256 (hex) of the full TARGET APK; the client
  *    verifies the reconstructed file against it before installing.
  */

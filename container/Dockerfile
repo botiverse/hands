@@ -52,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     binutils \
     openssl \
     zip \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Download Android command-line tools + accept licenses + install build-tools
