@@ -61,6 +61,8 @@ val buildHostBundledZlib by tasks.registering(Exec::class) {
         .map { File(cppDir, "zlib/$it") }
     inputs.files(zlibSources + fileTree(File(cppDir, "zlib")) { include("*.h") } + File(cppDir, "hands_zlib_deflater.c"))
     outputs.dir(hostBundledZlibDir)
+    // A ~1 s compile; always rebuild so tests never load a stale library.
+    outputs.upToDateWhen { false }
     val javaHome = File(System.getProperty("java.home"))
     val isMac = System.getProperty("os.name").lowercase().contains("mac")
     val outFile = hostBundledZlibDir.get().file(if (isMac) "libhandscrash.dylib" else "libhandscrash.so").asFile
@@ -179,6 +181,8 @@ tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
 tasks.withType<Test>().configureEach {
     if (!name.contains("UnitTest")) return@configureEach
     dependsOn(buildHostBundledZlib)
+    // Track the library's bytes so a native change re-runs the tests.
+    inputs.files(buildHostBundledZlib).withPropertyName("hostBundledZlib")
     val hostLibDir = hostBundledZlibDir.get().asFile.path
     systemProperty("java.library.path", hostLibDir)
     systemProperty("hands.hostBundledZlib", hostLibDir)
