@@ -60,6 +60,64 @@ export async function agentAwareFetch(
   return res;
 }
 
+// Failures that happen before the request leaves this machine: nothing reached
+// the server, so any request (a POST included) can be sent again.
+const CONNECT_FAILURE_CODES = new Set([
+  "ETIMEDOUT", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EAI_AGAIN", "ENOTFOUND",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function causeCodes(error: unknown): string[] {
+  const codes: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; current && typeof current === "object" && depth < 4; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") codes.push(code);
+    // Happy-eyeballs connects report one error per address.
+    const errors = (current as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) for (const e of errors) {
+      const c = (e as { code?: unknown } | null)?.code;
+      if (typeof c === "string") codes.push(c);
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return codes;
+}
+
+/** fetch() failed while connecting (timeout, refused, DNS), before sending anything. */
+export function isConnectFailure(error: unknown): boolean {
+  if (!(error instanceof TypeError)) return false;
+  const codes = causeCodes(error);
+  return codes.length > 0 && codes.every((c) => CONNECT_FAILURE_CODES.has(c));
+}
+
+/** fetch() failed without an HTTP answer (connect failure, reset, closed socket). */
+export function isTransportFailure(error: unknown): boolean {
+  return error instanceof TypeError && /fetch failed/i.test(error.message);
+}
+
+export let transportRetryDelayMs = 1000;
+export function setTransportRetryDelayMs(ms: number) { transportRetryDelayMs = ms; }
+
+/**
+ * Runs `send` up to `attempts` times while it fails as `retryable` says; each
+ * call must build a fresh request.
+ */
+export async function withTransportRetry<T>(
+  send: () => Promise<T>,
+  retryable: (error: unknown) => boolean = isConnectFailure,
+  attempts = 3,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      if (attempt >= attempts || !retryable(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, transportRetryDelayMs * attempt));
+    }
+  }
+}
+
 export class QuiverApiError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -148,12 +206,12 @@ export async function apiRequest<T = unknown>(
   const doFetch = (bearer: string | undefined) => {
     const headers = { ...baseHeaders };
     if (bearer) headers.authorization = `Bearer ${bearer}`;
-    return fetch(url.toString(), {
+    return withTransportRetry(() => fetch(url.toString(), {
       method: opts.method ?? "GET",
       headers,
       ...(body !== undefined ? { body } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
-    });
+    }));
   };
   const res = await agentAwareFetch(doFetch, opts.retryOnUnauthorized === undefined ? {} : { retryOnUnauthorized: opts.retryOnUnauthorized });
   if (readEnv("VERBOSE") === "1") {

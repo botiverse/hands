@@ -228,5 +228,13 @@ program.parseAsync(process.argv).then(() => updateCheck.finish(), async (err) =>
     process.exit(1);
   }
   console.error(err instanceof Error ? err.message : String(err));
+  // Node's fetch reports every transport failure as "fetch failed"; the reason
+  // (reset, timeout, DNS, TLS) is in the cause.
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (cause instanceof Error) {
+    const code = (cause as { code?: unknown }).code;
+    const detail = [cause.message, typeof code === "string" && !cause.message.includes(code) ? code : ""].filter(Boolean).join(" ");
+    if (detail) console.error(`Cause: ${detail}`);
+  }
   process.exit(1);
 });
