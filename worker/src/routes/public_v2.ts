@@ -708,6 +708,7 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
           ttl: latest.expires_in,
           deviceId,
           platform: requestedPlatform,
+          channel: latest.channel,
           algorithms: parseDeltaAlgorithms(
             c.req.header("X-Hands-Delta-Algorithms") ?? c.req.query("delta_algorithms"),
           ),
@@ -1181,6 +1182,7 @@ async function findDeltaPatch(
     ttl: number;
     deviceId: string | null;
     platform: string | null;
+    channel: string | null;
     algorithms: ReadonlySet<string>;
   },
 ): Promise<{
@@ -1208,6 +1210,7 @@ async function findDeltaPatch(
     appId: app.app_id,
     deviceId: args.deviceId,
     platform: args.platform,
+    channel: args.channel,
   });
   if (!enabled) return null;
 

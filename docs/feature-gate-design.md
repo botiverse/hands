@@ -44,6 +44,9 @@ identical.
    2. `deviceId ∈ allow_device_ids` → **true**
    3. `cohort ∈ allow_cohorts` → **true**
    4. `platforms` non-empty and `platform` not listed (or unknown) → **false**
+   4b. `channels` non-empty and the request's channel slug not listed (or
+      unknown) → **false**. The offer passes the canonical channel the update
+      check resolved to (an alias such as `latest` counts as `main`).
    5. `rollout_percent > 0` **and** we have a `deviceId`: stable bucket
       `fnv1a32(key + ':' + deviceId) % 100 < rollout_percent` → **true**
       (`>= 100` → always true). With no `deviceId`, rollout is skipped.
@@ -84,7 +87,8 @@ them to your allow-listed test device (flag `allow_device_ids = [deviceId]`).
     "allow_device_ids": ["device-123"],
     "deny_device_ids": [],
     "allow_cohorts": [],
-    "platforms": ["android"]
+    "platforms": ["android"],
+    "channels": ["alpha", "preview"]
   }
   ```
   `rollout_percent` must be an integer 0..100; the array fields must be arrays of

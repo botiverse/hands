@@ -20,6 +20,7 @@ export interface FeatureFlagRow {
   deny_device_ids: string;
   allow_cohorts: string;
   platforms: string;
+  channels: string;
 }
 
 export interface FeatureContext {
@@ -27,6 +28,8 @@ export interface FeatureContext {
   deviceId?: string | null;
   cohort?: string | null;
   platform?: string | null;
+  /** Canonical slug of the release channel the request resolved to. */
+  channel?: string | null;
 }
 
 /**
@@ -62,6 +65,7 @@ function parseStringArray(raw: string | null | undefined): string[] {
  *  2. device in allow list       → true
  *  3. cohort in allow_cohorts    → true
  *  4. platforms set & no match   → false
+ *  4b. channels set & no match   → false
  *  5. rollout_percent > 0 (needs a device id; stable per-device bucket) → maybe
  *  6. else default_enabled === 1
  */
@@ -90,6 +94,12 @@ export function evaluateFlag(
   if (platforms.length > 0 && (!ctx.platform || !platforms.includes(ctx.platform))) {
     return false;
   }
+  // 4b. channel restriction: when channels is non-empty, a request whose
+  //     channel is unknown or not listed is gated out.
+  const channels = parseStringArray(row.channels);
+  if (channels.length > 0 && (!ctx.channel || !channels.includes(ctx.channel))) {
+    return false;
+  }
   // 5. percentage rollout — only applies when we have a device id to bucket on.
   const rollout = row.rollout_percent;
   if (rollout > 0 && deviceId) {
@@ -101,7 +111,7 @@ export function evaluateFlag(
 }
 
 const LOAD_FLAG_SQL = `SELECT default_enabled, rollout_percent, allow_device_ids,
-       deny_device_ids, allow_cohorts, platforms
+       deny_device_ids, allow_cohorts, platforms, channels
   FROM feature_flags WHERE key = ?1 AND app_id IS ?2`;
 
 /**
