@@ -101,11 +101,18 @@ const SOURCE_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export async function selectPatchSources(
   db: D1Database, appId: string, newApk: ApkAssetRow, keep: number, now = Date.now(),
+  channelIds?: string[],
 ): Promise<ApkAssetRow[]> {
+  // The target channels: given by the caller (CI generates patches before the
+  // build has a release), else the channels the new build is released on.
+  const channels = channelIds ?? ((await db.prepare(
+    `SELECT DISTINCT channel_id FROM releases WHERE build_id = ?1`,
+  ).bind(newApk.build_id).all<{ channel_id: string }>()).results ?? []).map((r) => r.channel_id);
+  const channelsJson = JSON.stringify(channels);
   // One APK per released version code, for the new APK's arch.
   const released = (await db.prepare(
     `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes,
-            MAX(CASE WHEN r.channel_id IN (SELECT channel_id FROM releases WHERE build_id = ?4) THEN 1 ELSE 0 END) AS same_channel
+            MAX(CASE WHEN r.channel_id IN (SELECT value FROM json_each(?4)) THEN 1 ELSE 0 END) AS same_channel
      FROM build_assets ba
      JOIN builds b ON b.id = ba.build_id
      JOIN releases r ON r.build_id = b.id
@@ -116,18 +123,18 @@ export async function selectPatchSources(
      GROUP BY b.version_code
      ORDER BY b.version_code DESC
      LIMIT 200`,
-  ).bind(appId, newApk.arch, newApk.version_code, newApk.build_id).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
+  ).bind(appId, newApk.arch, newApk.version_code, channelsJson).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
   if (released.length === 0) return [];
   const byCode = new Map(released.map((row) => [row.version_code, row]));
   const active = (await db.prepare(
     `SELECT p.version_code, COUNT(*) AS devices
      FROM device_pings p
      WHERE p.app_id = ?1 AND p.last_seen > ?2 AND p.version_code < ?3
-       AND p.channel IN (SELECT c.slug FROM channels c JOIN releases r ON r.channel_id = c.id WHERE r.build_id = ?4)
+       AND p.channel IN (SELECT c.slug FROM channels c WHERE c.app_id = ?1 AND c.id IN (SELECT value FROM json_each(?4)))
      GROUP BY p.version_code
      ORDER BY devices DESC, p.version_code DESC
      LIMIT 50`,
-  ).bind(appId, now - SOURCE_ACTIVITY_WINDOW_MS, newApk.version_code, newApk.build_id)
+  ).bind(appId, now - SOURCE_ACTIVITY_WINDOW_MS, newApk.version_code, channelsJson)
     .all<{ version_code: number; devices: number }>()).results ?? [];
   const chosen: ApkAssetRow[] = [];
   const add = (row: ApkAssetRow | undefined) => {
@@ -400,9 +407,11 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
 }
 
 /**
- * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>
+ * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>[&channel_id=<id>]
  * Returns short-lived signed download URLs for the last N published installable
- * APKs (same arch, version_code < before). Used by the CLI/CI to fetch the
+ * APKs (same arch, version_code < before). With channel_id, the sources are
+ * chosen as in selectPatchSources: the versions that channel's devices run,
+ * plus its latest earlier release. Used by the CLI/CI to fetch the
  * source APKs, generate archive-patcher patches, and upload them via
  * publish-android --delta-patch. Keeps patch generation out of the Worker.
  */
@@ -416,6 +425,26 @@ export async function handleDeltaSources(c: AdminContext) {
   }
   const limitRaw = Number(c.req.query("limit"));
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 10) : DEFAULT_KEEP_VERSIONS;
+
+  const channelId = c.req.query("channel_id")?.trim() || null;
+  const origin = requestOrigin(c);
+  const sign = (rows: ApkAssetRow[]) => Promise.all(
+    rows.map(async (p) => ({
+      from_version_code: p.version_code,
+      arch: p.arch,
+      size_bytes: p.size_bytes,
+      sha256: p.file_hash,
+      url: await generateInternalR2Url(c.env, p.r2_key, 1800, origin),
+    })),
+  );
+  if (channelId) {
+    const channel = await c.env.DB.prepare(`SELECT id FROM channels WHERE id = ?1 AND app_id = ?2`)
+      .bind(channelId, appId).first<{ id: string }>();
+    if (!channel) return c.json({ error: "channel_id is not a channel of this app" }, 404);
+    const target: ApkAssetRow = { build_id: "", version_code: before, arch, r2_key: "", file_hash: "", size_bytes: 0 };
+    const rows = await selectPatchSources(c.env.DB, appId, target, limit, Date.now(), [channelId]);
+    return c.json({ arch, before, channel_id: channelId, sources: await sign(rows) });
+  }
 
   const priors = await c.env.DB.prepare(
     `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes
@@ -433,15 +462,5 @@ export async function handleDeltaSources(c: AdminContext) {
     .bind(appId, arch, before, limit)
     .all<ApkAssetRow>();
 
-  const origin = requestOrigin(c);
-  const sources = await Promise.all(
-    (priors.results ?? []).map(async (p) => ({
-      from_version_code: p.version_code,
-      arch: p.arch,
-      size_bytes: p.size_bytes,
-      sha256: p.file_hash,
-      url: await generateInternalR2Url(c.env, p.r2_key, 1800, origin),
-    })),
-  );
-  return c.json({ arch, before, sources });
+  return c.json({ arch, before, sources: await sign(priors.results ?? []) });
 }

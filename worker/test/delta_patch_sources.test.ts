@@ -70,6 +70,23 @@ describe("delta patch sources", () => {
     expect(sources[0]).toEqual({ build_id: "b126", version_code: 126, arch: null, r2_key: "apk/126", file_hash: "h126", size_bytes: 100 });
   });
 
+  it("uses the given channel for a build that has no release yet", async () => {
+    // CI generates patches before the build is released. A 1.30 preview build
+    // must diff against 1.29 on preview, not the 1.30 alphas just below it.
+    const { db, release, devices } = setup();
+    db.prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('alpha','app','alpha','Alpha',1)").run();
+    release(12900010, "preview", "active");
+    for (const code of [13000002, 13000003, 13000004]) release(code, "alpha", "superseded");
+    devices(12900007, "preview", 2);
+    release(12900007, "preview", "superseded");
+    devices(13000004, "alpha", 5);
+    const preview = await selectPatchSources(d1(db) as never, "app", target(13000005), 1, NOW, ["preview"]);
+    expect(preview.map((s) => s.version_code)).toEqual([12900007, 12900010]);
+    // Without a channel and with no release, the nearest earlier versions stand in.
+    const none = await selectPatchSources(d1(db) as never, "app", target(13000005), 1, NOW);
+    expect(none.map((s) => s.version_code)).toEqual([13000004, 13000003]);
+  });
+
   it("falls back to the nearest earlier releases when no device has reported", async () => {
     const { db, release } = setup();
     for (const code of [10, 11, 12, 13]) release(code, "main", "superseded");

@@ -1475,6 +1475,7 @@ export function registerBuildCommands(program: Command): void {
           const generated = await generateAndUploadAndroidDeltas({
             appId,
             buildId: build.id,
+            channelId,
             newApkPath: opts.apk,
             arch: androidArch,
             toVersionCode: versionCode,
@@ -2994,6 +2995,7 @@ interface DeltaSource {
 async function generateAndUploadAndroidDeltas(args: {
   appId: string;
   buildId: string;
+  channelId: string;
   newApkPath: string;
   arch: string | null;
   toVersionCode: number;
@@ -3004,7 +3006,9 @@ async function generateAndUploadAndroidDeltas(args: {
   const { sources } = await apiRequest<{ sources: DeltaSource[] }>(
     `/api/apps/${args.appId}/delta-sources`,
     // No arch (a universal APK) is sent as no parameter, which the server reads as "no arch".
-    { query: { arch: args.arch ?? undefined, before: args.toVersionCode, limit: args.versions } },
+    // channel_id picks sources from what the target channel's devices run (older
+    // servers ignore it and return the nearest earlier versions).
+    { query: { arch: args.arch ?? undefined, before: args.toVersionCode, limit: args.versions, channel_id: args.channelId } },
   );
   if (!sources || sources.length === 0) {
     console.error(`[delta] no prior published versions to diff against; skipping.`);

@@ -40,3 +40,22 @@ describe("delta-sources arch", () => {
     expect(await boundArch({ arch: "arm64-v8a", before: "100" })).toBe("arm64-v8a");
   });
 });
+
+describe("delta-sources channel", () => {
+  it("rejects a channel_id that is not a channel of the app", async () => {
+    let checked: unknown[] = [];
+    const c = {
+      env: { DB: { prepare: () => ({ bind: (...args: unknown[]) => { checked = args; return { first: async () => null }; } }) } },
+      req: {
+        url: "https://hands.test/api/apps/app-1/delta-sources",
+        param: () => "app-1",
+        query: (name: string) => ({ before: "100", channel_id: "other-app-channel" } as Record<string, string>)[name],
+        header: () => undefined,
+      },
+      json: (data: unknown, status = 200) => Response.json(data, { status }),
+    };
+    const res = await handleDeltaSources(c as never);
+    expect(res.status).toBe(404);
+    expect(checked).toEqual(["other-app-channel", "app-1"]);
+  });
+});
