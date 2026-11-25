@@ -90,16 +90,6 @@ export interface DeltaParams {
 const SOURCE_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * The installed versions worth a patch to `newApk`: those that devices on the
- * new build's release channels ran most in the last 30 days, plus the latest
- * earlier release on those channels; the nearest earlier releases fill any
- * remaining places (and stand in alone when there is no device activity).
- *
- * Nearest version codes alone are the wrong sources once a channel has
- * previews: 1.29.0 on main got patches only from 1.29 previews while main's
- * devices ran 1.26–1.28, so none of them could be offered a patch.
- */
-/**
  * A universal APK carries every ABI. Older CLIs stored it with the literal arch
  * `universal`; newer ones store no arch. Both mean the same APK, so patch
  * sources must match either way.
@@ -111,6 +101,16 @@ export function normalizeApkArch(arch: string | null | undefined): string | null
   return UNIVERSAL_APK_ARCHES.includes(trimmed) ? null : trimmed;
 }
 
+/**
+ * The installed versions worth a patch to `newApk`: those that devices on the
+ * new build's release channels ran most in the last 30 days, plus the latest
+ * earlier release on those channels; the nearest earlier releases fill any
+ * remaining places (and stand in alone when there is no device activity).
+ *
+ * Nearest version codes alone are the wrong sources once a channel has
+ * previews: 1.29.0 on main got patches only from 1.29 previews while main's
+ * devices ran 1.26–1.28, so none of them could be offered a patch.
+ */
 export async function selectPatchSources(
   db: D1Database, appId: string, newApk: ApkAssetRow, keep: number, now = Date.now(),
   channelIds?: string[],
