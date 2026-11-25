@@ -352,22 +352,38 @@ object HandsCrash {
             appendLine(Log.getStackTraceString(throwable))
             appendLine()
             appendLine("Process uptime: ${System.currentTimeMillis() - processStartMs} ms")
-            appendLine()
-            appendLine("Process info:")
-            appendProcessInfo(context)
-            appendLine()
-            appendLine("Open file descriptors:")
-            appendFdInfo()
-            appendLine()
-            appendLine("Recent logcat:")
-            appendLogcatTail()
-            appendLine()
-            appendLine("All threads:")
-            runCatching {
-                for ((t, frames) in Thread.getAllStackTraces()) {
-                    if (t === thread) continue
-                    appendLine("  Thread ${t.name} (${t.state}):")
-                    frames.take(24).forEach { frame -> appendLine("    at $frame") }
+            val runtime = Runtime.getRuntime()
+            val lowMemory = isLowMemoryCrash(
+                throwable,
+                usedBytes = runtime.totalMemory() - runtime.freeMemory(),
+                maxBytes = runtime.maxMemory(),
+            )
+            if (lowMemory) {
+                // With the heap exhausted, listing /proc/self/fd, reading logcat or
+                // walking every thread allocates enough to stall on GC for seconds
+                // and turn the crash into an ANR. Keep only what is already built.
+                appendLine()
+                appendLine("Low memory: skipped process info, file descriptors, logcat and threads")
+                appendLine("  JVM heap: used ${(runtime.totalMemory() - runtime.freeMemory()) / 1048576} MB / " +
+                    "max ${runtime.maxMemory() / 1048576} MB")
+            } else {
+                appendLine()
+                appendLine("Process info:")
+                appendProcessInfo(context)
+                appendLine()
+                appendLine("Open file descriptors:")
+                appendFdInfo()
+                appendLine()
+                appendLine("Recent logcat:")
+                appendLogcatTail()
+                appendLine()
+                appendLine("All threads:")
+                runCatching {
+                    for ((t, frames) in Thread.getAllStackTraces()) {
+                        if (t === thread) continue
+                        appendLine("  Thread ${t.name} (${t.state}):")
+                        frames.take(24).forEach { frame -> appendLine("    at $frame") }
+                    }
                 }
             }
             extraContext?.let { provider ->
@@ -381,6 +397,24 @@ object HandsCrash {
                 }
             }
         }
+
+    /**
+     * True when the crash happened with the Java heap exhausted: an
+     * OutOfMemoryError anywhere in the cause chain, or less than
+     * [LOW_MEMORY_HEADROOM_BYTES] left before the heap limit.
+     */
+    internal fun isLowMemoryCrash(throwable: Throwable, usedBytes: Long, maxBytes: Long): Boolean {
+        var t: Throwable? = throwable
+        var depth = 0
+        while (t != null && depth < 16) {
+            if (t is OutOfMemoryError) return false
+            t = t.cause
+            depth++
+        }
+        return maxBytes > 0 && maxBytes != Long.MAX_VALUE && maxBytes - usedBytes < LOW_MEMORY_HEADROOM_BYTES
+    }
+
+    internal const val LOW_MEMORY_HEADROOM_BYTES: Long = 16L * 1024 * 1024
 
     /** Memory/thread/foreground snapshot — the "scene data" tab equivalent. */
     private fun StringBuilder.appendProcessInfo(context: Context) {
