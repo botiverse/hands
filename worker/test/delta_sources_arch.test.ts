@@ -34,6 +34,7 @@ describe("delta-sources arch", () => {
     expect(await boundArch({ arch: "", before: "100" })).toBeNull();
     expect(await boundArch({ arch: "  ", before: "100" })).toBeNull();
     expect(await boundArch({ before: "100" })).toBeNull();
+    expect(await boundArch({ arch: "universal", before: "100" })).toBeNull();
   });
 
   it("keeps an explicit ABI", async () => {
