@@ -407,7 +407,7 @@ object HandsCrash {
         var t: Throwable? = throwable
         var depth = 0
         while (t != null && depth < 16) {
-            if (t is OutOfMemoryError) return false
+            if (t is OutOfMemoryError) return true
             t = t.cause
             depth++
         }
