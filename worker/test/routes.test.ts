@@ -195,6 +195,7 @@ function makeMockDb() {
       deny_device_ids TEXT NOT NULL DEFAULT '[]',
       allow_cohorts TEXT NOT NULL DEFAULT '[]',
       platforms TEXT NOT NULL DEFAULT '[]',
+      channels TEXT NOT NULL DEFAULT '[]',
       updated_at INTEGER NOT NULL,
       updated_by TEXT,
       FOREIGN KEY (app_id) REFERENCES apps(id) ON DELETE CASCADE
@@ -10531,6 +10532,7 @@ describe("quiver public API v2 — scope resolution", () => {
       default_enabled?: number;
       allow?: string[];
       deny?: string[];
+      channels?: string[];
     }) => {
       await env.DB.prepare(
         "DELETE FROM feature_flags WHERE app_id = ?1 AND key = 'delta_updates'",
@@ -10539,13 +10541,14 @@ describe("quiver public API v2 — scope resolution", () => {
         .run();
       await env.DB.prepare(
         `INSERT INTO feature_flags
-           (id, app_id, key, default_enabled, allow_device_ids, deny_device_ids, updated_at)
-         VALUES ('ff-delta', 'app-scope', 'delta_updates', ?1, ?2, ?3, ?4)`,
+           (id, app_id, key, default_enabled, allow_device_ids, deny_device_ids, channels, updated_at)
+         VALUES ('ff-delta', 'app-scope', 'delta_updates', ?1, ?2, ?3, ?4, ?5)`,
       )
         .bind(
           opts.default_enabled ?? 0,
           JSON.stringify(opts.allow ?? []),
           JSON.stringify(opts.deny ?? []),
+          JSON.stringify(opts.channels ?? []),
           Date.now(),
         )
         .run();
@@ -10574,6 +10577,20 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(denied.patch).toBeUndefined();
     const notDenied = await responseJson<any>(await call("dev-b"));
     expect(notDenied.patch).toMatchObject({ from_version_code: 10 });
+
+    // (e) channels scope: default-on but only for other channels → the
+    // "production" channel gets no patch; listing it offers again.
+    await setFlag({ default_enabled: 1, channels: ["alpha", "preview"] });
+    const otherChannel = await responseJson<any>(await call("dev-b"));
+    expect(otherChannel.update_available).toBe(true);
+    expect(otherChannel.patch).toBeUndefined();
+    await setFlag({ default_enabled: 1, channels: ["alpha", "production"] });
+    const listedChannel = await responseJson<any>(await call("dev-b"));
+    expect(listedChannel.patch).toMatchObject({ from_version_code: 10 });
+    // An allow-listed test device still gets patches on an unlisted channel.
+    await setFlag({ default_enabled: 0, allow: ["dev-a"], channels: ["alpha"] });
+    const allowedAnyChannel = await responseJson<any>(await call("dev-a"));
+    expect(allowedAnyChannel.patch).toMatchObject({ from_version_code: 10 });
   });
 
   it("delta offer picks the smallest patch among the algorithms the client declares", async () => {

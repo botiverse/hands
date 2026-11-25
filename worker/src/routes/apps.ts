@@ -819,6 +819,7 @@ const FEATURE_FLAG_DEFAULTS = {
   deny_device_ids: "[]",
   allow_cohorts: "[]",
   platforms: "[]",
+  channels: "[]",
 };
 
 /** GET /api/apps/:appId/feature-flags/:key — read a feature flag (viewer). */
@@ -831,7 +832,7 @@ export async function handleGetFeatureFlag(c: AdminContext) {
   if (!app) return c.json({ error: "not found" }, 404);
   const row = await c.env.DB.prepare(
     `SELECT id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
-            deny_device_ids, allow_cohorts, platforms, updated_at, updated_by
+            deny_device_ids, allow_cohorts, platforms, channels, updated_at, updated_by
      FROM feature_flags WHERE app_id = ?1 AND key = ?2`,
   )
     .bind(appId, key)
@@ -859,6 +860,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
     deny_device_ids?: string[];
     allow_cohorts?: string[];
     platforms?: string[];
+    channels?: string[];
   };
   // Confirm app exists.
   const existing = await c.env.DB.prepare("SELECT id FROM apps WHERE id = ?1")
@@ -901,6 +903,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
     "deny_device_ids",
     "allow_cohorts",
     "platforms",
+    "channels",
   ] as const;
   for (const field of arrayFields) {
     if (body[field] !== undefined && !isStringArray(body[field])) {
@@ -911,7 +914,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
   // Load the current row (if any) so a partial PUT preserves the other fields.
   const current = await c.env.DB.prepare(
     `SELECT default_enabled, rollout_percent, allow_device_ids, deny_device_ids,
-            allow_cohorts, platforms
+            allow_cohorts, platforms, channels
      FROM feature_flags WHERE app_id = ?1 AND key = ?2`,
   )
     .bind(appId, key)
@@ -922,6 +925,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
       deny_device_ids: string;
       allow_cohorts: string;
       platforms: string;
+      channels: string;
     }>();
 
   const defaultEnabled =
@@ -950,14 +954,18 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
     body.platforms !== undefined
       ? JSON.stringify(body.platforms)
       : current?.platforms ?? "[]";
+  const channels =
+    body.channels !== undefined
+      ? JSON.stringify(body.channels)
+      : current?.channels ?? "[]";
   const now = Date.now();
   const actor = currentActor(c);
 
   await c.env.DB.prepare(
     `INSERT INTO feature_flags
        (id, app_id, key, default_enabled, rollout_percent, allow_device_ids,
-        deny_device_ids, allow_cohorts, platforms, updated_at, updated_by)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        deny_device_ids, allow_cohorts, platforms, channels, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
      ON CONFLICT(app_id, key) DO UPDATE SET
        default_enabled = excluded.default_enabled,
        rollout_percent = excluded.rollout_percent,
@@ -965,6 +973,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
        deny_device_ids = excluded.deny_device_ids,
        allow_cohorts = excluded.allow_cohorts,
        platforms = excluded.platforms,
+       channels = excluded.channels,
        updated_at = excluded.updated_at,
        updated_by = excluded.updated_by`,
   )
@@ -978,6 +987,7 @@ export async function handleUpdateFeatureFlag(c: AdminContext) {
       denyDeviceIds,
       allowCohorts,
       platforms,
+      channels,
       now,
       actor,
     )
