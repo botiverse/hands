@@ -99,6 +99,18 @@ const SOURCE_ACTIVITY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
  * previews: 1.29.0 on main got patches only from 1.29 previews while main's
  * devices ran 1.26–1.28, so none of them could be offered a patch.
  */
+/**
+ * A universal APK carries every ABI. Older CLIs stored it with the literal arch
+ * `universal`; newer ones store no arch. Both mean the same APK, so patch
+ * sources must match either way.
+ */
+const UNIVERSAL_APK_ARCHES = ["universal", "any", ""];
+const APK_ARCH_SQL = `(CASE WHEN ba.arch IN (${UNIVERSAL_APK_ARCHES.map((a) => `'${a}'`).join(", ")}) THEN NULL ELSE ba.arch END)`;
+export function normalizeApkArch(arch: string | null | undefined): string | null {
+  const trimmed = arch?.trim() ?? "";
+  return UNIVERSAL_APK_ARCHES.includes(trimmed) ? null : trimmed;
+}
+
 export async function selectPatchSources(
   db: D1Database, appId: string, newApk: ApkAssetRow, keep: number, now = Date.now(),
   channelIds?: string[],
@@ -117,13 +129,13 @@ export async function selectPatchSources(
      JOIN builds b ON b.id = ba.build_id
      JOIN releases r ON r.build_id = b.id
      WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-       AND (ba.arch IS ?2 OR ba.arch = ?2)
+       AND ${APK_ARCH_SQL} IS ?2
        AND b.version_code < ?3
        AND r.status IN ('active', 'superseded')
      GROUP BY b.version_code
      ORDER BY b.version_code DESC
      LIMIT 200`,
-  ).bind(appId, newApk.arch, newApk.version_code, channelsJson).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
+  ).bind(appId, normalizeApkArch(newApk.arch), newApk.version_code, channelsJson).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
   if (released.length === 0) return [];
   const byCode = new Map(released.map((row) => [row.version_code, row]));
   const active = (await db.prepare(
@@ -418,7 +430,7 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
 export async function handleDeltaSources(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   // An empty arch is the same as none: a universal APK registered without an ABI.
-  const arch = c.req.query("arch")?.trim() || null;
+  const arch = normalizeApkArch(c.req.query("arch"));
   const before = Number(c.req.query("before"));
   if (!Number.isFinite(before)) {
     return c.json({ error: "before (version_code) must be a number" }, 400);
@@ -452,7 +464,7 @@ export async function handleDeltaSources(c: AdminContext) {
      JOIN builds b ON b.id = ba.build_id
      JOIN releases r ON r.build_id = b.id
      WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-       AND (ba.arch IS ?2 OR ba.arch = ?2)
+       AND ${APK_ARCH_SQL} IS ?2
        AND b.version_code < ?3
        AND r.status IN ('active', 'superseded')
      GROUP BY b.version_code

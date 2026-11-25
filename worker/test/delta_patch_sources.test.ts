@@ -33,11 +33,11 @@ function setup() {
   db.prepare("INSERT INTO organizations (id, slug, name, external_provider, external_id, created_at) VALUES ('org','org','Org','raft','s',1)").run();
   db.prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app','org','raft-android','Raft','android',1)").run();
   db.prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('main','app','main','Main',1), ('preview','app','preview','Preview',1)").run();
-  const release = (code: number, channel: string, status: string) => {
+  const release = (code: number, channel: string, status: string, arch: string | null = null) => {
     const build = `b${code}`;
     db.prepare("INSERT OR IGNORE INTO builds (id, app_id, version_name, version_code, created_at, updated_at) VALUES (?, 'app', ?, ?, 1, 1)").run(build, String(code), code);
-    db.prepare("INSERT OR IGNORE INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'installable', 'android', NULL, 'apk', ?, ?, 100, 1)")
-      .run(`a${code}`, build, `apk/${code}`, `h${code}`);
+    db.prepare("INSERT OR IGNORE INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'installable', 'android', ?, 'apk', ?, ?, 100, 1)")
+      .run(`a${code}`, build, arch, `apk/${code}`, `h${code}`);
     db.prepare("INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status, created_by, created_at, updated_at) VALUES (?, 'app', ?, ?, 'app', 'stable', ?, 't', 1, 1)")
       .run(`r${code}-${channel}`, build, channel, status);
   };
@@ -93,5 +93,16 @@ describe("delta patch sources", () => {
     release(14, "main", "active");
     const sources = await selectPatchSources(d1(db) as never, "app", target(14), 3, NOW);
     expect(sources.map((s) => s.version_code)).toEqual([13, 12, 11, 10]);
+  });
+
+  it("matches a universal APK stored with the literal arch `universal` to one stored with no arch", async () => {
+    const { db, release } = setup();
+    release(110, "main", "superseded", "universal");
+    release(111, "main", "active", "universal");
+    release(109, "main", "superseded", "arm64-v8a");
+    const fromNoArch = await selectPatchSources(d1(db) as never, "app", target(112), 3, NOW, ["main"]);
+    expect(fromNoArch.map((s) => s.version_code)).toEqual([111, 110]);
+    const fromUniversal = await selectPatchSources(d1(db) as never, "app", { ...target(112), arch: "universal" }, 3, NOW, ["main"]);
+    expect(fromUniversal.map((s) => s.version_code)).toEqual([111, 110]);
   });
 });
