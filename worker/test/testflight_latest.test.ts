@@ -91,11 +91,16 @@ describe("testflight_latest helper", () => {
       ascBuildId: "asc-b2", versionName: "1.32.0", buildNumber: "13100001", now: 2000,
     }))).toBe("upserted");
     expect(row()).toMatchObject({ asc_build_id: "asc-b2", version_code: 13100001, version_name: "1.32.0", updated_at: 2000 });
-    // Equal build number (a readback of the same build) refreshes updated_at.
-    expect(await recordExternalBuildState(db, observe({
+    // A repeat readback of the same build keeps when it was first recorded.
+    await recordExternalBuildState(db, observe({
       ascBuildId: "asc-b2", versionName: "1.32.0", buildNumber: "13100001", now: 3000,
-    }))).toBe("upserted");
-    expect(row()).toMatchObject({ asc_build_id: "asc-b2", updated_at: 3000 });
+    }));
+    expect(row()).toMatchObject({ asc_build_id: "asc-b2", updated_at: 2000 });
+    // A different ASC build with the same build number takes over with a new time.
+    await recordExternalBuildState(db, observe({
+      ascBuildId: "asc-b3", versionName: "1.32.0", buildNumber: "13100001", now: 4000,
+    }));
+    expect(row()).toMatchObject({ asc_build_id: "asc-b3", updated_at: 4000 });
   });
 
   it("ignores an older build and compares numerically, not as strings", async () => {

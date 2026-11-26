@@ -386,7 +386,11 @@ it is off by default.
 
 - `version_code` is the integer build number (`CFBundleVersion`); builds whose
   build number is not a plain integer are never reported.
-- `updated_at` is Unix milliseconds, when Hands last recorded the build.
+- `updated_at` is Unix milliseconds, when Hands first recorded this build as
+  the latest.
+- Build numbers are compared across marketing versions, so they must keep
+  increasing across versions (for example `13000003` for 1.30.0); an app that
+  restarts build numbers per version should not enable this endpoint.
 - Hands records the build from App Store Connect external-build-state webhooks
   and from `testflight-publish` / status readbacks. It keeps the highest build
   number currently `IN_BETA_TESTING`; when that build leaves external testing

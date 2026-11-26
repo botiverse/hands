@@ -76,7 +76,9 @@ export async function recordExternalBuildState(
          version_code = excluded.version_code,
          asc_build_id = excluded.asc_build_id,
          external_build_state = excluded.external_build_state,
-         updated_at = excluded.updated_at
+         -- A repeat observation of the same build keeps when it was first recorded.
+         updated_at = CASE WHEN testflight_latest_builds.asc_build_id = excluded.asc_build_id
+           THEN testflight_latest_builds.updated_at ELSE excluded.updated_at END
        WHERE excluded.version_code >= testflight_latest_builds.version_code`,
     )
     .bind(obs.appId, versionName, versionCode, ascBuildId, state, obs.now ?? Date.now())

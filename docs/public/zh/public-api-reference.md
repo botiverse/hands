@@ -257,7 +257,8 @@ GET /public/v2/apps/:appSlug/testflight/latest
 ```
 
 - `version_code` 是整数构建号（`CFBundleVersion`）；构建号不是纯整数的构建不会被返回。
-- `updated_at` 为 Unix 毫秒时间戳，表示 Hands 最近一次记录该构建的时间。
+- `updated_at` 为 Unix 毫秒时间戳，表示 Hands 首次把该构建记为最新的时间。
+- 构建号跨营销版本比较，因此必须跨版本持续递增（例如 1.30.0 用 `13000003`）；每个版本从头计数构建号的应用不应开启此接口。
 - Hands 根据 App Store Connect 外部构建状态 Webhook 以及 `testflight-publish` / 状态回读记录构建，保留当前处于 `IN_BETA_TESTING` 的最大构建号；该构建离开外部测试（例如过期）后记录会被清除，直到观察到其他构建。
 - 响应不会包含下载链接、App Store Connect ID、测试组 ID 或 TestFlight 链接。
 - `404` 且 `{"error": "not found"}`：应用不存在、已归档或未开启此功能（三者无法区分）。
