@@ -126,6 +126,7 @@ export interface App {
   description: string | null;
   archived: number;       // 0 = active, 1 = archived (soft-delete)
   public_history?: number; // 1 = public /apps/:slug/history page enabled
+  public_testflight_latest?: number; // 1 = public /public/v2/apps/:slug/testflight/latest enabled (iOS)
   history_channels?: string | null; // JSON array of channel slugs allowed on the public history surface; null = all
   history_show_downloads?: number; // 0 = hide download CTAs and 404 the public download endpoints
   delta_updates_enabled?: number; // 1 = auto-generate Android delta patches on publish
@@ -2351,6 +2352,13 @@ export const updateAppPublicHistory = (appId: string, enabled: boolean) =>
   request<{ ok: boolean }>(`/api/apps/${appId}`, {
     method: "PATCH",
     body: JSON.stringify({ public_history: enabled }),
+    admin: true,
+  });
+
+export const updateAppPublicTestflightLatest = (appId: string, enabled: boolean) =>
+  request<{ ok: boolean }>(`/api/apps/${appId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ public_testflight_latest: enabled }),
     admin: true,
   });
 

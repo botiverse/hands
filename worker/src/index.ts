@@ -153,6 +153,7 @@ import {
   handlePublicReleaseNotes,
   handlePublicReleaseNotesJson,
 } from "./routes/history";
+import { handlePublicTestflightLatest } from "./routes/public_testflight";
 import {
   handleCreateAppDeployToken,
   handleGetAppPermissionModel,
@@ -884,6 +885,8 @@ bindApp("get", "/public/v2/apps/:slug/updates/check", handlePublicV2UpdateCheck)
 bindApp("get", "/public/v2/apps/:slug/versions", handlePublicCliBinaryVersions);
 bindApp("get", "/public/v2/apps/:slug/installer/:channel/:target", handleCliInstallerMetadata);
 bindApp("get", "/public/v2/apps/:slug/release-notes", handlePublicReleaseNotesJson);
+// iOS apps opted in via public_testflight_latest: newest external TestFlight build.
+bindApp("get", "/public/v2/apps/:slug/testflight/latest", handlePublicTestflightLatest);
 // Desktop apps: per-target update check and content-addressed bundle files.
 bindApp("get", "/public/v2/apps/:slug/desktop/update", handlePublicDesktopUpdate);
 bindApp("get", "/public/v2/apps/:slug/files/:sha256", handlePublicDesktopFile);

@@ -20,6 +20,7 @@ const AppInput = z
     runtime: z.enum(["jvm", "electron", "native", "tauri", "other"]).nullable().optional(),
     description: z.string().nullable().optional(),
     public_history: z.boolean().optional(),
+    public_testflight_latest: z.boolean().optional(),
     history_channels: z.array(z.string().min(1)).nullable().optional(),
     history_show_downloads: z.boolean().optional(),
     delta_updates_enabled: z.boolean().optional(),

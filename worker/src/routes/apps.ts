@@ -27,7 +27,7 @@ export async function handleListApps(c: AdminContext) {
   if (deployToken) {
     const row = await c.env.DB.prepare(
       `SELECT id, org_id, slug, name, platform, runtime,
-              description, archived, archived_at, created_at, public_history,
+              description, archived, archived_at, created_at, public_history, public_testflight_latest,
               history_channels, history_show_downloads,
               release_requires_human_approval
        FROM apps
@@ -46,6 +46,7 @@ export async function handleListApps(c: AdminContext) {
         archived_at: number | null;
         created_at: number;
         public_history: number;
+        public_testflight_latest: number;
         history_channels: string | null;
         history_show_downloads: number;
         release_requires_human_approval: number;
@@ -73,7 +74,7 @@ export async function handleListApps(c: AdminContext) {
   const query = orgId && account
     ? {
         sql: `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.runtime,
-                     a.description, a.archived, a.archived_at, a.created_at, a.public_history,
+                     a.description, a.archived, a.archived_at, a.created_at, a.public_history, a.public_testflight_latest,
                      a.history_channels, a.history_show_downloads,
                      a.release_requires_human_approval
               FROM apps a
@@ -119,7 +120,7 @@ export async function handleListApps(c: AdminContext) {
     : orgId
     ? {
         sql: `SELECT id, org_id, slug, name, platform, runtime,
-                     description, archived, archived_at, created_at, public_history,
+                     description, archived, archived_at, created_at, public_history, public_testflight_latest,
                      history_channels, history_show_downloads,
                      release_requires_human_approval
               FROM apps
@@ -129,7 +130,7 @@ export async function handleListApps(c: AdminContext) {
       }
     : {
         sql: `SELECT id, org_id, slug, name, platform, runtime,
-                     description, archived, archived_at, created_at, public_history,
+                     description, archived, archived_at, created_at, public_history, public_testflight_latest,
                      history_channels, history_show_downloads,
                      release_requires_human_approval
               FROM apps
@@ -659,7 +660,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
   const appId = c.req.param("appId") ?? "";
   const row = await c.env.DB.prepare(
     `SELECT a.id, a.org_id, a.slug, a.name, a.platform, a.runtime, a.description,
-            a.archived, a.archived_at, a.created_at, a.public_history,
+            a.archived, a.archived_at, a.created_at, a.public_history, a.public_testflight_latest,
             a.history_channels, a.history_show_downloads,
             a.delta_updates_enabled,
             a.release_requires_human_approval,
@@ -680,6 +681,7 @@ export async function handleGetApp(c: Context<{ Bindings: Env }>) {
     archived_at: number | null;
     created_at: number;
     public_history: number;
+    public_testflight_latest: number;
     history_channels: string | null;
     history_show_downloads: number;
     delta_updates_enabled: number;
@@ -700,6 +702,7 @@ export async function handleUpdateApp(c: AdminContext) {
     runtime?: string | null;
     default_channel_id?: string | null;
     public_history?: boolean;
+    public_testflight_latest?: boolean;
     delta_updates_enabled?: boolean;
     release_requires_human_approval?: boolean;
     history_channels?: string[] | null;
@@ -733,6 +736,10 @@ export async function handleUpdateApp(c: AdminContext) {
   if (body.public_history !== undefined) {
     updates.push("public_history = ?");
     binds.push(body.public_history ? 1 : 0);
+  }
+  if (body.public_testflight_latest !== undefined) {
+    updates.push("public_testflight_latest = ?");
+    binds.push(body.public_testflight_latest ? 1 : 0);
   }
   if (body.history_channels !== undefined) {
     // null/empty array = every channel (the pre-flag behaviour). Any provided

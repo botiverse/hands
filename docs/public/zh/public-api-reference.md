@@ -239,6 +239,30 @@ Content-Type: application/json
 
 `changelog` 仍是本地化显示字符串；`release_notes` 是供需要所有语言的使用方使用的权威结构化对象。
 
+## 最新 TestFlight 构建
+
+```http
+GET /public/v2/apps/:appSlug/testflight/latest
+```
+
+适用于通过外部 TestFlight（而不是已发布的 Hands 版本）分发给测试者的 iOS 应用。TestFlight 构建用自身的 `CFBundleVersion` 与 `version_code` 比较，较旧时提示用户在 TestFlight 中更新。应用管理员在 **设置 → 公开页面 → 最新 TestFlight 构建** 中开启（即 `PATCH /api/apps/:appId` 的 `public_testflight_latest`），默认关闭。
+
+```json
+{
+  "version_name": "1.31.0",
+  "version_code": 13000003,
+  "external_build_state": "IN_BETA_TESTING",
+  "updated_at": 1795651200000
+}
+```
+
+- `version_code` 是整数构建号（`CFBundleVersion`）；构建号不是纯整数的构建不会被返回。
+- `updated_at` 为 Unix 毫秒时间戳，表示 Hands 最近一次记录该构建的时间。
+- Hands 根据 App Store Connect 外部构建状态 Webhook 以及 `testflight-publish` / 状态回读记录构建，保留当前处于 `IN_BETA_TESTING` 的最大构建号；该构建离开外部测试（例如过期）后记录会被清除，直到观察到其他构建。
+- 响应不会包含下载链接、App Store Connect ID、测试组 ID 或 TestFlight 链接。
+- `404` 且 `{"error": "not found"}`：应用不存在、已归档或未开启此功能（三者无法区分）。
+- `404` 且 `"code": "no_external_build"`：当前没有记录处于外部测试中的构建。
+
 ## Electron 通用提供方
 
 使用 `electron-updater` 的 Electron 应用可以将通用提供方指向 Hands：
