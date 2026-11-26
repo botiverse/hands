@@ -76,6 +76,7 @@ import {
   uploadAppIcon,
   publicAppIconUrl,
   updateAppPublicHistory,
+  updateAppPublicTestflightLatest,
   updateAppHistoryChannels,
   updateAppHistoryDownloads,
   updateAppDeltaUpdates,
@@ -509,6 +510,11 @@ function PublicPagesSection({ appId, app }: { appId: string; app: App }) {
     mutationFn: (next: boolean) => updateAppHistoryDownloads(appId, next),
     onSuccess: refresh,
   });
+  const testflightLatest = Boolean(app.public_testflight_latest);
+  const testflightToggle = useMutation({
+    mutationFn: (next: boolean) => updateAppPublicTestflightLatest(appId, next),
+    onSuccess: refresh,
+  });
   const toggleChannel = (slug: string) => {
     const next = selectedChannels.includes(slug)
       ? selectedChannels.filter((s) => s !== slug)
@@ -573,6 +579,25 @@ function PublicPagesSection({ appId, app }: { appId: string; app: App }) {
             disabled={downloadsToggle.isPending}
             error={failed(downloadsToggle.error, t)}
             onCheckedChange={(next) => downloadsToggle.mutate(next)}
+          />
+        )}
+        {app.platform === "ios" && (
+          <SwitchRow
+            title={t("Latest TestFlight build", "最新 TestFlight 构建")}
+            description={
+              testflightLatest ? (
+                <>
+                  {t("Anyone can read the version and build number of the newest build in external TestFlight testing at ", "任何人都可以在这里读取处于外部 TestFlight 测试中的最新构建的版本号和构建号：")}
+                  {link(`/public/v2/apps/${app.slug}/testflight/latest`)}
+                </>
+              ) : (
+                t("Lets TestFlight builds check for a newer external TestFlight build. Only the version and build number are shown.", "让 TestFlight 构建检查是否有更新的外部 TestFlight 构建。只公开版本号和构建号。")
+              )
+            }
+            checked={testflightLatest}
+            disabled={testflightToggle.isPending}
+            error={failed(testflightToggle.error, t)}
+            onCheckedChange={(next) => testflightToggle.mutate(next)}
           />
         )}
       </ListRowGroup>

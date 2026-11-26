@@ -362,6 +362,46 @@ Content-Type: application/json
 `changelog` remains the localized display string. `release_notes` is the
 canonical structured object for consumers that need every language.
 
+## Latest TestFlight Build
+
+```http
+GET /public/v2/apps/:appSlug/testflight/latest
+```
+
+For iOS apps whose builds reach testers through external TestFlight rather
+than a published Hands release. A TestFlight build compares its own
+`CFBundleVersion` with `version_code` and, when it is older, asks the user to
+update in TestFlight. An app admin turns it on in **Settings → Public pages →
+Latest TestFlight build** (`public_testflight_latest` on `PATCH /api/apps/:appId`);
+it is off by default.
+
+```json
+{
+  "version_name": "1.31.0",
+  "version_code": 13000003,
+  "external_build_state": "IN_BETA_TESTING",
+  "updated_at": 1795651200000
+}
+```
+
+- `version_code` is the integer build number (`CFBundleVersion`); builds whose
+  build number is not a plain integer are never reported.
+- `updated_at` is Unix milliseconds, when Hands first recorded this build as
+  the latest.
+- Build numbers are compared across marketing versions, so they must keep
+  increasing across versions (for example `13000003` for 1.30.0); an app that
+  restarts build numbers per version should not enable this endpoint.
+- Hands records the build from App Store Connect external-build-state webhooks
+  and from `testflight-publish` / status readbacks. It keeps the highest build
+  number currently `IN_BETA_TESTING`; when that build leaves external testing
+  (expired, for example) the record is cleared until another build is observed.
+- The response never contains download URLs, App Store Connect ids, beta group
+  ids or TestFlight links.
+- `404` with `{"error": "not found"}`: the app does not exist, is archived or
+  has not turned this on (the three are indistinguishable).
+- `404` with `"code": "no_external_build"`: no build is currently recorded as
+  being in external testing.
+
 ## Electron Generic Provider
 
 Electron apps using `electron-updater` can point the generic provider at

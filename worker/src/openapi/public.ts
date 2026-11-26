@@ -184,6 +184,15 @@ const PublicReleaseNotesResponse = z
   })
   .openapi("PublicReleaseNotesResponse");
 
+const PublicTestflightLatestResponse = z
+  .object({
+    version_name: z.string(),
+    version_code: z.number().int(),
+    external_build_state: z.literal("IN_BETA_TESTING"),
+    updated_at: z.number().int(),
+  })
+  .openapi("PublicTestflightLatestResponse");
+
 const FeedbackSubmitResponse = z
   .object({
     id: z.string(),
@@ -364,6 +373,20 @@ export function registerPublicRoutes(): RouteConfigList {
     responses: {
       200: success("Structured release notes.", PublicReleaseNotesResponse),
       404: error("App was not found or public history/release notes are disabled."),
+    },
+  });
+
+  routes.push({
+    method: "get",
+    path: "/public/v2/apps/{slug}/testflight/latest",
+    tags: ["Public update"],
+    summary: "Get the newest external TestFlight build",
+    description:
+      "For iOS apps that opted in with public_testflight_latest. Returns the marketing version and integer build number of the newest build Hands last observed in external TestFlight testing (IN_BETA_TESTING), so a TestFlight build can compare its own CFBundleVersion and prompt the user to update in TestFlight. updated_at is in Unix milliseconds. Never includes download URLs, App Store Connect ids, beta group ids or TestFlight links.",
+    request: { params: SlugParam },
+    responses: {
+      200: success("Newest build in external TestFlight testing.", PublicTestflightLatestResponse),
+      404: error("App was not found or has not opted in (error: not found), or no build is currently stored as being in external testing (code: no_external_build)."),
     },
   });
 

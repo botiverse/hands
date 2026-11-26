@@ -58,6 +58,7 @@ import {
 import { createOperation, updateOperation } from "./operations";
 import { completeTestflightOperation } from "../lib/testflight_events";
 import { triggerDeliveryNow } from "./webhooks";
+import { recordExternalBuildStateBestEffort } from "../lib/testflight_latest";
 import { insertAuditLog } from "../lib/permissions";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
@@ -876,6 +877,29 @@ export async function handleListTestflightGroups(c: AdminContext) {
   }
 }
 
+/**
+ * Feed a readback of one exact ASC build into the public "latest external
+ * TestFlight build" record (lib/testflight_latest). Callers pass "EXPIRED" for an
+ * expired build, whatever its beta detail last said. Best effort: never throws,
+ * so the admin response is unaffected.
+ */
+async function observeExternalBuildState(
+  c: AdminContext,
+  appId: string,
+  handsBuild: HandsTestflightBuild,
+  ascBuild: AscBuildResource,
+  externalBuildState: string | null | undefined,
+  source: string,
+) {
+  await recordExternalBuildStateBestEffort(c.env.DB, {
+    appId,
+    ascBuildId: ascBuild.id,
+    versionName: handsBuild.version_name,
+    buildNumber: String(handsBuild.version_code),
+    externalBuildState,
+  }, source);
+}
+
 export async function handleTestflightPublishStatus(c: AdminContext) {
   const appId = c.req.param("appId") ?? "";
   try {
@@ -947,6 +971,11 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
       ascBuild.attributes.processingState !== "VALID" ||
       ascBuild.attributes.expired
     ) {
+      // Only expiry says anything about external testing; a still-processing
+      // build has no external state yet.
+      if (ascBuild.attributes.expired) {
+        await observeExternalBuildState(c, appId, build, ascBuild, "EXPIRED", "testflight_status");
+      }
       return c.json(
         statusPayload({
           handsBuild: build,
@@ -963,6 +992,10 @@ export async function handleTestflightPublishStatus(c: AdminContext) {
       listBetaGroups(creds, ascAppId),
       readTestflightSnapshot(creds, ascBuild.id),
     ]);
+    await observeExternalBuildState(
+      c, appId, build, ascBuild,
+      snapshot.betaDetail.attributes.externalBuildState, "testflight_status",
+    );
     return c.json(
       statusPayload({
         handsBuild: build,
@@ -1303,6 +1336,7 @@ export async function handleTestflightExpire(c: AdminContext) {
         onPatchConfirmed,
       }),
     });
+    await observeExternalBuildState(c, appId, build, expired.ascBuild, "EXPIRED", "testflight_expire");
     try {
       await insertAuditLog(c.env.DB, c, {
         app_id: appId,
@@ -1440,6 +1474,10 @@ export async function handleTestflightPublish(c: AdminContext) {
       ascBuild,
       input,
     });
+    await observeExternalBuildState(
+      c, appId, build, ascBuild,
+      result.beta_detail?.external_build_state, "testflight_publish",
+    );
     const receiptAt = await completeTestflightOperation(c.env.DB, appId, op.id, op.kind, result);
     triggerDeliveryNow(c, c.env, receiptAt);
     await insertAuditLog(c.env.DB, c, {

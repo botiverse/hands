@@ -1001,4 +1001,86 @@ describe("Apple ingress — build identity enrichment", () => {
     expect((await send(betaEvent())).status).toBe(200);
     expect("version_string" in latestPayload(sql).payload).toBe(false);
   });
+
+  describe("latest external TestFlight build", () => {
+    const stateEvent = (id: string, state: string, old = "BETA_APPROVED") => {
+      const event = betaEvent(id);
+      event.data.attributes.newExternalBuildState = state;
+      event.data.attributes.oldExternalBuildState = old;
+      return event;
+    };
+    /** Apple answers the identity lookup with this build id and numbers. */
+    function identityFetch(build: { id: string; number: string; version: string } | "fail") {
+      const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
+      return vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/v1/buildBetaDetails/")) {
+          if (build === "fail") return new Response("boom", { status: 500 });
+          return json({
+            data: {
+              type: "builds", id: build.id, attributes: { version: build.number },
+              relationships: { preReleaseVersion: { data: { type: "preReleaseVersions", id: "pre-1" } } },
+            },
+            included: [{ type: "preReleaseVersions", id: "pre-1", attributes: { version: build.version } }],
+          });
+        }
+        return json({ data: [], included: [] });
+      });
+    }
+    const stored = (sql: Database.Database) =>
+      sql.prepare("SELECT version_name, version_code, asc_build_id, external_build_state FROM testflight_latest_builds WHERE app_id='app'").get();
+    const deliveries = (sql: Database.Database) =>
+      (sql.prepare("SELECT COUNT(*) n FROM webhook_deliveries WHERE event_type='testflight:external_state_changed'").get() as { n: number }).n;
+
+    it("stores an IN_BETA_TESTING build and clears it when that build expires", async () => {
+      const { sql, send } = await setup();
+      await withAscCredentials(sql);
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-build-7", number: "13000003", version: "1.31.0" }));
+      expect((await send(stateEvent("tf-1", "IN_BETA_TESTING"))).status).toBe(200);
+      expect(stored(sql)).toEqual({
+        version_name: "1.31.0", version_code: 13000003, asc_build_id: "asc-build-7", external_build_state: "IN_BETA_TESTING",
+      });
+      // The ASC build id is used for storage only; the notification payload is unchanged.
+      expect(JSON.stringify(latestPayload(sql))).not.toContain("asc-build-7");
+
+      expect((await send(stateEvent("tf-2", "EXPIRED", "IN_BETA_TESTING"))).status).toBe(200);
+      expect(stored(sql)).toBeUndefined();
+      expect(deliveries(sql)).toBe(2);
+    });
+
+    it("does not let an older build or a non-integer build number replace the stored one", async () => {
+      const { sql, send } = await setup();
+      await withAscCredentials(sql);
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-new", number: "13000003", version: "1.31.0" }));
+      await send(stateEvent("tf-new", "IN_BETA_TESTING"));
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-old", number: "12000001", version: "1.30.0" }));
+      await send(stateEvent("tf-old", "IN_BETA_TESTING"));
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-dotted", number: "14.0.1", version: "1.40.0" }));
+      await send(stateEvent("tf-dotted", "IN_BETA_TESTING"));
+      // Another build expiring does not clear the stored one.
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-old", number: "12000001", version: "1.30.0" }));
+      await send(stateEvent("tf-old-expired", "EXPIRED", "IN_BETA_TESTING"));
+      expect(stored(sql)).toMatchObject({ asc_build_id: "asc-new", version_code: 13000003 });
+    });
+
+    it("stores nothing when the build lookup fails, and still delivers", async () => {
+      const { sql, send } = await setup();
+      await withAscCredentials(sql);
+      vi.stubGlobal("fetch", identityFetch("fail"));
+      expect((await send(stateEvent("tf-fail", "IN_BETA_TESTING"))).status).toBe(200);
+      expect(stored(sql)).toBeUndefined();
+      expect(deliveries(sql)).toBe(1);
+    });
+
+    it("a storage failure does not cost the notification", async () => {
+      const { sql, send } = await setup();
+      await withAscCredentials(sql);
+      sql.exec("DROP TABLE testflight_latest_builds");
+      vi.stubGlobal("fetch", identityFetch({ id: "asc-build-7", number: "13000003", version: "1.31.0" }));
+      const res = await send(stateEvent("tf-broken", "IN_BETA_TESTING"));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ received: true, duplicate: false });
+      expect(deliveries(sql)).toBe(1);
+    });
+  });
 });

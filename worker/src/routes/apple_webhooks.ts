@@ -3,6 +3,7 @@ import type { AdminContext } from "../lib/permissions";
 import { getAscCredentials, encryptP8, decryptP8 } from "../lib/asc_credentials";
 import { ascRequest, AscApiError, getBetaBuildLocalizations, getBetaCrashLogText, getBetaFeedbackCrashSubmission, listAssignedBetaGroupNames, type AscApiCredentials } from "../lib/asc_api";
 import { lookupSourceCommit, whatToTestMap } from "../lib/testflight_events";
+import { recordExternalBuildStateBestEffort } from "../lib/testflight_latest";
 import { insertAuditLog } from "../lib/permissions";
 import { businessOrigin } from "../lib/origin";
 import { triggerDeliveryNow } from "./webhooks";
@@ -220,8 +221,13 @@ async function resolveBuildIdentityForEvent(
   eventType: string,
   resourceType: string,
   resourceId: string,
-): Promise<{ identity: BuildIdentity | null; whatToTest: Record<string, string> | null }> {
-  const none = { identity: null, whatToTest: null };
+): Promise<{
+  identity: BuildIdentity | null;
+  whatToTest: Record<string, string> | null;
+  /** ASC build id Apple returned from `/build`; never forwarded in the payload. */
+  ascBuildId: string | null;
+}> {
+  const none = { identity: null, whatToTest: null, ascBuildId: null };
   const candidatePath = Object.hasOwn(BUILD_LOOKUP, eventType)
     ? BUILD_LOOKUP[eventType]
     : undefined;
@@ -263,7 +269,7 @@ async function resolveBuildIdentityForEvent(
         // Groups are decoration on a notification that must still be delivered.
       }
     }
-    return { identity, whatToTest };
+    return { identity, whatToTest, ascBuildId: resolved.ascBuildId ?? null };
   } catch {
     return none;
   }
@@ -596,7 +602,7 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
   // every pre-existing field is unchanged. Note the payload always carries the
   // `build` key, so a consumer must treat null as "version unknown" rather
   // than as an absent field (match the previous shape if you compare payloads).
-  const { identity: buildIdentity, whatToTest } = await resolveBuildIdentityForEvent(
+  const { identity: buildIdentity, whatToTest, ascBuildId } = await resolveBuildIdentityForEvent(
     c.env,
     c.env.ASC_CRED_ENC_KEY,
     config.app_id,
@@ -696,6 +702,19 @@ export async function handleAppleWebhook(c: Context<{ Bindings: Env }>) {
   if (!receipt) return c.json({ error: "Webhook configuration changed" }, 409);
   if (receipt.body_sha256 !== digest)
     return c.json({ error: "Event ID reused with a different payload" }, 409);
+  // Public "latest external TestFlight build" (lib/testflight_latest): only for a
+  // first receipt, so a replayed old event cannot re-apply a stale state. Best
+  // effort: the notification above is already durably queued either way.
+  if (d.type === "buildBetaDetailExternalBuildStateUpdated" && receipt.receipt_nonce === nonce) {
+    await recordExternalBuildStateBestEffort(c.env.DB, {
+      appId: config.app_id,
+      ascBuildId,
+      versionName: buildIdentity?.version ?? null,
+      buildNumber: buildIdentity?.version_code ?? null,
+      externalBuildState: typeof attrs[spec[2]] === "string" ? (attrs[spec[2]] as string) : null,
+      now,
+    }, "apple_webhook");
+  }
   triggerDeliveryNow(c, c.env, now);
   return c.json({ received: true, duplicate: receipt.receipt_nonce !== nonce });
 }

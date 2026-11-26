@@ -567,5 +567,6 @@
   "that app has no AGC credentials": "该应用没有 AGC 凭据",
   "comment not found": "未找到评论",
   "only {\"internal\": true} is supported: an internal note cannot be made public": "只支持 {\"internal\": true}：内部备注不能改为公开",
-  "a reporter's own comment cannot be made internal": "反馈者自己的评论不能设为内部"
+  "a reporter's own comment cannot be made internal": "反馈者自己的评论不能设为内部",
+  "no external TestFlight build": "没有处于外部 TestFlight 测试中的构建"
 }
