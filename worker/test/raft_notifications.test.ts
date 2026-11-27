@@ -295,10 +295,13 @@ describe("Hands-managed Raft notifications", () => {
     attach("a4", "app.log", "text/plain", 5, null, 4);
     attach("a5", "vector.svg", "image/svg+xml", 5, null, 5);
     attach("a6", "secret.png", "image/png", 5, null, 6, "internal");
+    attach("a7", "raft-feedback-diagnostics-0f1e.zip", "application/zip", 5, null, 6);
     attach("c1", "reply.png", "image/png", 7, "comment-1", 7);
     attach("c2", "trace.dmp", "application/x-minidump", 9, "comment-2", 8);
     attach("c3", "refused.png", "image/png", 9, "comment-3", 9);
     attach("c4", "ok.png", "image/png", 9, "comment-3", 10);
+    attach("c5", "recording.mp4", "video/mp4", 9, "comment-4", 10);
+    attach("c6", "diagnostics-1764200000.zip", "application/zip", 9, "comment-5", 10);
     // Another app's ticket with the same comment id is never read.
     attach("x1", "foreign.png", "image/png", 9, "comment-1", 11, "reporter", "other-ticket");
     (env as any).APK_BUCKET = {
@@ -356,7 +359,7 @@ describe("Hands-managed Raft notifications", () => {
     expect(reply.target).toBe("#releases:root-000");
     expect(reply.attachmentIds).toEqual(["att-1", "att-2"]);
     expect(reply.content).toContain("2 attachments");
-    // Oversized image, log and SVG are counted; the internal image is not even counted.
+    // Oversized image, log and SVG are counted; the internal image and the diagnostics zip are not.
     expect(reply.content).toContain(`3 files more not attached here · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
     // Delivered again: nothing new is uploaded or posted.
     expect((await request(created, "d1-again")).status).toBe(200);
@@ -366,10 +369,19 @@ describe("Hands-managed Raft notifications", () => {
     const comment = (id: string, body = "see this") => feedbackBody("feedback:comment_created", { comment: { id, body } });
     expect((await request(comment("comment-1"), "d2")).status).toBe(200);
     expect(replies().at(-1)).toMatchObject({ attachmentIds: ["att-3"], target: "#releases:root-000", content: "📎 **1 attachment** from this report" });
-    // A comment whose only file is not an image gets no reply.
+    // A comment whose only files are app diagnostics (a minidump, a diagnostics zip) gets no reply.
     const before = replies().length;
     expect((await request(comment("comment-2", "ok"), "d3")).status).toBe(200);
+    expect((await request(comment("comment-5", "zip"), "d3-zip")).status).toBe(200);
     expect(replies()).toHaveLength(before);
+    // Any other file without an image is counted and linked, with nothing uploaded.
+    const uploadsBefore = uploads.length;
+    expect((await request(comment("comment-4", "video"), "d3-video")).status).toBe(200);
+    expect(replies().at(-1)).toMatchObject({
+      attachmentIds: [], target: "#releases:root-000",
+      content: `📎 1 file attached in Hands · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`,
+    });
+    expect(uploads).toHaveLength(uploadsBefore);
     // A file Raft refuses is counted and linked instead of failing the delivery.
     expect((await request(comment("comment-3", "two"), "d4")).status).toBe(200);
     expect(replies().at(-1)!.attachmentIds).toEqual(["att-4"]);
