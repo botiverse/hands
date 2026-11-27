@@ -102,6 +102,46 @@ export function normalizeApkArch(arch: string | null | undefined): string | null
 }
 
 /**
+ * One released APK per earlier version code that a patch to an APK of `arch`
+ * can start from, newest first. A device on a universal APK can upgrade to an
+ * ABI-specific one (1.31 ships arm64-v8a only after 1.29/1.30 shipped
+ * universal), so an ABI-specific target also takes universal sources; when a
+ * version has both, the same-arch APK wins. `same_channel` is 1 when the
+ * version was released on one of `channelsJson`'s channels.
+ */
+async function releasedApksForArch(
+  db: D1Database, appId: string, arch: string | null, before: number, channelsJson: string, limit = 200,
+): Promise<Array<ApkAssetRow & { same_channel: number }>> {
+  const target = normalizeApkArch(arch);
+  const rows = (await db.prepare(
+    `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes,
+            CASE WHEN r.channel_id IN (SELECT value FROM json_each(?4)) THEN 1 ELSE 0 END AS same_channel,
+            CASE WHEN ${APK_ARCH_SQL} IS ?2 THEN 1 ELSE 0 END AS exact_arch
+     FROM build_assets ba
+     JOIN builds b ON b.id = ba.build_id
+     JOIN releases r ON r.build_id = b.id
+     WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
+       AND (${APK_ARCH_SQL} IS ?2 OR (?2 IS NOT NULL AND ${APK_ARCH_SQL} IS NULL))
+       AND b.version_code < ?3
+       AND r.status IN ('active', 'superseded')
+     ORDER BY b.version_code DESC, exact_arch DESC, ba.id ASC
+     LIMIT 2000`,
+  ).bind(appId, target, before, channelsJson).all<ApkAssetRow & { same_channel: number; exact_arch: number }>()).results ?? [];
+  const byCode = new Map<number, ApkAssetRow & { same_channel: number }>();
+  for (const row of rows) {
+    const seen = byCode.get(row.version_code);
+    if (seen) {
+      if (row.same_channel === 1) seen.same_channel = 1;
+      continue;
+    }
+    if (byCode.size >= limit) break;
+    const { exact_arch: _exact, ...asset } = row;
+    byCode.set(row.version_code, asset);
+  }
+  return [...byCode.values()];
+}
+
+/**
  * The installed versions worth a patch to `newApk`: those that devices on the
  * new build's release channels ran most in the last 30 days, plus the latest
  * earlier release on those channels; the nearest earlier releases fill any
@@ -121,21 +161,7 @@ export async function selectPatchSources(
     `SELECT DISTINCT channel_id FROM releases WHERE build_id = ?1`,
   ).bind(newApk.build_id).all<{ channel_id: string }>()).results ?? []).map((r) => r.channel_id);
   const channelsJson = JSON.stringify(channels);
-  // One APK per released version code, for the new APK's arch.
-  const released = (await db.prepare(
-    `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes,
-            MAX(CASE WHEN r.channel_id IN (SELECT value FROM json_each(?4)) THEN 1 ELSE 0 END) AS same_channel
-     FROM build_assets ba
-     JOIN builds b ON b.id = ba.build_id
-     JOIN releases r ON r.build_id = b.id
-     WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-       AND ${APK_ARCH_SQL} IS ?2
-       AND b.version_code < ?3
-       AND r.status IN ('active', 'superseded')
-     GROUP BY b.version_code
-     ORDER BY b.version_code DESC
-     LIMIT 200`,
-  ).bind(appId, normalizeApkArch(newApk.arch), newApk.version_code, channelsJson).all<ApkAssetRow & { same_channel: number }>()).results ?? [];
+  const released = await releasedApksForArch(db, appId, newApk.arch, newApk.version_code, channelsJson);
   if (released.length === 0) return [];
   const byCode = new Map(released.map((row) => [row.version_code, row]));
   const active = (await db.prepare(
@@ -421,7 +447,7 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
 /**
  * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>[&channel_id=<id>]
  * Returns short-lived signed download URLs for the last N published installable
- * APKs (same arch, version_code < before). With channel_id, the sources are
+ * APKs (same arch, or universal for an ABI-specific arch; version_code < before). With channel_id, the sources are
  * chosen as in selectPatchSources: the versions that channel's devices run,
  * plus its latest earlier release. Used by the CLI/CI to fetch the
  * source APKs, generate archive-patcher patches, and upload them via
@@ -458,21 +484,7 @@ export async function handleDeltaSources(c: AdminContext) {
     return c.json({ arch, before, channel_id: channelId, sources: await sign(rows) });
   }
 
-  const priors = await c.env.DB.prepare(
-    `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes
-     FROM build_assets ba
-     JOIN builds b ON b.id = ba.build_id
-     JOIN releases r ON r.build_id = b.id
-     WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-       AND ${APK_ARCH_SQL} IS ?2
-       AND b.version_code < ?3
-       AND r.status IN ('active', 'superseded')
-     GROUP BY b.version_code
-     ORDER BY b.version_code DESC
-     LIMIT ?4`,
-  )
-    .bind(appId, arch, before, limit)
-    .all<ApkAssetRow>();
-
-  return c.json({ arch, before, sources: await sign(priors.results ?? []) });
+  const priors = await releasedApksForArch(c.env.DB, appId, arch, before, "[]", limit);
+  const sources = priors.map(({ same_channel: _ignored, ...row }) => row);
+  return c.json({ arch, before, sources: await sign(sources) });
 }

@@ -733,7 +733,10 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
       ? await findDeltaPatch(c, {
           buildId: latest.build.id,
           fromVersionCode: currentVersionCode,
-          arch: requestedArch,
+          // The patch must rebuild the APK actually offered. A client that sends
+          // no arch still gets an ABI-specific APK when that is all the build
+          // has, so match on the offered asset's arch, not the requested one.
+          arch: asset.arch,
           fullSizeBytes: asset.size_bytes,
           origin: publicRequestOrigin(c),
           ttl: latest.expires_in,

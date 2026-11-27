@@ -10515,6 +10515,36 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(bigPatch.patch).toBeUndefined();
   });
 
+  it("updates/check offers the arm64 patch to a client that sends no arch when the build is arm64-only", async () => {
+    // The Android SDK sends no arch by default. A build with only an arm64-v8a
+    // APK still offers that APK, so its arm64 patch must be offered with it.
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-arm", "build-arm", [["full", "all"]], { versionCode: 20, versionName: "1.0.20" });
+    await seedAsset(env, "build-arm", "asset-arm-full", { arch: "arm64-v8a", sizeBytes: 1000 });
+    await seedAsset(env, "build-arm", "asset-arm-patch", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "patch",
+      sizeBytes: 200,
+      r2Key: "apps/app-scope/patch-arm-10-20.patch",
+      metadata: { from_version_code: 10, to_version_code: 20, algorithm: "archive-patcher-v1", target_sha256: "a1" },
+    });
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-arm', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
+    const call = (query: Record<string, string>) =>
+      handlePublicV2UpdateCheck(makePublicContext(env, {
+        channel: "production", product_type: "android-apk", current_version_code: "10", platform: "android", ...query,
+      }));
+    const noArch = await responseJson<any>(await call({}));
+    expect(noArch.asset).toMatchObject({ arch: "arm64-v8a" });
+    expect(noArch.patch).toMatchObject({ from_version_code: 10, size_bytes: 200, target_sha256: "a1" });
+    const arm = await responseJson<any>(await call({ arch: "arm64-v8a" }));
+    expect(arm.patch).toMatchObject({ from_version_code: 10, size_bytes: 200 });
+  });
+
   it("delta offer respects the delta_updates feature flag (default off/on, per-device allow/deny)", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
