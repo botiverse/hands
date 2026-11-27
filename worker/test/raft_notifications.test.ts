@@ -6,7 +6,7 @@ import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
 import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
-import { AttachmentsDeferred, forwardFeedbackAttachments, UPLOAD_BUDGET_MS } from "../src/lib/raft_feedback_attachments";
+import { AttachmentsDeferred, feedbackEventAttachments, forwardFeedbackAttachments, UPLOAD_BUDGET_MS } from "../src/lib/raft_feedback_attachments";
 import { appGalleryCardObjectKey, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
 import {
   handleConnectRaftBot,
@@ -393,6 +393,30 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(repeat, "d5")).status).toBe(200);
     expect(sqlite.prepare("SELECT message_id FROM raft_notification_attachment_sends WHERE event_hash = ?").get(hash))
       .toEqual({ message_id: "sent:unknown" });
+  });
+
+  it("leaves a crash or error report's own files out, but keeps its images and later comments' files", async () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`CREATE TABLE feedback_tickets (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, kind TEXT NOT NULL);
+      CREATE TABLE feedback_attachments (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, comment_id TEXT,
+      r2_key TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT, size_bytes INTEGER NOT NULL,
+      origin TEXT NOT NULL DEFAULT 'submission', visibility TEXT NOT NULL DEFAULT 'reporter', created_at INTEGER NOT NULL)`);
+    sqlite.prepare("INSERT INTO feedback_tickets VALUES ('crash-1', 'app', 'crash'), ('bug-1', 'app', 'bug')").run();
+    const attach = (id: string, ticket: string, name: string, type: string, comment: string | null = null) => sqlite.prepare(
+      `INSERT INTO feedback_attachments (id, ticket_id, comment_id, r2_key, filename, content_type, size_bytes, origin, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 5, ?, 1)`,
+    ).run(id, ticket, comment, id, name, type, comment ? "reporter" : "submission");
+    attach("k1", "crash-1", "crash-1764200000.txt", "text/plain");
+    attach("k2", "crash-1", "anr-1764200000-42.txt", "text/plain");
+    attach("k3", "crash-1", "shot.png", "image/png");
+    attach("k4", "crash-1", "notes.txt", "text/plain", "comment-1");
+    attach("b1", "bug-1", "app.log", "text/plain");
+    const db = d1(sqlite);
+    const ids = async (ticket: string, event: string, comment?: string) =>
+      (await feedbackEventAttachments(db, "app", event, { ticket_id: ticket, ...(comment ? { comment: { id: comment } } : {}) })).map((row) => row.id);
+    expect(await ids("crash-1", "feedback:new")).toEqual(["k3"]);
+    expect(await ids("crash-1", "feedback:comment_created", "comment-1")).toEqual(["k4"]);
+    expect(await ids("bug-1", "feedback:new")).toEqual(["b1"]);
   });
 
   it("stops starting uploads when the attempt's time budget is spent, and the next attempt resumes", async () => {
