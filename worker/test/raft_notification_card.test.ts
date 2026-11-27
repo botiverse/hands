@@ -545,10 +545,10 @@ describe("Raft release notification cards", () => {
     expect(text).toContain("总次数: 55（其中用户主动清理 2 次，剔除后 53 次） · 涉及设备: 29");
     expect(text).toContain("按渠道和版本统计:");
     expect(text).toContain(
-      "- main · 1.30.0 (13000015, 13000016): 30 次 / 15 台（主动清理 2 次） · 当日活跃 36 台 · 覆盖 14/14 · 次数/活跃设备 0.78 · 受影响设备占活跃 39%"
-      + " · 基线 1.29.0 (12900011, 12900012) 0.29 次/设备日 ⚠️ 显著上升",
+      "- main · 1.30.0 (13000015, 13000016): 30 次 / 15 台（主动清理 2 次） · 当日活跃 36 台 · 覆盖 14/14 · 次数/已上报活跃设备 0.78 · 受影响设备占活跃 39%"
+      + " · 基线 1.29.0 (12900011, 12900012) 0.29 次/设备日 ⚠️ 较上一版本上升（观察）",
     );
-    expect(text).toContain("- preview · 1.30.0 (13000014): 3 次 / 3 台 · 当日活跃 5 台 · 覆盖 3/3 · 次数/活跃设备 0.60 · 受影响设备占活跃 60%"
+    expect(text).toContain("- preview · 1.30.0 (13000014): 3 次 / 3 台 · 当日活跃 5 台 · 覆盖 3/3 · 次数/已上报活跃设备 0.60 · 受影响设备占活跃 60%"
       + " · 无可比基线（新版本出现前 7 天没有完整的活跃设备记录）");
     expect(text).toContain("- main · 1.29.0 (12900012): 4 次 / 4 台 · 当日活跃 12 台 · 覆盖 2/4 · 覆盖不足，比例和预警不可比"
       + " · 无可比基线（旧版本的退出设备活跃记录覆盖不足）");
@@ -558,6 +558,6 @@ describe("Raft release notification cards", () => {
     expect(text).toContain("按服务器接收日");
     expect(text).toContain("低于 90% 不给比例和预警");
     expect(text).not.toContain("另有");
-    expect(text.match(/显著上升/g)).toHaveLength(1);
+    expect(text.match(/较上一版本上升/g)).toHaveLength(1);
   });
 });

@@ -501,6 +501,7 @@ const BG_KILL_SUMMARY_METHOD_NOTE = [
   "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。",
   "活跃设备 = 当天用该渠道该版本向 Hands 上报过活跃的设备（启动或检查更新时上报，按服务器接收日、按天去重；当天升级的设备两个版本都算；没上报的设备不在内）。退出按设备记录的退出时间归日，可能与接收日错开。",
   "覆盖 = 有退出的设备中当天有该版本活跃记录的比例，低于 90% 不给比例和预警。基线 = 旧版本在新版本出现前 7 天的次数 ÷ 设备日，与当日次数 ÷ 当日活跃设备同口径。没有完整活跃记录的日子只给次数。",
+  "比例是相对已上报活跃设备的观察指标，不等于真实发生率；⚠️ 只表示同一口径下比上一版本高 2 倍以上，需人工核实。",
 ].join("\n");
 
 const BG_KILL_BASELINE_REASONS: Record<string, string> = {
@@ -545,7 +546,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
     parts.push(`当日活跃 ${active} 台`);
     if (matched !== null && reporters !== null && reporters > 0) parts.push(`覆盖 ${matched}/${reporters}`);
     if (rate !== null) {
-      parts.push(`次数/活跃设备 ${rate.toFixed(2)}`);
+      parts.push(`次数/已上报活跃设备 ${rate.toFixed(2)}`);
       if (share !== null) parts.push(`受影响设备占活跃 ${Math.round(share * 100)}%`);
     } else if (rateReason === "low_coverage") {
       parts.push("覆盖不足，比例和预警不可比");
@@ -557,7 +558,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const baselineRate = baseline ? bgKillNumber(baseline.rate) : null;
   if (baseline && baselineRate !== null) {
     parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${baselineRate.toFixed(2)} 次/设备日`
-      + (entry.spike === true ? " ⚠️ 显著上升" : ""));
+      + (entry.spike === true ? " ⚠️ 较上一版本上升（观察）" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
     parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`);
