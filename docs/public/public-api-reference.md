@@ -444,6 +444,27 @@ short-lived signed R2 URL that carries the same file name, so large downloads
 go straight to storage. R2 serves `Range` requests itself, so electron-updater's
 differential download works unchanged. `latest*.yml` is served by Hands directly.
 
+Hands counts the `GET` requests this route answers, per file and UTC day, and
+shows them to app viewers:
+
+```http
+GET /api/apps/:appId/stats/electron-downloads?days=14
+```
+
+`days` is 1 to 90 (default 14). The response has `from` and `to` (UTC days),
+`files` (one row per file and day: `day`, `file`, `version`, `role`,
+`full_requests`, `range_requests`, `sources`) and `by_role` (`day`, `role` and
+the same counts). `role` is `patch` (`.patch` files), `blockmap` or `full`
+(installers and archives); update checks (`latest*.yml`) are not counted.
+`full_requests` had no `Range` header; `range_requests` had one, which on a
+`full` archive usually means electron-updater's differential download. `sources` counts
+distinct requesters from a per-day hash of IP address and user agent, so it is
+approximate: clients sharing both count once, and a client that changes network
+counts twice. Only requests that reach Hands are counted; a client that reuses
+a signed storage URL for further ranges is counted once. `HEAD` requests and
+unknown files are not counted. Counting started with migration 0123; earlier
+days have no rows.
+
 Example asset conventions:
 
 | File | `platform` | `arch` | `filetype` | `artifact_kind` |

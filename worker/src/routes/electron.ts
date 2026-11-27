@@ -4,6 +4,7 @@ import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
 import { readR2WithRetry } from "../lib/r2_read_retry";
 import { redirectToR2 } from "../lib/r2_presign";
 import { currentElectronMetadataOverride } from "../lib/electron_metadata_overrides";
+import { countElectronRequest, electronFileRole } from "../lib/electron_download_stats";
 
 export type ElectronAssetRow = {
   id: string;
@@ -101,6 +102,19 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
       },
       404,
     );
+  }
+
+  // Downloads are counted; update checks (latest*.yml) are not: every client
+  // polls them, and a write per poll would load D1 for no download signal.
+  if (appRow && c.req.method === "GET" && !isElectronMetadataAsset(asset)) {
+    await countElectronRequest(c, {
+      appId: appRow.id,
+      buildId: build.build_id,
+      assetId: asset.id,
+      file,
+      role: electronFileRole(asset, file),
+      ranged: Boolean(c.req.header("range")),
+    });
   }
 
   // Update metadata replaced after publishing is served instead of the build's

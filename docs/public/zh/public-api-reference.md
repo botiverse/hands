@@ -291,6 +291,14 @@ Hands 从该渠道的活动 `desktop-installer` 版本提供这些文件（旧�
 
 安装包、压缩包和 `.blockmap` 文件以 `302` 跳转到短时有效的 R2 签名地址，文件名不变，大文件直接从存储下载。R2 自己处理 `Range` 请求，electron-updater 的差分下载照常工作。`latest*.yml` 仍由 Hands 直接返回。
 
+Hands 按文件、按 UTC 日统计此路由响应的 `GET` 请求，应用 viewer 即可查看：
+
+```http
+GET /api/apps/:appId/stats/electron-downloads?days=14
+```
+
+`days` 取 1 到 90（默认 14）。返回 `from`、`to`（UTC 日期）、`files`（每个文件每天一行：`day`、`file`、`version`、`role`、`full_requests`、`range_requests`、`sources`）和 `by_role`（`day`、`role` 及同样的计数）。`role` 为 `patch`（`.patch` 文件）、`blockmap` 或 `full`（安装包和压缩包）；检查更新（`latest*.yml`）不计数。`full_requests` 是不带 `Range` 头的请求，`range_requests` 带 `Range` 头，对 `full` 压缩包而言通常就是 electron-updater 的差分下载。`sources` 是按天对 IP 和 user agent 做哈希后的不同请求方数，是近似值：两者都相同的客户端算一个，当天换了网络的客户端算两个。只统计到达 Hands 的请求；客户端如果复用存储签名地址继续请求其他区段，只算一次。`HEAD` 请求和不存在的文件不计数。统计从迁移 0123 开始，之前的日期没有数据。
+
 文件约定示例：
 
 | 文件 | `platform` | `arch` | `filetype` | `artifact_kind` |
