@@ -107,7 +107,7 @@ excerpt can contain information the user submitted. HTTP(S) URLs are omitted
 and Raft mentions in the excerpt are not activated. Crash text and comment
 bodies are not included. Images attached to a new ticket or a new comment
 follow as one reply in the ticket's thread, carrying them as Raft attachments
-(at most 6, each up to 10 MB); the reply counts the files it does not carry
+(PNG, JPEG, GIF, WebP or HEIC; at most 6, each up to 5 MB and 15 MB in all); the reply counts the files it does not carry
 and links to the ticket. Other files, such as logs and minidumps, are only
 counted, and an event without images gets no such reply. A feedback notification includes a `hands feedback
 show <app> <ticket>` command; viewing the full ticket still requires Hands

@@ -2,13 +2,20 @@
 //
 // A new ticket's submission images and a new comment's images are sent as one
 // reply in the ticket's thread, carrying them as Raft attachments, so the team
-// sees them without opening Hands. Only images are forwarded (minidumps, logs
-// and other files are counted and linked, and an event with no image gets no
-// reply); at most MAX_FORWARDED images of at
-// most MAX_FORWARDED_BYTES each, the rest counted and linked.
+// sees them without opening Hands. Only common image types are forwarded, at
+// most MAX_FORWARDED of at most MAX_FORWARDED_BYTES each and MAX_TOTAL_BYTES in
+// all; the reply counts the other files and links to the ticket. An event with
+// no image at all (a crash's minidump, a log) gets no reply.
+//
+// The work survives a delivery attempt that is cut off: each upload's Raft id
+// is saved as soon as it exists, and the reply (text and ids) is fixed once,
+// first writer wins, so every later attempt sends exactly the same message
+// under the same idempotency key.
 
 export const MAX_FORWARDED = 6;
-export const MAX_FORWARDED_BYTES = 10 * 1024 * 1024;
+export const MAX_FORWARDED_BYTES = 5 * 1024 * 1024;
+export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/heic", "image/heif"]);
 
 export type FeedbackAttachmentRow = {
   id: string;
@@ -21,7 +28,7 @@ export type FeedbackAttachmentRow = {
 type Record_ = Record<string, unknown>;
 const rec = (value: unknown): Record_ => value && typeof value === "object" && !Array.isArray(value) ? value as Record_ : {};
 
-/** The attachments a feedback:new (the submission's) or feedback:comment_created (that comment's) event brought. */
+/** The reporter-visible attachments a feedback:new (the submission's) or feedback:comment_created (that comment's) event brought. */
 export async function feedbackEventAttachments(
   db: D1Database, appId: string, event: string, payload: Record_,
 ): Promise<FeedbackAttachmentRow[]> {
@@ -38,29 +45,38 @@ export async function feedbackEventAttachments(
   } else {
     return [];
   }
+  // A query failure must not block the notification itself: it goes without images.
   try {
     const { results } = await db.prepare(
       `SELECT a.id, a.filename, a.content_type, a.size_bytes, a.r2_key
        FROM feedback_attachments a JOIN feedback_tickets t ON t.id = a.ticket_id
-       WHERE a.ticket_id = ?1 AND t.app_id = ?2 AND ${where}
+       WHERE a.ticket_id = ?1 AND t.app_id = ?2 AND a.visibility = 'reporter' AND ${where}
        ORDER BY a.created_at, a.id`,
     ).bind(...binds).all<FeedbackAttachmentRow>();
     return results ?? [];
-  } catch {
+  } catch (error) {
+    console.warn(JSON.stringify({ hands: "raft_feedback_attachments_query_failed", why: String((error as Error)?.message ?? error).slice(0, 200) }));
     return [];
   }
 }
 
 export function isForwardableImage(row: FeedbackAttachmentRow): boolean {
-  return (row.content_type ?? "").toLowerCase().startsWith("image/");
+  return IMAGE_TYPES.has((row.content_type ?? "").toLowerCase());
 }
 
 /** Which attachments go to Raft, and how many are only mentioned. An event
- * without any image (a crash's minidump, a log) gets no reply. */
+ * without any image gets nothing. */
 export function planForward(rows: FeedbackAttachmentRow[]): { send: FeedbackAttachmentRow[]; other: number } {
   if (!rows.some(isForwardableImage)) return { send: [], other: 0 };
-  const send = rows.filter((r) => isForwardableImage(r) && r.size_bytes > 0 && r.size_bytes <= MAX_FORWARDED_BYTES)
-    .slice(0, MAX_FORWARDED);
+  const send: FeedbackAttachmentRow[] = [];
+  let total = 0;
+  for (const row of rows) {
+    if (send.length >= MAX_FORWARDED) break;
+    if (!isForwardableImage(row) || row.size_bytes <= 0 || row.size_bytes > MAX_FORWARDED_BYTES) continue;
+    if (total + row.size_bytes > MAX_TOTAL_BYTES) continue;
+    total += row.size_bytes;
+    send.push(row);
+  }
   return { send, other: rows.length - send.length };
 }
 
@@ -76,17 +92,45 @@ export function attachmentsReplyText(sent: number, other: number, link: string |
   return lines.join("\n");
 }
 
+export class AttachmentSendRefused extends Error {
+  constructor(readonly kind: "duplicate" | "refused") { super(kind); }
+}
+
 export type AttachmentTransport = {
-  /** Uploads one file as a Raft attachment for the channel; null if Raft refuses this file (too large, type). */
+  /** Uploads one file as a Raft attachment; null if this file cannot go to Raft (refused, not permitted). Throws to retry. */
   upload(file: { bytes: ArrayBuffer; filename: string; contentType: string }): Promise<string | null>;
+  /** Throws AttachmentSendRefused when Raft says the key was used for other content, or refuses the message. */
   send(request: { target: string; content: string; attachmentIds: string[]; idempotencyKey: string }): Promise<{ messageId: string }>;
-  readObject(key: string): Promise<ArrayBuffer | null>;
+  readObject(key: string, maxBytes: number): Promise<ArrayBuffer | null>;
 };
 
+type Reply = { content: string; ids: string[] };
+
+function parseReply(value: string | null | undefined): Reply | null {
+  if (!value) return null;
+  try {
+    const parsed = rec(JSON.parse(value));
+    if (typeof parsed.content === "string" && Array.isArray(parsed.ids) && parsed.ids.every((id) => typeof id === "string")) {
+      return { content: parsed.content, ids: parsed.ids as string[] };
+    }
+  } catch { /* unusable: rebuilt below */ }
+  return null;
+}
+
+function parseProgress(value: string | null | undefined): Record<string, string | null> {
+  try {
+    const parsed = rec(JSON.parse(value || "{}"));
+    const out: Record<string, string | null> = {};
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === "string" || v === null) out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
- * Sends the event's attachments reply once. Uploaded ids are saved before the
- * send, so a retry after a lost reply resends the same message under the same
- * key rather than uploading again. Throws on a retryable failure.
+ * Sends the event's attachments reply once (see the file comment). Throws on a
+ * retryable failure; the caller retries the delivery.
  */
 export async function forwardFeedbackAttachments(options: {
   db: D1Database;
@@ -100,49 +144,74 @@ export async function forwardFeedbackAttachments(options: {
   const { db, subscriptionId, eventHash, threadTarget, rows, link, transport } = options;
   const plan = planForward(rows);
   if (plan.send.length === 0 && plan.other === 0) return null;
-  const prior = await db.prepare(
-    `SELECT attachment_ids_json, message_id FROM raft_notification_attachment_sends
-     WHERE subscription_id = ?1 AND event_hash = ?2`,
-  ).bind(subscriptionId, eventHash).first<{ attachment_ids_json: string | null; message_id: string | null }>();
-  if (prior?.message_id) return null;
-  let ids: string[] | null = null;
-  if (prior?.attachment_ids_json) {
-    try {
-      const parsed = JSON.parse(prior.attachment_ids_json);
-      if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) ids = parsed;
-    } catch { ids = null; }
-  }
-  if (!ids) {
-    ids = [];
-    for (const row of plan.send) {
-      const bytes = await transport.readObject(row.r2_key);
-      if (!bytes) continue;
-      const id = await transport.upload({ bytes, filename: row.filename, contentType: row.content_type ?? "application/octet-stream" });
-      if (id) ids.push(id);
-    }
-    const now = Date.now();
-    await db.prepare(
-      `INSERT INTO raft_notification_attachment_sends
-         (subscription_id, event_hash, attachment_ids_json, message_id, created_at, updated_at)
-       VALUES (?1, ?2, ?3, NULL, ?4, ?4)
-       ON CONFLICT (subscription_id, event_hash) DO UPDATE SET attachment_ids_json = ?3, updated_at = ?4`,
-    ).bind(subscriptionId, eventHash, JSON.stringify(ids), now).run();
-  }
-  const content = attachmentsReplyText(ids.length, rows.length - ids.length, link);
-  if (!content) return null;
-  const key = `hands-raft-attachments:${subscriptionId}:${eventHash}`.slice(0, 240);
-  const sent = await transport.send({ target: threadTarget, content, attachmentIds: ids, idempotencyKey: key });
+  const now = Date.now();
   await db.prepare(
+    `INSERT INTO raft_notification_attachment_sends
+       (subscription_id, event_hash, attachment_ids_json, reply_json, message_id, created_at, updated_at)
+     VALUES (?1, ?2, '{}', NULL, NULL, ?3, ?3)
+     ON CONFLICT (subscription_id, event_hash) DO NOTHING`,
+  ).bind(subscriptionId, eventHash, now).run();
+  const read = () => db.prepare(
+    `SELECT attachment_ids_json, reply_json, message_id FROM raft_notification_attachment_sends
+     WHERE subscription_id = ?1 AND event_hash = ?2`,
+  ).bind(subscriptionId, eventHash).first<{ attachment_ids_json: string | null; reply_json: string | null; message_id: string | null }>();
+  let state = await read();
+  if (state?.message_id) return null;
+  let reply = parseReply(state?.reply_json);
+  if (!reply) {
+    // Upload what is not uploaded yet, saving each id at once (null: not sent to Raft).
+    const progress = parseProgress(state?.attachment_ids_json);
+    for (const row of plan.send) {
+      if (row.id in progress) continue;
+      const bytes = await transport.readObject(row.r2_key, MAX_FORWARDED_BYTES);
+      progress[row.id] = bytes
+        ? await transport.upload({ bytes, filename: row.filename, contentType: row.content_type ?? "application/octet-stream" })
+        : null;
+      await db.prepare(
+        `UPDATE raft_notification_attachment_sends SET attachment_ids_json = ?1, updated_at = ?2
+         WHERE subscription_id = ?3 AND event_hash = ?4 AND reply_json IS NULL`,
+      ).bind(JSON.stringify(progress), Date.now(), subscriptionId, eventHash).run();
+    }
+    const ids = plan.send.map((row) => progress[row.id]).filter((id): id is string => !!id);
+    const built: Reply = { content: attachmentsReplyText(ids.length, rows.length - ids.length, link), ids };
+    // Fixed once: a concurrent attempt that got here first decides the reply.
+    await db.prepare(
+      `UPDATE raft_notification_attachment_sends SET reply_json = ?1, updated_at = ?2
+       WHERE subscription_id = ?3 AND event_hash = ?4 AND reply_json IS NULL`,
+    ).bind(JSON.stringify(built), Date.now(), subscriptionId, eventHash).run();
+    state = await read();
+    if (state?.message_id) return null;
+    reply = parseReply(state?.reply_json) ?? built;
+  }
+  if (!reply.content) return null;
+  const key = `hands-raft-attachments:${subscriptionId}:${eventHash}`.slice(0, 240);
+  const done = (messageId: string) => db.prepare(
     `UPDATE raft_notification_attachment_sends SET message_id = ?1, updated_at = ?2
      WHERE subscription_id = ?3 AND event_hash = ?4`,
-  ).bind(sent.messageId, Date.now(), subscriptionId, eventHash).run();
-  return { messageId: sent.messageId, attached: ids.length };
-}
-
-/** Forgets saved upload ids (Raft refused them on send), so the next attempt uploads again. */
-export async function resetForwardedUploads(db: D1Database, subscriptionId: string, eventHash: string): Promise<void> {
-  await db.prepare(
-    `UPDATE raft_notification_attachment_sends SET attachment_ids_json = NULL, updated_at = ?1
-     WHERE subscription_id = ?2 AND event_hash = ?3 AND message_id IS NULL`,
-  ).bind(Date.now(), subscriptionId, eventHash).run();
+  ).bind(messageId, Date.now(), subscriptionId, eventHash).run();
+  try {
+    const sent = await transport.send({ target: threadTarget, content: reply.content, attachmentIds: reply.ids, idempotencyKey: key });
+    await done(sent.messageId);
+    return { messageId: sent.messageId, attached: reply.ids.length };
+  } catch (error) {
+    if (!(error instanceof AttachmentSendRefused)) throw error;
+    if (error.kind === "duplicate") {
+      // This key already carried a reply for the event: it was sent.
+      await done("sent:unknown");
+      return null;
+    }
+    // Raft refused the message with these attachments: say so in text, once.
+    if (reply.ids.length > 0) {
+      try {
+        const text = attachmentsReplyText(0, rows.length, link);
+        const sent = await transport.send({ target: threadTarget, content: text, attachmentIds: [], idempotencyKey: `${key}:text`.slice(0, 240) });
+        await done(sent.messageId);
+        return { messageId: sent.messageId, attached: 0 };
+      } catch (fallback) {
+        if (!(fallback instanceof AttachmentSendRefused)) throw fallback;
+      }
+    }
+    await done(`refused:${error.kind}`);
+    return null;
+  }
 }
