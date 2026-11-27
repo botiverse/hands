@@ -1,6 +1,6 @@
 # @botiverse/hands-electron
 
-Crash reporting for Electron apps, backed by [Hands](https://hands.build).
+Crash reporting and macOS update patches for Electron apps, backed by [Hands](https://hands.build).
 
 Electron's built-in [Crashpad](https://www.electronjs.org/docs/latest/api/crash-reporter)
 captures native minidumps for **both the main and renderer processes** and
@@ -100,6 +100,37 @@ hands builds publish-electron my-desktop-app \
 Once symbols are present, each crash ticket gets a symbolicated stack posted as
 a comment. Without symbols, Hands still records the crash with module+offset
 frames.
+
+## macOS update patches (`/updater`)
+
+With [electron-updater](https://www.electron.build/auto-update) on the Hands
+generic feed, macOS updates can be downloaded as a small binary patch to the
+installed app instead of the whole zip:
+
+```ts
+import { autoUpdater } from "electron-updater";
+import { enablePatchUpdates } from "@botiverse/hands-electron/updater";
+
+const patches = enablePatchUpdates(autoUpdater, {
+  onEvent: (event) => log.info("update_patch", event), // closed codes only; no network calls of its own
+});
+```
+
+When `latest-mac.yml` lists a patch from the running version
+(`hands electron make-patches` makes them in CI), the SDK downloads it,
+rebuilds the release zip from the installed app (every file checked against
+the release's sha256), and hands it to Squirrel.Mac. Any failure, and a
+Squirrel rejection, falls back to electron-updater's own download. The hook
+uses private electron-updater methods; it is tested against 6.3.9 and 6.8.11
+and turns itself off (`unavailable` event) when they are missing.
+`electron-updater` (>=6.3.9 <7) is an optional peer dependency, needed only
+for this entry point.
+
+Requires an Electron whose Node is 22.19+ or 24.6+ (zstd dictionaries). Full
+guide: [Electron update patches](https://hands.build/docs/electron-updates/).
+
+`pnpm smoke:patch` applies a patch inside a real Electron (its `node:fs` shows
+`app.asar` as a folder; the applier reads through `original-fs`).
 
 ## What gets sent
 

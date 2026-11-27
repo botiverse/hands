@@ -775,6 +775,19 @@ hands builds publish-electron raft-desktop \
 
 与 Android 一样遵循先草稿规则：CI 创建 Electron 版本草稿，用户或智能体审核更新说明后明确发布。macOS 更新文件必须在上传前签名；可在打包前用 `hands sign --notarize`（见“签名”）为 `.app` 签名并公证。
 
+### macOS 更新补丁 {#macos-update-patches}
+
+`hands electron make-patches` 从渠道上最近的几个版本到新版本生成二进制补丁，逐个实际应用一次做校验，并把它们写进新的 `latest-mac.yml`：
+
+```bash
+hands electron make-patches raft-deck \
+  --version-name 0.1.8 \
+  --dir release \
+  --update-feed release/latest-mac.yml
+```
+
+需要 `unzip`、`diff` 和 Node 22.19+ 或 24.6+。最新的 base 失败时以 2 退出，不写任何补丁。选项、输出（包含构建资产 slot 的 `patches.json`）和发布方式见 [Electron 更新补丁](electron-updates.md)。
+
 ### 修改已发布版本的更新元数据
 
 应用管理员可以替换草稿或生效中的 Electron 版本对外提供的 `latest*.yml`，不必重新发布，例如关闭增量补丁或分阶段放量：

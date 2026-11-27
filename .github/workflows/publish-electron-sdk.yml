@@ -67,8 +67,18 @@ jobs:
           fi
           echo "value=${package_version}" >> "$GITHUB_OUTPUT"
 
+      - name: Verify app-patch dependency is published
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node scripts/resolve-workspace-dependency-version.mjs \
+            clients/electron/package.json @botiverse/hands-app-patch packages/app-patch/package.json)"
+          npm view "@botiverse/hands-app-patch@${version}" version
+
       - name: Build Electron SDK
-        run: pnpm --filter @botiverse/hands-electron build
+        run: |
+          pnpm --filter @botiverse/hands-app-patch build
+          pnpm --filter @botiverse/hands-electron build
 
       - name: Pack check
         working-directory: clients/electron

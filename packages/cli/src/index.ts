@@ -41,6 +41,7 @@ import { registerPlayCommands } from "./commands/play.js";
 import { registerStatsCommands } from "./commands/stats.js";
 import { registerQuotaCommands } from "./commands/quota.js";
 import { registerApiCommand } from "./commands/api.js";
+import { registerElectronCommands } from "./commands/electron.js";
 import { getConfig } from "./lib/config.js";
 import { redactForLog } from "./lib/redact_for_log.js";
 import { readEnv } from "./lib/env.js";
@@ -113,6 +114,8 @@ Common recipes:
   hands app-store submit|withdraw <app> --version-name 1.17.0 [--commit]
   hands app-store release <app> <versionId> --version-name 1.17.0 [--build <ascBuildId>] [--commit]
                                                        Release an approved version (irreversible; dry run by default)
+  hands electron make-patches <app> --version-name 1.2.3 --dir release --update-feed release/latest-mac.yml
+                                                       macOS update patches from the newest releases (verified)
   hands logs collect                                  Bundle local CLI logs for a bug report
 
 Every command supports --json for scripts/agents. Full docs:
@@ -162,6 +165,7 @@ registerTrustedPublisherCommands(program);
 registerSigningCommands(program);
 registerOrgTokenCommands(program);
 registerLogsCommands(program);
+registerElectronCommands(program);
 registerApiCommand(program);
 
 program

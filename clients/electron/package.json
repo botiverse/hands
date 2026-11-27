@@ -1,7 +1,7 @@
 {
   "name": "@botiverse/hands-electron",
-  "version": "0.2.1",
-  "description": "Hands crash reporting for Electron apps — main + renderer, Crashpad minidumps auto-uploaded and symbolicated server-side.",
+  "version": "0.3.0",
+  "description": "Hands for Electron apps — Crashpad crash reporting (main + renderer) and macOS update patches for electron-updater.",
   "author": {
     "name": "jiacheng",
     "email": "jiacheng@botiverse.dev"
@@ -25,6 +25,10 @@
     "./preload": {
       "types": "./dist/preload.d.ts",
       "import": "./dist/preload.js"
+    },
+    "./updater": {
+      "types": "./dist/updater/index.d.ts",
+      "import": "./dist/updater/index.js"
     }
   },
   "files": [
@@ -34,12 +38,25 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:patch": "node smoke/patch-smoke.mjs"
+  },
+  "dependencies": {
+    "@botiverse/hands-app-patch": "workspace:*"
   },
   "peerDependencies": {
-    "electron": ">=22"
+    "electron": ">=22",
+    "electron-updater": ">=6.3.9 <7"
+  },
+  "peerDependenciesMeta": {
+    "electron-updater": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron-updater": "6.8.11",
+    "electron-updater-6.3.9": "npm:electron-updater@6.3.9",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   },

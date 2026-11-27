@@ -89,6 +89,19 @@ hands builds publish-electron my-desktop-app \
 
 随后每个崩溃工单都会收到一条包含符号化堆栈的评论。没有符号文件时，Hands 仍会记录崩溃，堆栈帧显示模块和偏移量，并提示上传符号文件。
 
+## 更新补丁（macOS） {#update-patches-macos}
+
+`@botiverse/hands-electron/updater` 让 electron-updater 在更新源列出补丁时，把 macOS 更新作为针对已安装应用的小型二进制补丁下载，否则照常下载：
+
+```ts
+import { autoUpdater } from "electron-updater";
+import { enablePatchUpdates } from "@botiverse/hands-electron/updater";
+
+enablePatchUpdates(autoUpdater, { onEvent: (e) => log.info("update_patch", e) });
+```
+
+补丁由 CI 用 `hands electron make-patches` 生成。接入、事件和发布见 [Electron 更新补丁](electron-updates.md)。
+
 ## 发送的数据
 
 每个 minidump 都包含一组类似 Sentry 的注释，服务端会将其合入工单：`product_type=electron`、`version`、`version_code`、`environment`/`channel`、`platform`、`arch`、`process_type`、`electron_version`、`chrome_version`，以及所有 `extra` 和当前用户、标签、操作轨迹。

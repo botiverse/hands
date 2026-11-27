@@ -287,6 +287,8 @@ GET /electron/:appSlug/:channel/:installerFile.blockmap
 
 Hands 从该渠道的活动 `desktop-installer` 版本提供这些文件（旧名称 `electron-installer` 也同样接受）。Hands 有意原样托管 electron-builder 生成的文件：将 `latest*.yml`、安装程序和 `.blockmap` 文件作为构建文件上传。`latest*.yml` 使用 `artifact_kind = electron-metadata`；在 `variant` 或 `metadata_json.filename` 中使用原始文件名，以保持 yml 中的相对 URL 可解析。
 
+Hands 每个请求只响应一个字节区段。请在应用的 electron-builder `publish` 配置中设置 `useMultipleRangeRequest: false`，否则 electron-updater 的 blockmap 差分会回退为完整下载。`latest-mac.yml` 还可以列出 `patches`，即由同一构建提供的更小的 macOS 更新补丁，见 [Electron 更新补丁](electron-updates.md)。
+
 安装包下载支持 `?name=<令牌>`。令牌恰好是 8 位小写字母或数字（`^[a-z0-9]{8}$`）时，保存的文件名会在扩展名前加 `-<令牌>`，例如 `Raft-Desktop-1.36.0-universal.dmg?name=k3x9a2pq` 保存为 `Raft-Desktop-1.36.0-universal-k3x9a2pq.dmg`，安装后的应用可以由此知道它从哪里下载。文件内容、长度和 etag 不变。其他取值一律忽略，`latest*.yml` 不改名。
 
 安装包、压缩包和 `.blockmap` 文件以 `302` 跳转到短时有效的 R2 签名地址，文件名不变，大文件直接从存储下载。R2 自己处理 `Range` 请求，electron-updater 的差分下载照常工作。`latest*.yml` 仍由 Hands 直接返回。
@@ -308,6 +310,7 @@ GET /api/apps/:appId/stats/electron-downloads?days=14
 | `latest-linux.yml` | `linux` | `x64` 或 `arm64` | `yml` | `electron-metadata` |
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
+| `Raft-Desktop-1.2.3-arm64-from-1.2.2.patch` | `darwin` | `arm64` | `patch` | `update-patch`（`variant` 为 `patch-from-1.2.2`） |
 
 macOS 更新仍要求签名的应用文件。Hands 只托管已构建并签名的文件，不会为 Electron 应用签名。
 

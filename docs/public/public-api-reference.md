@@ -431,6 +431,13 @@ assets. Use `artifact_kind = electron-metadata` for `latest*.yml`; use the
 original filename in `variant` or `metadata_json.filename` so relative URLs
 inside the yml resolve unchanged.
 
+Hands answers one byte range per request. Set
+`useMultipleRangeRequest: false` in the app's electron-builder `publish`
+config, otherwise electron-updater's blockmap differential falls back to a full
+download. A `latest-mac.yml` may also list `patches`, smaller macOS update
+patches served from the same build; see
+[Electron update patches](electron-updates.md).
+
 An installer download accepts `?name=<token>`. When the token is exactly eight
 lowercase letters or digits (`^[a-z0-9]{8}$`), the saved file name gets
 `-<token>` before its extension, for example
@@ -474,6 +481,7 @@ Example asset conventions:
 | `latest-linux.yml` | `linux` | `x64` or `arm64` | `yml` | `electron-metadata` |
 | `Raft Setup 1.2.3.exe` | `win32` | `x64` | `exe` | `installable` |
 | `Raft Setup 1.2.3.exe.blockmap` | `win32` | `x64` | `blockmap` | `electron-blockmap` |
+| `Raft-Desktop-1.2.3-arm64-from-1.2.2.patch` | `darwin` | `arm64` | `patch` | `update-patch` (`variant` `patch-from-1.2.2`) |
 
 macOS updates still require signed app artifacts. Hands only hosts the
 already-built and signed files; it does not sign Electron applications.
