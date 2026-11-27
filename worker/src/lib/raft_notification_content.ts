@@ -546,7 +546,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
     parts.push(`当日活跃 ${active} 台`);
     if (matched !== null && reporters !== null && reporters > 0) parts.push(`覆盖 ${matched}/${reporters}`);
     if (rate !== null) {
-      parts.push(`次数/已上报活跃设备 ${rate.toFixed(2)}`);
+      parts.push(`次数/已上报活跃设备 ${bgKillNumber(entry.count_excluding_cleanup) ?? count}/${active} = ${rate.toFixed(2)}`);
       if (share !== null) parts.push(`受影响设备占活跃 ${Math.round(share * 100)}%`);
     } else if (rateReason === "low_coverage") {
       parts.push("覆盖不足，比例和预警不可比");
@@ -558,7 +558,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const baselineRate = baseline ? bgKillNumber(baseline.rate) : null;
   if (baseline && baselineRate !== null) {
     parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${baselineRate.toFixed(2)} 次/设备日`
-      + (entry.spike === true ? " ⚠️ 较上一版本上升（观察）" : ""));
+      + (entry.spike === true ? " ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
     parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`);
