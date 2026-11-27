@@ -104,13 +104,15 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
     );
   }
 
-  if (appRow && c.req.method === "GET") {
+  // Downloads are counted; update checks (latest*.yml) are not: every client
+  // polls them, and a write per poll would load D1 for no download signal.
+  if (appRow && c.req.method === "GET" && !isElectronMetadataAsset(asset)) {
     await countElectronRequest(c, {
       appId: appRow.id,
       buildId: build.build_id,
       assetId: asset.id,
       file,
-      role: electronFileRole(asset, file, isElectronMetadataAsset(asset)),
+      role: electronFileRole(asset, file),
       ranged: Boolean(c.req.header("range")),
     });
   }

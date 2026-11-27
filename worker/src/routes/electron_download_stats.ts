@@ -2,7 +2,7 @@
  * GET /api/apps/:appId/stats/electron-downloads?days=14
  *
  * Daily request counts on the public Electron update route, per file and per
- * file role (patch, full, blockmap, metadata). `full_requests` are requests
+ * file role (patch, full, blockmap). Update metadata is not counted. `full_requests` are requests
  * without a Range header; `range_requests` carry one (electron-updater's
  * differential download). `sources` is the number of distinct requesters
  * (per-day hash of IP and user agent). It is approximate: clients sharing an
@@ -22,8 +22,9 @@ export async function handleElectronDownloadStats(c: Context<{ Bindings: Env }>)
   if (!Number.isInteger(days) || days < 1 || days > MAX_DAYS) {
     return c.json({ error: `days must be an integer from 1 to ${MAX_DAYS}` }, 400);
   }
-  const to = utcDay(Date.now());
-  const from = utcDay(Date.now() - (days - 1) * 86_400_000);
+  const now = Date.now();
+  const to = utcDay(now);
+  const from = utcDay(now - (days - 1) * 86_400_000);
 
   const [files, roles] = await Promise.all([
     c.env.DB.prepare(

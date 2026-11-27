@@ -451,12 +451,13 @@ shows them to app viewers:
 GET /api/apps/:appId/stats/electron-downloads?days=14
 ```
 
-`days` is 1 to 90 (default 14). The response has `files` (one row per file and
-day: `file`, `version`, `role`, `full_requests`, `range_requests`, `sources`)
-and `by_role` (the same per day and role). `role` is `patch` (`.patch` files),
-`blockmap`, `metadata` (`latest*.yml`) or `full` (installers and archives).
+`days` is 1 to 90 (default 14). The response has `from` and `to` (UTC days),
+`files` (one row per file and day: `day`, `file`, `version`, `role`,
+`full_requests`, `range_requests`, `sources`) and `by_role` (`day`, `role` and
+the same counts). `role` is `patch` (`.patch` files), `blockmap` or `full`
+(installers and archives); update checks (`latest*.yml`) are not counted.
 `full_requests` had no `Range` header; `range_requests` had one, which on a
-`full` archive is electron-updater's differential download. `sources` counts
+`full` archive usually means electron-updater's differential download. `sources` counts
 distinct requesters from a per-day hash of IP address and user agent, so it is
 approximate: clients sharing both count once, and a client that changes network
 counts twice. Only requests that reach Hands are counted; a client that reuses

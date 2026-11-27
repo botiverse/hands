@@ -86,11 +86,10 @@ const client = (ip: string) => ({ "cf-connecting-ip": ip, "user-agent": "electro
 
 describe("electron download stats", () => {
   it("classifies files by role", () => {
-    expect(electronFileRole({ filetype: "patch" }, "x-from-1.0.0.patch", false)).toBe("patch");
-    expect(electronFileRole({ filetype: "zip" }, "x.zip", false)).toBe("full");
-    expect(electronFileRole({ filetype: "dmg" }, "x.dmg", false)).toBe("full");
-    expect(electronFileRole({ filetype: "blockmap" }, "x.zip.blockmap", false)).toBe("blockmap");
-    expect(electronFileRole({ filetype: "yml" }, "latest-mac.yml", true)).toBe("metadata");
+    expect(electronFileRole({ filetype: "patch" }, "x-from-1.0.0.patch")).toBe("patch");
+    expect(electronFileRole({ filetype: "zip" }, "x.zip")).toBe("full");
+    expect(electronFileRole({ filetype: "dmg" }, "x.dmg")).toBe("full");
+    expect(electronFileRole({ filetype: "blockmap" }, "x.zip.blockmap")).toBe("blockmap");
   });
 
   it("counts whole-file and Range requests apart, and distinct requesters per file", async () => {
@@ -116,11 +115,20 @@ describe("electron download stats", () => {
     expect(file("Raft-1.42.0-arm64.zip")).toMatchObject({ role: "full", version: "1.42.0", full_requests: 1, range_requests: 2, sources: 2 });
     expect(file("Raft-1.42.0-arm64-from-1.40.0.patch")).toMatchObject({ role: "patch", full_requests: 3, range_requests: 0, sources: 2 });
     expect(file("Raft-1.42.0-arm64.zip.blockmap")).toMatchObject({ role: "blockmap", full_requests: 1, sources: 1 });
-    expect(file("latest-mac.yml")).toMatchObject({ role: "metadata", full_requests: 1, sources: 1 });
-    expect(body.files).toHaveLength(4);
+    // Update checks are not counted.
+    expect(file("latest-mac.yml")).toBeUndefined();
+    expect(body.files).toHaveLength(3);
     const role = (r: string) => body.by_role.find((x: any) => x.role === r);
     expect(role("patch")).toMatchObject({ full_requests: 3, range_requests: 0, sources: 2 });
     expect(role("full")).toMatchObject({ full_requests: 1, range_requests: 2, sources: 2 });
+  });
+
+  it("still serves the download when counting fails", async () => {
+    const h = setup();
+    h.sqlite.exec("DROP TABLE electron_download_day_sources; DROP TABLE electron_download_days;");
+    const res = await h.get("Raft-1.42.0-arm64-from-1.40.0.patch", client("1.1.1.1"));
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer()).length).toBe(1000);
   });
 
   it("does not store raw addresses", async () => {

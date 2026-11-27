@@ -3,7 +3,8 @@
  *
  * Desktop clients that predate their own download telemetry report nothing, so
  * the route is the only place their patch, full and differential downloads are
- * visible. Every GET that resolves to a file is counted per file and UTC day:
+ * visible. Every GET that resolves to a downloadable file (not update
+ * metadata) is counted per file and UTC day:
  * whole-file requests and Range requests separately (electron-updater's
  * blockmap differential download is a series of Range requests against the
  * archive), plus the number of distinct requesters.
@@ -13,14 +14,12 @@
  */
 import type { Context } from "hono";
 
-export type ElectronFileRole = "patch" | "full" | "blockmap" | "metadata";
+export type ElectronFileRole = "patch" | "full" | "blockmap";
 
 export function electronFileRole(
   asset: { filetype: string },
   file: string,
-  isMetadata: boolean,
 ): ElectronFileRole {
-  if (isMetadata) return "metadata";
   const type = asset.filetype.toLowerCase();
   const name = file.toLowerCase();
   if (type === "blockmap" || name.endsWith(".blockmap")) return "blockmap";
