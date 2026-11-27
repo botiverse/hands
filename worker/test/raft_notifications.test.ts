@@ -6,6 +6,7 @@ import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
 import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
+import { AttachmentsDeferred, forwardFeedbackAttachments, UPLOAD_BUDGET_MS } from "../src/lib/raft_feedback_attachments";
 import { appGalleryCardObjectKey, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
 import {
   handleConnectRaftBot,
@@ -272,6 +273,138 @@ describe("Hands-managed Raft notifications", () => {
     expect(res.status).toBe(200);
     expect(attempts[0]).toContain("Reporter: jane · acme");
     expect(attempts.at(-1)).not.toContain("Reporter:");
+  });
+
+  it("forwards a ticket's and a comment's screenshots to its thread as Raft attachments, once", async () => {
+    const { request, sqlite, env, updateConfig } = await harness();
+    expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);
+    sqlite.exec(readFileSync(new URL("../../migrations/sql/0124_raft_notification_attachments.sql", import.meta.url), "utf8"));
+    sqlite.exec(`CREATE TABLE feedback_attachments (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, comment_id TEXT,
+      r2_key TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT, size_bytes INTEGER NOT NULL,
+      origin TEXT NOT NULL DEFAULT 'submission', visibility TEXT NOT NULL DEFAULT 'reporter', created_at INTEGER NOT NULL)`);
+    sqlite.prepare("INSERT INTO feedback_tickets (id, app_id, kind) VALUES (?, ?, 'bug')").run(TICKET_ID, APP_ID);
+    sqlite.prepare("INSERT INTO feedback_tickets (id, app_id, kind) VALUES ('other-ticket', 'other-app', 'bug')").run();
+    const attach = (id: string, name: string, type: string, size: number, comment: string | null = null, at = 1,
+      visibility = "reporter", ticket = TICKET_ID) => sqlite.prepare(
+      `INSERT INTO feedback_attachments (id, ticket_id, comment_id, r2_key, filename, content_type, size_bytes, origin, visibility, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, ticket, comment, `feedback/${id}`, name, type, size, comment ? "reporter" : "submission", visibility, at);
+    attach("a1", "one.png", "image/png", 10, null, 1);
+    attach("a2", "two.jpg", "image/jpeg", 20, null, 2);
+    attach("a3", "huge.png", "image/png", 50 * 1024 * 1024, null, 3);
+    attach("a4", "app.log", "text/plain", 5, null, 4);
+    attach("a5", "vector.svg", "image/svg+xml", 5, null, 5);
+    attach("a6", "secret.png", "image/png", 5, null, 6, "internal");
+    attach("c1", "reply.png", "image/png", 7, "comment-1", 7);
+    attach("c2", "trace.dmp", "application/x-minidump", 9, "comment-2", 8);
+    attach("c3", "refused.png", "image/png", 9, "comment-3", 9);
+    attach("c4", "ok.png", "image/png", 9, "comment-3", 10);
+    // Another app's ticket with the same comment id is never read.
+    attach("x1", "foreign.png", "image/png", 9, "comment-1", 11, "reporter", "other-ticket");
+    (env as any).APK_BUCKET = {
+      head: async () => ({ size: 10 }),
+      get: async (key: string) => ({ size: 10, arrayBuffer: async () => new TextEncoder().encode(key).buffer }),
+    };
+    // Raft binds a key to its target, content and attachments: a different reuse is refused.
+    const committed = new Map<string, { body: string; messageId: string }>();
+    const posts: Array<Record<string, any>> = [];
+    const uploads: string[] = [];
+    let failUploadOnce: string | null = null;
+    let lostReplyOnce = false;
+    mockRaftFetch(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/resolve-channel")) return Response.json({ channelId: "channel-1" });
+      if (url.endsWith("/upload")) {
+        const form = init?.body as FormData;
+        expect(form.get("channelId")).toBe("channel-1");
+        const name = (form.get("file") as unknown as File).name;
+        if (name === failUploadOnce) { failUploadOnce = null; return new Response("{}", { status: 503 }); }
+        if (name === "refused.png") return Response.json({ code: "file_type_not_allowed" }, { status: 403 });
+        uploads.push(name);
+        return Response.json({ id: `att-${uploads.length}`, filename: name, mimeType: null, sizeBytes: 1, thumbnailUrl: null });
+      }
+      const call = JSON.parse(String(init?.body));
+      const { idempotencyKey, ...rest } = call;
+      const bound = JSON.stringify({ ...rest, attachmentIds: rest.attachmentIds ?? [] });
+      const prior = committed.get(idempotencyKey);
+      if (prior) {
+        if (prior.body !== bound) return Response.json({ code: "idempotency_key_reused" }, { status: 409 });
+        return Response.json({ state: "committed", messageId: prior.messageId });
+      }
+      const messageId = call.attachmentIds ? `reply-${posts.length}` : `root-${String(posts.length).padStart(4, "0")}-message`;
+      committed.set(idempotencyKey, { body: bound, messageId });
+      posts.push(call);
+      if (call.attachmentIds && lostReplyOnce) { lostReplyOnce = false; return new Response("{}", { status: 503 }); }
+      return Response.json({ state: "sent", messageId });
+    });
+    const replies = () => posts.filter((call) => call.attachmentIds);
+    const created = feedbackBody("feedback:new", { kind: "bug", message: "it broke" });
+    // Attempt 1 is cut off at the second upload; attempt 2 loses the reply's
+    // response; attempt 3 replays it. One root, one reply, each file uploaded once.
+    failUploadOnce = "two.jpg";
+    expect((await request(created, "d1")).status).toBe(503);
+    expect(uploads).toEqual(["one.png"]);
+    lostReplyOnce = true;
+    expect((await request(created, "d1-retry")).status).toBe(503);
+    const ok = await request(created, "d1-retry-2");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ attached: 2 });
+    expect(uploads).toEqual(["one.png", "two.jpg"]);
+    expect(posts.filter((call) => !call.attachmentIds)).toHaveLength(1);
+    expect(replies()).toHaveLength(1);
+    const reply = replies()[0]!;
+    expect(reply.target).toBe("#releases:root-000");
+    expect(reply.attachmentIds).toEqual(["att-1", "att-2"]);
+    expect(reply.content).toContain("2 attachments");
+    // Oversized image, log and SVG are counted; the internal image is not even counted.
+    expect(reply.content).toContain(`3 files more not attached here · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    // Delivered again: nothing new is uploaded or posted.
+    expect((await request(created, "d1-again")).status).toBe(200);
+    expect(posts).toHaveLength(2);
+    expect(uploads).toHaveLength(2);
+    // A comment forwards only its own image, in the same thread.
+    const comment = (id: string, body = "see this") => feedbackBody("feedback:comment_created", { comment: { id, body } });
+    expect((await request(comment("comment-1"), "d2")).status).toBe(200);
+    expect(replies().at(-1)).toMatchObject({ attachmentIds: ["att-3"], target: "#releases:root-000", content: "📎 **1 attachment** from this report" });
+    // A comment whose only file is not an image gets no reply.
+    const before = replies().length;
+    expect((await request(comment("comment-2", "ok"), "d3")).status).toBe(200);
+    expect(replies()).toHaveLength(before);
+    // A file Raft refuses is counted and linked instead of failing the delivery.
+    expect((await request(comment("comment-3", "two"), "d4")).status).toBe(200);
+    expect(replies().at(-1)!.attachmentIds).toEqual(["att-4"]);
+    expect(replies().at(-1)!.content).toContain("1 file more not attached here");
+    // A reply whose key Raft already bound to other content counts as sent.
+    const repeat = comment("comment-1", "again");
+    const hash = await sha256Hex(JSON.stringify(repeat));
+    committed.set(`hands-raft-attachments:${SUBSCRIPTION_ID}:${hash}`, { body: "other", messageId: "earlier" });
+    expect((await request(repeat, "d5")).status).toBe(200);
+    expect(sqlite.prepare("SELECT message_id FROM raft_notification_attachment_sends WHERE event_hash = ?").get(hash))
+      .toEqual({ message_id: "sent:unknown" });
+  });
+
+  it("stops starting uploads when the attempt's time budget is spent, and the next attempt resumes", async () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(readFileSync(new URL("../../migrations/sql/0124_raft_notification_attachments.sql", import.meta.url), "utf8"));
+    const db = d1(sqlite);
+    const rows = ["a", "b", "c"].map((id) => ({ id, filename: `${id}.png`, content_type: "image/png", size_bytes: 10, r2_key: id }));
+    let time = 0;
+    const uploads: string[] = [];
+    const sends: Array<{ content: string; attachmentIds: string[] }> = [];
+    const transport = {
+      canUpload: async () => true,
+      readObject: async () => new ArrayBuffer(1),
+      // Each upload takes most of the budget.
+      upload: async (file: { filename: string }) => { uploads.push(file.filename); time += UPLOAD_BUDGET_MS - 1000; return `id-${file.filename}`; },
+      send: async (request: { content: string; attachmentIds: string[] }) => { sends.push(request); return { messageId: "reply-1" }; },
+    };
+    const run = () => forwardFeedbackAttachments({ db, subscriptionId: "s", eventHash: "h", threadTarget: "#c:12345678", rows, link: null, transport, now: () => time });
+    await expect(run()).rejects.toBeInstanceOf(AttachmentsDeferred);
+    expect(uploads).toEqual(["a.png", "b.png"]);
+    time = 0;
+    expect(await run()).toEqual({ messageId: "reply-1", attached: 3 });
+    expect(uploads).toEqual(["a.png", "b.png", "c.png"]);
+    expect(sends).toEqual([expect.objectContaining({ attachmentIds: ["id-a.png", "id-b.png", "id-c.png"] })]);
   });
 
   it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
