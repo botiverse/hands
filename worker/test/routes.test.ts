@@ -543,6 +543,12 @@ function makeMockDb() {
       channel TEXT, platform TEXT, version_code INTEGER, country TEXT,
       PRIMARY KEY (app_id, day, device_id)
     );
+    -- Mirrors migrations/sql/0122_device_version_days.sql.
+    CREATE TABLE device_version_days (
+      app_id TEXT NOT NULL, day TEXT NOT NULL, channel TEXT NOT NULL, version_code INTEGER NOT NULL,
+      device_id TEXT NOT NULL,
+      PRIMARY KEY (app_id, day, channel, version_code, device_id)
+    );
     -- Mirrors migrations/sql/0115_feedback_rules.sql + 0121_feedback_rule_category.sql.
     CREATE TABLE feedback_rules (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, name TEXT NOT NULL,
@@ -13958,6 +13964,20 @@ describe("quiver public API v2 — scope resolution", () => {
     ).all();
     expect(days.results.map((r: any) => [r.device_id, r.country])).toEqual([["devA", "CN"], ["devB", "US"], ["devC", "CN"], ["devD", "CN"]]);
     expect((days.results[0] as any).day).toBe(new Date().toISOString().slice(0, 10));
+
+    // device_version_days keeps every version a device used that day: devA
+    // upgrading to 1.0.3 adds a row there, while device_ping_days keeps its first.
+    expect((await ping("devA", "1.0.3", 1000300, "android")).status).toBe(202);
+    const versionDays = await env.DB.prepare(
+      "SELECT device_id, version_code FROM device_version_days WHERE app_id = 'app-scope' ORDER BY device_id, version_code",
+    ).all();
+    expect(versionDays.results.map((r: any) => [r.device_id, r.version_code])).toEqual([
+      ["devA", 1000200], ["devA", 1000300], ["devB", 1000200], ["devC", 1000101], ["devD", 1000300],
+    ]);
+    const firstPing = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM device_ping_days WHERE app_id = 'app-scope' AND device_id = 'devA'",
+    ).first() as { n: number } | null;
+    expect(firstPing!.n).toBe(1);
   });
 
   it("sessions: start/end/crash events roll up into crash-free release health", async () => {

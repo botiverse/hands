@@ -539,11 +539,11 @@ describe("Raft release notification cards", () => {
       + " · 基线 1.29.0 (12900011, 12900012) 0.29 次/设备日 ⚠️ 显著上升",
     );
     expect(text).toContain("- preview · 1.30.0 (13000014): 3 次 / 3 台 · 当日活跃 5 台 · 次数/活跃设备 0.60 · 受影响设备占活跃 60%"
-      + " · 无可比分母（新版本出现前 7 天没有完整的活跃设备数据）");
-    expect(text).toContain("- unknown · unknown: 1 次 / 1 台 · 当日无活跃设备数据，不计算比例 · 无可比分母（缺少活跃设备数据）");
+      + " · 无可比分母（新版本出现前 7 天没有完整的活跃设备记录）");
+    expect(text).toContain("- unknown · unknown: 1 次 / 1 台 · 当日没有完整的活跃设备记录，比例和预警不可比 · 无可比分母（缺少完整的活跃设备记录）");
     expect(text).toContain("main 同时包含 Play 和 Hands main 两种分发，未分开比较");
-    expect(text).toContain("当天升级的设备算在旧版本");
-    expect(text).toContain("2026-11-24 之前没有活跃设备数据");
+    expect(text).toContain("当天升级的设备两个版本都算，与是否退出无关");
+    expect(text).toContain("没有完整活跃设备记录的日子只给次数，比例和预警不可比");
     expect(text.match(/显著上升/g)).toHaveLength(1);
   });
 });

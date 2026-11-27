@@ -48,14 +48,15 @@ function harness() {
     for (let d = from; d <= to; d = addDays(d, 1)) {
       for (let i = 0; i < devices; i++) {
         sqlite.prepare(
-          "INSERT OR IGNORE INTO device_ping_days (app_id, day, device_id, channel, platform, version_code) VALUES ('app', ?, ?, ?, 'android', ?)",
-        ).run(d, `${prefix}-${i}`, channel, code);
+          "INSERT OR IGNORE INTO device_version_days (app_id, day, channel, version_code, device_id) VALUES ('app', ?, ?, ?, ?)",
+        ).run(d, channel, code, `${prefix}-${i}`);
       }
     }
   };
-  const kill = (o: { channel: string | null; versionName: string; code: number; device: string; at: number; ruleId?: string }) => {
+  const kill = (o: { channel: string | null; versionName: string; code: number; device: string; at: number; ruleId?: string; exitAt?: number }) => {
     n += 1;
     const metadata: Record<string, unknown> = { crash_type: "system_kill", crash_exit_reason_code: 13, crash_exit_importance: 400 };
+    if (o.exitAt !== undefined) metadata.crash_exit_timestamp = o.exitAt;
     if (o.ruleId) metadata.hands_rule = { id: o.ruleId, name: "rule", action: "close" };
     sqlite.prepare(
       `INSERT INTO feedback_tickets (id, app_id, kind, status, closure_reason, message, version_name, version_code, channel, device_id,
@@ -168,7 +169,7 @@ describe("daily background system kill summary", () => {
   it("gives no rate and no flag without active-device data for the day", async () => {
     const h = harness();
     release130(h);
-    h.sqlite.prepare("DELETE FROM device_ping_days WHERE day = ?").run(DAY);
+    h.sqlite.prepare("DELETE FROM device_version_days WHERE day = ?").run(DAY);
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
     for (const row of s.by_version) {
       expect(row).toMatchObject({ active_devices: null, kills_per_active_device: null, affected_device_share: null, spike: false });
@@ -178,7 +179,7 @@ describe("daily background system kill summary", () => {
   it("gives no baseline when the 7 days before the new version predate the ping data", async () => {
     const h = harness();
     release130(h);
-    h.sqlite.prepare("DELETE FROM device_ping_days WHERE day < '2026-11-16'").run();
+    h.sqlite.prepare("DELETE FROM device_version_days WHERE day < '2026-11-16'").run();
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
     expect(s.by_version[0]).toMatchObject({ baseline: null, baseline_unavailable_reason: "insufficient_history", spike: false });
     expect(s.by_version[0]!.active_devices).toBe(30);
@@ -191,6 +192,50 @@ describe("daily background system kill summary", () => {
     for (let i = 0; i < 3; i++) h.kill({ channel: "alpha", versionName: "2.0.0", code: 20000001, device: `a-${i}`, at: window.startMs + i });
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
     expect(s.by_version[0]).toMatchObject({ channel: "alpha", active_devices: 12, baseline: null, baseline_unavailable_reason: "no_previous_version" });
+  });
+
+  it("counts a device that upgraded that day on both versions, and never adds reporters to the denominator", async () => {
+    const h = harness();
+    release130(h);
+    // Five devices used 1.29.0 and then 1.30.0 on main that day; none reported an exit.
+    for (let i = 0; i < 5; i++) {
+      for (const code of [12900012, 13000015]) {
+        h.sqlite.prepare(
+          "INSERT INTO device_version_days (app_id, day, channel, version_code, device_id) VALUES ('app', ?, 'main', ?, ?)",
+        ).run(DAY, code, `upg-${i}`);
+      }
+    }
+    // An old-version report from a device with no activity record that day.
+    h.kill({ channel: "main", versionName: "1.29.0", code: 12900012, device: "no-ping", at: window.startMs + 5 });
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    const main130 = s.by_version.find((r) => r.channel === "main" && r.version_name === "1.30.0")!;
+    const main129 = s.by_version.find((r) => r.channel === "main" && r.version_name === "1.29.0")!;
+    // 30 devices recorded on 1.30.0 plus the 5 that upgraded; the reporting devices m-* have no record and are not added.
+    expect(main130.active_devices).toBe(35);
+    expect(main130.kills_per_active_device).toBeCloseTo(19 / 35);
+    // 1.29.0 had no other devices that day: only the 5 upgraders, and the reporter without a record is not added.
+    expect(main129).toMatchObject({ count: 1, active_devices: 5 });
+  });
+
+  it("counts a late report on the day the exit happened, not the day it arrived", async () => {
+    const h = harness();
+    release130(h);
+    // Exit on the report day, uploaded two days later: counted.
+    h.kill({ channel: "preview", versionName: "1.30.0", code: 13000014, device: "late", at: window.endMs + 2 * DAY_MS, exitAt: window.startMs + 60_000 });
+    // Arrived on the report day, but the exit was the day before: not counted.
+    h.kill({ channel: "preview", versionName: "1.30.0", code: 13000014, device: "early", at: window.startMs + 60_000, exitAt: window.startMs - 60_000 });
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    const preview = s.by_version.find((r) => r.channel === "preview")!;
+    expect(preview).toMatchObject({ count: 4, device_count: 4 });
+  });
+
+  it("gives no rate on the first, partial day of activity records", async () => {
+    const h = harness();
+    h.build("2.0.0", 20000001);
+    h.pings("alpha", 20000001, DAY, DAY, 12);
+    h.kill({ channel: "alpha", versionName: "2.0.0", code: 20000001, device: "a-0", at: window.startMs });
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s.by_version[0]).toMatchObject({ active_devices: null, kills_per_active_device: null, spike: false });
   });
 
   it("flags only with enough devices and reports on both sides", () => {

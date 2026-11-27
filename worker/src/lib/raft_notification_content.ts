@@ -499,14 +499,14 @@ function releaseBuildMessage(event: string, payload: Payload, build: Payload, ap
 
 const BG_KILL_SUMMARY_METHOD_NOTE = [
   "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。",
-  "活跃设备按当天去重，版本取设备当天第一次上报时的版本（当天升级的设备算在旧版本）；对比基线为旧版本在新版本出现前 7 天的次数 ÷ 设备日（每天去重活跃设备之和），与当日次数 ÷ 当日活跃设备同口径。",
-  "统计时尚未上报的退出不计入；2026-11-24 之前没有活跃设备数据。",
+  "活跃设备 = 当天用该渠道该版本上报过 Hands 的设备（按天去重，当天升级的设备两个版本都算，与是否退出无关）；基线 = 旧版本在新版本出现前 7 天的次数 ÷ 设备日（每天去重活跃设备之和），与当日次数 ÷ 当日活跃设备同口径。",
+  "退出按实际发生日统计，统计时尚未上报的不计入；没有完整活跃设备记录的日子只给次数，比例和预警不可比。",
 ].join("\n");
 
 const BG_KILL_BASELINE_REASONS: Record<string, string> = {
-  no_ping_data: "缺少活跃设备数据",
+  no_ping_data: "缺少完整的活跃设备记录",
   no_previous_version: "同渠道没有上一个版本",
-  insufficient_history: "新版本出现前 7 天没有完整的活跃设备数据",
+  insufficient_history: "新版本出现前 7 天没有完整的活跃设备记录",
 };
 
 function bgKillNumber(value: unknown): number | null {
@@ -534,7 +534,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const rate = bgKillNumber(entry.kills_per_active_device);
   const share = bgKillNumber(entry.affected_device_share);
   if (active === null) {
-    parts.push("当日无活跃设备数据，不计算比例");
+    parts.push("当日没有完整的活跃设备记录，比例和预警不可比");
   } else {
     parts.push(`当日活跃 ${active} 台`);
     if (rate !== null) parts.push(`次数/活跃设备 ${rate.toFixed(2)}`);
@@ -547,7 +547,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
       + (entry.spike === true ? " ⚠️ 显著上升" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
-    parts.push(`无可比分母（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少活跃设备数据"}）`);
+    parts.push(`无可比分母（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`);
   }
   return parts.join(" · ");
 }

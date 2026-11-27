@@ -109,6 +109,18 @@ export async function handleDeviceRegister(c: Context<{ Bindings: Env }>) {
     .run()
     .catch((error: unknown) => console.warn("device_ping_days write failed", error instanceof Error ? error.message : error));
 
+  // Every channel and version the device used that day, independent of any
+  // report it sends; the background kill summary's denominator.
+  if (versionCode !== null) {
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO device_version_days (app_id, day, channel, version_code, device_id)
+       VALUES (?1, ?2, ?3, ?4, ?5)`,
+    )
+      .bind(app.id, new Date(now).toISOString().slice(0, 10), str("channel") ?? "unknown", versionCode, deviceId)
+      .run()
+      .catch((error: unknown) => console.warn("device_version_days write failed", error instanceof Error ? error.message : error));
+  }
+
   return c.json({ ok: true }, 202);
 }
 

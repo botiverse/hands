@@ -3194,12 +3194,14 @@ const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
  * the app reported and its version name, so the builds one commit gets on
  * different channels (preview, main, Play: all one version name) are one row
  * per channel and are never compared with each other. Rates use the devices
- * Hands recorded as active that day (device_ping_days, one row per device per
- * UTC day with its channel and version code at the first ping). A row is
- * compared only with the previous version of the same channel, over the 7 days
- * before the new version first appeared there, and is flagged only when both
- * sides have enough active devices and reports. Without ping data there is no
- * rate and no flag. Reports closed by a rule whose category is `user_cleanup`
+ * that used that channel and version that day (device_version_days: every
+ * channel and version each device pinged from that day, so a device that
+ * upgrades counts on both, whether or not it reported an exit). Reports never
+ * add to the denominator. The first recorded day is partial and gives no
+ * rate. A row is compared only with the previous version of the same channel,
+ * over the 7 days before the new version first appeared there (all after the
+ * first recorded day), and is flagged only when both sides have enough active
+ * devices and reports. Without complete data there is no rate and no flag. Reports closed by a rule whose category is `user_cleanup`
  * (cleanup the user started) are counted separately and left out of rates.
  */
 const BG_KILL_SUMMARY_MAX_ROWS = 12;
@@ -3383,20 +3385,19 @@ export async function buildBackgroundSystemKillDailySummary(
       .bind(appId)
       .all<{ version_code: number; version_name: string }>(),
     env.DB.prepare(
-      `SELECT COALESCE(channel, 'unknown') AS channel, version_code, COUNT(*) AS n
-       FROM device_ping_days WHERE app_id = ?1 AND day = ?2
-       GROUP BY COALESCE(channel, 'unknown'), version_code`,
+      `SELECT channel, version_code, device_id
+       FROM device_version_days WHERE app_id = ?1 AND day = ?2`,
     )
       .bind(appId, day)
-      .all<{ channel: string; version_code: number | null; n: number }>(),
+      .all<{ channel: string; version_code: number; device_id: string }>(),
     env.DB.prepare(
-      `SELECT COALESCE(channel, 'unknown') AS channel, version_code, MIN(day) AS first_day
-       FROM device_ping_days WHERE app_id = ?1 AND day <= ?2 AND version_code IS NOT NULL
-       GROUP BY COALESCE(channel, 'unknown'), version_code`,
+      `SELECT channel, version_code, MIN(day) AS first_day
+       FROM device_version_days WHERE app_id = ?1 AND day <= ?2
+       GROUP BY channel, version_code`,
     )
       .bind(appId, day)
       .all<{ channel: string; version_code: number; first_day: string }>(),
-    env.DB.prepare(`SELECT MIN(day) AS d FROM device_ping_days WHERE app_id = ?1`)
+    env.DB.prepare(`SELECT MIN(day) AS d FROM device_version_days WHERE app_id = ?1`)
       .bind(appId)
       .first<{ d: string | null }>(),
   ]);
@@ -3440,13 +3441,18 @@ export async function buildBackgroundSystemKillDailySummary(
     }
   }
 
-  const pingDataToday = dayPings.results.length > 0;
-  const activeToday = new Map<string, number>(); // channel \0 version name -> devices
+  // The first recorded day is partial (recording started during it), so it
+  // has no complete denominator; nor does a day with no rows.
+  const pingSince = pingStart?.d ?? null;
+  const pingDataToday = dayPings.results.length > 0 && pingSince !== null && day > pingSince;
+  const activeSets = new Map<string, Set<string>>(); // channel \0 version name -> devices
   for (const p of dayPings.results) {
     const name = nameOf(p.version_code);
     if (name === null) continue;
     const key = `${p.channel}\u0000${name}`;
-    activeToday.set(key, (activeToday.get(key) ?? 0) + Number(p.n));
+    let set = activeSets.get(key);
+    if (!set) activeSets.set(key, (set = new Set()));
+    set.add(p.device_id);
   }
   // Per channel: version name -> {codes seen in pings, first day seen}.
   const pingVersions = new Map<string, Map<string, { codes: Set<number>; firstDay: string }>>();
@@ -3462,7 +3468,6 @@ export async function buildBackgroundSystemKillDailySummary(
       if (r.first_day < v.firstDay) v.firstDay = r.first_day;
     }
   }
-  const pingSince = pingStart?.d ?? null;
 
   const ordered = [...groups.values()].sort((a, b) =>
     compareChannels(a.channel, b.channel)
@@ -3475,7 +3480,7 @@ export async function buildBackgroundSystemKillDailySummary(
     const channelVersions = pingVersions.get(g.channel);
     const current = channelVersions?.get(g.versionName);
     const codes = new Set<number>([...g.codes, ...(current?.codes ?? [])]);
-    const activeDevices = pingDataToday ? (activeToday.get(`${g.channel}\u0000${g.versionName}`) ?? 0) : null;
+    const activeDevices = pingDataToday ? (activeSets.get(`${g.channel}\u0000${g.versionName}`)?.size ?? 0) : null;
     const kills = activeDevices !== null && activeDevices > 0 ? excl / activeDevices : null;
     const share = activeDevices !== null && activeDevices > 0 ? g.devicesExcl.size / activeDevices : null;
 
@@ -3498,15 +3503,19 @@ export async function buildBackgroundSystemKillDailySummary(
         const windowStartMs = firstMs - BG_KILL_BASELINE_DAYS * DAY_MS;
         const windowStart = isoDay(windowStartMs);
         const windowEnd = isoDay(firstMs - DAY_MS);
-        if (windowStart < pingSince) {
+        // Strictly after the first (partial) recorded day, which also makes
+        // current.firstDay the real first day rather than the start of data.
+        if (windowStart <= pingSince) {
           reason = "insufficient_history";
         } else {
           const prevCodes = JSON.stringify([...prev.codes]);
           const [deviceDays, prevKills] = await Promise.all([
             env.DB.prepare(
-              `SELECT COUNT(*) AS n FROM device_ping_days
-               WHERE app_id = ?1 AND COALESCE(channel, 'unknown') = ?2 AND day >= ?3 AND day <= ?4
-                 AND version_code IN (SELECT value FROM json_each(?5))`,
+              `SELECT COUNT(*) AS n FROM (
+                 SELECT DISTINCT day, device_id FROM device_version_days
+                 WHERE app_id = ?1 AND channel = ?2 AND day >= ?3 AND day <= ?4
+                   AND version_code IN (SELECT value FROM json_each(?5))
+               )`,
             )
               .bind(appId, g.channel, windowStart, windowEnd, prevCodes)
               .first<{ n: number }>(),
