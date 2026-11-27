@@ -40,7 +40,7 @@
     "vitest": "^2.1.9"
   },
   "engines": {
-    "node": ">=22.15"
+    "node": "^22.19.0 || >=24.6.0"
   },
   "publishConfig": {
     "access": "public"

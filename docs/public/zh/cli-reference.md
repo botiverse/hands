@@ -786,7 +786,7 @@ hands electron make-patches raft-deck \
   --update-feed release/latest-mac.yml
 ```
 
-需要 `unzip`、`diff` 和 Node 22.19+。最新的 base 失败时以 2 退出，不写任何补丁。选项、输出（包含构建资产 slot 的 `patches.json`）和发布方式见 [Electron 更新补丁](electron-updates.md)。
+需要 `unzip`、`diff` 和 Node 22.19+ 或 24.6+。最新的 base 失败时以 2 退出，不写任何补丁。选项、输出（包含构建资产 slot 的 `patches.json`）和发布方式见 [Electron 更新补丁](electron-updates.md)。
 
 ### 修改已发布版本的更新元数据
 

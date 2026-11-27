@@ -15,7 +15,7 @@
 // a failure: `patches` is empty and the feed is left as it was.
 //
 // Needs `unzip` and `diff` (any Linux runner) and a Node whose zstd takes a
-// dictionary (22.19+ / 24.6+).
+// dictionary (22.19+ or 24.6+).
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -186,7 +186,7 @@ export function registerElectronCommands(program: Command): void {
     .command("make-patches <appIdOrSlug>")
     .description(
       "Make macOS update patches from the newest releases on the channel to a new version, verify each by applying it, " +
-      "and optionally list them in latest-mac.yml. Needs `unzip`, `diff` and Node 22.19+.",
+      "and optionally list them in latest-mac.yml. Needs `unzip`, `diff` and Node 22.19+ or 24.6+.",
     )
     .requiredOption("--version-name <version>", "The new version (latest-mac.yml's version).")
     .requiredOption("--dir <dir>", "Folder with the new release's latest-mac.yml and per-arch zips (<name>-<version>-<arch>.zip).")

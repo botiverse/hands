@@ -1239,7 +1239,7 @@ hands electron make-patches raft-deck \
   --update-feed release/latest-mac.yml
 ```
 
-It needs `unzip`, `diff` and Node 22.19+. It exits 2 when the newest base
+It needs `unzip`, `diff` and Node 22.19+ or 24.6+. It exits 2 when the newest base
 fails, and then writes no patches. Options, output (`patches.json` with the
 build asset slots) and publishing are in
 [Electron update patches](electron-updates.md).
