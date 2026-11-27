@@ -543,6 +543,14 @@ function makeMockDb() {
       channel TEXT, platform TEXT, version_code INTEGER, country TEXT,
       PRIMARY KEY (app_id, day, device_id)
     );
+    -- Mirrors migrations/sql/0115_feedback_rules.sql + 0121_feedback_rule_category.sql.
+    CREATE TABLE feedback_rules (
+      id TEXT PRIMARY KEY, app_id TEXT NOT NULL, name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0, action TEXT NOT NULL, match_json TEXT NOT NULL,
+      protect_high_risk INTEGER NOT NULL DEFAULT 1, hits INTEGER NOT NULL DEFAULT 0, last_hit_at INTEGER,
+      created_by TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      category TEXT CHECK (category IS NULL OR category IN ('user_cleanup'))
+    );
     CREATE TABLE app_sessions (
       app_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
@@ -12483,14 +12491,21 @@ describe("quiver public API v2 — scope resolution", () => {
         total_count: 15,
         device_count: 7,
       });
+      // No active-device data was recorded, so there is no rate and no flag:
+      // a count alone says nothing about how often devices are killed.
       expect(summaryBody.summary.by_version[0]).toMatchObject({
+        channel: "unknown",
         version_name: "1.23.0",
         version_code: 1023000,
+        version_codes: [1023000],
         count: 10,
         device_count: 5,
-        previous_version_code: 1022000,
-        previous_version_count: 5,
-        spike: true,
+        user_cleanup_count: 0,
+        active_devices: null,
+        kills_per_active_device: null,
+        baseline: null,
+        baseline_unavailable_reason: "no_ping_data",
+        spike: false,
       });
       expect(summaryBody.summary.top_devices[0]).toMatchObject({
         device_id: "dev-repeat",

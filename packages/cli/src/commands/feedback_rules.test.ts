@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatRulePreview, formatRules } from "./feedback.js";
+import { formatRulePreview, formatRules, parseRuleCategoryOption } from "./feedback.js";
 
 describe("hands feedback rules output", () => {
   it("summarises a preview", () => {
@@ -16,5 +16,13 @@ describe("hands feedback rules output", () => {
     expect(text).toContain("abcdef12  off  close  Kills");
     expect(text).toContain("(high-risk exits NOT protected)");
     expect(formatRules([])).toBe("No rules.");
+  });
+  it("shows and parses a rule's category", () => {
+    const text = formatRules([{ id: "abcdef12-0000-0000-0000-000000000000", name: "Swipe", enabled: true, action: "close",
+      category: "user_cleanup", match: { exit_reason_codes: [13] }, protect_high_risk: true, hits: 0, last_hit_at: null }]);
+    expect(text).toContain("abcdef12  on   close  Swipe  [user_cleanup]");
+    expect(parseRuleCategoryOption("user_cleanup")).toBe("user_cleanup");
+    expect(parseRuleCategoryOption("none")).toBeNull();
+    expect(() => parseRuleCategoryOption("noise")).toThrow(/user_cleanup or none/);
   });
 });

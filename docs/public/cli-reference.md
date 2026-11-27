@@ -1455,6 +1455,11 @@ hands feedback rules list raft-android
 hands feedback rules enable raft-android <rule-id>
 hands feedback rules disable raft-android <rule-id>
 hands feedback rules delete raft-android <rule-id>
+
+# Mark a rule whose matches are confirmed user-started cleanup (e.g. swipe-up
+# clean); the daily background kill summary lists them separately.
+hands feedback rules set-category raft-android <rule-id> user_cleanup
+hands feedback rules set-category raft-android <rule-id> none
 ```
 
 Conditions (all given ones must hold): `kinds`, `signatures` and `device_models`

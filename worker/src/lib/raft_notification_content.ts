@@ -497,6 +497,61 @@ function releaseBuildMessage(event: string, payload: Payload, build: Payload, ap
     : truncateMessage(content, MAX_MESSAGE_LENGTH);
 }
 
+const BG_KILL_SUMMARY_METHOD_NOTE = [
+  "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。",
+  "活跃设备按当天去重，版本取设备当天第一次上报时的版本（当天升级的设备算在旧版本）；对比基线为旧版本在新版本出现前 7 天的次数 ÷ 设备日（每天去重活跃设备之和），与当日次数 ÷ 当日活跃设备同口径。",
+  "统计时尚未上报的退出不计入；2026-11-24 之前没有活跃设备数据。",
+].join("\n");
+
+const BG_KILL_BASELINE_REASONS: Record<string, string> = {
+  no_ping_data: "缺少活跃设备数据",
+  no_previous_version: "同渠道没有上一个版本",
+  insufficient_history: "新版本出现前 7 天没有完整的活跃设备数据",
+};
+
+function bgKillNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function bgKillVersionLabel(name: unknown, codes: unknown): string {
+  const vName = safePreview(safeValue(name), 80) ?? "unknown";
+  const list = Array.isArray(codes)
+    ? codes.filter((c): c is number => typeof c === "number" && Number.isSafeInteger(c)).slice(0, 6)
+    : [];
+  return list.length ? `${vName} (${list.join(", ")})` : vName;
+}
+
+/** One per-channel row of the daily background system kill summary. */
+function bgKillChannelRow(entry: Record<string, unknown>): string {
+  const channel = safePreview(safeValue(entry.channel), 40) ?? "unknown";
+  const count = bgKillNumber(entry.count) ?? 0;
+  const devices = bgKillNumber(entry.device_count) ?? 0;
+  const cleanup = bgKillNumber(entry.user_cleanup_count) ?? 0;
+  const parts = [
+    `${channel} · ${bgKillVersionLabel(entry.version_name, entry.version_codes)}: ${count} 次 / ${devices} 台${cleanup > 0 ? `（主动清理 ${cleanup} 次）` : ""}`,
+  ];
+  const active = bgKillNumber(entry.active_devices);
+  const rate = bgKillNumber(entry.kills_per_active_device);
+  const share = bgKillNumber(entry.affected_device_share);
+  if (active === null) {
+    parts.push("当日无活跃设备数据，不计算比例");
+  } else {
+    parts.push(`当日活跃 ${active} 台`);
+    if (rate !== null) parts.push(`次数/活跃设备 ${rate.toFixed(2)}`);
+    if (share !== null) parts.push(`受影响设备占活跃 ${Math.round(share * 100)}%`);
+  }
+  const baseline = entry.baseline ? record(entry.baseline) : null;
+  const baselineRate = baseline ? bgKillNumber(baseline.rate) : null;
+  if (baseline && baselineRate !== null) {
+    parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${baselineRate.toFixed(2)} 次/设备日`
+      + (entry.spike === true ? " ⚠️ 显著上升" : ""));
+  } else {
+    const reason = safeValue(entry.baseline_unavailable_reason);
+    parts.push(`无可比分母（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少活跃设备数据"}）`);
+  }
+  return parts.join(" · ");
+}
+
 function issueAlertMessage(event: string, payload: Payload, app: string | null, appId: string | null,
   cliApp: string | null, ticketId: string | null, dashboardOrigin: string | null | undefined, occurred: string | null): string {
   const presentation = PRESENTATIONS.get(event);
@@ -509,12 +564,22 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       ? payload.total_count : 0;
     const deviceCount = typeof payload.device_count === "number" && Number.isSafeInteger(payload.device_count)
       ? payload.device_count : 0;
+    const cleanupTotal = typeof payload.user_cleanup_count === "number" && Number.isSafeInteger(payload.user_cleanup_count)
+      ? payload.user_cleanup_count : 0;
+    const cleanupPart = cleanupTotal > 0
+      ? `（其中用户主动清理 ${cleanupTotal} 次，剔除后 ${Math.max(0, totalCount - cleanupTotal)} 次）`
+      : "";
     const lines = [
       `📊 **${app ? `${app} · ` : ""}后台被系统结束每日汇总 (${day ?? "最近 24h"})**`,
-      `总次数: ${totalCount} · 涉及设备: ${deviceCount}`,
+      `总次数: ${totalCount}${cleanupPart} · 涉及设备: ${deviceCount}`,
     ];
     const byVersion = Array.isArray(payload.by_version) ? payload.by_version : [];
-    if (byVersion.length > 0) {
+    const channelRows = byVersion.length > 0 && typeof record(byVersion[0]).channel === "string";
+    if (channelRows) {
+      lines.push("按渠道和版本统计:");
+      for (const raw of byVersion.slice(0, 8)) lines.push(`- ${bgKillChannelRow(record(raw))}`);
+    } else if (byVersion.length > 0) {
+      // Summaries sent before rows were per channel.
       lines.push("按版本统计:");
       for (const raw of byVersion.slice(0, 6)) {
         const entry = record(raw);
@@ -523,16 +588,7 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
         const vLabel = [vName, vCode && vCode !== vName ? `(${vCode})` : null].filter(Boolean).join(" ") || "unknown";
         const count = typeof entry.count === "number" ? entry.count : 0;
         const devices = typeof entry.device_count === "number" ? entry.device_count : 0;
-        const prevName = safePreview(safeValue(entry.previous_version_name), 80);
-        const prevCode = safePreview(safeValue(entry.previous_version_code), 40);
-        const prevCount = typeof entry.previous_version_count === "number" ? entry.previous_version_count : null;
-        const prevDevices = typeof entry.previous_version_device_count === "number" ? entry.previous_version_device_count : null;
-        const prevLabel = [prevName, prevCode && prevCode !== prevName ? `(${prevCode})` : null].filter(Boolean).join(" ");
-        const spike = entry.spike === true ? " ⚠️ 较上一版本显著上升" : "";
-        const prevPart = prevCount !== null
-          ? ` (上一版本 ${prevLabel || "prev"} 累计: ${prevCount} 次 / ${prevDevices ?? 0} 台${spike})`
-          : "";
-        lines.push(`- ${vLabel}: ${count} 次 (${devices} 台设备)${prevPart}`);
+        lines.push(`- ${vLabel}: ${count} 次 (${devices} 台设备)`);
       }
     }
     const topDevices = Array.isArray(payload.top_devices) ? payload.top_devices : [];
@@ -548,6 +604,7 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       }
     }
     const footer: string[] = [];
+    if (channelRows) footer.push(BG_KILL_SUMMARY_METHOD_NOTE);
     if (cliApp) footer.push(`📖 View more: \`hands feedback list ${cliApp} --signature SystemKill@background\``);
     if (occurred) footer.push(`At: ${humanTime(occurred)}`);
     const content = lines.join("\n");

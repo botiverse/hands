@@ -298,9 +298,18 @@ export function reporterEventNote(event: unknown): string | null {
 }
 
 type FeedbackRule = {
-  id: string; name: string; enabled: boolean; action: "close" | "mute"; match: Record<string, unknown>;
-  protect_high_risk: boolean; hits: number; last_hit_at: number | null;
+  id: string; name: string; enabled: boolean; action: "close" | "mute"; category?: "user_cleanup" | null;
+  match: Record<string, unknown>; protect_high_risk: boolean; hits: number; last_hit_at: number | null;
 };
+
+const RULE_CATEGORIES = ["user_cleanup"] as const;
+
+/** `user_cleanup` or `none` (clears it) from the command line; the API value. */
+export function parseRuleCategoryOption(value: string): "user_cleanup" | null {
+  if (value === "none") return null;
+  if ((RULE_CATEGORIES as readonly string[]).includes(value)) return value as "user_cleanup";
+  throw new Error("category must be user_cleanup or none");
+}
 type RulePreview = {
   days: number; scanned: number; scan_limit_reached: boolean; matched: number; matched_open: number;
   by_signature: Array<{ signature: string; count: number }>;
@@ -326,7 +335,7 @@ export function formatRulePreview(p: RulePreview): string {
 export function formatRules(rules: FeedbackRule[]): string {
   if (rules.length === 0) return "No rules.";
   return rules.map((r) => [
-    `${r.id.slice(0, 8)}  ${r.enabled ? "on " : "off"}  ${r.action.padEnd(5)}  ${r.name}`,
+    `${r.id.slice(0, 8)}  ${r.enabled ? "on " : "off"}  ${r.action.padEnd(5)}  ${r.name}${r.category ? `  [${r.category}]` : ""}`,
     `          match ${JSON.stringify(r.match)}${r.protect_high_risk ? "" : "  (high-risk exits NOT protected)"}`,
     `          hits ${r.hits}${r.last_hit_at ? `, last ${new Date(r.last_hit_at).toISOString()}` : ""}`,
   ].join("\n")).join("\n");
@@ -377,12 +386,15 @@ function registerFeedbackRuleCommands(program: Command, feedback: Command): void
     .requiredOption("--action <action>", "close (as not_planned) | mute (stay open, no alerts).")
     .requiredOption("--match <json|@file>", "Conditions (see 'rules preview').")
     .option("--no-protect", "Let the rule match native crashes, ANRs and Java exceptions.")
+    .option("--category <category>", "user_cleanup: matches are confirmed user-started cleanup; the daily background kill summary lists them separately.")
     .option("--enable", "Enable it right away.", false)
     .option("--json", "Output JSON.", false)
-    .action(async (app: string, opts: { name: string; action: string; match: string; protect: boolean; enable?: boolean; json?: boolean }) => {
+    .action(async (app: string, opts: { name: string; action: string; match: string; protect: boolean; category?: string; enable?: boolean; json?: boolean }) => {
       const appId = await resolveAppId(app);
+      const category = opts.category === undefined ? undefined : parseRuleCategoryOption(opts.category);
       const res = await apiRequest<{ rule: FeedbackRule }>(`/api/apps/${appId}/feedback/rules`, { method: "POST",
-        body: { name: opts.name, action: opts.action, match: await readMatch(opts.match), protect_high_risk: opts.protect, enabled: opts.enable === true } });
+        body: { name: opts.name, action: opts.action, match: await readMatch(opts.match), protect_high_risk: opts.protect, enabled: opts.enable === true,
+          ...(category !== undefined ? { category } : {}) } });
       console.log(jsonRequested(program, opts.json) ? JSON.stringify(res, null, 2) : formatRules([res.rule]));
     });
 
@@ -394,6 +406,15 @@ function registerFeedbackRuleCommands(program: Command, feedback: Command): void
         console.log(formatRules([res.rule]));
       });
   }
+
+  rules.command("set-category <appIdOrSlug> <ruleId> <category>")
+    .description("Set what kind of noise a rule identifies: user_cleanup (confirmed user-started cleanup, listed separately in the daily background kill summary) or none.")
+    .action(async (app: string, id: string, value: string) => {
+      const category = parseRuleCategoryOption(value);
+      const { appId, ruleId } = await resolve(app, id);
+      const res = await apiRequest<{ rule: FeedbackRule }>(`/api/apps/${appId}/feedback/rules/${ruleId}`, { method: "PATCH", body: { category } });
+      console.log(formatRules([res.rule]));
+    });
 
   rules.command("delete <appIdOrSlug> <ruleId>").description("Delete a rule. Tickets it already closed stay closed.")
     .action(async (app: string, id: string) => {
