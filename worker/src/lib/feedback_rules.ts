@@ -34,12 +34,27 @@ export type FeedbackRuleMatch = {
 
 export type FeedbackRuleAction = "close" | "mute";
 
+/**
+ * What kind of noise a rule identifies. `user_cleanup`: its matches are
+ * confirmed to be cleanup the user started (e.g. a swipe-up clean from
+ * recents); the daily background system kill summary lists them separately.
+ */
+export const FEEDBACK_RULE_CATEGORIES = ["user_cleanup"] as const;
+export type FeedbackRuleCategory = (typeof FEEDBACK_RULE_CATEGORIES)[number];
+
+export function parseRuleCategory(value: unknown): { category: FeedbackRuleCategory | null } | null {
+  if (value === null) return { category: null };
+  return typeof value === "string" && (FEEDBACK_RULE_CATEGORIES as readonly string[]).includes(value)
+    ? { category: value as FeedbackRuleCategory } : null;
+}
+
 export type FeedbackRule = {
   id: string;
   app_id: string;
   name: string;
   enabled: boolean;
   action: FeedbackRuleAction;
+  category: FeedbackRuleCategory | null;
   match: FeedbackRuleMatch;
   protect_high_risk: boolean;
   hits: number;
@@ -50,7 +65,7 @@ export type FeedbackRule = {
 };
 
 type Row = {
-  id: string; app_id: string; name: string; enabled: number; action: string; match_json: string;
+  id: string; app_id: string; name: string; enabled: number; action: string; category?: string | null; match_json: string;
   protect_high_risk: number; hits: number; last_hit_at: number | null; created_by: string | null;
   created_at: number; updated_at: number;
 };
@@ -60,7 +75,8 @@ export function ruleFromRow(row: Row): FeedbackRule {
   try { match = JSON.parse(row.match_json) as FeedbackRuleMatch; } catch { match = {}; }
   return {
     id: row.id, app_id: row.app_id, name: row.name, enabled: row.enabled === 1,
-    action: row.action === "mute" ? "mute" : "close", match, protect_high_risk: row.protect_high_risk !== 0,
+    action: row.action === "mute" ? "mute" : "close",
+    category: parseRuleCategory(row.category ?? null)?.category ?? null, match, protect_high_risk: row.protect_high_risk !== 0,
     hits: Number(row.hits ?? 0), last_hit_at: row.last_hit_at, created_by: row.created_by,
     created_at: row.created_at, updated_at: row.updated_at,
   };

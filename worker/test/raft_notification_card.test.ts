@@ -483,13 +483,81 @@ describe("Raft release notification cards", () => {
     expect(dailySummary).toContain("后台被系统结束每日汇总 (2026-11-11)");
     expect(dailySummary).toContain("总次数: 15 · 涉及设备: 7");
     expect(dailySummary).toContain("1.23.0 (1023000): 10 次 (5 台设备)");
-    // The previous version's figures are all-time totals, not that day's.
-    expect(dailySummary).toContain("(上一版本 1.22.0 (1022000) 累计: 5 次 / 2 台");
-    expect(dailySummary).toContain("较上一版本显著上升");
+    // A summary sent before rows were per channel still renders, without the
+    // cross-channel, all-time comparison it used to show.
+    expect(dailySummary).not.toContain("上一版本");
+    expect(dailySummary).not.toContain("显著上升");
+    expect(dailySummary).not.toContain("口径");
     expect(dailySummary).toContain("PME110 (dev-oppo): 6 次");
     // The footer must be a command the published CLI accepts and must select
     // exactly the tickets the summary counted.
     expect(dailySummary).toContain("View more: `hands feedback list raft-android --signature SystemKill@background`");
     expect(dailySummary).not.toContain("feedback crashes");
+  });
+
+  it("renders the per-channel daily background kill summary with denominators, cleanup and comparisons", () => {
+    const text = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android",
+        signature: "SystemKill@background",
+        alert_reason: "background_system_kill_daily_summary",
+        day: "2026-11-26",
+        total_count: 55,
+        device_count: 29,
+        user_cleanup_count: 2,
+        total_count_excluding_cleanup: 53,
+        by_version: [
+          {
+            channel: "main", version_name: "1.30.0", version_code: 13000016, version_codes: [13000015, 13000016],
+            count: 30, device_count: 15, user_cleanup_count: 2, count_excluding_cleanup: 28, device_count_excluding_cleanup: 14,
+            active_devices: 36, coverage: { matched: 14, reporters: 14 }, rate_unavailable_reason: null,
+            kills_per_active_device: 28 / 36, affected_device_share: 14 / 36,
+            baseline: { version_name: "1.29.0", version_codes: [12900011, 12900012], window_start_day: "2026-11-17",
+              window_end_day: "2026-11-23", count: 60, active_device_days: 210, rate: 60 / 210, coverage: { matched: 50, reporters: 52 } },
+            baseline_unavailable_reason: null, spike: true,
+          },
+          {
+            channel: "preview", version_name: "1.30.0", version_code: 13000014, version_codes: [13000014],
+            count: 3, device_count: 3, user_cleanup_count: 0, count_excluding_cleanup: 3, device_count_excluding_cleanup: 3,
+            active_devices: 5, coverage: { matched: 3, reporters: 3 }, rate_unavailable_reason: null,
+            kills_per_active_device: 0.6, affected_device_share: 0.6,
+            baseline: null, baseline_unavailable_reason: "insufficient_history", spike: false,
+          },
+          {
+            channel: "main", version_name: "1.29.0", version_code: 12900012, version_codes: [12900012],
+            count: 4, device_count: 4, user_cleanup_count: 0, count_excluding_cleanup: 4, device_count_excluding_cleanup: 4,
+            active_devices: 12, coverage: { matched: 2, reporters: 4 }, rate_unavailable_reason: "low_coverage",
+            kills_per_active_device: null, affected_device_share: null,
+            baseline: null, baseline_unavailable_reason: "low_coverage", spike: false,
+          },
+          {
+            channel: "unknown", version_name: "unknown", version_code: null, version_codes: [],
+            count: 1, device_count: 1, user_cleanup_count: 0, count_excluding_cleanup: 1, device_count_excluding_cleanup: 1,
+            active_devices: null, coverage: null, rate_unavailable_reason: "no_ping_data",
+            kills_per_active_device: null, affected_device_share: null,
+            baseline: null, baseline_unavailable_reason: "no_ping_data", spike: false,
+          },
+        ],
+        top_devices: [],
+      },
+    });
+    expect(text).toContain("总次数: 55（其中用户主动清理 2 次，剔除后 53 次） · 涉及设备: 29");
+    expect(text).toContain("按渠道和版本统计:");
+    expect(text).toContain(
+      "- main · 1.30.0 (13000015, 13000016): 30 次 / 15 台（主动清理 2 次） · 当日活跃 36 台 · 覆盖 14/14 · 次数/已上报活跃设备 28/36 = 0.78 · 受影响设备占活跃 39%"
+      + " · 基线 1.29.0 (12900011, 12900012) 60/210 = 0.29 次/设备日 ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）",
+    );
+    expect(text).toContain("- preview · 1.30.0 (13000014): 3 次 / 3 台 · 当日活跃 5 台 · 覆盖 3/3 · 次数/已上报活跃设备 3/5 = 0.60 · 受影响设备占活跃 60%"
+      + " · 无可比基线（新版本出现前 7 天没有完整的活跃设备记录）");
+    expect(text).toContain("- main · 1.29.0 (12900012): 4 次 / 4 台 · 当日活跃 12 台 · 覆盖 2/4 · 覆盖不足，比例和预警不可比"
+      + " · 无可比基线（旧版本的退出设备活跃记录覆盖不足）");
+    expect(text).toContain("- unknown · unknown: 1 次 / 1 台 · 当日没有完整的活跃设备记录，比例和预警不可比 · 无可比基线（缺少完整的活跃设备记录）");
+    expect(text).toContain("main 同时包含 Play 和 Hands main 两种分发，未分开比较");
+    expect(text).toContain("Android 活跃上报最多一天一次");
+    expect(text).toContain("按服务器接收日");
+    expect(text).toContain("低于 90% 不给比例和预警");
+    expect(text).not.toContain("另有");
+    expect(text.match(/较上一版本上升/g)).toHaveLength(1);
   });
 });

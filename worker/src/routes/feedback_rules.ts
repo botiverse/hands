@@ -1,7 +1,7 @@
 /**
  * Per-app noise rules for crash and error reports (lib/feedback_rules.ts):
  *   GET    /api/apps/:appId/feedback/rules
- *   POST   /api/apps/:appId/feedback/rules            {name, action, match, protect_high_risk?, enabled?}
+ *   POST   /api/apps/:appId/feedback/rules            {name, action, match, protect_high_risk?, enabled?, category?}
  *   PATCH  /api/apps/:appId/feedback/rules/:ruleId    any of those
  *   DELETE /api/apps/:appId/feedback/rules/:ruleId
  *   POST   /api/apps/:appId/feedback/rules/preview    {match, protect_high_risk?, days?} (or {rule_id, days?})
@@ -10,7 +10,7 @@
  */
 import type { Context } from "hono";
 import { currentActor, type AdminEnv } from "../middleware/auth";
-import { ruleFromRow, ruleMatches, validateMatch, type FeedbackRuleMatch } from "../lib/feedback_rules";
+import { parseRuleCategory, ruleFromRow, ruleMatches, validateMatch, type FeedbackRuleMatch } from "../lib/feedback_rules";
 
 type AdminContext = Context<AdminEnv & { Bindings: Env }>;
 
@@ -18,6 +18,7 @@ const PREVIEW_MAX_DAYS = 90;
 const PREVIEW_SCAN = 5000;
 const PREVIEW_SAMPLE = 20;
 const MAX_RULES = 50;
+const CATEGORY_ERROR = "category must be user_cleanup or null";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -47,16 +48,18 @@ export async function handleCreateFeedbackRule(c: AdminContext) {
     return c.json({ error: "protect_high_risk must be true or false" }, 400);
   }
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") return c.json({ error: "enabled must be true or false" }, 400);
+  const category = body.category === undefined ? { category: null } : parseRuleCategory(body.category);
+  if (!category) return c.json({ error: CATEGORY_ERROR }, 400);
   const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM feedback_rules WHERE app_id = ?1").bind(appId).first<{ n: number }>();
   if (Number(count?.n ?? 0) >= MAX_RULES) return c.json({ error: "an app has at most 50 rules" }, 409);
   const id = crypto.randomUUID();
   const now = Date.now();
   await c.env.DB.prepare(
-    `INSERT INTO feedback_rules (id, app_id, name, enabled, action, match_json, protect_high_risk, created_by, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+    `INSERT INTO feedback_rules (id, app_id, name, enabled, action, match_json, protect_high_risk, created_by, created_at, updated_at, category)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)`,
   ).bind(id, appId, name, body.enabled === true ? 1 : 0, action, JSON.stringify(match.match),
-    body.protect_high_risk === false ? 0 : 1, currentActor(c), now).run();
-  await audit(c, appId, "feedback.rule_created", { rule_id: id, name, action, enabled: body.enabled === true });
+    body.protect_high_risk === false ? 0 : 1, currentActor(c), now, category.category).run();
+  await audit(c, appId, "feedback.rule_created", { rule_id: id, name, action, enabled: body.enabled === true, category: category.category });
   const row = await c.env.DB.prepare("SELECT * FROM feedback_rules WHERE id = ?1").bind(id).first<Parameters<typeof ruleFromRow>[0]>();
   return c.json({ rule: ruleFromRow(row!) }, 201);
 }
@@ -82,6 +85,11 @@ export async function handleUpdateFeedbackRule(c: AdminContext) {
     if ("error" in match) return c.json({ error: match.error }, 400);
     sets.push("match_json = ?"); binds.push(JSON.stringify(match.match));
   }
+  if (body.category !== undefined) {
+    const category = parseRuleCategory(body.category);
+    if (!category) return c.json({ error: CATEGORY_ERROR }, 400);
+    sets.push("category = ?"); binds.push(category.category);
+  }
   for (const key of ["protect_high_risk", "enabled"] as const) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "boolean") return c.json({ error: `${key} must be true or false` }, 400);
@@ -91,7 +99,8 @@ export async function handleUpdateFeedbackRule(c: AdminContext) {
   sets.push("updated_at = ?"); binds.push(Date.now(), ruleId, appId);
   const result = await c.env.DB.prepare(`UPDATE feedback_rules SET ${sets.join(", ")} WHERE id = ? AND app_id = ?`).bind(...binds).run();
   if (result.meta.changes === 0) return c.json({ error: "rule not found" }, 404);
-  await audit(c, appId, "feedback.rule_updated", { rule_id: ruleId, changed: Object.keys(body) });
+  await audit(c, appId, "feedback.rule_updated", { rule_id: ruleId, changed: Object.keys(body),
+    ...(body.category !== undefined ? { category: body.category } : {}) });
   const row = await c.env.DB.prepare("SELECT * FROM feedback_rules WHERE id = ?1").bind(ruleId).first<Parameters<typeof ruleFromRow>[0]>();
   return c.json({ rule: ruleFromRow(row!) });
 }

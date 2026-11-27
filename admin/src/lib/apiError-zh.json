@@ -556,6 +556,7 @@
   "an app has at most 50 rules": "一个应用最多 50 条规则",
   "days must be 1-90": "days 必须在 1 到 90 之间",
   "enabled must be true or false": "enabled 必须是 true 或 false",
+  "category must be user_cleanup or null": "category 必须是 user_cleanup 或 null",
   "match must be an object": "match 必须是一个对象",
   "match needs at least one condition besides kinds": "match 除 kinds 外至少需要一个条件",
   "match.foreground must be true or false": "match.foreground 必须是 true 或 false",
@@ -568,5 +569,7 @@
   "comment not found": "未找到评论",
   "only {\"internal\": true} is supported: an internal note cannot be made public": "只支持 {\"internal\": true}：内部备注不能改为公开",
   "a reporter's own comment cannot be made internal": "反馈者自己的评论不能设为内部",
-  "no external TestFlight build": "没有处于外部 TestFlight 测试中的构建"
+  "no external TestFlight build": "没有处于外部 TestFlight 测试中的构建",
+  "channel_id is not a channel of this app": "channel_id 不是这个应用的渠道",
+  "match.exit_descriptions must be a non-empty list of strings": "match.exit_descriptions 必须是非空的字符串列表"
 }

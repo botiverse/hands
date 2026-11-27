@@ -115,4 +115,29 @@ describe("feedback rule routes", () => {
     expect(sqlite.prepare("SELECT action FROM audit_logs ORDER BY created_at").all().map((r: any) => r.action))
       .toEqual(["feedback.rule_created", "feedback.rule_updated", "feedback.rule_deleted"]);
   });
+
+  it("records whether a rule's matches are user-started cleanup", async () => {
+    const { sqlite, call } = harness();
+    const match = { exit_reason_codes: [13], exit_descriptions: ["SwipeUpClean"] };
+    expect((await call("POST", "/r/app", { name: "x", action: "close", match, category: "noise" })).status).toBe(400);
+    const plain = (await (await call("POST", "/r/app", { name: "Plain", action: "close", match })).json() as any).rule;
+    expect(plain.category).toBeNull();
+    const created = await call("POST", "/r/app", { name: "Swipe-up clean", action: "close", match, category: "user_cleanup" });
+    expect(created.status).toBe(201);
+    const rule = (await created.json() as any).rule;
+    expect(rule.category).toBe("user_cleanup");
+    const cleared = await call("PATCH", `/r/app/${rule.id}`, { category: null });
+    expect(((await cleared.json()) as any).rule.category).toBeNull();
+    const bad = await call("PATCH", `/r/app/${rule.id}`, { category: "" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as any).error).toBe("category must be user_cleanup or null");
+    expect(((await (await call("PATCH", `/r/app/${plain.id}`, { category: "user_cleanup" })).json()) as any).rule.category).toBe("user_cleanup");
+    const audits = sqlite.prepare("SELECT action, payload FROM audit_logs ORDER BY created_at, rowid").all() as any[];
+    expect(audits.map((a) => [a.action, JSON.parse(a.payload).category])).toEqual([
+      ["feedback.rule_created", null],
+      ["feedback.rule_created", "user_cleanup"],
+      ["feedback.rule_updated", null],
+      ["feedback.rule_updated", "user_cleanup"],
+    ]);
+  });
 });

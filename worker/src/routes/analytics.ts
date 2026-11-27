@@ -92,22 +92,35 @@ export async function handleDeviceRegister(c: Context<{ Bindings: Env }>) {
   // One row per device per UTC day, for daily active devices and the country
   // split over any date range. The first ping of the day decides the row.
   const country = (c.req.raw as (Request & { cf?: { country?: unknown } }) | undefined)?.cf?.country;
-  await c.env.DB.prepare(
-    `INSERT OR IGNORE INTO device_ping_days
-       (app_id, day, device_id, channel, platform, version_code, country)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
-  )
-    .bind(
+  // Every channel and version the device used that day (each ping, not only
+  // the first): the background kill summary's denominator, independent of any
+  // report the device sends. Both writes go in one round trip.
+  const day = new Date(now).toISOString().slice(0, 10);
+  const dayWrites = [
+    c.env.DB.prepare(
+      `INSERT OR IGNORE INTO device_ping_days
+         (app_id, day, device_id, channel, platform, version_code, country)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(
       app.id,
-      new Date(now).toISOString().slice(0, 10),
+      day,
       deviceId,
       str("channel"),
       str("platform"),
       versionCode,
       typeof country === "string" && /^[A-Z]{2}$/.test(country) ? country : null,
-    )
-    .run()
-    .catch((error: unknown) => console.warn("device_ping_days write failed", error instanceof Error ? error.message : error));
+    ),
+  ];
+  if (versionCode !== null && versionCode > 0) {
+    dayWrites.push(
+      c.env.DB.prepare(
+        `INSERT OR IGNORE INTO device_version_days (app_id, day, channel, version_code, device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)`,
+      ).bind(app.id, day, str("channel") ?? "unknown", versionCode, deviceId),
+    );
+  }
+  await c.env.DB.batch(dayWrites)
+    .catch((error: unknown) => console.warn("device day writes failed", error instanceof Error ? error.message : error));
 
   return c.json({ ok: true }, 202);
 }

@@ -543,6 +543,20 @@ function makeMockDb() {
       channel TEXT, platform TEXT, version_code INTEGER, country TEXT,
       PRIMARY KEY (app_id, day, device_id)
     );
+    -- Mirrors migrations/sql/0122_device_version_days.sql.
+    CREATE TABLE device_version_days (
+      app_id TEXT NOT NULL, day TEXT NOT NULL, channel TEXT NOT NULL, version_code INTEGER NOT NULL,
+      device_id TEXT NOT NULL,
+      PRIMARY KEY (app_id, day, channel, version_code, device_id)
+    );
+    -- Mirrors migrations/sql/0115_feedback_rules.sql + 0121_feedback_rule_category.sql.
+    CREATE TABLE feedback_rules (
+      id TEXT PRIMARY KEY, app_id TEXT NOT NULL, name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0, action TEXT NOT NULL, match_json TEXT NOT NULL,
+      protect_high_risk INTEGER NOT NULL DEFAULT 1, hits INTEGER NOT NULL DEFAULT 0, last_hit_at INTEGER,
+      created_by TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      category TEXT CHECK (category IS NULL OR category IN ('user_cleanup'))
+    );
     CREATE TABLE app_sessions (
       app_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
@@ -7384,6 +7398,12 @@ describe("quiver public API v2 — scope resolution", () => {
       "zh-CN": "- E2E 冒烟发布",
     });
     expect(update.asset.download_url).toContain("/public/r2/");
+    // The check also records the device as active on its channel and installed version that day.
+    await Promise.all(waited.splice(0));
+    const versionDay = await env.DB.prepare(
+      "SELECT channel, version_code FROM device_version_days WHERE device_id = 'e2e-device'",
+    ).all();
+    expect(versionDay.results).toEqual([{ channel: "production", version_code: 1 }]);
 
     const shareResponse = await handleCreateReleaseShare(
       makeShareAdminContext(env, { appId: "app-scope", releaseId: draft.id }, { ttl_seconds: 604800 }),
@@ -12483,14 +12503,21 @@ describe("quiver public API v2 — scope resolution", () => {
         total_count: 15,
         device_count: 7,
       });
+      // No active-device data was recorded, so there is no rate and no flag:
+      // a count alone says nothing about how often devices are killed.
       expect(summaryBody.summary.by_version[0]).toMatchObject({
+        channel: "unknown",
         version_name: "1.23.0",
         version_code: 1023000,
+        version_codes: [1023000],
         count: 10,
         device_count: 5,
-        previous_version_code: 1022000,
-        previous_version_count: 5,
-        spike: true,
+        user_cleanup_count: 0,
+        active_devices: null,
+        kills_per_active_device: null,
+        baseline: null,
+        baseline_unavailable_reason: "no_ping_data",
+        spike: false,
       });
       expect(summaryBody.summary.top_devices[0]).toMatchObject({
         device_id: "dev-repeat",
@@ -13943,6 +13970,20 @@ describe("quiver public API v2 — scope resolution", () => {
     ).all();
     expect(days.results.map((r: any) => [r.device_id, r.country])).toEqual([["devA", "CN"], ["devB", "US"], ["devC", "CN"], ["devD", "CN"]]);
     expect((days.results[0] as any).day).toBe(new Date().toISOString().slice(0, 10));
+
+    // device_version_days keeps every version a device used that day: devA
+    // upgrading to 1.0.3 adds a row there, while device_ping_days keeps its first.
+    expect((await ping("devA", "1.0.3", 1000300, "android")).status).toBe(202);
+    const versionDays = await env.DB.prepare(
+      "SELECT device_id, version_code FROM device_version_days WHERE app_id = 'app-scope' ORDER BY device_id, version_code",
+    ).all();
+    expect(versionDays.results.map((r: any) => [r.device_id, r.version_code])).toEqual([
+      ["devA", 1000200], ["devA", 1000300], ["devB", 1000200], ["devC", 1000101], ["devD", 1000300],
+    ]);
+    const firstPing = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM device_ping_days WHERE app_id = 'app-scope' AND device_id = 'devA'",
+    ).first() as { n: number } | null;
+    expect(firstPing!.n).toBe(1);
   });
 
   it("sessions: start/end/crash events roll up into crash-free release health", async () => {
