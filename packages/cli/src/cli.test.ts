@@ -3329,7 +3329,7 @@ describe("testflight external beta commands", () => {
       const last = () => requests[requests.length - 1];
 
       await run("beta-groups", "list", "raft-ios");
-      expect(logs.some((l) => l.includes("https://testflight.apple.com/join/ABC"))).toBe(true);
+      expect(logs.join("\n")).toMatch(/(^|\s)https:\/\/testflight\.apple\.com\/join\/ABC(\s|$)/m);
 
       await run("beta-groups", "create", "raft-ios", "--name", "Public Beta", "--public-link", "--public-link-limit", "500", "--feedback");
       expect(last()).toMatchObject({ method: "POST", url: "/api/apps/app-1/testflight-beta-groups" });
