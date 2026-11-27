@@ -1,0 +1,48 @@
+{
+  "name": "@botiverse/hands-app-patch",
+  "version": "0.1.0",
+  "description": "Binary update patches for desktop apps: a macOS .app (or a single file) rebuilt byte for byte from the installed copy plus a small patch. Zero dependencies (node:zlib zstd).",
+  "author": {
+    "name": "jiacheng",
+    "email": "jiacheng@botiverse.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/botiverse/hands.git",
+    "directory": "packages/app-patch"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./make": {
+      "types": "./dist/make.d.ts",
+      "import": "./dist/make.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
