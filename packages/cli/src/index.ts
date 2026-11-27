@@ -94,6 +94,10 @@ Common recipes:
                                                        Tester-shared TestFlight crashes + .ips logs
   hands testflight feedback <app> --build <n>          TestFlight screenshot feedback
   hands testflight close <app> crash|feedback <id>    Close it on Apple's side (deletes in ASC)
+  hands testflight beta-groups create <app> --name "Public Beta" --public-link
+                                                       External beta group with a public TestFlight link (admin)
+  hands testflight review-detail set <app> --contact-email <e> --demo-account-password-stdin
+                                                       Beta App Review contact / demo account (admin)
   hands agc upload <app> <build> --package-name <n> --wait
                                                        OHOS .app → AppGallery invitation-test version
   hands agc submit <app> <submission> --group <id>    Submit it to Huawei review for a test group

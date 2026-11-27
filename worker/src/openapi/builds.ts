@@ -187,8 +187,46 @@ const BetaAppDescriptionInput = z.object({
     .record(z.string().min(1).max(64), z.string().min(1).max(4_000))
     .refine((value) => Object.keys(value).length > 0, {
       message: "At least one locale is required.",
-    }),
+    })
+    .optional(),
+  localizations: z
+    .record(
+      z.string().min(1).max(64),
+      z.object({
+        feedback_email: z.string().email().optional(),
+        marketing_url: z.string().url().optional(),
+        privacy_policy_url: z.string().url().optional(),
+      }).passthrough(),
+    )
+    .optional(),
 }).passthrough().openapi("BetaAppDescriptionInput");
+
+const BetaGroupCreateInput = z.object({
+  name: z.string().min(1).max(255),
+  public_link_enabled: z.boolean().optional(),
+  public_link_limit: z.number().int().min(1).max(10_000).optional(),
+  public_link_limit_enabled: z.boolean().optional(),
+  feedback_enabled: z.boolean().optional(),
+}).passthrough().openapi("TestflightBetaGroupCreateInput");
+
+const BetaGroupUpdateInput = BetaGroupCreateInput.partial()
+  .passthrough()
+  .openapi("TestflightBetaGroupUpdateInput");
+
+const BetaReviewDetailInput = z.object({
+  contact_first_name: z.string().min(1).max(255).optional(),
+  contact_last_name: z.string().min(1).max(255).optional(),
+  contact_phone: z.string().min(1).max(255).optional(),
+  contact_email: z.string().min(1).max(255).optional(),
+  demo_account_name: z.string().min(1).max(255).optional(),
+  demo_account_password: z.string().min(1).max(255).optional(),
+  demo_account_required: z.boolean().optional(),
+  notes: z.string().min(1).max(4_000).optional(),
+}).passthrough().openapi("TestflightBetaReviewDetailInput");
+
+const BetaGroupParams = AppIdParam.merge(
+  z.object({ groupId: z.string().openapi({ param: { name: "groupId", in: "path" } }) }),
+);
 
 export function registerBuildRoutes(): RouteConfigList {
   const routes: RouteConfigDef[] = [];
@@ -318,7 +356,7 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["TestFlight"],
     summary: "Read app-level TestFlight Beta App Description localizations",
     description:
-      "Reads betaAppLocalizations.description for the App Store Connect app resolved from the Hands app's main-channel bundle id. This is app-level metadata and is separate from each build's What to Test text.",
+      "Reads betaAppLocalizations (description, feedback email, marketing URL, privacy policy URL) for the App Store Connect app resolved from the Hands app's main-channel bundle id. This is app-level metadata and is separate from each build's What to Test text.",
     security: auth,
     request: { params: AppIdParam },
     responses: {
@@ -372,7 +410,7 @@ export function registerBuildRoutes(): RouteConfigList {
     tags: ["TestFlight"],
     summary: "Upsert app-level TestFlight Beta App Description localizations",
     description:
-      "Creates or updates only the supplied betaAppLocalizations.description values, preserves other locales, then fetches Apple again and fails unless every requested locale is byte-for-byte equal. It never changes build-level What to Test text, uploads a build, distributes testers, or publishes an App Store version.",
+      "Creates or updates only the supplied betaAppLocalizations fields (`descriptions`, plus optional per-locale `feedback_email`, `marketing_url` and `privacy_policy_url` under `localizations`), preserves other locales and fields, then fetches Apple again and fails unless every requested field is byte-for-byte equal. A locale that does not exist yet needs a description. It never changes build-level What to Test text, uploads a build, distributes testers, or publishes an App Store version.",
     security: auth,
     request: {
       params: AppIdParam,
@@ -382,6 +420,108 @@ export function registerBuildRoutes(): RouteConfigList {
       200: success("Descriptions updated with exact Apple readback.", GenericObject),
       400: error("The input, app, bundle id, or ASC credentials are invalid."),
       403: error("App publisher role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      409: error("Apple readback did not exactly match the request."),
+      502: error("Apple rejected the metadata update or readback."),
+    },
+  });
+
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/testflight-beta-groups",
+    tags: ["TestFlight"],
+    summary: "List the app's TestFlight beta groups",
+    description:
+      "Lists every internal and external beta group of the App Store Connect app resolved from the main-channel bundle id, with `public_link`, `public_link_enabled`, `public_link_limit`, `public_link_limit_enabled` and `feedback_enabled`. No build is needed.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Beta groups from Apple.", GenericObject),
+      400: error("The app, bundle id, or ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      502: error("Apple rejected the metadata request."),
+    },
+  });
+
+  routes.push({
+    method: "post",
+    path: "/api/apps/{appId}/testflight-beta-groups",
+    tags: ["TestFlight"],
+    summary: "Create an external TestFlight beta group",
+    description:
+      "Creates an external beta group (`isInternalGroup` false) for the app, optionally with a public link, a tester limit (integer 1-10000; also turns the limit on unless `public_link_limit_enabled` is given) and tester feedback. Refuses a name already used by a group of the app with 409. Re-reads the group from Apple and fails unless every requested setting matches; `public_link` comes from that read. Does not add builds or testers.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(BetaGroupCreateInput), required: true },
+    },
+    responses: {
+      201: success("Group created and verified by Apple readback.", GenericObject),
+      400: error("The input, app, bundle id, or ASC credentials are invalid."),
+      403: error("App admin role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      409: error("A group with that name exists, or Apple readback did not match."),
+      502: error("Apple rejected the metadata update or readback."),
+    },
+  });
+
+  routes.push({
+    method: "patch",
+    path: "/api/apps/{appId}/testflight-beta-groups/{groupId}",
+    tags: ["TestFlight"],
+    summary: "Update a TestFlight beta group",
+    description:
+      "Updates only the supplied settings of one beta group of this app (name, public link, tester limit, feedback). Public link fields are refused for internal groups, and a group that belongs to another App Store Connect app is not found. Re-reads the group from Apple and fails unless every requested setting matches.",
+    security: auth,
+    request: {
+      params: BetaGroupParams,
+      body: { content: json(BetaGroupUpdateInput), required: true },
+    },
+    responses: {
+      200: success("Group updated and verified by Apple readback.", GenericObject),
+      400: error("Invalid input, or public link settings on an internal group."),
+      403: error("App admin role is required."),
+      404: error("The app or the beta group was not found for this app."),
+      409: error("A group with that name exists, or Apple readback did not match."),
+      502: error("Apple rejected the metadata update or readback."),
+    },
+  });
+
+  routes.push({
+    method: "get",
+    path: "/api/apps/{appId}/testflight-beta-review-detail",
+    tags: ["TestFlight"],
+    summary: "Read the TestFlight Beta App Review Detail",
+    description:
+      "Reads the app's betaAppReviewDetail: reviewer contact, demo account name, `demo_account_required` and notes. The demo account password is never returned; `demo_account_password_set` says whether one is stored.",
+    security: auth,
+    request: { params: AppIdParam },
+    responses: {
+      200: success("Beta App Review Detail from Apple, without the password.", GenericObject),
+      400: error("The app, bundle id, or ASC credentials are not configured for iOS."),
+      403: error("App viewer role is required."),
+      404: error("Hands or App Store Connect app was not found."),
+      502: error("Apple rejected the metadata request."),
+    },
+  });
+
+  routes.push({
+    method: "put",
+    path: "/api/apps/{appId}/testflight-beta-review-detail",
+    tags: ["TestFlight"],
+    summary: "Update the TestFlight Beta App Review Detail",
+    description:
+      "Patches only the supplied Beta App Review Detail fields, then re-reads Apple and fails unless every supplied field matches; for `demo_account_password` Hands only checks that a password is set. The password is never returned, logged or audited; the audit records field names only.",
+    security: auth,
+    request: {
+      params: AppIdParam,
+      body: { content: json(BetaReviewDetailInput), required: true },
+    },
+    responses: {
+      200: success("Review detail updated with Apple readback, without the password.", GenericObject),
+      400: error("The input, app, bundle id, or ASC credentials are invalid."),
+      403: error("App admin role is required."),
       404: error("Hands or App Store Connect app was not found."),
       409: error("Apple readback did not exactly match the request."),
       502: error("Apple rejected the metadata update or readback."),

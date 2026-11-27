@@ -586,6 +586,54 @@ Apple 官方参考资料：
 - [邀请外部测试人员](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight 概览](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
+### 公开外部 TestFlight 测试（CLI 0.5.85 起）
+
+无需 App Store Connect 网页即可为公开外部测试做好准备。这些命令作用于应用本身（不需要 Hands 构建），并通过主渠道的包 ID 找到 App Store Connect 应用。读取需要应用查看者；测试群组和审核信息的写入需要应用管理员；`beta-description set` 需要应用发布者。每次写入都会记录审计，然后从 Apple 重新读取；除非 Apple 返回的内容与请求一致，否则命令失败（`READBACK_MISMATCH`）。
+
+```bash
+# 1. 测试群组：列出、创建带公开链接的外部群组、调整设置
+hands testflight beta-groups list raft-ios
+hands testflight beta-groups create raft-ios --name "Public Beta" \
+  --public-link --public-link-limit 1000 --feedback
+hands testflight beta-groups update raft-ios <group-id> --no-public-link-limit-enabled
+
+# 2. Beta App Review 信息（审核联系人、演示账号、备注）。
+#    密码只能来自 stdin 或指定名称的环境变量。
+printf %s "$DEMO_PASSWORD" | hands testflight review-detail set raft-ios \
+  --contact-first-name Ada --contact-last-name Lovelace \
+  --contact-phone "+1 555 0100" --contact-email beta@example.com \
+  --demo-account-name demo@example.com --demo-account-password-stdin \
+  --demo-account-required --notes-file ./review-notes.txt
+hands testflight review-detail set raft-ios --demo-account-password-env DEMO_PASSWORD
+hands testflight review-detail get raft-ios
+
+# 3. Beta App 多语言信息：描述以及反馈邮箱和网址
+hands testflight beta-description set raft-ios \
+  --description en-US="A private collaboration app" \
+  --feedback-email en-US=beta@example.com \
+  --marketing-url en-US=https://example.com \
+  --privacy-policy-url en-US=https://example.com/privacy
+hands testflight beta-description get raft-ios
+```
+
+- `beta-groups create` 总是创建**外部**群组；如果应用的其他群组已使用该名称（不区分大小写），以 HTTP 409 拒绝。`--public-link-limit` 取值 1-10000，并会同时开启上限。开启公开链接后，Apple 可能稍后才给出 `https://testflight.apple.com/join/...` 链接；若暂时缺失，请稍后再次列出群组。
+- `beta-groups update` 拒绝对内部群组设置公开链接选项（Apple 只允许外部群组使用公开链接），也拒绝属于其他 App Store Connect 应用的群组 ID。
+- `review-detail get` 从不显示演示账号密码，只显示是否已设置。Hands 从不返回、记录日志或审计该密码；审计只记录字段名。
+- `beta-description set` 只修改给出的语言和字段。Apple 上尚不存在的语言必须提供 `--description`（或 `--description-file`）；网址必须是 `https://`。
+- 这些命令都不会把构建加入群组，也不会提交 Beta App 审核；请使用 `hands builds testflight-publish --distribution external`。
+
+API：
+
+| 操作 | 请求 |
+| --- | --- |
+| 列出测试群组 | `GET /api/apps/<appId>/testflight-beta-groups` |
+| 创建外部群组 | `POST /api/apps/<appId>/testflight-beta-groups` `{name, public_link_enabled?, public_link_limit?, public_link_limit_enabled?, feedback_enabled?}` |
+| 更新群组 | `PATCH /api/apps/<appId>/testflight-beta-groups/<groupId>`（字段相同，均可选） |
+| 读取审核信息 | `GET /api/apps/<appId>/testflight-beta-review-detail` |
+| 更新审核信息 | `PUT /api/apps/<appId>/testflight-beta-review-detail` `{contact_first_name?, contact_last_name?, contact_phone?, contact_email?, demo_account_name?, demo_account_password?, demo_account_required?, notes?}` |
+| 读取 Beta 多语言信息 | `GET /api/apps/<appId>/testflight-beta-app-description` |
+| 更新 Beta 多语言信息 | `PUT /api/apps/<appId>/testflight-beta-app-description` `{descriptions?: {locale: text}, localizations?: {locale: {feedback_email?, marketing_url?, privacy_policy_url?}}}` |
+
 ### TestFlight 崩溃报告和截图反馈
 
 使用应用保存的 App Store Connect 密钥拉取测试人员从 TestFlight 提交的内容，应用查看者权限即可。拉取不会更改 Apple 侧的任何内容。

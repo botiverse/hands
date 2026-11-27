@@ -444,7 +444,38 @@ export interface BetaGroupResource {
     hasAccessToAllBuilds: boolean | null;
     publicLinkEnabled: boolean | null;
     publicLink: string | null;
+    publicLinkLimit?: number | null;
+    publicLinkLimitEnabled?: boolean | null;
+    feedbackEnabled?: boolean | null;
   };
+  relationships?: {
+    app?: { data?: { type: "apps"; id: string } | null };
+  };
+}
+
+/** Writable betaGroups attributes, named exactly as App Store Connect documents them. */
+export interface BetaGroupWritableAttributes {
+  name?: string;
+  publicLinkEnabled?: boolean;
+  publicLinkLimit?: number;
+  publicLinkLimitEnabled?: boolean;
+  feedbackEnabled?: boolean;
+}
+
+export interface BetaAppReviewDetailAttributes {
+  contactFirstName: string | null;
+  contactLastName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  demoAccountName: string | null;
+  demoAccountPassword: string | null;
+  demoAccountRequired: boolean | null;
+  notes: string | null;
+}
+
+export interface BetaAppReviewDetailResource {
+  id: string;
+  attributes: Partial<BetaAppReviewDetailAttributes>;
 }
 
 export interface BetaBuildLocalizationResource {
@@ -460,7 +491,32 @@ export interface BetaAppLocalizationResource {
   attributes: {
     locale: string | null;
     description: string | null;
+    feedbackEmail?: string | null;
+    marketingUrl?: string | null;
+    privacyPolicyUrl?: string | null;
   };
+}
+
+/** Writable betaAppLocalizations attributes (tvOsPrivacyPolicy intentionally omitted). */
+export interface BetaAppLocalizationFields {
+  description?: string;
+  feedbackEmail?: string;
+  marketingUrl?: string;
+  privacyPolicyUrl?: string;
+}
+
+const BETA_APP_LOCALIZATION_FIELDS = [
+  "description",
+  "feedbackEmail",
+  "marketingUrl",
+  "privacyPolicyUrl",
+] as const;
+
+/** A new locale needs a description: Hands never creates a localization without one. */
+export class BetaAppLocalizationNeedsDescriptionError extends Error {
+  constructor(readonly locales: string[]) {
+    super(`creating a new Beta App localization requires a description: ${locales.join(", ")}`);
+  }
 }
 
 export interface BetaAppReviewSubmissionResource {
@@ -756,8 +812,9 @@ export async function getBetaAppLocalizations(
 
 export async function createBetaAppLocalization(
   creds: AscApiCredentials,
-  args: { ascAppId: string; locale: string; description: string },
+  args: { ascAppId: string; locale: string; description: string } & BetaAppLocalizationFields,
 ): Promise<BetaAppLocalizationResource> {
+  const { ascAppId, locale, ...fields } = args;
   const res = await ascRequest<{ data: BetaAppLocalizationResource }>(
     creds,
     "POST",
@@ -765,12 +822,9 @@ export async function createBetaAppLocalization(
     {
       data: {
         type: "betaAppLocalizations",
-        attributes: {
-          locale: args.locale,
-          description: args.description,
-        },
+        attributes: { locale, ...pickLocalizationFields(fields) },
         relationships: {
-          app: { data: { type: "apps", id: args.ascAppId } },
+          app: { data: { type: "apps", id: ascAppId } },
         },
       },
     },
@@ -780,30 +834,60 @@ export async function createBetaAppLocalization(
 
 export async function updateBetaAppLocalization(
   creds: AscApiCredentials,
-  args: { localizationId: string; description: string },
+  args: { localizationId: string } & BetaAppLocalizationFields,
 ): Promise<BetaAppLocalizationResource> {
+  const { localizationId, ...fields } = args;
   const res = await ascRequest<{ data: BetaAppLocalizationResource }>(
     creds,
     "PATCH",
-    `/v1/betaAppLocalizations/${encodeURIComponent(args.localizationId)}`,
+    `/v1/betaAppLocalizations/${encodeURIComponent(localizationId)}`,
     {
       data: {
         type: "betaAppLocalizations",
-        id: args.localizationId,
-        attributes: { description: args.description },
+        id: localizationId,
+        attributes: pickLocalizationFields(fields),
       },
     },
   );
   return res.data;
 }
 
-/** Create or update supplied app-level descriptions without touching other locales. */
+function pickLocalizationFields(fields: BetaAppLocalizationFields): BetaAppLocalizationFields {
+  const out: BetaAppLocalizationFields = {};
+  for (const key of BETA_APP_LOCALIZATION_FIELDS) {
+    if (fields[key] !== undefined) out[key] = fields[key];
+  }
+  return out;
+}
+
+/** Only the supplied fields whose live value differs. */
+function changedLocalizationFields(
+  current: BetaAppLocalizationResource,
+  wanted: BetaAppLocalizationFields,
+): BetaAppLocalizationFields {
+  const out: BetaAppLocalizationFields = {};
+  for (const key of BETA_APP_LOCALIZATION_FIELDS) {
+    const value = wanted[key];
+    if (value !== undefined && current.attributes[key] !== value) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Create or update supplied app-level localizations without touching other locales
+ * or unsupplied fields. A string value is shorthand for `{ description }`. Every
+ * locale that would have to be created must carry a description; that is checked
+ * before any write so a bad request never half-applies.
+ */
 export async function upsertBetaAppLocalizations(
   creds: AscApiCredentials,
   ascAppId: string,
-  descriptions: Record<string, string>,
+  requestedByLocale: Record<string, string | BetaAppLocalizationFields>,
 ): Promise<BetaAppLocalizationResource[]> {
-  const requested = Object.entries(descriptions);
+  const requested = Object.entries(requestedByLocale).map(
+    ([locale, value]) =>
+      [locale, typeof value === "string" ? { description: value } : value] as const,
+  );
   if (requested.length === 0) return [];
   const existing = await getBetaAppLocalizations(creds, ascAppId);
   const byLocale = new Map(
@@ -811,8 +895,20 @@ export async function upsertBetaAppLocalizations(
       .filter((item) => item.attributes.locale)
       .map((item) => [item.attributes.locale!, item]),
   );
+  const missingDescription = requested
+    .filter(([locale, fields]) => !byLocale.has(locale) && fields.description === undefined)
+    .map(([locale]) => locale);
+  if (missingDescription.length > 0) {
+    throw new BetaAppLocalizationNeedsDescriptionError(missingDescription);
+  }
   const results: BetaAppLocalizationResource[] = [];
-  for (const [locale, description] of requested) {
+  const updateIfChanged = async (current: BetaAppLocalizationResource, fields: BetaAppLocalizationFields) => {
+    const changed = changedLocalizationFields(current, fields);
+    return Object.keys(changed).length === 0
+      ? current
+      : await updateBetaAppLocalization(creds, { localizationId: current.id, ...changed });
+  };
+  for (const [locale, fields] of requested) {
     const current = byLocale.get(locale);
     if (!current) {
       try {
@@ -820,7 +916,8 @@ export async function upsertBetaAppLocalizations(
           await createBetaAppLocalization(creds, {
             ascAppId,
             locale,
-            description,
+            ...fields,
+            description: fields.description!,
           }),
         );
       } catch (error) {
@@ -829,27 +926,92 @@ export async function upsertBetaAppLocalizations(
           (item) => item.attributes.locale === locale,
         );
         if (!raced) throw error;
-        results.push(
-          raced.attributes.description === description
-            ? raced
-            : await updateBetaAppLocalization(creds, {
-                localizationId: raced.id,
-                description,
-              }),
-        );
+        results.push(await updateIfChanged(raced, fields));
       }
-    } else if (current.attributes.description !== description) {
-      results.push(
-        await updateBetaAppLocalization(creds, {
-          localizationId: current.id,
-          description,
-        }),
-      );
     } else {
-      results.push(current);
+      results.push(await updateIfChanged(current, fields));
     }
   }
   return results;
+}
+
+// ---------- Beta groups (app level) ----------
+
+export async function getBetaGroup(
+  creds: AscApiCredentials,
+  groupId: string,
+): Promise<BetaGroupResource> {
+  const res = await ascRequest<{ data: BetaGroupResource }>(
+    creds,
+    "GET",
+    `/v1/betaGroups/${encodeURIComponent(groupId)}`,
+  );
+  return res.data;
+}
+
+/** Create an external beta group (isInternalGroup is always false here). */
+export async function createExternalBetaGroup(
+  creds: AscApiCredentials,
+  ascAppId: string,
+  attributes: BetaGroupWritableAttributes & { name: string },
+): Promise<BetaGroupResource> {
+  const res = await ascRequest<{ data: BetaGroupResource }>(
+    creds,
+    "POST",
+    "/v1/betaGroups",
+    {
+      data: {
+        type: "betaGroups",
+        attributes: { ...attributes, isInternalGroup: false },
+        relationships: {
+          app: { data: { type: "apps", id: ascAppId } },
+        },
+      },
+    },
+  );
+  return res.data;
+}
+
+export async function updateBetaGroup(
+  creds: AscApiCredentials,
+  groupId: string,
+  attributes: BetaGroupWritableAttributes,
+): Promise<BetaGroupResource> {
+  const res = await ascRequest<{ data: BetaGroupResource }>(
+    creds,
+    "PATCH",
+    `/v1/betaGroups/${encodeURIComponent(groupId)}`,
+    { data: { type: "betaGroups", id: groupId, attributes } },
+  );
+  return res.data;
+}
+
+// ---------- Beta App Review Detail (one per app) ----------
+
+export async function getBetaAppReviewDetail(
+  creds: AscApiCredentials,
+  ascAppId: string,
+): Promise<BetaAppReviewDetailResource> {
+  const res = await ascRequest<{ data: BetaAppReviewDetailResource }>(
+    creds,
+    "GET",
+    `/v1/apps/${encodeURIComponent(ascAppId)}/betaAppReviewDetail`,
+  );
+  return res.data;
+}
+
+export async function updateBetaAppReviewDetail(
+  creds: AscApiCredentials,
+  detailId: string,
+  attributes: Partial<BetaAppReviewDetailAttributes>,
+): Promise<BetaAppReviewDetailResource> {
+  const res = await ascRequest<{ data: BetaAppReviewDetailResource }>(
+    creds,
+    "PATCH",
+    `/v1/betaAppReviewDetails/${encodeURIComponent(detailId)}`,
+    { data: { type: "betaAppReviewDetails", id: detailId, attributes } },
+  );
+  return res.data;
 }
 
 export async function getBetaAppReviewSubmission(

@@ -243,6 +243,15 @@ import {
   handleUpdateBetaAppDescription,
 } from "./routes/testflight_beta_app_description";
 import {
+  handleCreateBetaGroup,
+  handleListBetaGroups,
+  handleUpdateBetaGroup,
+} from "./routes/testflight_beta_groups";
+import {
+  handleGetBetaReviewDetail,
+  handleUpdateBetaReviewDetail,
+} from "./routes/testflight_beta_review_detail";
+import {
   handleCloseTestflightCrash,
   handleCloseTestflightFeedback,
   handleGetTestflightCrashLog,
@@ -1590,6 +1599,12 @@ bindAdmin("put", "/api/apps/:appId/testflight-beta-app-description",
   requireAppRole("publisher"),
   handleUpdateBetaAppDescription,
 );
+// App-level beta groups and Beta App Review Detail: reads for viewers, writes for app admins.
+bindAdmin("get", "/api/apps/:appId/testflight-beta-groups", requireAppRole("viewer"), handleListBetaGroups);
+bindAdmin("post", "/api/apps/:appId/testflight-beta-groups", requireAppRole("admin"), handleCreateBetaGroup);
+bindAdmin("patch", "/api/apps/:appId/testflight-beta-groups/:groupId", requireAppRole("admin"), handleUpdateBetaGroup);
+bindAdmin("get", "/api/apps/:appId/testflight-beta-review-detail", requireAppRole("viewer"), handleGetBetaReviewDetail);
+bindAdmin("put", "/api/apps/:appId/testflight-beta-review-detail", requireAppRole("admin"), handleUpdateBetaReviewDetail);
 bindAdmin("get", "/api/apps/:appId/testflight-feedback", requireAppRole("viewer"), handleListTestflightFeedback);
 // Closing deletes the submission in App Store Connect: same bar as feedback triage.
 bindAdmin("delete", "/api/apps/:appId/testflight-crashes/:submissionId",

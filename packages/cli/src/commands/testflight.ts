@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Command } from "commander";
 import { apiRequest } from "../lib/api.js";
 import { jsonRequested } from "../lib/json_output.js";
+import { registerTestflightBetaCommands } from "./testflight_beta.js";
 
 type AppRow = { id: string; slug: string };
 export type TestflightCrash = {
@@ -166,6 +167,8 @@ export function registerTestflightCommands(program: Command): void {
       }
       console.log(`✔ Closed TestFlight ${kind} ${submissionId} (deleted in App Store Connect).`);
     });
+
+  registerTestflightBetaCommands(testflight, program, resolveAppId);
 }
 
 export function formatCrashTable(crashes: TestflightCrash[], saved: Record<string, string> = {}): string {

@@ -1085,7 +1085,7 @@ export async function handleAgentHelp(c: Context<{ Bindings: Env }>) {
       "2. Crash triage: list-feedback (kind=crash) → get-feedback (device context + attachments) → presign-feedback-attachment, then curl the returned download_url yourself (raw-bytes endpoints get corrupted through agent transports).",
       "3. Triage as you work: update-feedback (change status/assignee, e.g. close a fixed ticket) and comment-feedback (attribution note, internal=true for staff-only). Requires org member (or app publisher).",
       "4. Release management (app publisher): create-release from an existing build (DRAFT by default) → update-release with bilingual release_notes → after explicit human authorization, publish-release. See docs.release_guide.",
-      "5. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy separately from build-level What to Test. An app publisher runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
+      "5. TestFlight: get/update-testflight-beta-app-description manage app-level invitation copy (plus feedback email, marketing and privacy policy URLs) separately from build-level What to Test. For a public external beta, an app admin uses create-testflight-beta-group / update-testflight-beta-group (public link, limit, feedback) and update-testflight-beta-review-detail (reviewer contact, demo account, notes); list-testflight-beta-groups and get-testflight-beta-review-detail need app viewer. An app publisher runs upload-testflight-build and polls get-testflight-upload-status to COMPLETE; an app viewer lists beta groups, then an app publisher runs publish-testflight-build and polls distribution status. These actions never activate a Hands release or submit an App Store production release.",
     ],
     auth: {
       raft_agents:
@@ -1783,7 +1783,87 @@ export async function handleAgentManifest(c: Context<{ Bindings: Env }>) {
         },
         parameters: {
           app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
-          descriptions: { type: "object", in: "body", required: true, description: "Non-empty locale-to-description map, for example {\"en-US\":\"A private collaboration app\"}." },
+          descriptions: { type: "object", in: "body", required: false, description: "Locale-to-description map, for example {\"en-US\":\"A private collaboration app\"}. Required for a locale that does not exist yet. At least one of descriptions or localizations is required." },
+          localizations: { type: "object", in: "body", required: false, description: "Locale-to-fields map with optional feedback_email, marketing_url and privacy_policy_url (https), for example {\"en-US\":{\"feedback_email\":\"beta@example.com\"}}." },
+        },
+      },
+      {
+        name: "list-testflight-beta-groups",
+        description:
+          "List every App Store Connect beta group of the app (no build needed): id, name, is_internal, public_link_enabled, public_link, public_link_limit, public_link_limit_enabled, feedback_enabled. Read-only; requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-beta-groups",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID; its main-channel bundle id selects the ASC app." },
+        },
+      },
+      {
+        name: "create-testflight-beta-group",
+        description:
+          "Create an EXTERNAL TestFlight beta group in App Store Connect, optionally with a public link, then re-read it from Apple and fail unless the settings match. Refuses a name already used by another group of the app (409). Does not add builds or testers. Requires app admin.",
+        endpoint: {
+          method: "POST",
+          path: "/api/apps/{app_id}/testflight-beta-groups",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID." },
+          name: { type: "string", in: "body", required: true, description: "Group name, unique within the app." },
+          public_link_enabled: { type: "boolean", in: "body", required: false, description: "Enable the public TestFlight link (https://testflight.apple.com/join/...)." },
+          public_link_limit: { type: "number", in: "body", required: false, description: "Maximum testers through the public link, integer 1-10000; also enables the limit unless public_link_limit_enabled is given." },
+          public_link_limit_enabled: { type: "boolean", in: "body", required: false, description: "Turn the public link tester limit on or off." },
+          feedback_enabled: { type: "boolean", in: "body", required: false, description: "Allow testers in this group to send TestFlight feedback." },
+        },
+      },
+      {
+        name: "update-testflight-beta-group",
+        description:
+          "Update one beta group of this app (name, public link, limit, feedback), then re-read it from Apple and fail unless it matches. Refuses public link fields on internal groups and groups of other apps. Requires app admin.",
+        endpoint: {
+          method: "PATCH",
+          path: "/api/apps/{app_id}/testflight-beta-groups/{group_id}",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID." },
+          group_id: { type: "string", in: "path", required: true, description: "Beta group id from list-testflight-beta-groups." },
+          name: { type: "string", in: "body", required: false, description: "New group name, unique within the app." },
+          public_link_enabled: { type: "boolean", in: "body", required: false, description: "Enable or disable the public link (external groups only)." },
+          public_link_limit: { type: "number", in: "body", required: false, description: "Integer 1-10000 (external groups only)." },
+          public_link_limit_enabled: { type: "boolean", in: "body", required: false, description: "Turn the tester limit on or off (external groups only)." },
+          feedback_enabled: { type: "boolean", in: "body", required: false, description: "Allow tester feedback." },
+        },
+      },
+      {
+        name: "get-testflight-beta-review-detail",
+        description:
+          "Read the app's Beta App Review Detail (reviewer contact, demo account name, demo_account_required, notes) from App Store Connect. The demo account password is never returned; demo_account_password_set says whether one is stored. Requires app viewer.",
+        endpoint: {
+          method: "GET",
+          path: "/api/apps/{app_id}/testflight-beta-review-detail",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID." },
+        },
+      },
+      {
+        name: "update-testflight-beta-review-detail",
+        description:
+          "Patch only the supplied Beta App Review Detail fields, then re-read from Apple and fail unless every field matches (the password is only checked to be set). The password is never returned or audited; the audit records field names only. Requires app admin.",
+        endpoint: {
+          method: "PUT",
+          path: "/api/apps/{app_id}/testflight-beta-review-detail",
+        },
+        parameters: {
+          app_id: { type: "string", in: "path", required: true, description: "Hands iOS app UUID." },
+          contact_first_name: { type: "string", in: "body", required: false, description: "Reviewer contact first name." },
+          contact_last_name: { type: "string", in: "body", required: false, description: "Reviewer contact last name." },
+          contact_phone: { type: "string", in: "body", required: false, description: "Reviewer contact phone." },
+          contact_email: { type: "string", in: "body", required: false, description: "Reviewer contact email." },
+          demo_account_name: { type: "string", in: "body", required: false, description: "Demo account user name." },
+          demo_account_password: { type: "string", in: "body", required: false, description: "Demo account password (write-only)." },
+          demo_account_required: { type: "boolean", in: "body", required: false, description: "Whether reviewers need the demo account." },
+          notes: { type: "string", in: "body", required: false, description: "Notes for the reviewer, at most 4000 characters." },
         },
       },
       {
