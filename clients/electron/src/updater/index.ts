@@ -27,6 +27,10 @@
 // release zip's: its own size and sha512 take the release's place in what is
 // handed to Squirrel. The .app inside is byte for byte the signed and
 // notarized release, so Squirrel's signature check passes as for the zip.
+// electron-updater's cache folder records that hash too, so a later check of
+// a version already patched in this run asks for the built zip by its own
+// hash: the cached zip is handed to Squirrel again, nothing is downloaded or
+// rebuilt.
 //
 // No network calls of its own and no telemetry: `onEvent` gets closed codes
 // and numbers, the app decides what to log or report.
@@ -200,6 +204,8 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
   const ownMethod = Object.prototype.hasOwnProperty.call(inner, "doDownloadUpdate");
   const full = original.bind(inner);
   const patchedVersions = new Set<string>();
+  /** The zip built for each patched version, and the release and patch it was built for. */
+  const builtZips = new Map<string, { release: string; patch: string; size: number; sha512: string }>();
   /** Versions whose patch failed in this run: not tried again. */
   const skipped = new Set<string>();
   /** The patched version last handed to Squirrel, until Squirrel takes or refuses it. */
@@ -211,6 +217,7 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
 
   inner.doDownloadUpdate = async (options) => {
     const { info, provider } = options.updateInfoAndProvider;
+    const prior = patchedVersions.has(info.version) ? builtZips.get(info.version) : undefined;
     patchedVersions.delete(info.version);
     const patch = skipped.has(info.version) ? null : pickPatch(info, { version, arch });
     const download = inner.httpExecutor?.download;
@@ -238,7 +245,18 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
     // Our own copy: its size and hash become the built zip's, which the proxy
     // announces and the cache folder records.
     const file: FileInfo = { ...release, info: { ...release.info } };
+    const releaseSha512 = release.info.sha512;
+    // Patched before in this run, from the same release and patch: ask the
+    // cache folder for that zip by its own hash. On a hit executeDownload
+    // hands it to Squirrel without calling the task; on a miss the task
+    // downloads the patch and builds the zip again.
+    const reuse = prior !== undefined && prior.release === releaseSha512 && prior.patch === patch.sha512;
+    if (reuse) {
+      file.info.size = prior.size;
+      file.info.sha512 = prior.sha512;
+    }
     const id = { from: version, to: info.version, arch };
+    let taskRan = false;
     let built = false;
     let downloaded = false;
     try {
@@ -248,6 +266,7 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
         downloadUpdateOptions: options,
         task: async (destination, downloadOptions) => {
           const patchFile = `${destination}.patch`;
+          taskRan = true;
           try {
             emit({ type: "started", ...id, bytes: patch.size });
             // Refuses bytes that are not the feed's sha512.
@@ -259,6 +278,7 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
             file.info.sha512 = zip.sha512;
             built = true;
             patchedVersions.add(info.version);
+            builtZips.set(info.version, { release: releaseSha512, patch: patch.sha512, size: zip.size, sha512: zip.sha512 });
             emit({ type: "built", ...id, bytes: patch.size, downloadMs: downloadedAt - startedAt, buildMs: Date.now() - downloadedAt });
           } finally {
             if (existsSync(patchFile)) rmSync(patchFile, { force: true });
@@ -266,11 +286,14 @@ export function enablePatchUpdates(updater: AppUpdater, opts: PatchUpdatesOption
         },
         done: (event) => inner.updateDownloaded(file, event),
       });
+      // The cached zip from an earlier patch of this version.
+      if (reuse && !taskRan) patchedVersions.add(info.version);
       if (patchedVersions.has(info.version)) delivered = info.version;
       return result;
     } catch (error) {
       if (isCancellation(error)) throw error;
       patchedVersions.delete(info.version);
+      builtZips.delete(info.version);
       skipped.add(info.version);
       const reason = built ? "other" : reasonOf(error);
       // Which file, for the local log (events otherwise carry closed codes only).

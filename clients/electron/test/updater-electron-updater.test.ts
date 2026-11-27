@@ -122,7 +122,13 @@ for (const pkg of ["electron-updater-6.3.9", "electron-updater"]) {
       updater.logger = null;
       updater.autoInstallOnAppQuit = true;
       const downloads: string[] = [];
+      const feedRequests: string[] = [];
       updater.httpExecutor = {
+        // The feed (latest-mac.yml) for checkForUpdates; JSON is YAML.
+        async request(options: { path?: string }) {
+          feedRequests.push(String(options.path));
+          return JSON.stringify(info);
+        },
         async download(url: URL, destination: string, options: { sha512?: string }) {
           downloads.push(path.basename(url.pathname));
           const bytes = url.pathname.endsWith(".patch") ? (opts.servedPatch?.(patchBytes) ?? patchBytes) : releaseZip;
@@ -142,7 +148,7 @@ for (const pkg of ["electron-updater-6.3.9", "electron-updater"]) {
         disableDifferentialDownload: true,
       });
       const run = () => (updater.doDownloadUpdate as (o: unknown) => Promise<unknown>)(options());
-      return { updater, patch, events, downloads, run, releaseZip, made };
+      return { updater, patch, events, downloads, feedRequests, run, releaseZip, made };
     }
 
     it("hands Squirrel the zip built from the patch, announced with its own size", async () => {
@@ -157,6 +163,31 @@ for (const pkg of ["electron-updater-6.3.9", "electron-updater"]) {
       assert.equal(got.contentLength, got.bytes.length);
       assert.ok(env.patch.patched("1.1.0"));
       assert.deepEqual(env.events.map((e) => e.type), ["started", "built"]);
+    });
+
+    it("reuses the zip built for a version on the next check instead of patching again", async () => {
+      const env = await setup();
+      env.updater.autoDownload = false;
+      env.updater.disableDifferentialDownload = true;
+      const checkAndDownload = async (): Promise<void> => {
+        const check = await env.updater.checkForUpdates();
+        assert.equal(check?.updateInfo?.version, "1.1.0");
+        await env.updater.downloadUpdate();
+      };
+      await checkAndDownload();
+      await waitFor(() => squirrel.received.length >= 1);
+      assert.deepEqual(env.downloads, ["p.patch"]);
+      // The periodic checks that follow.
+      await checkAndDownload();
+      await waitFor(() => squirrel.received.length >= 2);
+      await checkAndDownload();
+      await waitFor(() => squirrel.received.length >= 3);
+      assert.ok(env.feedRequests.length >= 3, "each check fetched the feed");
+      assert.deepEqual(env.downloads, ["p.patch"], "neither the patch nor the release zip is downloaded again");
+      assert.deepEqual(env.events.map((e) => e.type), ["started", "built"], "the zip is built once");
+      assert.equal(squirrel.received.length, 3);
+      for (const got of squirrel.received) assert.deepEqual(got.bytes, squirrel.received[0]!.bytes);
+      assert.ok(env.patch.patched("1.1.0"));
     });
 
     it("goes on to MacUpdater's own download when the patch is bad", async () => {
