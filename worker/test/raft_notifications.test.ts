@@ -274,6 +274,77 @@ describe("Hands-managed Raft notifications", () => {
     expect(attempts.at(-1)).not.toContain("Reporter:");
   });
 
+  it("forwards a ticket's and a comment's screenshots to its thread as Raft attachments, once", async () => {
+    const { request, sqlite, env, updateConfig } = await harness();
+    expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);
+    sqlite.exec(readFileSync(new URL("../../migrations/sql/0124_raft_notification_attachments.sql", import.meta.url), "utf8"));
+    sqlite.exec(`CREATE TABLE feedback_attachments (id TEXT PRIMARY KEY, ticket_id TEXT NOT NULL, comment_id TEXT,
+      r2_key TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT, size_bytes INTEGER NOT NULL,
+      origin TEXT NOT NULL DEFAULT 'submission', visibility TEXT NOT NULL DEFAULT 'reporter', created_at INTEGER NOT NULL)`);
+    sqlite.prepare("INSERT INTO feedback_tickets (id, app_id, kind) VALUES (?, ?, 'bug')").run(TICKET_ID, APP_ID);
+    const attach = (id: string, name: string, type: string, size: number, comment: string | null = null, at = 1) => sqlite.prepare(
+      `INSERT INTO feedback_attachments (id, ticket_id, comment_id, r2_key, filename, content_type, size_bytes, origin, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, TICKET_ID, comment, `feedback/${id}`, name, type, size, comment ? "reporter" : "submission", at);
+    attach("a1", "one.png", "image/png", 10, null, 1);
+    attach("a2", "two.jpg", "image/jpeg", 20, null, 2);
+    attach("a3", "huge.png", "image/png", 50 * 1024 * 1024, null, 3);
+    attach("a4", "app.log", "text/plain", 5, null, 4);
+    attach("c1", "reply.png", "image/png", 7, "comment-1", 5);
+    attach("c2", "trace.dmp", "application/x-minidump", 9, "comment-2", 6);
+    (env as any).APK_BUCKET = { get: async (key: string) => ({ arrayBuffer: async () => new TextEncoder().encode(key).buffer }) };
+    const sends: Array<Record<string, any>> = [];
+    const uploads: string[] = [];
+    let failAttachmentSend = false;
+    mockRaftFetch(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/resolve-channel")) return Response.json({ channelId: "channel-1" });
+      if (url.endsWith("/upload")) {
+        const form = init?.body as FormData;
+        expect(form.get("channelId")).toBe("channel-1");
+        uploads.push((form.get("file") as unknown as File).name);
+        return Response.json({ id: `att-${uploads.length}`, filename: "x", mimeType: null, sizeBytes: 1, thumbnailUrl: null });
+      }
+      const call = JSON.parse(String(init?.body));
+      if (call.attachmentIds && failAttachmentSend) {
+        failAttachmentSend = false;
+        return new Response("{}", { status: 503 });
+      }
+      sends.push(call);
+      return Response.json({ state: "sent", messageId: call.attachmentIds ? `reply-${sends.length}` : "ticket-root-0001" });
+    });
+    failAttachmentSend = true;
+    const created = feedbackBody("feedback:new", { kind: "bug", message: "it broke" });
+    // The reply's lost send fails the delivery; the retry replays the message and sends the reply once.
+    expect((await request(created, "d1")).status).toBe(503);
+    expect(uploads).toEqual(["one.png", "two.jpg"]);
+    const ok = await request(created, "d1-retry");
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ attached: 2 });
+    expect(uploads).toEqual(["one.png", "two.jpg"]);
+    const replies = sends.filter((call) => call.attachmentIds);
+    expect(replies).toHaveLength(1);
+    const reply = replies[0]!;
+    expect(reply.target).toBe("#releases:ticket-r");
+    expect(reply.attachmentIds).toEqual(["att-1", "att-2"]);
+    expect(reply.content).toContain("2 attachments");
+    expect(reply.content).toContain(`2 files more not attached here · [View feedback](https://hands.test/apps/${APP_ID}/feedback/${TICKET_ID})`);
+    // Delivered again: nothing new is uploaded or sent as a reply.
+    expect((await request(created, "d1-again")).status).toBe(200);
+    expect(sends.filter((call) => call.attachmentIds)).toHaveLength(1);
+    // A comment forwards only its own image.
+    const comment = feedbackBody("feedback:comment_created", { comment: { id: "comment-1", body: "see this" } });
+    expect((await request(comment, "d2")).status).toBe(200);
+    const last = sends.filter((call) => call.attachmentIds).at(-1)!;
+    expect(last.attachmentIds).toEqual(["att-3"]);
+    expect(last.target).toBe("#releases:ticket-r");
+    expect(last.content).toBe("📎 **1 attachment** from this report");
+    // A comment whose only file is not an image gets no reply.
+    const before = sends.length;
+    expect((await request(feedbackBody("feedback:comment_created", { comment: { id: "comment-2", body: "ok" } }), "d3")).status).toBe(200);
+    expect(sends.slice(before).some((call) => call.attachmentIds)).toBe(false);
+  });
+
   it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
     const { request, sqlite, updateConfig, getConfig } = await harness();
     expect((await updateConfig({ events: ["feedback:new", "feedback:comment_created"] })).status).toBe(200);

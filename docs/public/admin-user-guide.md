@@ -104,8 +104,12 @@ of guessing their order.
 For new feedback and bug reports, a notification includes a short excerpt of
 the user's message. Choose channels whose members may read that feedback; the
 excerpt can contain information the user submitted. HTTP(S) URLs are omitted
-and Raft mentions in the excerpt are not activated. Crash text, attachments, and comment
-bodies are not included. A feedback notification includes a `hands feedback
+and Raft mentions in the excerpt are not activated. Crash text and comment
+bodies are not included. Images attached to a new ticket or a new comment
+follow as one reply in the ticket's thread, carrying them as Raft attachments
+(at most 6, each up to 10 MB); the reply counts the files it does not carry
+and links to the ticket. Other files, such as logs and minidumps, are only
+counted, and an event without images gets no such reply. A feedback notification includes a `hands feedback
 show <app> <ticket>` command; viewing the full ticket still requires Hands
 access. The `feedback:comment_created` and `feedback:status_changed` events are
 emitted for reporter-owned tickets. Updates for the same ticket and destination

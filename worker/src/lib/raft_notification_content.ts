@@ -219,7 +219,7 @@ interface NotificationApp {
   earlierFeedback?: boolean;
 }
 
-function feedbackLink(origin: string | null | undefined, appId: string | null, ticketId: string | null): string | null {
+export function feedbackLink(origin: string | null | undefined, appId: string | null, ticketId: string | null): string | null {
   if (!origin || !appId || !ticketId || !UUID_RE.test(appId)) return null;
   try {
     const url = new URL(origin);

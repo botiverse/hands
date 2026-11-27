@@ -13,7 +13,8 @@ import type { Context } from "hono";
 import { currentActorInfo } from "../middleware/auth";
 import type { AdminContext } from "../lib/permissions";
 import { decryptP8, encryptP8 } from "../lib/asc_credentials";
-import { formatEarlierFeedbackRoot, formatExistingFeedbackRoot, formatRaftNotificationMessage, type EarlierFeedbackTicket } from "../lib/raft_notification_content";
+import { feedbackLink, formatEarlierFeedbackRoot, formatExistingFeedbackRoot, formatRaftNotificationMessage, type EarlierFeedbackTicket } from "../lib/raft_notification_content";
+import { feedbackEventAttachments, forwardFeedbackAttachments, resetForwardedUploads } from "../lib/raft_feedback_attachments";
 import { deliverRaftNotificationCard, isStandaloneRaftNotificationCard, RAFT_NOTIFICATION_CARD_EVENTS, supportsRaftNotificationCards } from "../lib/raft_notification_card_delivery";
 import { formatRaftNotificationCard, withoutPlayConsoleFooter, type RaftMessageCard } from "../lib/raft_notification_card";
 import { renderStatusCardAsText } from "../lib/raft_card_text";
@@ -743,6 +744,96 @@ async function sendBotMessage(
   return { messageId, ...(revision === undefined ? {} : { cardRevision: revision }) };
 }
 
+/** POSTs to the bot's agent API and returns the parsed JSON, or throws a RaftBotApiError. */
+async function botApi(env: Env, key: string, path: string, init: { json?: unknown; form?: FormData }): Promise<Record<string, unknown>> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiOrigin(env)}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        accept: "application/json",
+        ...(init.json !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      body: init.form ?? JSON.stringify(init.json),
+    });
+  } catch {
+    throw new RaftBotApiError(503, "RAFT_BOT_PROVIDER_UNREACHABLE");
+  }
+  const text = await response.text();
+  let parsed: unknown = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+  const record = parseJsonRecord(parsed);
+  if (!response.ok) {
+    throw new RaftBotApiError(response.status, safeProviderCode(
+      typeof record.errorCode === "string" ? record.errorCode : record.code, "bot_request_failed"));
+  }
+  return record;
+}
+
+/** Sends a feedback event's images to its thread as Raft attachments (see raft_feedback_attachments). */
+async function forwardEventAttachments(
+  env: Env, bot: BotInstallationRow, row: { id: string; app_id: string; channel_target: string },
+  event: string, eventBody: Record<string, unknown>, eventHash: string, objectKey: string,
+): Promise<{ messageId: string; attached: number } | null> {
+  if (event !== "feedback:new" && event !== "feedback:comment_created") return null;
+  const payload = parseJsonRecord(eventBody.payload);
+  const rows = await feedbackEventAttachments(env.DB, row.app_id, event, payload);
+  if (rows.length === 0) return null;
+  // The thread is the ticket's root message, whichever attempt created it.
+  const parent = await env.DB.prepare(
+    `SELECT parent_message_id FROM raft_notification_threads WHERE subscription_id = ?1 AND object_key = ?2`,
+  ).bind(row.id, objectKey).first<{ parent_message_id: string }>();
+  const parentId = parent?.parent_message_id;
+  if (!parentId || parentId === "pending" || parentId === FEEDBACK_ROOT_PENDING) return null;
+  const key = await readBotKey(env, bot);
+  let channelId: string | null = null;
+  const ticketId = typeof payload.ticket_id === "string" ? payload.ticket_id : null;
+  try {
+    return await forwardFeedbackAttachments({
+      db: env.DB, subscriptionId: row.id, eventHash,
+      threadTarget: `${row.channel_target}:${parentId.slice(0, 8)}`,
+      rows, link: feedbackLink(env.DASHBOARD_ORIGIN ?? null, row.app_id, ticketId),
+      transport: {
+        readObject: async (r2Key) => {
+          const object = await env.APK_BUCKET.get(r2Key);
+          return object ? object.arrayBuffer() : null;
+        },
+        upload: async (file) => {
+          if (!channelId) {
+            const resolved = await botApi(env, key, "/internal/agent-api/resolve-channel", { json: { target: row.channel_target } });
+            if (typeof resolved.channelId !== "string" || !resolved.channelId) throw new RaftBotApiError(503, "bot_channel_unresolved");
+            channelId = resolved.channelId;
+          }
+          const form = new FormData();
+          form.append("file", new Blob([file.bytes], { type: file.contentType }), file.filename);
+          form.append("channelId", channelId);
+          form.append("mimeType", file.contentType);
+          try {
+            const uploaded = await botApi(env, key, "/internal/agent-api/upload", { form });
+            return typeof uploaded.id === "string" && uploaded.id ? uploaded.id : null;
+          } catch (error) {
+            // Raft refusing this one file (size, type, plan limit) leaves it to the link.
+            if (error instanceof RaftBotApiError && error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 403 && error.status !== 429) return null;
+            throw error;
+          }
+        },
+        send: async (request) => {
+          const sent = await botApi(env, key, "/internal/agent-api/v2/send", { json: request });
+          if ((sent.state !== "sent" && sent.state !== "committed") || typeof sent.messageId !== "string") {
+            throw new RaftBotApiError(503, sent.state === "held" ? "bot_send_held" : "bot_send_incomplete");
+          }
+          return { messageId: sent.messageId };
+        },
+      },
+    });
+  } catch (error) {
+    // Raft refused the saved attachments: upload them again on the next attempt.
+    if (error instanceof RaftBotApiError && error.status === 400) await resetForwardedUploads(env.DB, row.id, eventHash);
+    throw error;
+  }
+}
+
 async function sendKnownBotText(env: Env, bot: BotInstallationRow, target: string, contents: string[], key: string) {
   let conflict: unknown;
   for (const candidate of new Set(contents)) {
@@ -1352,7 +1443,12 @@ export async function handleRaftNotificationWebhook(c: Context<{ Bindings: Env }
          WHERE subscription_id = ?2 AND object_key = ?3`,
       ).bind(now, subscriptionId, objectKey).run();
     }
+    // The event's screenshots follow as a reply in the ticket's thread. A
+    // failure here retries the whole delivery: the message above replays
+    // under its key, and the reply is sent once (raft_feedback_attachments).
+    const attachments = await forwardEventAttachments(c.env, bot, row, event, eventBody, eventHash, objectKey);
     return c.json({ ok: true, message_id: sent.messageId, threaded: !channelText && target !== row.channel_target,
+      ...(attachments ? { attachments_message_id: attachments.messageId, attached: attachments.attached } : {}),
       ...(cardFallbackReason ? { card_fallback: cardFallbackReason } : {}) });
   } catch (error) {
     if (ownsParentClaim) {
