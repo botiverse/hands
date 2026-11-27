@@ -53,10 +53,11 @@ function harness() {
       }
     }
   };
-  const kill = (o: { channel: string | null; versionName: string; code: number; device: string; at: number; ruleId?: string; exitAt?: number }) => {
+  const kill = (o: { channel: string | null; versionName: string; code: number; device: string; at: number; ruleId?: string; exitAt?: number; description?: string }) => {
     n += 1;
     const metadata: Record<string, unknown> = { crash_type: "system_kill", crash_exit_reason_code: 13, crash_exit_importance: 400 };
     if (o.exitAt !== undefined) metadata.crash_exit_timestamp = o.exitAt;
+    if (o.description !== undefined) metadata.crash_exit_description = o.description;
     if (o.ruleId) metadata.hands_rule = { id: o.ruleId, name: "rule", action: "close" };
     sqlite.prepare(
       `INSERT INTO feedback_tickets (id, app_id, kind, status, closure_reason, message, version_name, version_code, channel, device_id,
@@ -64,11 +65,12 @@ function harness() {
        VALUES (?, 'app', 'crash', 'closed', 'not_planned', 'kill', ?, ?, ?, ?, ?, 'SystemKill@background', ?, ?)`,
     ).run(`t${n}`, o.versionName, o.code, o.channel, o.device, JSON.stringify(metadata), o.at, o.at);
   };
-  const rule = (id: string, category: string | null) => {
+  /** A rule matching system kills whose exit description is `description`. */
+  const rule = (id: string, category: string | null, description = id) => {
     sqlite.prepare(
       `INSERT INTO feedback_rules (id, app_id, name, enabled, action, match_json, created_at, updated_at, category)
-       VALUES (?, 'app', ?, 1, 'close', '{"crash_types":["system_kill"]}', 1, 1, ?)`,
-    ).run(id, id, category);
+       VALUES (?, 'app', ?, 1, 'close', ?, 1, 1, ?)`,
+    ).run(id, id, JSON.stringify({ crash_types: ["system_kill"], exit_descriptions: [description] }), category);
   };
   const env = { DB: d1(sqlite) } as unknown as Env;
   return { sqlite, env, build, pings, kill, rule };
@@ -83,29 +85,31 @@ function release130(h: ReturnType<typeof harness>) {
     ["1.30.0", 13000014], ["1.30.0", 13000015], ["1.30.0", 13000016]] as const) h.build(name, code);
   h.pings("main", 12900011, "2026-11-10", "2026-11-25", 10);
   h.pings("main", 12900012, "2026-11-10", "2026-11-25", 10);
-  h.pings("preview", 12900010, "2026-11-10", "2026-11-24", 2);
+  h.pings("preview", 12900010, "2026-11-10", "2026-11-24", 3);
   h.pings("main", 13000015, "2026-11-20", DAY, 15);
   h.pings("main", 13000016, "2026-11-21", DAY, 15);
   h.pings("preview", 13000014, "2026-11-25", DAY, 5);
-  h.rule("swipe", "user_cleanup");
+  // Rules are not applied to background kills at ingest, so these reports carry
+  // no hands_rule: the summary matches the user_cleanup rule itself.
+  h.rule("swipe", "user_cleanup", "SwipeUpClean");
   h.rule("plain", null);
   // Baseline window for main 1.30.0 (first seen 11-20): 11-13..11-19, 20 devices a day on 1.29.0.
   for (let i = 0; i < 14; i++) {
-    h.kill({ channel: "main", versionName: "1.29.0", code: 12900011, device: `old-${i}`, at: dayMs("2026-11-13") + i * 3_600_000 * 8 });
+    h.kill({ channel: "main", versionName: "1.29.0", code: 12900011, device: `main-12900011-${i % 10}`, at: dayMs("2026-11-13") + i * 3_600_000 * 8 });
   }
   // A cleanup report in the window does not count toward the baseline.
-  h.kill({ channel: "main", versionName: "1.29.0", code: 12900011, device: "old-x", at: dayMs("2026-11-15"), ruleId: "swipe" });
+  h.kill({ channel: "main", versionName: "1.29.0", code: 12900011, device: "main-12900011-0", at: dayMs("2026-11-15"), description: "SwipeUpClean" });
   // Preview baseline window (1.30.0 first seen 11-25): 11-18..11-24.
-  h.kill({ channel: "preview", versionName: "1.29.0", code: 12900010, device: "pv-old", at: dayMs("2026-11-20") });
+  h.kill({ channel: "preview", versionName: "1.29.0", code: 12900010, device: "preview-12900010-0", at: dayMs("2026-11-20") });
   const t = window.startMs + 3_600_000;
   for (let i = 0; i < 18; i++) {
-    h.kill({ channel: "main", versionName: "1.30.0", code: i % 2 ? 13000015 : 13000016, device: `m-${i % 9}`, at: t + i });
+    h.kill({ channel: "main", versionName: "1.30.0", code: i % 2 ? 13000015 : 13000016, device: `main-13000015-${i % 9}`, at: t + i });
   }
-  h.kill({ channel: "main", versionName: "1.30.0", code: 13000015, device: "m-swipe", at: t, ruleId: "swipe" });
-  h.kill({ channel: "main", versionName: "1.30.0", code: 13000015, device: "m-swipe", at: t + 1, ruleId: "swipe" });
+  h.kill({ channel: "main", versionName: "1.30.0", code: 13000015, device: "main-13000015-9", at: t, description: "SwipeUpClean" });
+  h.kill({ channel: "main", versionName: "1.30.0", code: 13000015, device: "main-13000015-9", at: t + 1, description: "SwipeUpClean" });
   // Closed by a rule without a category: still an ordinary report.
-  h.kill({ channel: "main", versionName: "1.30.0", code: 13000016, device: "m-plain", at: t, ruleId: "plain" });
-  for (let i = 0; i < 3; i++) h.kill({ channel: "preview", versionName: "1.30.0", code: 13000014, device: `p-${i}`, at: t + i });
+  h.kill({ channel: "main", versionName: "1.30.0", code: 13000016, device: "main-13000016-0", at: t, ruleId: "plain", description: "plain" });
+  for (let i = 0; i < 3; i++) h.kill({ channel: "preview", versionName: "1.30.0", code: 13000014, device: `preview-13000014-${i}`, at: t + i });
 }
 
 describe("daily background system kill summary", () => {
@@ -149,7 +153,7 @@ describe("daily background system kill summary", () => {
     // active devices and 3 reports are too few to flag.
     const preview = s.by_version[1]!;
     expect(preview).toMatchObject({ version_codes: [13000014], count: 3, active_devices: 5 });
-    expect(preview.baseline).toMatchObject({ version_name: "1.29.0", version_codes: [12900010], count: 1, active_device_days: 14 });
+    expect(preview.baseline).toMatchObject({ version_name: "1.29.0", version_codes: [12900010], count: 1, active_device_days: 21 });
     expect(preview.spike).toBe(false);
   });
 
@@ -159,7 +163,7 @@ describe("daily background system kill summary", () => {
     // Forty more baseline reports: 54 / 140 ≈ 0.39, and today's 19 / 30 ≈ 0.63
     // is less than twice that.
     for (let i = 0; i < 40; i++) {
-      h.kill({ channel: "main", versionName: "1.29.0", code: 12900012, device: `old2-${i}`, at: dayMs("2026-11-14") + i });
+      h.kill({ channel: "main", versionName: "1.29.0", code: 12900012, device: `main-12900012-${i % 10}`, at: dayMs("2026-11-14") + i });
     }
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
     expect(s.by_version[0]!.baseline!.count).toBe(54);
@@ -205,16 +209,44 @@ describe("daily background system kill summary", () => {
         ).run(DAY, code, `upg-${i}`);
       }
     }
-    // An old-version report from a device with no activity record that day.
+    // An old-version report from a device with no activity record on 1.29.0 that day.
     h.kill({ channel: "main", versionName: "1.29.0", code: 12900012, device: "no-ping", at: window.startMs + 5 });
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
     const main130 = s.by_version.find((r) => r.channel === "main" && r.version_name === "1.30.0")!;
     const main129 = s.by_version.find((r) => r.channel === "main" && r.version_name === "1.29.0")!;
-    // 30 devices recorded on 1.30.0 plus the 5 that upgraded; the reporting devices m-* have no record and are not added.
+    // 30 devices recorded on 1.30.0 plus the 5 that upgraded without reporting an exit.
     expect(main130.active_devices).toBe(35);
     expect(main130.kills_per_active_device).toBeCloseTo(19 / 35);
-    // 1.29.0 had no other devices that day: only the 5 upgraders, and the reporter without a record is not added.
-    expect(main129).toMatchObject({ count: 1, active_devices: 5 });
+    // 1.29.0 had only the 5 upgraders that day. The reporter has no record, so it
+    // is not added; coverage is 0/1 and there is no rate rather than a made-up one.
+    expect(main129).toMatchObject({
+      count: 1, active_devices: 5, coverage: { matched: 0, reporters: 1 },
+      kills_per_active_device: null, rate_unavailable_reason: "low_coverage", spike: false,
+    });
+  });
+
+  it("gives no rate and no flag when under 90% of reporting devices have an activity record", async () => {
+    const h = harness();
+    release130(h);
+    // Two more reporting devices with no activity record: 10 of 12 covered.
+    for (const d of ["ghost-1", "ghost-2"]) {
+      h.kill({ channel: "main", versionName: "1.30.0", code: 13000015, device: d, at: window.startMs + 7 });
+    }
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    const main = s.by_version.find((r) => r.channel === "main")!;
+    expect(main).toMatchObject({
+      active_devices: 30, coverage: { matched: 10, reporters: 12 },
+      kills_per_active_device: null, affected_device_share: null, rate_unavailable_reason: "low_coverage", spike: false,
+    });
+  });
+
+  it("treats a report as user cleanup only through a user_cleanup rule", async () => {
+    const h = harness();
+    release130(h);
+    // Same exit description, but the rule now has no category: counted as ordinary.
+    h.sqlite.prepare("UPDATE feedback_rules SET category = NULL WHERE id = 'swipe'").run();
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s).toMatchObject({ user_cleanup_count: 0, total_count_excluding_cleanup: 24 });
   });
 
   it("counts a late report on the day the exit happened, not the day it arrived", async () => {
@@ -239,7 +271,7 @@ describe("daily background system kill summary", () => {
   });
 
   it("flags only with enough devices and reports on both sides", () => {
-    const baseline = { version_name: "1", version_codes: [1], window_start_day: "a", window_end_day: "b", count: 7, active_device_days: 70, rate: 0.1 };
+    const baseline = { version_name: "1", version_codes: [1], window_start_day: "a", window_end_day: "b", count: 7, active_device_days: 70, rate: 0.1, coverage: { matched: 7, reporters: 7 } };
     const ok = { active_devices: 10, count_excluding_cleanup: 10, kills_per_active_device: 1 };
     expect(backgroundSystemKillSpike(ok, baseline)).toBe(true);
     expect(backgroundSystemKillSpike({ ...ok, active_devices: 9 }, baseline)).toBe(false);

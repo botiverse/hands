@@ -9,7 +9,7 @@
  */
 import { presignR2DownloadUrl, redirectToR2 } from "../lib/r2_presign";
 import type { Context } from "hono";
-import { enabledRules, firstMatch } from "../lib/feedback_rules";
+import { enabledRules, firstMatch, ruleFromRow, ruleMatches, type FeedbackRule } from "../lib/feedback_rules";
 import { currentActor, type AdminEnv } from "../middleware/auth";
 import { emitWebhookEvent, triggerDeliveryNow } from "./webhooks";
 import { presignR2UploadUrl } from "../lib/r2_presign";
@@ -3193,36 +3193,49 @@ const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
  * Daily background system kill summary. Reports are grouped by the channel
  * the app reported and its version name, so the builds one commit gets on
  * different channels (preview, main, Play: all one version name) are one row
- * per channel and are never compared with each other. Rates use the devices
- * that used that channel and version that day (device_version_days: every
- * channel and version each device pinged from that day, so a device that
- * upgrades counts on both, whether or not it reported an exit). Reports never
- * add to the denominator. The first recorded day is partial and gives no
- * rate. A row is compared only with the previous version of the same channel,
- * over the 7 days before the new version first appeared there (all after the
- * first recorded day), and is flagged only when both sides have enough active
- * devices and reports. Without complete data there is no rate and no flag. Reports closed by a rule whose category is `user_cleanup`
- * (cleanup the user started) are counted separately and left out of rates.
+ * per channel and are never compared with each other.
+ *
+ * Denominator: the devices that pinged from that channel and version that day
+ * (device_version_days, written on every ping by server receive day, so a
+ * device that upgrades counts on both versions whether or not it reported an
+ * exit). Reports never add to it. Exits are dated by the device's exit time,
+ * pings by the server's receive day, and not every device pings, so each row
+ * also checks coverage: the share of its reporting devices that have an
+ * activity record on that channel and version that day. Below 90% the rate is
+ * not given. The first recorded day is partial and gives no rate.
+ *
+ * A row is compared only with the previous version of the same channel, over
+ * the 7 days before the new version first appeared there (all after the first
+ * recorded day), with the same coverage check, and is flagged only when both
+ * sides have enough active devices and reports.
+ *
+ * Reports matching a rule whose category is `user_cleanup` (cleanup the user
+ * started) are counted separately and left out of rates. Rules are not applied
+ * to background kills at ingest, so the rule's conditions are matched here.
  */
 const BG_KILL_SUMMARY_MAX_ROWS = 12;
-const BG_KILL_SUMMARY_SCAN = 5000;
+const BG_KILL_SUMMARY_SCAN = 20_000;
 const BG_KILL_BASELINE_DAYS = 7;
+const BG_KILL_FIRST_SEEN_LOOKBACK_DAYS = 120;
+const BG_KILL_FIRST_SEEN_MIN_DEVICES = 3;
 const BG_KILL_MIN_ACTIVE_DEVICES = 10;
 const BG_KILL_MIN_COUNT = 10;
+const BG_KILL_MIN_COVERAGE = 0.9;
 const BG_KILL_SPIKE_MULTIPLIER = 2;
 const DAY_MS = 86_400_000;
 
-/** 1 when the ticket was closed by a rule marked as user-started cleanup. */
-const USER_CLEANUP_SQL = `(CASE WHEN json_valid(t.metadata_json) AND EXISTS (
-    SELECT 1 FROM feedback_rules fr
-    WHERE fr.app_id = t.app_id AND fr.category = 'user_cleanup'
-      AND fr.id = json_extract(t.metadata_json, '$.hands_rule.id')
-  ) THEN 1 ELSE 0 END)`;
-
 export type BackgroundSystemKillBaselineUnavailableReason =
   | "no_ping_data"
+  | "no_activity_for_version"
   | "no_previous_version"
-  | "insufficient_history";
+  | "insufficient_history"
+  | "low_coverage";
+
+/** Reporting devices (outside user cleanup) and how many had an activity record on the row's channel and version that day. */
+export interface BackgroundSystemKillCoverage {
+  matched: number;
+  reporters: number;
+}
 
 export interface BackgroundSystemKillDailySummaryBaseline {
   version_name: string;
@@ -3235,6 +3248,8 @@ export interface BackgroundSystemKillDailySummaryBaseline {
   active_device_days: number;
   /** count / active_device_days; null when there were no active device days. */
   rate: number | null;
+  /** Reporting device-days in the window and how many had an activity record. */
+  coverage: BackgroundSystemKillCoverage;
 }
 
 export interface BackgroundSystemKillDailySummaryVersionEntry {
@@ -3249,8 +3264,12 @@ export interface BackgroundSystemKillDailySummaryVersionEntry {
   count_excluding_cleanup: number;
   /** Devices with at least one report that is not user-started cleanup. */
   device_count_excluding_cleanup: number;
-  /** Devices active on this channel and version that day; null when Hands has no ping data for the day. */
+  /** Devices active on this channel and version that day; null when Hands has no complete activity records for the day. */
   active_devices: number | null;
+  /** Null when there are no complete activity records for the day. */
+  coverage: BackgroundSystemKillCoverage | null;
+  /** Why kills_per_active_device is null although there are reports. */
+  rate_unavailable_reason: "no_ping_data" | "no_activity_for_version" | "low_coverage" | null;
   /** count_excluding_cleanup / active_devices (reports per active device, not a device rate). */
   kills_per_active_device: number | null;
   /** device_count_excluding_cleanup / active_devices (share of active devices affected). */
@@ -3273,8 +3292,10 @@ export interface BackgroundSystemKillDailySummary {
   device_count: number;
   user_cleanup_count: number;
   total_count_excluding_cleanup: number;
-  /** First UTC day with active-device data for the app; null when none. */
+  /** First UTC day with activity records for the app (a partial day); null when none. */
   ping_data_since: string | null;
+  /** More reports than the summary reads: totals are exact, rows count only the first ones read. */
+  rows_truncated: boolean;
   by_version: BackgroundSystemKillDailySummaryVersionEntry[];
   top_devices: Array<{
     device_id: string;
@@ -3344,23 +3365,37 @@ export async function buildBackgroundSystemKillDailySummary(
   if (!app) return null;
 
   const { day, startMs, endMs } = dayWindow;
-  const [ticketRows, deviceRows, buildRows, dayPings, firstSeenRows, pingStart] = await Promise.all([
+  const lookbackDay = isoDay(startMs - BG_KILL_FIRST_SEEN_LOOKBACK_DAYS * DAY_MS);
+  const [totalsRow, ticketRows, deviceRows, buildRows, ruleRows, dayPings, firstSeenRows, pingStart] = await Promise.all([
+    env.DB.prepare(
+      `SELECT COUNT(*) AS total_count, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS device_count
+       FROM feedback_tickets t
+       WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
+         AND ${BACKGROUND_SYSTEM_KILL_SQL}
+         AND ${feedbackBuildScopeClause("standard")}
+         AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?2 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?3`,
+    )
+      .bind(appId, startMs, endMs)
+      .first<{ total_count: number; device_count: number }>(),
     env.DB.prepare(
       `SELECT
+         t.kind AS kind,
          COALESCE(t.channel, 'unknown') AS channel,
          COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
          ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
          COALESCE(t.device_id, 'unknown') AS device_id,
-         ${USER_CLEANUP_SQL} AS user_cleanup
+         t.device_model AS device_model,
+         t.metadata_json AS metadata_json
        FROM feedback_tickets t
        WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
          AND ${BACKGROUND_SYSTEM_KILL_SQL}
          AND ${feedbackBuildScopeClause("standard")}
          AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?2 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?3
+       ORDER BY t.id
        LIMIT ${BG_KILL_SUMMARY_SCAN}`,
     )
       .bind(appId, startMs, endMs)
-      .all<{ channel: string; version_name: string; version_code: number | null; device_id: string; user_cleanup: number }>(),
+      .all<BgKillTicketRow>(),
     env.DB.prepare(
       `SELECT
          COALESCE(t.device_id, 'unknown') AS device_id,
@@ -3378,30 +3413,43 @@ export async function buildBackgroundSystemKillDailySummary(
     )
       .bind(appId, startMs, endMs)
       .all<{ device_id: string; device_model: string | null; count: number; last_seen: number }>(),
+    // Oldest first, so the latest build's name wins for a code.
     env.DB.prepare(
-      `SELECT DISTINCT version_code, version_name FROM builds
-       WHERE app_id = ?1 AND version_code IS NOT NULL AND version_name IS NOT NULL`,
+      `SELECT version_code, version_name FROM builds
+       WHERE app_id = ?1 AND version_code IS NOT NULL AND version_name IS NOT NULL
+       ORDER BY created_at, id`,
     )
       .bind(appId)
       .all<{ version_code: number; version_name: string }>(),
+    env.DB.prepare("SELECT * FROM feedback_rules WHERE app_id = ?1 AND category = 'user_cleanup'")
+      .bind(appId)
+      .all<Parameters<typeof ruleFromRow>[0]>(),
     env.DB.prepare(
-      `SELECT channel, version_code, device_id
-       FROM device_version_days WHERE app_id = ?1 AND day = ?2`,
-    )
-      .bind(appId, day)
-      .all<{ channel: string; version_code: number; device_id: string }>(),
-    env.DB.prepare(
-      `SELECT channel, version_code, MIN(day) AS first_day
-       FROM device_version_days WHERE app_id = ?1 AND day <= ?2
+      `SELECT channel, version_code, COUNT(*) AS n
+       FROM device_version_days WHERE app_id = ?1 AND day = ?2
        GROUP BY channel, version_code`,
     )
       .bind(appId, day)
+      .all<{ channel: string; version_code: number; n: number }>(),
+    // First day at least a few devices used a code on a channel, so one early
+    // test device does not move the comparison window.
+    env.DB.prepare(
+      `SELECT channel, version_code, MIN(day) AS first_day FROM (
+         SELECT channel, version_code, day FROM device_version_days
+         WHERE app_id = ?1 AND day >= ?2 AND day <= ?3
+         GROUP BY channel, version_code, day
+         HAVING COUNT(*) >= ${BG_KILL_FIRST_SEEN_MIN_DEVICES}
+       )
+       GROUP BY channel, version_code`,
+    )
+      .bind(appId, lookbackDay, day)
       .all<{ channel: string; version_code: number; first_day: string }>(),
     env.DB.prepare(`SELECT MIN(day) AS d FROM device_version_days WHERE app_id = ?1`)
       .bind(appId)
       .first<{ d: string | null }>(),
   ]);
 
+  const cleanupRules = ruleRows.results.map(ruleFromRow);
   // Version code -> version name: the app's builds, then what reports carried.
   const nameByCode = new Map<number, string>();
   for (const b of buildRows.results) nameByCode.set(Number(b.version_code), b.version_name);
@@ -3417,11 +3465,10 @@ export async function buildBackgroundSystemKillDailySummary(
     devices: Set<string>; devicesExcl: Set<string>;
   };
   const groups = new Map<string, Group>();
-  const allDevices = new Set<string>();
-  let total = 0;
   let cleanupTotal = 0;
   for (const t of ticketRows.results) {
-    const versionName = t.version_name !== "unknown" ? t.version_name : (nameOf(t.version_code) ?? "unknown");
+    // Named by the build for its code where Hands has one, as activity records are.
+    const versionName = nameOf(t.version_code) ?? t.version_name;
     const key = `${t.channel}\u0000${versionName}`;
     let g = groups.get(key);
     if (!g) {
@@ -3431,30 +3478,49 @@ export async function buildBackgroundSystemKillDailySummary(
     if (t.version_code !== null) g.codes.add(Number(t.version_code));
     g.count++;
     g.devices.add(t.device_id);
-    allDevices.add(t.device_id);
-    total++;
-    if (Number(t.user_cleanup) === 1) {
+    if (isBgKillUserCleanup(t, cleanupRules)) {
       g.cleanup++;
       cleanupTotal++;
     } else {
       g.devicesExcl.add(t.device_id);
     }
   }
+  const rowsTruncated = ticketRows.results.length >= BG_KILL_SUMMARY_SCAN;
+  const total = Number(totalsRow?.total_count ?? ticketRows.results.length);
 
   // The first recorded day is partial (recording started during it), so it
   // has no complete denominator; nor does a day with no rows.
   const pingSince = pingStart?.d ?? null;
   const pingDataToday = dayPings.results.length > 0 && pingSince !== null && day > pingSince;
-  const activeSets = new Map<string, Set<string>>(); // channel \0 version name -> devices
+  // Active devices per channel and version name. Counted per code, so a device
+  // that used two codes of one name that day counts twice (rare).
+  const activeCounts = new Map<string, number>(); // channel \0 version name -> devices
   for (const p of dayPings.results) {
     const name = nameOf(p.version_code);
     if (name === null) continue;
     const key = `${p.channel}\u0000${name}`;
-    let set = activeSets.get(key);
-    if (!set) activeSets.set(key, (set = new Set()));
-    set.add(p.device_id);
+    activeCounts.set(key, (activeCounts.get(key) ?? 0) + Number(p.n));
   }
-  // Per channel: version name -> {codes seen in pings, first day seen}.
+  // Which channel/version names each reporting device has activity records for that day.
+  const reporterActivity = new Map<string, Set<string>>(); // device -> channel \0 version name
+  const reporters = new Set<string>();
+  for (const g of groups.values()) for (const d of g.devicesExcl) reporters.add(d);
+  if (pingDataToday && reporters.size > 0) {
+    const { results } = await env.DB.prepare(
+      `SELECT device_id, channel, version_code FROM device_version_days
+       WHERE app_id = ?1 AND day = ?2 AND device_id IN (SELECT value FROM json_each(?3))`,
+    )
+      .bind(appId, day, JSON.stringify([...reporters]))
+      .all<{ device_id: string; channel: string; version_code: number }>();
+    for (const r of results) {
+      const name = nameOf(r.version_code);
+      if (name === null) continue;
+      let set = reporterActivity.get(r.device_id);
+      if (!set) reporterActivity.set(r.device_id, (set = new Set()));
+      set.add(`${r.channel}\u0000${name}`);
+    }
+  }
+  // Per channel: version name -> {codes seen in activity records, first day seen}.
   const pingVersions = new Map<string, Map<string, { codes: Set<number>; firstDay: string }>>();
   for (const r of firstSeenRows.results) {
     const name = nameOf(r.version_code);
@@ -3480,14 +3546,34 @@ export async function buildBackgroundSystemKillDailySummary(
     const channelVersions = pingVersions.get(g.channel);
     const current = channelVersions?.get(g.versionName);
     const codes = new Set<number>([...g.codes, ...(current?.codes ?? [])]);
-    const activeDevices = pingDataToday ? (activeSets.get(`${g.channel}\u0000${g.versionName}`)?.size ?? 0) : null;
-    const kills = activeDevices !== null && activeDevices > 0 ? excl / activeDevices : null;
-    const share = activeDevices !== null && activeDevices > 0 ? g.devicesExcl.size / activeDevices : null;
+    const groupKey = `${g.channel}\u0000${g.versionName}`;
+    const activeDevices = pingDataToday ? (activeCounts.get(groupKey) ?? 0) : null;
+    let coverage: BackgroundSystemKillCoverage | null = null;
+    let rateReason: BackgroundSystemKillDailySummaryVersionEntry["rate_unavailable_reason"] = null;
+    let kills: number | null = null;
+    let share: number | null = null;
+    if (!pingDataToday) {
+      rateReason = excl > 0 ? "no_ping_data" : null;
+    } else {
+      let matched = 0;
+      for (const d of g.devicesExcl) if (reporterActivity.get(d)?.has(groupKey)) matched++;
+      coverage = { matched, reporters: g.devicesExcl.size };
+      if (!activeDevices) {
+        rateReason = excl > 0 ? "no_activity_for_version" : null;
+      } else if (!coverageOk(coverage)) {
+        rateReason = "low_coverage";
+      } else {
+        kills = excl / activeDevices;
+        share = g.devicesExcl.size / activeDevices;
+      }
+    }
 
     let baseline: BackgroundSystemKillDailySummaryBaseline | null = null;
     let reason: BackgroundSystemKillBaselineUnavailableReason | null = null;
-    if (!current || !channelVersions || pingSince === null) {
+    if (pingSince === null) {
       reason = "no_ping_data";
+    } else if (!current || !channelVersions) {
+      reason = "no_activity_for_version";
     } else {
       const minCode = Math.min(...codes);
       let prev: { name: string; codes: Set<number>; max: number } | null = null;
@@ -3520,39 +3606,65 @@ export async function buildBackgroundSystemKillDailySummary(
               .bind(appId, g.channel, windowStart, windowEnd, prevCodes)
               .first<{ n: number }>(),
             env.DB.prepare(
-              `SELECT COUNT(*) AS n FROM feedback_tickets t
-               WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
-                 AND ${BACKGROUND_SYSTEM_KILL_SQL}
-                 AND ${feedbackBuildScopeClause("standard")}
-                 AND COALESCE(t.channel, 'unknown') = ?2
-                 AND ${EFFECTIVE_VERSION_CODE_SQL} IN (SELECT value FROM json_each(?5))
-                 AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?3 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?4
-                 AND ${USER_CLEANUP_SQL} = 0`,
+              `SELECT k.*, EXISTS (
+                 SELECT 1 FROM device_version_days p
+                 WHERE p.app_id = ?1 AND p.day = k.day AND p.device_id = k.device_id AND p.channel = ?2
+                   AND p.version_code IN (SELECT value FROM json_each(?5))
+               ) AS has_activity
+               FROM (
+                 SELECT
+                   t.kind AS kind,
+                   COALESCE(t.channel, 'unknown') AS channel,
+                   COALESCE(${EFFECTIVE_VERSION_NAME_SQL}, 'unknown') AS version_name,
+                   ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
+                   COALESCE(t.device_id, 'unknown') AS device_id,
+                   t.device_model AS device_model,
+                   t.metadata_json AS metadata_json,
+                   strftime('%Y-%m-%d', ${EFFECTIVE_OCCURRED_AT_SQL} / 1000, 'unixepoch') AS day
+                 FROM feedback_tickets t
+                 WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
+                   AND ${BACKGROUND_SYSTEM_KILL_SQL}
+                   AND ${feedbackBuildScopeClause("standard")}
+                   AND COALESCE(t.channel, 'unknown') = ?2
+                   AND ${EFFECTIVE_VERSION_CODE_SQL} IN (SELECT value FROM json_each(?5))
+                   AND ${EFFECTIVE_OCCURRED_AT_SQL} >= ?3 AND ${EFFECTIVE_OCCURRED_AT_SQL} < ?4
+                 LIMIT ${BG_KILL_SUMMARY_SCAN}
+               ) k`,
             )
               .bind(appId, g.channel, windowStartMs, firstMs, prevCodes)
-              .first<{ n: number }>(),
+              .all<BgKillTicketRow & { day: string; has_activity: number }>(),
           ]);
           const activeDeviceDays = Number(deviceDays?.n ?? 0);
-          const count = Number(prevKills?.n ?? 0);
-          baseline = {
-            version_name: prev.name,
-            version_codes: [...prev.codes].sort((a, b) => a - b),
-            window_start_day: windowStart,
-            window_end_day: windowEnd,
-            count,
-            active_device_days: activeDeviceDays,
-            rate: activeDeviceDays > 0 ? count / activeDeviceDays : null,
-          };
+          let count = 0;
+          const pairs = new Map<string, boolean>();
+          for (const k of prevKills.results) {
+            if (isBgKillUserCleanup(k, cleanupRules)) continue;
+            count++;
+            pairs.set(`${k.day}\u0000${k.device_id}`, Number(k.has_activity) === 1);
+          }
+          const baselineCoverage = { matched: [...pairs.values()].filter(Boolean).length, reporters: pairs.size };
           if (activeDeviceDays === 0) {
-            baseline = null;
             reason = "no_ping_data";
+          } else if (!coverageOk(baselineCoverage) || prevKills.results.length >= BG_KILL_SUMMARY_SCAN) {
+            reason = "low_coverage";
+          } else {
+            baseline = {
+              version_name: prev.name,
+              version_codes: [...prev.codes].sort((a, b) => a - b),
+              window_start_day: windowStart,
+              window_end_day: windowEnd,
+              count,
+              active_device_days: activeDeviceDays,
+              rate: count / activeDeviceDays,
+              coverage: baselineCoverage,
+            };
           }
         }
       }
     }
 
     const sortedCodes = [...codes].sort((a, b) => a - b);
-    const entry = {
+    const entry: BackgroundSystemKillDailySummaryVersionEntry = {
       channel: g.channel,
       version_name: g.versionName,
       version_code: sortedCodes.length ? sortedCodes[sortedCodes.length - 1]! : null,
@@ -3563,15 +3675,19 @@ export async function buildBackgroundSystemKillDailySummary(
       count_excluding_cleanup: excl,
       device_count_excluding_cleanup: g.devicesExcl.size,
       active_devices: activeDevices,
+      coverage,
+      rate_unavailable_reason: rateReason,
       kills_per_active_device: kills,
       affected_device_share: share,
       baseline,
       baseline_unavailable_reason: baseline ? null : reason,
       spike: false,
     };
-    entry.spike = backgroundSystemKillSpike(entry, baseline);
+    entry.spike = !rowsTruncated && backgroundSystemKillSpike(entry, baseline);
     byVersion.push(entry);
   }
+  // Flagged rows first, so a message that shows only some rows keeps them.
+  byVersion.sort((a, b) => Number(b.spike) - Number(a.spike));
 
   return {
     orgId: app.org_id,
@@ -3584,14 +3700,50 @@ export async function buildBackgroundSystemKillDailySummary(
       window_start_ms: startMs,
       window_end_ms: endMs,
       total_count: total,
-      device_count: allDevices.size,
+      device_count: Number(totalsRow?.device_count ?? 0),
       user_cleanup_count: cleanupTotal,
       total_count_excluding_cleanup: total - cleanupTotal,
       ping_data_since: pingSince,
+      rows_truncated: rowsTruncated,
       by_version: byVersion,
       top_devices: deviceRows.results,
     },
   };
+}
+
+type BgKillTicketRow = {
+  kind: string; channel: string; version_name: string; version_code: number | null;
+  device_id: string; device_model: string | null; metadata_json: string | null;
+};
+
+function coverageOk(c: BackgroundSystemKillCoverage): boolean {
+  return c.reporters === 0 || c.matched / c.reporters >= BG_KILL_MIN_COVERAGE;
+}
+
+/**
+ * Whether a background kill report is cleanup the user started: closed at
+ * ingest by a `user_cleanup` rule, or matching one now (rules are not applied
+ * to background kills at ingest, and a rule may be marked after the fact).
+ */
+function isBgKillUserCleanup(t: BgKillTicketRow, rules: FeedbackRule[]): boolean {
+  if (rules.length === 0) return false;
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(t.metadata_json ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed as Record<string, unknown>;
+  } catch { /* not JSON */ }
+  const stamped = metadata["hands_rule"];
+  const stampedId = stamped && typeof stamped === "object" ? (stamped as Record<string, unknown>)["id"] : null;
+  if (typeof stampedId === "string" && rules.some((r) => r.id === stampedId)) return true;
+  const facts = {
+    kind: t.kind,
+    signature: BACKGROUND_SYSTEM_KILL_SIGNATURE,
+    channel: t.channel === "unknown" ? null : t.channel,
+    device_model: t.device_model,
+    version_code: t.version_code === null ? null : Number(t.version_code),
+    metadata,
+  };
+  return rules.some((r) => ruleMatches(r, facts));
 }
 
 export async function dispatchBackgroundSystemKillDailySummaries(
