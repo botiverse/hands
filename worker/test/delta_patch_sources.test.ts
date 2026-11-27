@@ -105,4 +105,25 @@ describe("delta patch sources", () => {
     const fromUniversal = await selectPatchSources(d1(db) as never, "app", { ...target(112), arch: "universal" }, 3, NOW, ["main"]);
     expect(fromUniversal.map((s) => s.version_code)).toEqual([111, 110]);
   });
+  it("lets an arm64-v8a build patch from universal releases, preferring the same arch per version", async () => {
+    // 1.29/1.30 shipped universal APKs; 1.31 ships arm64-v8a only. Devices on
+    // 1.30 must still get a patch.
+    const { db, release, devices } = setup();
+    release(128, "main", "superseded", "arm64-v8a");
+    release(129, "main", "superseded");
+    release(130, "main", "active", "universal");
+    release(127, "main", "superseded", "x86_64");
+    devices(130, "main", 20);
+    devices(129, "main", 10);
+    const arm = await selectPatchSources(d1(db) as never, "app", { ...target(131), arch: "arm64-v8a" }, 3, NOW, ["main"]);
+    expect(arm.map((s) => [s.version_code, s.arch])).toEqual([[130, "universal"], [129, null], [128, "arm64-v8a"]]);
+    // A version with both a universal and an arm64 APK yields the arm64 one.
+    db.prepare("INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES ('a130arm', 'b130', 'installable', 'android', 'arm64-v8a', 'apk', 'apk/130arm', 'h130arm', 90, 1)").run();
+    const preferred = await selectPatchSources(d1(db) as never, "app", { ...target(131), arch: "arm64-v8a" }, 1, NOW, ["main"]);
+    expect(preferred[0]).toMatchObject({ version_code: 130, arch: "arm64-v8a", r2_key: "apk/130arm" });
+    // A universal target still takes universal sources only.
+    const universal = await selectPatchSources(d1(db) as never, "app", target(131), 3, NOW, ["main"]);
+    expect(universal.map((s) => s.version_code)).toEqual([130, 129]);
+    expect(universal[0]?.arch).toBe("universal");
+  });
 });
