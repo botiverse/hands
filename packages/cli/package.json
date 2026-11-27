@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-cli",
-  "version": "0.5.84",
+  "version": "0.5.85",
   "description": "Hands CLI \u2014 manage apps, builds, releases from the terminal.",
   "author": {
     "name": "jiacheng",
@@ -32,8 +32,10 @@
   },
   "dependencies": {
     "@botiverse/agent-session-store": "workspace:*",
+    "@botiverse/hands-app-patch": "workspace:*",
     "@botiverse/hands-node": "workspace:*",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
