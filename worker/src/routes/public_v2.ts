@@ -624,7 +624,8 @@ function recordDeviceVersionDay(
   versionCode: number,
   deviceId: string | null,
 ): void {
-  if (!deviceId || !Number.isSafeInteger(versionCode) || versionCode <= 0) return;
+  // Same id limit as analytics pings, so one device is one row in both.
+  if (!deviceId || deviceId.length > 200 || !Number.isSafeInteger(versionCode) || versionCode <= 0) return;
   const run = c.env.DB.prepare(
     `INSERT OR IGNORE INTO device_version_days (app_id, day, channel, version_code, device_id)
      SELECT id, ?2, ?3, ?4, ?5 FROM apps WHERE slug = ?1`,
@@ -670,7 +671,9 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const latestResponse = await handlePublicV2Latest(c);
   if (latestResponse.status !== 200) return latestResponse;
   const latest = (await latestResponse.json()) as PublicLatestResponse;
-  recordDeviceVersionDay(c, latest.app.slug, latest.channel, currentVersionCode, metricDeviceId);
+  // The channel as the app sent it (before alias resolution), which is how
+  // analytics pings and reports store it.
+  recordDeviceVersionDay(c, latest.app.slug, c.req.query("channel")?.trim() || latest.channel, currentVersionCode, metricDeviceId);
 
   if (latest.build.version_code <= currentVersionCode) {
     if (latest.build.version_code === currentVersionCode) {
