@@ -145,8 +145,11 @@ export async function handleUpdateBetaReviewDetail(c: AdminContext) {
     const live = readback.attributes ?? {};
     const mismatched = fields.filter((field) => {
       if (field === PASSWORD_FIELD) {
-        // Apple may not echo the password verbatim; require only that one is set.
-        return !(typeof live.demoAccountPassword === "string" && live.demoAccountPassword.length > 0);
+        // The password is write-mostly: if Apple omits it from the readback we
+        // cannot verify it and do not fail the write; if it is returned it
+        // must be the value sent.
+        if (live.demoAccountPassword === undefined || live.demoAccountPassword === null) return false;
+        return live.demoAccountPassword !== attributes.demoAccountPassword;
       }
       return live[FIELD_MAP[field]] !== attributes[FIELD_MAP[field]];
     });

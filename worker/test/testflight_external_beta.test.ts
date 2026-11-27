@@ -61,7 +61,7 @@ function d1(sqlite: Database.Database): D1Database {
 type GroupAttrs = Record<string, unknown> & { name: string; isInternalGroup: boolean };
 
 /** Stateful fake ASC. `ignore` lists attributes a PATCH/POST silently drops (to provoke readback mismatches). */
-function fakeAsc(opts: { ignore?: string[]; storePassword?: boolean } = {}) {
+function fakeAsc(opts: { ignore?: string[]; storePassword?: boolean | "other" } = {}) {
   const groups = new Map<string, { app: string; attributes: GroupAttrs }>([
     ["grp-internal", { app: "asc-app-1", attributes: { name: "Team", isInternalGroup: true, hasAccessToAllBuilds: true, publicLinkEnabled: false, publicLink: null, feedbackEnabled: true } }],
     ["grp-ext", { app: "asc-app-1", attributes: { name: "Friends", isInternalGroup: false, hasAccessToAllBuilds: false, publicLinkEnabled: false, publicLink: null, publicLinkLimit: null, publicLinkLimitEnabled: false, feedbackEnabled: false } }],
@@ -112,7 +112,7 @@ function fakeAsc(opts: { ignore?: string[]; storePassword?: boolean } = {}) {
     if (method === "PATCH" && path === "/v1/betaAppReviewDetails/rd-1") {
       const { demoAccountPassword, ...rest } = call.body.data.attributes;
       apply(review, rest);
-      if (demoAccountPassword !== undefined) review.demoAccountPassword = opts.storePassword === false ? null : demoAccountPassword;
+      if (demoAccountPassword !== undefined) review.demoAccountPassword = opts.storePassword === false ? null : opts.storePassword === "other" ? "someone-else" : demoAccountPassword;
       return { json: { data: { type: "betaAppReviewDetails", id: "rd-1", attributes: { ...review } } } };
     }
     if (method === "GET" && path === "/v1/apps/asc-app-1/betaAppLocalizations?limit=200") {
@@ -354,12 +354,21 @@ describe("Beta App Review Detail", () => {
     expect(h.audits().every((a) => !a.payload.includes(SECRET))).toBe(true);
   });
 
-  it("fails when a supplied password is not set on Apple's side", async () => {
+  it("fails when Apple returns a different password than the one sent", async () => {
     const h = await harness();
-    fakeAsc({ storePassword: false });
+    fakeAsc({ storePassword: "other" });
     const out = await h.call("PUT", "/testflight-beta-review-detail", { demo_account_password: SECRET });
     expect(out.status).toBe(409);
     expect(out.json.mismatched_fields).toEqual(["demo_account_password"]);
+    expect(out.text).not.toContain(SECRET);
+  });
+
+  it("accepts a password write when Apple does not return the password", async () => {
+    const h = await harness();
+    fakeAsc({ storePassword: false });
+    const out = await h.call("PUT", "/testflight-beta-review-detail", { demo_account_password: SECRET });
+    expect(out.status).toBe(200);
+    expect(out.text).not.toContain(SECRET);
   });
 
   it("validates input before calling Apple and never echoes values", async () => {

@@ -916,7 +916,7 @@ Official Apple references:
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
-### Public external TestFlight beta (since CLI 0.5.85)
+### Public external TestFlight beta (since CLI 0.5.86)
 
 Prepare an app for a public external beta without the App Store Connect web
 UI. These commands work on the app (no Hands build needed) and find the App

@@ -586,7 +586,7 @@ Apple 官方参考资料：
 - [邀请外部测试人员](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight 概览](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
-### 公开外部 TestFlight 测试（CLI 0.5.85 起）
+### 公开外部 TestFlight 测试（CLI 0.5.86 起）
 
 无需 App Store Connect 网页即可为公开外部测试做好准备。这些命令作用于应用本身（不需要 Hands 构建），并通过主渠道的包 ID 找到 App Store Connect 应用。读取需要应用查看者；测试群组和审核信息的写入需要应用管理员；`beta-description set` 需要应用发布者。每次写入都会记录审计，然后从 Apple 重新读取；除非 Apple 返回的内容与请求一致，否则命令失败（`READBACK_MISMATCH`）。
 
