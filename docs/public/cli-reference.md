@@ -916,6 +916,69 @@ Official Apple references:
 - [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
 
+### Public external TestFlight beta (since CLI 0.5.86)
+
+Prepare an app for a public external beta without the App Store Connect web
+UI. These commands work on the app (no Hands build needed) and find the App
+Store Connect app through the main channel's bundle id. Reads need app viewer;
+beta group and review-detail writes need app admin; `beta-description set`
+needs app publisher. Every write is audited, then read back from Apple, and
+the command fails (`READBACK_MISMATCH`) unless Apple returns what was asked for.
+
+```bash
+# 1. Beta groups: list, create an external group with a public link, adjust it
+hands testflight beta-groups list raft-ios
+hands testflight beta-groups create raft-ios --name "Public Beta" \
+  --public-link --public-link-limit 1000 --feedback
+hands testflight beta-groups update raft-ios <group-id> --no-public-link-limit-enabled
+
+# 2. Beta App Review Detail (reviewer contact, demo account, notes).
+#    The password comes only from stdin or a named environment variable.
+printf %s "$DEMO_PASSWORD" | hands testflight review-detail set raft-ios \
+  --contact-first-name Ada --contact-last-name Lovelace \
+  --contact-phone "+1 555 0100" --contact-email beta@example.com \
+  --demo-account-name demo@example.com --demo-account-password-stdin \
+  --demo-account-required --notes-file ./review-notes.txt
+hands testflight review-detail set raft-ios --demo-account-password-env DEMO_PASSWORD
+hands testflight review-detail get raft-ios
+
+# 3. Beta App localizations: description plus feedback email and URLs
+hands testflight beta-description set raft-ios \
+  --description en-US="A private collaboration app" \
+  --feedback-email en-US=beta@example.com \
+  --marketing-url en-US=https://example.com \
+  --privacy-policy-url en-US=https://example.com/privacy
+hands testflight beta-description get raft-ios
+```
+
+- `beta-groups create` always creates an **external** group and refuses a name
+  that another group of the app already uses (case-insensitive, HTTP 409).
+  `--public-link-limit` takes 1-10000 and also turns the limit on. Apple may
+  fill in the `https://testflight.apple.com/join/...` link a moment after the
+  link is enabled; if it is missing, list the groups again.
+- `beta-groups update` refuses public link options on an internal group (Apple
+  allows public links only on external groups) and a group id that belongs to
+  another App Store Connect app.
+- `review-detail get` never shows the demo password, only whether one is set.
+  Hands never returns, logs or audits it; the audit records field names only.
+- `beta-description set` changes only the given locales and fields. A locale
+  that does not exist on Apple yet needs `--description` (or
+  `--description-file`); URLs must be `https://`.
+- None of these commands adds a build to a group or submits a build for Beta
+  App Review; use `hands builds testflight-publish --distribution external`.
+
+API:
+
+| Action | Request |
+| --- | --- |
+| List beta groups | `GET /api/apps/<appId>/testflight-beta-groups` |
+| Create external group | `POST /api/apps/<appId>/testflight-beta-groups` `{name, public_link_enabled?, public_link_limit?, public_link_limit_enabled?, feedback_enabled?}` |
+| Update group | `PATCH /api/apps/<appId>/testflight-beta-groups/<groupId>` (same fields, all optional) |
+| Read review detail | `GET /api/apps/<appId>/testflight-beta-review-detail` |
+| Update review detail | `PUT /api/apps/<appId>/testflight-beta-review-detail` `{contact_first_name?, contact_last_name?, contact_phone?, contact_email?, demo_account_name?, demo_account_password?, demo_account_required?, notes?}` |
+| Read beta localizations | `GET /api/apps/<appId>/testflight-beta-app-description` |
+| Update beta localizations | `PUT /api/apps/<appId>/testflight-beta-app-description` `{descriptions?: {locale: text}, localizations?: {locale: {feedback_email?, marketing_url?, privacy_policy_url?}}}` |
+
 ### TestFlight crash reports and screenshot feedback
 
 Pull what testers submitted from TestFlight, using the app's stored App Store

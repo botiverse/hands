@@ -126,6 +126,8 @@ Hands 角色有意分离：上传构建到 Apple 和分发构建都要求应用�
 
 ## 命令行和 API
 
+首次外部分发前，可用 `hands testflight beta-groups`、`hands testflight review-detail` 和 `hands testflight beta-description` 创建带公开链接的外部群组，并填写 Beta App Review 信息和测试版多语言信息（见 CLI 参考中的“公开外部 TestFlight 测试”）。
+
 命令行：
 
 ```sh

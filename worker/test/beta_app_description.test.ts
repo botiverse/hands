@@ -133,7 +133,16 @@ describe("betaAppLocalizations ASC client", () => {
 describe("Beta App Description route", () => {
   it("validates a non-empty locale map without accepting blank descriptions", () => {
     expect({ ...parseBetaAppDescriptions({ descriptions: { "en-US": "  Hello  " } }) })
-      .toEqual({ "en-US": "  Hello  " });
+      .toEqual({ "en-US": { description: "  Hello  " } });
+    expect({
+      ...parseBetaAppDescriptions({
+        descriptions: { "en-US": "Hello" },
+        localizations: { "en-US": { feedback_email: "beta@example.com" } },
+      }),
+    }).toEqual({ "en-US": { description: "Hello", feedbackEmail: "beta@example.com" } });
+    expect(() => parseBetaAppDescriptions({})).toThrow(/only descriptions and localizations/);
+    expect(() => parseBetaAppDescriptions({ localizations: { "en-US": { toString: "x" } } }))
+      .toThrow(/may contain only/);
     expect(() => parseBetaAppDescriptions({ descriptions: {} })).toThrow(/between 1 and 100/);
     expect(() => parseBetaAppDescriptions({ descriptions: { "en-US": "   " } })).toThrow(
       /must contain/,

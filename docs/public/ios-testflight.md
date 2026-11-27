@@ -201,6 +201,12 @@ Review at a time and up to six submitted builds in a 24-hour period.
 
 ## CLI and API
 
+Before the first external distribution, create an external group with a
+public link, fill in the Beta App Review Detail and the beta localizations
+with `hands testflight beta-groups`, `hands testflight review-detail` and
+`hands testflight beta-description` (see the CLI reference, "Public external
+TestFlight beta").
+
 CLI:
 
 ```sh
