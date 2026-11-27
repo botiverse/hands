@@ -102,6 +102,22 @@ Each crash ticket then gets a symbolicated stack posted as a comment. Without
 symbols, Hands still records the crash with module+offset frames and leaves a
 tip to upload them.
 
+## Update patches (macOS)
+
+`@botiverse/hands-electron/updater` makes electron-updater download a macOS
+update as a small binary patch to the installed app when the feed lists one,
+and falls back to the normal download otherwise:
+
+```ts
+import { autoUpdater } from "electron-updater";
+import { enablePatchUpdates } from "@botiverse/hands-electron/updater";
+
+enablePatchUpdates(autoUpdater, { onEvent: (e) => log.info("update_patch", e) });
+```
+
+CI makes the patches with `hands electron make-patches`. Setup, events and
+publishing are in [Electron update patches](electron-updates.md).
+
 ## What gets sent
 
 Every minidump carries a Sentry-style annotation set the server folds into the

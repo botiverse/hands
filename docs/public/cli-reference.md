@@ -1226,6 +1226,24 @@ release, then a human or agent reviews release notes and explicitly publishes.
 macOS update artifacts must be signed before upload; `hands sign --notarize`
 (see Signing) signs and notarizes the `.app` before it is packaged.
 
+### macOS update patches
+
+`hands electron make-patches` makes binary patches from the newest releases
+on the channel to a new version, verifies each one by applying it, and lists
+them in the new `latest-mac.yml`:
+
+```bash
+hands electron make-patches raft-deck \
+  --version-name 0.1.8 \
+  --dir release \
+  --update-feed release/latest-mac.yml
+```
+
+It needs `unzip`, `diff` and Node 22.19+. It exits 2 when the newest base
+fails, and then writes no patches. Options, output (`patches.json` with the
+build asset slots) and publishing are in
+[Electron update patches](electron-updates.md).
+
 ### Changing a published release's update metadata
 
 An app admin can replace the `latest*.yml` a draft or active Electron release
