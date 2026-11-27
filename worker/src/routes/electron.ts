@@ -4,6 +4,7 @@ import { DESKTOP_INSTALLER, equivalentsOf } from "../lib/release_resolver";
 import { readR2WithRetry } from "../lib/r2_read_retry";
 import { redirectToR2 } from "../lib/r2_presign";
 import { currentElectronMetadataOverride } from "../lib/electron_metadata_overrides";
+import { countElectronRequest, electronFileRole } from "../lib/electron_download_stats";
 
 export type ElectronAssetRow = {
   id: string;
@@ -101,6 +102,17 @@ export async function handleElectronGenericAsset(c: Context<{ Bindings: Env }>) 
       },
       404,
     );
+  }
+
+  if (appRow && c.req.method === "GET") {
+    await countElectronRequest(c, {
+      appId: appRow.id,
+      buildId: build.build_id,
+      assetId: asset.id,
+      file,
+      role: electronFileRole(asset, file, isElectronMetadataAsset(asset)),
+      ranged: Boolean(c.req.header("range")),
+    });
   }
 
   // Update metadata replaced after publishing is served instead of the build's

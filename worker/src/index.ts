@@ -142,6 +142,7 @@ import {
 } from "./routes/feedback";
 import { handleDeviceRegister, handleDeviceAnalytics, handleDeviceDetail, handleVersionAnalytics } from "./routes/analytics";
 import { handleAppStats } from "./routes/stats";
+import { handleElectronDownloadStats } from "./routes/electron_download_stats";
 import { handleEnableAscAnalyticsReports, handleIngestAscAnalytics } from "./routes/asc_analytics_requests";
 import { handleSessionEvent, handleReleaseHealth } from "./routes/sessions";
 import {
@@ -1324,6 +1325,7 @@ bindAdmin("get", "/api/apps/:appId/analytics/devices", requireAppRole("viewer"),
 bindAdmin("get", "/api/apps/:appId/analytics/versions", requireAppRole("viewer"), handleVersionAnalytics);
 bindAdmin("get", "/api/apps/:appId/analytics/devices/:deviceId", requireAppRole("viewer"), handleDeviceDetail);
 bindAdmin("get", "/api/apps/:appId/stats", requireAppRole("viewer"), handleAppStats);
+bindAdmin("get", "/api/apps/:appId/stats/electron-downloads", requireAppRole("viewer"), handleElectronDownloadStats);
 bindAdmin("post", "/api/apps/:appId/stats/app-store/analytics-report-requests", requireAppRole("admin"), handleEnableAscAnalyticsReports);
 bindAdmin("post", "/api/apps/:appId/stats/app-store/ingest", requireAppRole("admin"), handleIngestAscAnalytics);
 bindAdmin("post", "/api/apps/:appId/stats/google-play/ingest", requireAppRole("admin"), handleIngestPlayStats);
