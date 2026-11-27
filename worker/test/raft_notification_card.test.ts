@@ -546,7 +546,7 @@ describe("Raft release notification cards", () => {
     expect(text).toContain("按渠道和版本统计:");
     expect(text).toContain(
       "- main · 1.30.0 (13000015, 13000016): 30 次 / 15 台（主动清理 2 次） · 当日活跃 36 台 · 覆盖 14/14 · 次数/已上报活跃设备 28/36 = 0.78 · 受影响设备占活跃 39%"
-      + " · 基线 1.29.0 (12900011, 12900012) 0.29 次/设备日 ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）",
+      + " · 基线 1.29.0 (12900011, 12900012) 60/210 = 0.29 次/设备日 ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）",
     );
     expect(text).toContain("- preview · 1.30.0 (13000014): 3 次 / 3 台 · 当日活跃 5 台 · 覆盖 3/3 · 次数/已上报活跃设备 3/5 = 0.60 · 受影响设备占活跃 60%"
       + " · 无可比基线（新版本出现前 7 天没有完整的活跃设备记录）");
@@ -554,7 +554,7 @@ describe("Raft release notification cards", () => {
       + " · 无可比基线（旧版本的退出设备活跃记录覆盖不足）");
     expect(text).toContain("- unknown · unknown: 1 次 / 1 台 · 当日没有完整的活跃设备记录，比例和预警不可比 · 无可比基线（缺少完整的活跃设备记录）");
     expect(text).toContain("main 同时包含 Play 和 Hands main 两种分发，未分开比较");
-    expect(text).toContain("当天升级的设备两个版本都算");
+    expect(text).toContain("Android 活跃上报最多一天一次");
     expect(text).toContain("按服务器接收日");
     expect(text).toContain("低于 90% 不给比例和预警");
     expect(text).not.toContain("另有");

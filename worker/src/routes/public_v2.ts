@@ -611,6 +611,33 @@ export function bumpReleaseMetric(
   }
 }
 
+/**
+ * An update check also shows the device is in use on its channel and installed
+ * version that day: recorded in device_version_days (the background kill
+ * summary's denominator) alongside analytics pings, which the Android SDK
+ * sends at most once a day. Off the response path.
+ */
+function recordDeviceVersionDay(
+  c: Context<{ Bindings: Env }>,
+  appSlug: string,
+  channel: string,
+  versionCode: number,
+  deviceId: string | null,
+): void {
+  if (!deviceId || !Number.isSafeInteger(versionCode) || versionCode <= 0) return;
+  const run = c.env.DB.prepare(
+    `INSERT OR IGNORE INTO device_version_days (app_id, day, channel, version_code, device_id)
+     SELECT id, ?2, ?3, ?4, ?5 FROM apps WHERE slug = ?1`,
+  )
+    .bind(appSlug, new Date().toISOString().slice(0, 10), channel || "unknown", versionCode, deviceId)
+    .run();
+  try {
+    c.executionCtx.waitUntil(run.catch(() => {}));
+  } catch {
+    void run.catch(() => {});
+  }
+}
+
 export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   if (c.req.query("product_type") === "cli-binary" || c.req.query("current_version")) {
     return handlePublicCliBinaryUpdateCheck(c);
@@ -643,6 +670,7 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
   const latestResponse = await handlePublicV2Latest(c);
   if (latestResponse.status !== 200) return latestResponse;
   const latest = (await latestResponse.json()) as PublicLatestResponse;
+  recordDeviceVersionDay(c, latest.app.slug, latest.channel, currentVersionCode, metricDeviceId);
 
   if (latest.build.version_code <= currentVersionCode) {
     if (latest.build.version_code === currentVersionCode) {

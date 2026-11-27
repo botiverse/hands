@@ -7398,6 +7398,12 @@ describe("quiver public API v2 — scope resolution", () => {
       "zh-CN": "- E2E 冒烟发布",
     });
     expect(update.asset.download_url).toContain("/public/r2/");
+    // The check also records the device as active on its channel and installed version that day.
+    await Promise.all(waited.splice(0));
+    const versionDay = await env.DB.prepare(
+      "SELECT channel, version_code FROM device_version_days WHERE device_id = 'e2e-device'",
+    ).all();
+    expect(versionDay.results).toEqual([{ channel: "production", version_code: 1 }]);
 
     const shareResponse = await handleCreateReleaseShare(
       makeShareAdminContext(env, { appId: "app-scope", releaseId: draft.id }, { ttl_seconds: 604800 }),

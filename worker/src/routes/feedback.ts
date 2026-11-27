@@ -3196,9 +3196,10 @@ const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
  * per channel and are never compared with each other.
  *
  * Denominator: the devices that pinged from that channel and version that day
- * (device_version_days, written on every ping by server receive day, so a
- * device that upgrades counts on both versions whether or not it reported an
- * exit). Reports never add to it. Exits are dated by the device's exit time,
+ * (device_version_days, written on every analytics ping and every update
+ * check by server receive day, so a device counts on each version it was seen
+ * on, whether or not it reported an exit; the Android SDK pings at most once a
+ * day, so an upgrade shows on the new version at its next update check). Reports never add to it. Exits are dated by the device's exit time,
  * pings by the server's receive day, and not every device pings, so each row
  * also checks coverage: the share of its reporting devices that have an
  * activity record on that channel and version that day. Below 90% the rate is
@@ -3366,7 +3367,14 @@ export async function buildBackgroundSystemKillDailySummary(
 
   const { day, startMs, endMs } = dayWindow;
   const lookbackDay = isoDay(startMs - BG_KILL_FIRST_SEEN_LOOKBACK_DAYS * DAY_MS);
-  const [totalsRow, ticketRows, deviceRows, buildRows, ruleRows, dayPings, firstSeenRows, pingStart] = await Promise.all([
+  const ruleRows = await env.DB.prepare(
+    "SELECT * FROM feedback_rules WHERE app_id = ?1 AND category = 'user_cleanup' AND enabled = 1",
+  )
+    .bind(appId)
+    .all<Parameters<typeof ruleFromRow>[0]>();
+  // Report metadata is read only to match cleanup rules.
+  const withMetadata = ruleRows.results.length > 0 ? "t.metadata_json" : "NULL";
+  const [totalsRow, ticketRows, deviceRows, buildRows, dayPings, firstSeenRows, pingStart] = await Promise.all([
     env.DB.prepare(
       `SELECT COUNT(*) AS total_count, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS device_count
        FROM feedback_tickets t
@@ -3385,7 +3393,7 @@ export async function buildBackgroundSystemKillDailySummary(
          ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
          COALESCE(t.device_id, 'unknown') AS device_id,
          t.device_model AS device_model,
-         t.metadata_json AS metadata_json
+         ${withMetadata} AS metadata_json
        FROM feedback_tickets t
        WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')
          AND ${BACKGROUND_SYSTEM_KILL_SQL}
@@ -3421,9 +3429,6 @@ export async function buildBackgroundSystemKillDailySummary(
     )
       .bind(appId)
       .all<{ version_code: number; version_name: string }>(),
-    env.DB.prepare("SELECT * FROM feedback_rules WHERE app_id = ?1 AND category = 'user_cleanup'")
-      .bind(appId)
-      .all<Parameters<typeof ruleFromRow>[0]>(),
     env.DB.prepare(
       `SELECT channel, version_code, COUNT(*) AS n
        FROM device_version_days WHERE app_id = ?1 AND day = ?2
@@ -3591,7 +3596,7 @@ export async function buildBackgroundSystemKillDailySummary(
         const windowEnd = isoDay(firstMs - DAY_MS);
         // Strictly after the first (partial) recorded day, which also makes
         // current.firstDay the real first day rather than the start of data.
-        if (windowStart <= pingSince) {
+        if (windowStart <= pingSince || current.firstDay <= lookbackDay) {
           reason = "insufficient_history";
         } else {
           const prevCodes = JSON.stringify([...prev.codes]);
@@ -3619,7 +3624,7 @@ export async function buildBackgroundSystemKillDailySummary(
                    ${EFFECTIVE_VERSION_CODE_SQL} AS version_code,
                    COALESCE(t.device_id, 'unknown') AS device_id,
                    t.device_model AS device_model,
-                   t.metadata_json AS metadata_json,
+                   ${withMetadata} AS metadata_json,
                    strftime('%Y-%m-%d', ${EFFECTIVE_OCCURRED_AT_SQL} / 1000, 'unixepoch') AS day
                  FROM feedback_tickets t
                  WHERE t.app_id = ?1 AND t.kind IN ('crash', 'error')

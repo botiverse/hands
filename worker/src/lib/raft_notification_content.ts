@@ -499,7 +499,7 @@ function releaseBuildMessage(event: string, payload: Payload, build: Payload, ap
 
 const BG_KILL_SUMMARY_METHOD_NOTE = [
   "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。",
-  "活跃设备 = 当天用该渠道该版本向 Hands 上报过活跃的设备（启动或检查更新时上报，按服务器接收日、按天去重；当天升级的设备两个版本都算；没上报的设备不在内）。退出按设备记录的退出时间归日，可能与接收日错开。",
+  "活跃设备 = 当天用该渠道该版本向 Hands 发过活跃上报或检查更新的设备（按服务器接收日、按天去重；Android 活跃上报最多一天一次，当天升级的设备要到升级后再次检查更新才算进新版本；没上报的设备不在内）。退出按设备记录的退出时间归日，可能与接收日错开。",
   "覆盖 = 有退出的设备中当天有该版本活跃记录的比例，低于 90% 不给比例和预警。基线 = 旧版本在新版本出现前 7 天的次数 ÷ 设备日，与当日次数 ÷ 当日活跃设备同口径。没有完整活跃记录的日子只给次数。",
   "比例是相对已上报活跃设备的观察指标，不等于真实发生率；⚠️ 只表示同一口径下比上一版本高 2 倍以上，需人工核实。",
 ].join("\n");
@@ -557,7 +557,7 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const baseline = entry.baseline ? record(entry.baseline) : null;
   const baselineRate = baseline ? bgKillNumber(baseline.rate) : null;
   if (baseline && baselineRate !== null) {
-    parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${baselineRate.toFixed(2)} 次/设备日`
+    parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${bgKillNumber(baseline.count) ?? 0}/${bgKillNumber(baseline.active_device_days) ?? 0} = ${baselineRate.toFixed(2)} 次/设备日`
       + (entry.spike === true ? " ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
@@ -580,7 +580,9 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       ? payload.device_count : 0;
     const cleanupTotal = typeof payload.user_cleanup_count === "number" && Number.isSafeInteger(payload.user_cleanup_count)
       ? payload.user_cleanup_count : 0;
-    const cleanupPart = cleanupTotal > 0
+    const cleanupPart = payload.rows_truncated === true
+      ? "（报告过多，主动清理只统计了读取的部分）"
+      : cleanupTotal > 0
       ? `（其中用户主动清理 ${cleanupTotal} 次，剔除后 ${Math.max(0, totalCount - cleanupTotal)} 次）`
       : "";
     const lines = [
