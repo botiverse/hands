@@ -18,6 +18,9 @@ on:
       - "play-adapter/**"
       - "migrations/**"
       - "packages/**"
+      # The Electron SDK's update-patch hook and its tests against the real
+      # electron-updater (6.3.9 and 6.8.11) run in the app-patch job below.
+      - "clients/electron/**"
       - ".github/workflows/worker-tests.yml"
       # The root files this job actually reads, enumerated rather than guessed:
       # pnpm/action-setup takes packageManager from the root package.json; the pnpm
@@ -125,7 +128,7 @@ jobs:
       # The CLI imports the workspace packages, so they must be built before its
       # typecheck or tests can resolve them.
       - name: Build workspace dependencies
-        run: pnpm --filter @botiverse/hands-node build && pnpm --filter @botiverse/agent-session-store build
+        run: pnpm --filter @botiverse/hands-node build && pnpm --filter @botiverse/agent-session-store build && pnpm --filter @botiverse/hands-app-patch build
       - name: Typecheck and test the CLI
         # Until now no job ran these: worker-tests.yml tested only worker/, the
         # play-adapter job only the adapter, and publish-cli.yml only built and
@@ -133,6 +136,25 @@ jobs:
         run: |
           pnpm --filter @botiverse/hands-cli exec tsc --noEmit
           pnpm --filter @botiverse/hands-cli test
+
+  app-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Patches are made and applied with unzip, diff and python3's zipfile
+      # (test fixtures), all present on the runner image.
+      - name: Test and build the patch format, then the Electron SDK on top of it
+        run: |
+          pnpm --filter @botiverse/hands-app-patch test
+          pnpm --filter @botiverse/hands-app-patch build
+          pnpm --filter @botiverse/hands-electron typecheck
+          pnpm --filter @botiverse/hands-electron test
 
   windows-device-id:
     runs-on: windows-latest
@@ -271,11 +293,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/hands-cli-pack"
           pnpm --dir packages/agent-session-store pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           pnpm --dir packages/node pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
+          pnpm --dir packages/app-patch pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           pnpm --dir packages/cli pack --pack-destination "$RUNNER_TEMP/hands-cli-pack"
           cli_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-cli-*.tgz' -print -quit)"
           node_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-node-*.tgz' -print -quit)"
           store_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-agent-session-store-*.tgz' -print -quit)"
+          patch_path="$(find "$RUNNER_TEMP/hands-cli-pack" -maxdepth 1 -name 'botiverse-hands-app-patch-*.tgz' -print -quit)"
           test -n "${cli_path}"
           test -n "${node_path}"
           test -n "${store_path}"
-          node packages/cli/test/installed-device-json.mjs "${cli_path}" "${node_path}" "${store_path}"
+          test -n "${patch_path}"
+          node packages/cli/test/installed-device-json.mjs "${cli_path}" "${node_path}" "${store_path}" "${patch_path}"
