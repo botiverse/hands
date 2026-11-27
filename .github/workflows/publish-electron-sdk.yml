@@ -80,26 +80,37 @@ jobs:
           pnpm --filter @botiverse/hands-app-patch build
           pnpm --filter @botiverse/hands-electron build
 
-      - name: Pack check
+      # pnpm pack rewrites `workspace:*` to the published version; npm publish
+      # inside the workspace would ship the literal `workspace:*` specifier.
+      - name: Pack Electron SDK
+        id: pack
         working-directory: clients/electron
-        run: npm pack --dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist-packages"
+          pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages"
+          package_path="$(find "$GITHUB_WORKSPACE/dist-packages" -maxdepth 1 -name 'botiverse-hands-electron-*.tgz' -print -quit)"
+          test -n "${package_path}"
+          if tar -xOzf "${package_path}" package/package.json | grep -q '"workspace:'; then
+            echo "Packed package.json still has a workspace: specifier" >&2
+            exit 1
+          fi
+          echo "path=${package_path}" >> "$GITHUB_OUTPUT"
 
       - name: Publish dry run
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        working-directory: clients/electron
-        run: npm publish --access public --dry-run
+        run: npm publish "$PACKAGE_PATH" --access public --dry-run
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
 
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
-        working-directory: clients/electron
-        shell: bash
+        run: npm publish "$PACKAGE_PATH" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          npm publish --access public
+          PACKAGE_PATH: ${{ steps.pack.outputs.path }}
 
       - name: Summary
         shell: bash
