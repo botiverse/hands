@@ -68,6 +68,7 @@ declare module "electron" {
 declare const process: {
   platform: string;
   arch: string;
+  execPath: string;
   versions: Record<string, string | undefined>;
 };
 
