@@ -15,6 +15,9 @@
 export const MAX_FORWARDED = 6;
 export const MAX_FORWARDED_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
+/** No new upload starts this long after forwarding began: the delivery attempt
+ * has a deadline, and the next attempt resumes from the saved uploads. */
+export const UPLOAD_BUDGET_MS = 5_000;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/heic", "image/heif"]);
 
 export type FeedbackAttachmentRow = {
@@ -96,7 +99,13 @@ export class AttachmentSendRefused extends Error {
   constructor(readonly kind: "duplicate" | "refused") { super(kind); }
 }
 
+export class AttachmentsDeferred extends Error {
+  constructor() { super("attachments_deferred"); }
+}
+
 export type AttachmentTransport = {
+  /** Whether the bot may upload to the channel at all; false leaves every file to the link. Throws to retry. */
+  canUpload(): Promise<boolean>;
   /** Uploads one file as a Raft attachment; null if this file cannot go to Raft (refused, not permitted). Throws to retry. */
   upload(file: { bytes: ArrayBuffer; filename: string; contentType: string }): Promise<string | null>;
   /** Throws AttachmentSendRefused when Raft says the key was used for other content, or refuses the message. */
@@ -104,14 +113,15 @@ export type AttachmentTransport = {
   readObject(key: string, maxBytes: number): Promise<ArrayBuffer | null>;
 };
 
-type Reply = { content: string; ids: string[] };
+type Reply = { content: string; ids: string[]; files: number };
 
 function parseReply(value: string | null | undefined): Reply | null {
   if (!value) return null;
   try {
     const parsed = rec(JSON.parse(value));
     if (typeof parsed.content === "string" && Array.isArray(parsed.ids) && parsed.ids.every((id) => typeof id === "string")) {
-      return { content: parsed.content, ids: parsed.ids as string[] };
+      const files = typeof parsed.files === "number" ? parsed.files : (parsed.ids as string[]).length;
+      return { content: parsed.content, ids: parsed.ids as string[], files };
     }
   } catch { /* unusable: rebuilt below */ }
   return null;
@@ -140,8 +150,11 @@ export async function forwardFeedbackAttachments(options: {
   rows: FeedbackAttachmentRow[];
   link: string | null;
   transport: AttachmentTransport;
+  now?: () => number;
 }): Promise<{ messageId: string; attached: number } | null> {
   const { db, subscriptionId, eventHash, threadTarget, rows, link, transport } = options;
+  const clock = options.now ?? Date.now;
+  const started = clock();
   const plan = planForward(rows);
   if (plan.send.length === 0 && plan.other === 0) return null;
   const now = Date.now();
@@ -161,9 +174,14 @@ export async function forwardFeedbackAttachments(options: {
   if (!reply) {
     // Upload what is not uploaded yet, saving each id at once (null: not sent to Raft).
     const progress = parseProgress(state?.attachment_ids_json);
-    for (const row of plan.send) {
-      if (row.id in progress) continue;
-      const bytes = await transport.readObject(row.r2_key, MAX_FORWARDED_BYTES);
+    const pending = plan.send.filter((row) => !(row.id in progress));
+    const allowed = pending.length === 0 || await transport.canUpload();
+    let uploadedNow = 0;
+    for (const row of pending) {
+      // At least one file per attempt, so a slow upload still makes progress.
+      if (uploadedNow > 0 && clock() - started > UPLOAD_BUDGET_MS) throw new AttachmentsDeferred();
+      uploadedNow += 1;
+      const bytes = allowed ? await transport.readObject(row.r2_key, MAX_FORWARDED_BYTES) : null;
       progress[row.id] = bytes
         ? await transport.upload({ bytes, filename: row.filename, contentType: row.content_type ?? "application/octet-stream" })
         : null;
@@ -173,7 +191,7 @@ export async function forwardFeedbackAttachments(options: {
       ).bind(JSON.stringify(progress), Date.now(), subscriptionId, eventHash).run();
     }
     const ids = plan.send.map((row) => progress[row.id]).filter((id): id is string => !!id);
-    const built: Reply = { content: attachmentsReplyText(ids.length, rows.length - ids.length, link), ids };
+    const built: Reply = { content: attachmentsReplyText(ids.length, rows.length - ids.length, link), ids, files: rows.length };
     // Fixed once: a concurrent attempt that got here first decides the reply.
     await db.prepare(
       `UPDATE raft_notification_attachment_sends SET reply_json = ?1, updated_at = ?2
@@ -203,7 +221,7 @@ export async function forwardFeedbackAttachments(options: {
     // Raft refused the message with these attachments: say so in text, once.
     if (reply.ids.length > 0) {
       try {
-        const text = attachmentsReplyText(0, rows.length, link);
+        const text = attachmentsReplyText(0, reply.files, link);
         const sent = await transport.send({ target: threadTarget, content: text, attachmentIds: [], idempotencyKey: `${key}:text`.slice(0, 240) });
         await done(sent.messageId);
         return { messageId: sent.messageId, attached: 0 };

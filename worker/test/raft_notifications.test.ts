@@ -6,6 +6,7 @@ import { encryptP8 } from "../src/lib/asc_credentials";
 import { buildFeedbackCommentEvent, buildFeedbackStatusEvent } from "../src/lib/feedback_events";
 import { formatRaftNotificationCard } from "../src/lib/raft_notification_card";
 import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
+import { AttachmentsDeferred, forwardFeedbackAttachments, UPLOAD_BUDGET_MS } from "../src/lib/raft_feedback_attachments";
 import { appGalleryCardObjectKey, isReleaseChannelEvent, notificationObjectKey, sha256Hex } from "../src/lib/raft_notification_identity";
 import {
   handleConnectRaftBot,
@@ -298,7 +299,12 @@ describe("Hands-managed Raft notifications", () => {
     attach("c2", "trace.dmp", "application/x-minidump", 9, "comment-2", 8);
     attach("c3", "refused.png", "image/png", 9, "comment-3", 9);
     attach("c4", "ok.png", "image/png", 9, "comment-3", 10);
-    (env as any).APK_BUCKET = { get: async (key: string) => ({ size: 10, arrayBuffer: async () => new TextEncoder().encode(key).buffer }) };
+    // Another app's ticket with the same comment id is never read.
+    attach("x1", "foreign.png", "image/png", 9, "comment-1", 11, "reporter", "other-ticket");
+    (env as any).APK_BUCKET = {
+      head: async () => ({ size: 10 }),
+      get: async (key: string) => ({ size: 10, arrayBuffer: async () => new TextEncoder().encode(key).buffer }),
+    };
     // Raft binds a key to its target, content and attachments: a different reuse is refused.
     const committed = new Map<string, { body: string; messageId: string }>();
     const posts: Array<Record<string, any>> = [];
@@ -375,6 +381,30 @@ describe("Hands-managed Raft notifications", () => {
     expect((await request(repeat, "d5")).status).toBe(200);
     expect(sqlite.prepare("SELECT message_id FROM raft_notification_attachment_sends WHERE event_hash = ?").get(hash))
       .toEqual({ message_id: "sent:unknown" });
+  });
+
+  it("stops starting uploads when the attempt's time budget is spent, and the next attempt resumes", async () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(readFileSync(new URL("../../migrations/sql/0124_raft_notification_attachments.sql", import.meta.url), "utf8"));
+    const db = d1(sqlite);
+    const rows = ["a", "b", "c"].map((id) => ({ id, filename: `${id}.png`, content_type: "image/png", size_bytes: 10, r2_key: id }));
+    let time = 0;
+    const uploads: string[] = [];
+    const sends: Array<{ content: string; attachmentIds: string[] }> = [];
+    const transport = {
+      canUpload: async () => true,
+      readObject: async () => new ArrayBuffer(1),
+      // Each upload takes most of the budget.
+      upload: async (file: { filename: string }) => { uploads.push(file.filename); time += UPLOAD_BUDGET_MS - 1000; return `id-${file.filename}`; },
+      send: async (request: { content: string; attachmentIds: string[] }) => { sends.push(request); return { messageId: "reply-1" }; },
+    };
+    const run = () => forwardFeedbackAttachments({ db, subscriptionId: "s", eventHash: "h", threadTarget: "#c:12345678", rows, link: null, transport, now: () => time });
+    await expect(run()).rejects.toBeInstanceOf(AttachmentsDeferred);
+    expect(uploads).toEqual(["a.png", "b.png"]);
+    time = 0;
+    expect(await run()).toEqual({ messageId: "reply-1", attached: 3 });
+    expect(uploads).toEqual(["a.png", "b.png", "c.png"]);
+    expect(sends).toEqual([expect.objectContaining({ attachmentIds: ["id-a.png", "id-b.png", "id-c.png"] })]);
   });
 
   it("announces only the feedback its filter lets through: kinds and reporters' servers", async () => {
