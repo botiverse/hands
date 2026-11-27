@@ -1,6 +1,6 @@
 {
   "name": "@botiverse/hands-electron",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Hands for Electron apps — Crashpad crash reporting (main + renderer) and macOS update patches for electron-updater.",
   "author": {
     "name": "jiacheng",
