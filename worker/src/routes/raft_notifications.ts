@@ -771,7 +771,7 @@ async function botApi(env: Env, key: string, path: string, init: { json?: unknow
   return record;
 }
 
-/** Sends a feedback event's images to its thread as Raft attachments (see raft_feedback_attachments). */
+/** Sends a feedback event's images to its thread as Raft attachments, and counts and links its other files (see raft_feedback_attachments). */
 async function forwardEventAttachments(
   env: Env, bot: BotInstallationRow, row: { id: string; app_id: string; channel_target: string },
   event: string, eventBody: Record<string, unknown>, eventHash: string, objectKey: string,

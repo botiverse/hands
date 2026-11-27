@@ -4,8 +4,11 @@
 // reply in the ticket's thread, carrying them as Raft attachments, so the team
 // sees them without opening Hands. Only common image types are forwarded, at
 // most MAX_FORWARDED of at most MAX_FORWARDED_BYTES each and MAX_TOTAL_BYTES in
-// all; the reply counts the other files and links to the ticket. An event with
-// no image at all (a crash's minidump, a log) gets no reply.
+// all; the reply counts the other files and links to the ticket. Diagnostics an
+// app attaches on its own (a diagnostics zip, a crash's minidump) are left out:
+// an event with only those gets no reply; so do the logs an SDK files with a
+// crash or error report. Any other file a reporter attached (a recording, a
+// log) is counted and linked even when there is no image.
 //
 // The work survives a delivery attempt that is cut off: each upload's Raft id
 // is saved as soon as it exists, and the reply (text and ids) is fixed once,
@@ -18,6 +21,7 @@ export const MAX_TOTAL_BYTES = 15 * 1024 * 1024;
 /** No new upload starts this long after forwarding began: the delivery attempt
  * has a deadline, and the next attempt resumes from the saved uploads. */
 export const UPLOAD_BUDGET_MS = 5_000;
+const MACHINE_KINDS = new Set(["crash", "error"]);
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/heic", "image/heif"]);
 
 export type FeedbackAttachmentRow = {
@@ -51,12 +55,16 @@ export async function feedbackEventAttachments(
   // A query failure must not block the notification itself: it goes without images.
   try {
     const { results } = await db.prepare(
-      `SELECT a.id, a.filename, a.content_type, a.size_bytes, a.r2_key
+      `SELECT a.id, a.filename, a.content_type, a.size_bytes, a.r2_key, t.kind AS ticket_kind
        FROM feedback_attachments a JOIN feedback_tickets t ON t.id = a.ticket_id
        WHERE a.ticket_id = ?1 AND t.app_id = ?2 AND a.visibility = 'reporter' AND ${where}
        ORDER BY a.created_at, a.id`,
-    ).bind(...binds).all<FeedbackAttachmentRow>();
-    return results ?? [];
+    ).bind(...binds).all<FeedbackAttachmentRow & { ticket_kind: string | null }>();
+    // A crash or error report's own files (crash log, ANR trace, native record)
+    // come from the SDK, not the reporter: only its images are of interest.
+    return (results ?? [])
+      .filter((row) => !(event === "feedback:new" && MACHINE_KINDS.has(row.ticket_kind ?? "") && !isForwardableImage(row)))
+      .map(({ ticket_kind: _kind, ...row }) => row);
   } catch (error) {
     console.warn(JSON.stringify({ hands: "raft_feedback_attachments_query_failed", why: String((error as Error)?.message ?? error).slice(0, 200) }));
     return [];
@@ -67,10 +75,19 @@ export function isForwardableImage(row: FeedbackAttachmentRow): boolean {
   return IMAGE_TYPES.has((row.content_type ?? "").toLowerCase());
 }
 
-/** Which attachments go to Raft, and how many are only mentioned. An event
- * without any image gets nothing. */
+/** A diagnostics bundle or minidump the app attached on its own, such as
+ * raft-feedback-diagnostics-<id>.zip or a crash's diagnostics-<ts>.zip. */
+export function isDiagnosticsBundle(row: FeedbackAttachmentRow): boolean {
+  const name = row.filename.toLowerCase();
+  const type = (row.content_type ?? "").toLowerCase();
+  if (type === "application/x-minidump" || name.endsWith(".dmp")) return true;
+  return /(^|[-_])diagnostics([-_.][^/\\]*)?\.zip$/.test(name);
+}
+
+/** Which attachments go to Raft, and how many are only mentioned. Diagnostics
+ * bundles are neither sent nor counted. */
 export function planForward(rows: FeedbackAttachmentRow[]): { send: FeedbackAttachmentRow[]; other: number } {
-  if (!rows.some(isForwardableImage)) return { send: [], other: 0 };
+  rows = rows.filter((row) => !isDiagnosticsBundle(row));
   const send: FeedbackAttachmentRow[] = [];
   let total = 0;
   for (const row of rows) {
@@ -152,7 +169,8 @@ export async function forwardFeedbackAttachments(options: {
   transport: AttachmentTransport;
   now?: () => number;
 }): Promise<{ messageId: string; attached: number } | null> {
-  const { db, subscriptionId, eventHash, threadTarget, rows, link, transport } = options;
+  const { db, subscriptionId, eventHash, threadTarget, link, transport } = options;
+  const rows = options.rows.filter((row) => !isDiagnosticsBundle(row));
   const clock = options.now ?? Date.now;
   const started = clock();
   const plan = planForward(rows);
