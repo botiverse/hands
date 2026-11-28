@@ -560,4 +560,51 @@ describe("Raft release notification cards", () => {
     expect(text).not.toContain("另有");
     expect(text.match(/较上一版本上升/g)).toHaveLength(1);
   });
+
+  it("labels main rows by distribution, gives Play and unconfirmed rows counts only, and shows a held flag", () => {
+    const base = {
+      version_name: "1.30.0", user_cleanup_count: 0, device_count: 2, device_count_excluding_cleanup: 2,
+      spike: false, spike_held: false,
+    };
+    const text = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android",
+        signature: "SystemKill@background",
+        alert_reason: "background_system_kill_daily_summary",
+        day: "2026-11-28",
+        total_count: 30, device_count: 20, user_cleanup_count: 0, total_count_excluding_cleanup: 30,
+        by_version: [
+          {
+            ...base, channel: "main", distribution: "hands", version_code: 13000015, version_codes: [13000015],
+            count: 20, count_excluding_cleanup: 20, active_devices: 20, coverage: { matched: 2, reporters: 2 },
+            rate_unavailable_reason: null, kills_per_active_device: 1, affected_device_share: 0.1,
+            baseline: { version_name: "1.29.0", version_codes: [12900011], window_start_day: "2026-11-17",
+              window_end_day: "2026-11-23", count: 14, active_device_days: 70, rate: 0.2, coverage: { matched: 9, reporters: 9 } },
+            baseline_unavailable_reason: null, spike_held: true,
+          },
+          {
+            ...base, channel: "main", distribution: "play", version_code: 13000016, version_codes: [13000016],
+            count: 7, count_excluding_cleanup: 7, active_devices: null, coverage: null,
+            rate_unavailable_reason: "distribution_not_comparable", kills_per_active_device: null, affected_device_share: null,
+            baseline: null, baseline_unavailable_reason: "distribution_not_comparable",
+          },
+          {
+            ...base, channel: "main", distribution: "unconfirmed", version_code: 13000017, version_codes: [13000017],
+            count: 3, count_excluding_cleanup: 3, active_devices: null, coverage: null,
+            rate_unavailable_reason: "distribution_not_comparable", kills_per_active_device: null, affected_device_share: null,
+            baseline: null, baseline_unavailable_reason: "distribution_not_comparable",
+          },
+        ],
+        top_devices: [],
+      },
+    });
+    expect(text).toContain("- main（Hands） · 1.30.0 (13000015): 20 次 / 2 台 · 当日活跃 20 台 · 覆盖 2/2 · 次数/已上报活跃设备 20/20 = 1.00"
+      + " · 受影响设备占活跃 10% · 基线 1.29.0 (12900011) 14/70 = 0.20 次/设备日（预警暂停，待核对基线和覆盖）");
+    expect(text).toContain("- main（Play） · 1.30.0 (13000016): 7 次 / 2 台 · 只给次数，不给比例和预警");
+    expect(text).toContain("- main（未确认归属） · 1.30.0 (13000017): 3 次 / 2 台 · 只给次数，不给比例和预警");
+    expect(text).not.toContain("较上一版本上升");
+    expect(text).toContain("main 按可核验的分发记录拆分");
+    expect(text).not.toContain("未分开比较");
+  });
 });

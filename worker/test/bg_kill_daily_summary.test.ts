@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { buildBackgroundSystemKillDailySummary, backgroundSystemKillSpike } from "../src/routes/feedback";
+import {
+  buildBackgroundSystemKillDailySummary,
+  backgroundSystemKillDistribution,
+  backgroundSystemKillSpike,
+} from "../src/routes/feedback";
 
 const dir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -35,8 +39,10 @@ function harness() {
   sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app', NULL, 'raft-android', 'Raft', 'android', 1)").run();
   sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('ch', 'app', 'main', 'Main', 1)").run();
   let n = 0;
+  const buildIds = new Map<number, string>();
   const build = (versionName: string, versionCode: number) => {
     n += 1;
+    buildIds.set(versionCode, `b${n}`);
     sqlite.prepare(
       `INSERT INTO builds (id, app_id, channel_id, product_type, release_type, version_name, version_code,
                            source, status, build_metadata_json, parsed_metadata_json, provenance_json, created_at, updated_at)
@@ -72,17 +78,36 @@ function harness() {
        VALUES (?, 'app', ?, 1, 'close', ?, 1, 1, ?)`,
     ).run(id, id, JSON.stringify({ crash_types: ["system_kill"], exit_descriptions: [description] }), category);
   };
+  /** A main release of an existing build; `activated` ones were offered by Hands. */
+  const release = (code: number, activated: boolean, status = activated ? "superseded" : "draft") => {
+    n += 1;
+    sqlite.prepare(
+      `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status, activated_at, created_by, created_at, updated_at)
+       VALUES (?, 'app', ?, 'ch', 'apk', 'stable', ?, ?, 'test', 1, 1)`,
+    ).run(`r${n}`, buildIds.get(code), status, activated ? 1 : null);
+  };
+  /** Hands main releases (activated) for these codes. */
+  const handsMain = (...codes: number[]) => { for (const c of codes) release(c, true); };
+  /** What Play's track poll recorded for a version code. */
+  const playObserved = (code: number, state = "RELEASE_LIFECYCLE_STATE_PUBLISHED", track = "production") => {
+    sqlite.prepare(
+      `INSERT INTO google_play_release_observations (app_id, package_name, play_track, version_code, state, revision, nonce, observed_at)
+       VALUES ('app', 'build.raft.app', ?, ?, ?, 1, 'n', 1)`,
+    ).run(track, code, state);
+  };
   const env = { DB: d1(sqlite) } as unknown as Env;
-  return { sqlite, env, build, pings, kill, rule };
+  return { sqlite, env, build, pings, kill, rule, release, handsMain, playObserved };
 }
 
 /**
- * One commit ships as preview N, Hands main N+1 and Play N+2 (Play reports the
- * main channel), so 1.30.0 is 13000014 on preview and 13000015/13000016 on main.
+ * Version codes 13000014 (preview) and 13000015/13000016 (main). Here every
+ * main code has an activated Hands main release, so main is one Hands row; the
+ * Hands/Play split is tested separately.
  */
-function release130(h: ReturnType<typeof harness>) {
+function release130(h: ReturnType<typeof harness>, { allHandsMain = true } = {}) {
   for (const [name, code] of [["1.29.0", 12900010], ["1.29.0", 12900011], ["1.29.0", 12900012],
     ["1.30.0", 13000014], ["1.30.0", 13000015], ["1.30.0", 13000016]] as const) h.build(name, code);
+  if (allHandsMain) h.handsMain(12900011, 12900012, 13000015, 13000016);
   h.pings("main", 12900011, "2026-11-10", "2026-11-25", 10);
   h.pings("main", 12900012, "2026-11-10", "2026-11-25", 10);
   h.pings("preview", 12900010, "2026-11-10", "2026-11-24", 3);
@@ -147,14 +172,88 @@ describe("daily background system kill summary", () => {
       active_device_days: 140,
     });
     expect(main.baseline!.rate).toBeCloseTo(0.1);
-    expect(main.spike).toBe(true);
+    expect(main.distribution).toBe("hands");
+    // Over twice the baseline, but Hands main flags are held until its baseline is checked.
+    expect(backgroundSystemKillSpike(main, main.baseline)).toBe(true);
+    expect(main).toMatchObject({ spike: false, spike_held: true });
 
     // Preview is compared with preview 1.29.0. Its rate is far higher, but 5
     // active devices and 3 reports are too few to flag.
     const preview = s.by_version[1]!;
     expect(preview).toMatchObject({ version_codes: [13000014], count: 3, active_devices: 5 });
     expect(preview.baseline).toMatchObject({ version_name: "1.29.0", version_codes: [12900010], count: 1, active_device_days: 21 });
-    expect(preview.spike).toBe(false);
+    expect(preview).toMatchObject({ distribution: null, spike: false, spike_held: false });
+  });
+
+  it("splits main by verifiable distribution records and keeps every report in exactly one row", async () => {
+    const h = harness();
+    release130(h, { allHandsMain: false });
+    // 1.29.0: 12900011 Hands main, 12900012 Play. 1.30.0: 13000015 Hands main
+    // (Play's build gets a main release that stays a draft), 13000016 Play.
+    h.handsMain(12900011, 13000015);
+    h.release(13000016, false);
+    h.playObserved(12900012);
+    h.playObserved(13000016);
+    h.playObserved(13000016, "RELEASE_LIFECYCLE_STATE_PUBLISHED", "internal");
+    // Both records: unconfirmed. Play only in review: no Play record, so unconfirmed.
+    h.build("1.30.0", 13000017);
+    h.handsMain(13000017);
+    h.playObserved(13000017);
+    h.build("1.30.0", 13000018);
+    h.playObserved(13000018, "RELEASE_LIFECYCLE_STATE_IN_REVIEW");
+    h.pings("main", 13000017, "2026-11-21", DAY, 4);
+    h.pings("main", 13000018, "2026-11-21", DAY, 4);
+    const t = window.startMs + 7_200_000;
+    h.kill({ channel: "main", versionName: "1.30.0", code: 13000017, device: "main-13000017-0", at: t });
+    h.kill({ channel: "main", versionName: "1.30.0", code: 13000018, device: "main-13000018-0", at: t });
+    h.kill({ channel: "main", versionName: "1.30.0", code: 13000018, device: "main-13000018-1", at: t, description: "SwipeUpClean" });
+    // A device seen on both Hands and Play rows is one device in the total.
+    h.kill({ channel: "main", versionName: "1.30.0", code: 13000016, device: "main-13000015-0", at: t + 1 });
+
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s.by_version.map((r) => [r.channel, r.distribution, r.version_codes])).toEqual([
+      ["main", "hands", [13000015]],
+      ["main", "play", [13000016]],
+      ["main", "unconfirmed", [13000017, 13000018]],
+      ["preview", null, [13000014]],
+    ]);
+    // Events add up, raw and excluding cleanup; devices are deduplicated in the total only.
+    const sum = (k: "count" | "count_excluding_cleanup" | "user_cleanup_count") => s.by_version.reduce((a, r) => a + r[k], 0);
+    expect(s.total_count).toBe(28);
+    expect(sum("count")).toBe(s.total_count);
+    expect(sum("count_excluding_cleanup")).toBe(s.total_count_excluding_cleanup);
+    expect(sum("user_cleanup_count")).toBe(s.user_cleanup_count);
+    expect(s.user_cleanup_count).toBe(3);
+    expect(s.by_version.reduce((a, r) => a + r.device_count, 0)).toBeGreaterThan(s.device_count);
+
+    const [hands, play, unconfirmed] = s.by_version;
+    // Hands main: its own codes only, today and in the baseline (12900011, 10 devices a day).
+    expect(hands).toMatchObject({
+      count: 11, user_cleanup_count: 2, count_excluding_cleanup: 9, active_devices: 15,
+      baseline: { version_codes: [12900011], count: 14, active_device_days: 70 },
+      spike: false, spike_held: true,
+    });
+    expect(hands!.kills_per_active_device).toBeCloseTo(9 / 15);
+    for (const row of [play!, unconfirmed!]) {
+      expect(row).toMatchObject({
+        active_devices: null, coverage: null, kills_per_active_device: null, affected_device_share: null,
+        rate_unavailable_reason: "distribution_not_comparable", baseline: null,
+        baseline_unavailable_reason: "distribution_not_comparable", spike: false, spike_held: false,
+      });
+    }
+    expect(play).toMatchObject({ count: 11, count_excluding_cleanup: 11 });
+    expect(unconfirmed).toMatchObject({ count: 3, user_cleanup_count: 1, count_excluding_cleanup: 2 });
+  });
+
+  it("classifies a main version code only when exactly one kind of record names it", () => {
+    const hands = new Set([1, 3]);
+    const play = new Set([2, 3]);
+    expect(backgroundSystemKillDistribution("main", 1, hands, play)).toBe("hands");
+    expect(backgroundSystemKillDistribution("main", 2, hands, play)).toBe("play");
+    expect(backgroundSystemKillDistribution("main", 3, hands, play)).toBe("unconfirmed");
+    expect(backgroundSystemKillDistribution("main", 4, hands, play)).toBe("unconfirmed");
+    expect(backgroundSystemKillDistribution("main", null, hands, play)).toBe("unconfirmed");
+    expect(backgroundSystemKillDistribution("preview", 2, hands, play)).toBeNull();
   });
 
   it("does not flag when the rate is within twice the baseline", async () => {

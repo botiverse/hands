@@ -3210,6 +3210,16 @@ const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
  * recorded day), with the same coverage check, and is flagged only when both
  * sides have enough active devices and reports.
  *
+ * Play and Hands main builds both report the `main` channel, so main rows are
+ * split by distribution, from verifiable records only: a version code with a
+ * main release that was ever activated in Hands is Hands main; one Play shows
+ * published on a track is Play; one with both or neither (or no code) is
+ * unconfirmed. Play and unconfirmed rows give counts only. Play builds never
+ * check Hands for updates, so their activity records are incomplete. Hands
+ * main rows give rates and a baseline over Hands main codes only, but are not
+ * flagged until that baseline and its coverage have been checked
+ * (BG_KILL_MAIN_SPIKE_HELD).
+ *
  * Reports matching a rule whose category is `user_cleanup` (cleanup the user
  * started) are counted separately and left out of rates. Rules are not applied
  * to background kills at ingest, so the rule's conditions are matched here.
@@ -3224,13 +3234,33 @@ const BG_KILL_MIN_COUNT = 10;
 const BG_KILL_MIN_COVERAGE = 0.9;
 const BG_KILL_SPIKE_MULTIPLIER = 2;
 const DAY_MS = 86_400_000;
+/** Hands main rows are never flagged while this holds (see above). */
+const BG_KILL_MAIN_SPIKE_HELD = true;
+
+/** How a `main` build was distributed; null on other channels. */
+export type BackgroundSystemKillDistribution = "hands" | "play" | "unconfirmed";
+
+/** Classify a `main` version code from verifiable records; both or neither is unconfirmed. */
+export function backgroundSystemKillDistribution(
+  channel: string,
+  versionCode: number | null,
+  handsMainCodes: ReadonlySet<number>,
+  playCodes: ReadonlySet<number>,
+): BackgroundSystemKillDistribution | null {
+  if (channel !== "main") return null;
+  if (versionCode === null) return "unconfirmed";
+  const hands = handsMainCodes.has(Number(versionCode));
+  const play = playCodes.has(Number(versionCode));
+  return hands && !play ? "hands" : play && !hands ? "play" : "unconfirmed";
+}
 
 export type BackgroundSystemKillBaselineUnavailableReason =
   | "no_ping_data"
   | "no_activity_for_version"
   | "no_previous_version"
   | "insufficient_history"
-  | "low_coverage";
+  | "low_coverage"
+  | "distribution_not_comparable";
 
 /** Reporting devices (outside user cleanup) and how many had an activity record on the row's channel and version that day. */
 export interface BackgroundSystemKillCoverage {
@@ -3255,6 +3285,8 @@ export interface BackgroundSystemKillDailySummaryBaseline {
 
 export interface BackgroundSystemKillDailySummaryVersionEntry {
   channel: string;
+  /** On `main`: Hands main, Play or unconfirmed; null (or absent in older summaries) elsewhere. */
+  distribution: BackgroundSystemKillDistribution | null;
   version_name: string;
   /** Highest version code in the row (one of version_codes), for older readers. */
   version_code: number | null;
@@ -3270,7 +3302,7 @@ export interface BackgroundSystemKillDailySummaryVersionEntry {
   /** Null when there are no complete activity records for the day. */
   coverage: BackgroundSystemKillCoverage | null;
   /** Why kills_per_active_device is null although there are reports. */
-  rate_unavailable_reason: "no_ping_data" | "no_activity_for_version" | "low_coverage" | null;
+  rate_unavailable_reason: "no_ping_data" | "no_activity_for_version" | "low_coverage" | "distribution_not_comparable" | null;
   /** count_excluding_cleanup / active_devices (reports per active device, not a device rate). */
   kills_per_active_device: number | null;
   /** device_count_excluding_cleanup / active_devices (share of active devices affected). */
@@ -3278,6 +3310,8 @@ export interface BackgroundSystemKillDailySummaryVersionEntry {
   baseline: BackgroundSystemKillDailySummaryBaseline | null;
   baseline_unavailable_reason: BackgroundSystemKillBaselineUnavailableReason | null;
   spike: boolean;
+  /** Flagging is switched off for this row (Hands main until its baseline is checked). */
+  spike_held: boolean;
 }
 
 export interface BackgroundSystemKillDailySummary {
@@ -3335,6 +3369,11 @@ function compareChannels(a: string, b: string): number {
   return rank(a) - rank(b) || a.localeCompare(b);
 }
 
+function compareDistributions(a: BackgroundSystemKillDistribution | null, b: BackgroundSystemKillDistribution | null): number {
+  const rank = (d: BackgroundSystemKillDistribution | null) => (d === "play" ? 1 : d === "unconfirmed" ? 2 : 0);
+  return rank(a) - rank(b);
+}
+
 /**
  * Whether today's rate warrants a flag against the baseline: both sides need
  * at least 10 active devices (the baseline as a daily average), today needs at
@@ -3374,7 +3413,7 @@ export async function buildBackgroundSystemKillDailySummary(
     .all<Parameters<typeof ruleFromRow>[0]>();
   // Report metadata is read only to match cleanup rules.
   const withMetadata = ruleRows.results.length > 0 ? "t.metadata_json" : "NULL";
-  const [totalsRow, ticketRows, deviceRows, buildRows, dayPings, firstSeenRows, pingStart] = await Promise.all([
+  const [totalsRow, ticketRows, deviceRows, buildRows, dayPings, firstSeenRows, pingStart, handsMainRows, playRows] = await Promise.all([
     env.DB.prepare(
       `SELECT COUNT(*) AS total_count, COUNT(DISTINCT COALESCE(t.device_id, 'unknown')) AS device_count
        FROM feedback_tickets t
@@ -3452,7 +3491,33 @@ export async function buildBackgroundSystemKillDailySummary(
     env.DB.prepare(`SELECT MIN(day) AS d FROM device_version_days WHERE app_id = ?1`)
       .bind(appId)
       .first<{ d: string | null }>(),
+    // Hands main: a main release that was ever activated (Play builds get a
+    // main release that stays a draft).
+    env.DB.prepare(
+      `SELECT DISTINCT b.version_code FROM releases r
+       JOIN channels ch ON ch.id = r.channel_id
+       JOIN builds b ON b.id = r.build_id
+       WHERE r.app_id = ?1 AND ch.slug = 'main' AND r.activated_at IS NOT NULL AND b.version_code IS NOT NULL`,
+    )
+      .bind(appId)
+      .all<{ version_code: number }>(),
+    // Play: a version code Play showed published on any track.
+    env.DB.prepare(
+      `SELECT DISTINCT version_code FROM google_play_release_observations
+       WHERE app_id = ?1 AND state GLOB '*_PUBLISHED' AND state NOT GLOB '*NOT_PUBLISHED'`,
+    )
+      .bind(appId)
+      .all<{ version_code: number }>(),
   ]);
+  const handsMainCodes = new Set(handsMainRows.results.map((r) => Number(r.version_code)));
+  const playCodes = new Set(playRows.results.map((r) => Number(r.version_code)));
+  const distOf = (channel: string, code: number | null) =>
+    backgroundSystemKillDistribution(channel, code, handsMainCodes, playCodes);
+  // Rows, activity and first-seen days are keyed by channel and distribution.
+  const rowChannel = (channel: string, code: number | null): string => {
+    const d = distOf(channel, code);
+    return d === null ? channel : `${channel}\u0001${d}`;
+  };
 
   const cleanupRules = ruleRows.results.map(ruleFromRow);
   // Version code -> version name: the app's builds, then what reports carried.
@@ -3466,7 +3531,8 @@ export async function buildBackgroundSystemKillDailySummary(
   const nameOf = (code: number | null): string | null => (code === null ? null : nameByCode.get(Number(code)) ?? null);
 
   type Group = {
-    channel: string; versionName: string; codes: Set<number>; count: number; cleanup: number;
+    channel: string; distribution: BackgroundSystemKillDistribution | null; rowChannel: string;
+    versionName: string; codes: Set<number>; count: number; cleanup: number;
     devices: Set<string>; devicesExcl: Set<string>;
   };
   const groups = new Map<string, Group>();
@@ -3474,10 +3540,14 @@ export async function buildBackgroundSystemKillDailySummary(
   for (const t of ticketRows.results) {
     // Named by the build for its code where Hands has one, as activity records are.
     const versionName = nameOf(t.version_code) ?? t.version_name;
-    const key = `${t.channel}\u0000${versionName}`;
+    const rc = rowChannel(t.channel, t.version_code);
+    const key = `${rc}\u0000${versionName}`;
     let g = groups.get(key);
     if (!g) {
-      g = { channel: t.channel, versionName, codes: new Set(), count: 0, cleanup: 0, devices: new Set(), devicesExcl: new Set() };
+      g = {
+        channel: t.channel, distribution: distOf(t.channel, t.version_code), rowChannel: rc,
+        versionName, codes: new Set(), count: 0, cleanup: 0, devices: new Set(), devicesExcl: new Set(),
+      };
       groups.set(key, g);
     }
     if (t.version_code !== null) g.codes.add(Number(t.version_code));
@@ -3503,7 +3573,7 @@ export async function buildBackgroundSystemKillDailySummary(
   for (const p of dayPings.results) {
     const name = nameOf(p.version_code);
     if (name === null) continue;
-    const key = `${p.channel}\u0000${name}`;
+    const key = `${rowChannel(p.channel, p.version_code)}\u0000${name}`;
     activeCounts.set(key, (activeCounts.get(key) ?? 0) + Number(p.n));
   }
   // Which channel/version names each reporting device has activity records for that day.
@@ -3522,7 +3592,7 @@ export async function buildBackgroundSystemKillDailySummary(
       if (name === null) continue;
       let set = reporterActivity.get(r.device_id);
       if (!set) reporterActivity.set(r.device_id, (set = new Set()));
-      set.add(`${r.channel}\u0000${name}`);
+      set.add(`${rowChannel(r.channel, r.version_code)}\u0000${name}`);
     }
   }
   // Per channel: version name -> {codes seen in activity records, first day seen}.
@@ -3530,8 +3600,9 @@ export async function buildBackgroundSystemKillDailySummary(
   for (const r of firstSeenRows.results) {
     const name = nameOf(r.version_code);
     if (name === null) continue;
-    let byName = pingVersions.get(r.channel);
-    if (!byName) pingVersions.set(r.channel, (byName = new Map()));
+    const rc = rowChannel(r.channel, r.version_code);
+    let byName = pingVersions.get(rc);
+    if (!byName) pingVersions.set(rc, (byName = new Map()));
     const v = byName.get(name);
     if (!v) byName.set(name, { codes: new Set([Number(r.version_code)]), firstDay: r.first_day });
     else {
@@ -3542,22 +3613,27 @@ export async function buildBackgroundSystemKillDailySummary(
 
   const ordered = [...groups.values()].sort((a, b) =>
     compareChannels(a.channel, b.channel)
+    || compareDistributions(a.distribution, b.distribution)
     || Math.max(-1, ...b.codes) - Math.max(-1, ...a.codes)
     || b.count - a.count).slice(0, BG_KILL_SUMMARY_MAX_ROWS);
 
   const byVersion: BackgroundSystemKillDailySummaryVersionEntry[] = [];
   for (const g of ordered) {
     const excl = g.count - g.cleanup;
-    const channelVersions = pingVersions.get(g.channel);
+    const channelVersions = pingVersions.get(g.rowChannel);
     const current = channelVersions?.get(g.versionName);
     const codes = new Set<number>([...g.codes, ...(current?.codes ?? [])]);
-    const groupKey = `${g.channel}\u0000${g.versionName}`;
-    const activeDevices = pingDataToday ? (activeCounts.get(groupKey) ?? 0) : null;
+    const groupKey = `${g.rowChannel}\u0000${g.versionName}`;
+    // Play and unconfirmed main rows: counts only.
+    const countsOnly = g.distribution === "play" || g.distribution === "unconfirmed";
+    const activeDevices = pingDataToday && !countsOnly ? (activeCounts.get(groupKey) ?? 0) : null;
     let coverage: BackgroundSystemKillCoverage | null = null;
     let rateReason: BackgroundSystemKillDailySummaryVersionEntry["rate_unavailable_reason"] = null;
     let kills: number | null = null;
     let share: number | null = null;
-    if (!pingDataToday) {
+    if (countsOnly) {
+      rateReason = "distribution_not_comparable";
+    } else if (!pingDataToday) {
       rateReason = excl > 0 ? "no_ping_data" : null;
     } else {
       let matched = 0;
@@ -3575,7 +3651,9 @@ export async function buildBackgroundSystemKillDailySummary(
 
     let baseline: BackgroundSystemKillDailySummaryBaseline | null = null;
     let reason: BackgroundSystemKillBaselineUnavailableReason | null = null;
-    if (pingSince === null) {
+    if (countsOnly) {
+      reason = "distribution_not_comparable";
+    } else if (pingSince === null) {
       reason = "no_ping_data";
     } else if (!current || !channelVersions) {
       reason = "no_activity_for_version";
@@ -3669,8 +3747,10 @@ export async function buildBackgroundSystemKillDailySummary(
     }
 
     const sortedCodes = [...codes].sort((a, b) => a - b);
+    const spikeHeld = BG_KILL_MAIN_SPIKE_HELD && g.distribution === "hands";
     const entry: BackgroundSystemKillDailySummaryVersionEntry = {
       channel: g.channel,
+      distribution: g.distribution,
       version_name: g.versionName,
       version_code: sortedCodes.length ? sortedCodes[sortedCodes.length - 1]! : null,
       version_codes: sortedCodes,
@@ -3687,8 +3767,9 @@ export async function buildBackgroundSystemKillDailySummary(
       baseline,
       baseline_unavailable_reason: baseline ? null : reason,
       spike: false,
+      spike_held: spikeHeld,
     };
-    entry.spike = !rowsTruncated && backgroundSystemKillSpike(entry, baseline);
+    entry.spike = !rowsTruncated && !spikeHeld && backgroundSystemKillSpike(entry, baseline);
     byVersion.push(entry);
   }
   // Flagged rows first, so a message that shows only some rows keeps them.
