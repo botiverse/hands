@@ -40,9 +40,9 @@ class DeltaCompressionTest {
     }
 
     @Test
-    fun `without the native library zucchini patches are not declared`() {
-        // JVM unit tests cannot load libhandscrash.so.
-        assertEquals(DeltaUpdater.supportedAlgorithms(false), DeltaUpdater.SUPPORTED_ALGORITHMS)
+    fun `zucchini is declared first when the native applier loads`() {
+        // Unit tests load the host build of libhandscrash.so, which carries it.
+        assertEquals(DeltaUpdater.supportedAlgorithms(true), DeltaUpdater.SUPPORTED_ALGORITHMS)
     }
 
     @Test

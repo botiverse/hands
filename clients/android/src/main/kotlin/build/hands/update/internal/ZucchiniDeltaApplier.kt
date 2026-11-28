@@ -14,9 +14,23 @@ import java.util.function.BiFunction
  * (see `src/main/cpp/hands_zucchini.cc`).
  */
 internal object ZucchiniNative {
-    /** The applier ships in the same library as the bundled zlib. */
-    val isAvailable: Boolean
-        get() = BundledZlib.isAvailable
+    /**
+     * True when the native library is loaded and has the applier. It ships in
+     * the same library as the bundled zlib; the probe also guards against a
+     * library built without it. Never throws.
+     */
+    val isAvailable: Boolean by lazy {
+        try {
+            BundledZlib.isAvailable && nativeAbiVersion() == ABI_VERSION
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /** Bumped if [nativeApply]'s contract changes. */
+    private const val ABI_VERSION = 1
+
+    @JvmStatic external fun nativeAbiVersion(): Int
 
     /**
      * Applies the Zucchini patch at [patchPath] to [oldPath], writing the

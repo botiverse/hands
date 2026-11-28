@@ -14,11 +14,11 @@ import org.junit.Test
 
 class HandsClientTest {
     @Test
-    fun `update check declares the delta algorithms this SDK applies, xz first`() = runBlocking {
+    fun `update check declares the delta algorithms this SDK applies, zucchini first`() = runBlocking {
         val request = execute(null)
 
         assertEquals(
-            "archive-patcher-v1+xz,archive-patcher-v1+gzip",
+            "archive-patcher-zucchini-v1+xz,archive-patcher-v1+xz,archive-patcher-v1+gzip",
             request.header("X-Hands-Delta-Algorithms"),
         )
     }

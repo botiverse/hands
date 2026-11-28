@@ -59,21 +59,56 @@ val buildHostBundledZlib by tasks.registering(Exec::class) {
     val cppDir = file("src/main/cpp")
     val zlibSources = listOf("adler32.c", "crc32.c", "deflate.c", "trees.c", "zutil.c")
         .map { File(cppDir, "zlib/$it") }
-    inputs.files(zlibSources + fileTree(File(cppDir, "zlib")) { include("*.h") } + File(cppDir, "hands_zlib_deflater.c"))
+    // The Zucchini applier, as in CMakeLists.txt, so JVM tests apply real patches.
+    val zucchiniSources = listOf(
+        "address_translator", "buffer_sink", "buffer_source", "crc32", "disassembler",
+        "disassembler_no_op", "element_detection", "equivalence_map", "image_index",
+        "patch_reader", "reference_set", "target_pool", "zucchini_apply", "targets_affinity",
+        "encoded_view", "zucchini_capi", "disassembler_dex", "disassembler_elf", "reloc_elf",
+        "rel32_finder", "rel32_utils", "arm_utils", "abs32_utils",
+    ).map { File(cppDir, "zucchini/components/zucchini/$it.cc") }
+    inputs.files(
+        zlibSources + fileTree(File(cppDir, "zlib")) { include("*.h") } + File(cppDir, "hands_zlib_deflater.c") +
+            zucchiniSources + fileTree(File(cppDir, "zucchini")) { include("**/*.h") } + File(cppDir, "hands_zucchini.cc")
+    )
     outputs.dir(hostBundledZlibDir)
-    // A ~1 s compile; always rebuild so tests never load a stale library.
+    // Always rebuild so tests never load a stale library; objects compile in
+    // parallel (a few seconds, mostly Zucchini).
     outputs.upToDateWhen { false }
     val javaHome = File(System.getProperty("java.home"))
     val isMac = System.getProperty("os.name").lowercase().contains("mac")
     val outFile = hostBundledZlibDir.get().file(if (isMac) "libhandscrash.dylib" else "libhandscrash.so").asFile
-    doFirst { outFile.parentFile.mkdirs() }
-    commandLine(
-        listOf(
-            "cc", "-shared", "-fPIC", "-O2", "-std=c11", "-DZ_PREFIX", "-fvisibility=hidden",
-            "-I${javaHome}/include", "-I${javaHome}/include/${if (isMac) "darwin" else "linux"}",
-            File(cppDir, "hands_zlib_deflater.c").path,
-        ) + zlibSources.map { it.path } + listOf("-o", outFile.path)
-    )
+    val objDir = layout.buildDirectory.dir("host-bundled-zlib-obj").get().asFile
+    val script = File(objDir, "build.sh")
+    val jni = listOf("-I${javaHome}/include", "-I${javaHome}/include/${if (isMac) "darwin" else "linux"}")
+    val cFlags = listOf("-fPIC", "-O2", "-std=c11", "-DZ_PREFIX", "-fvisibility=hidden") + jni
+    val cxxFlags = listOf(
+        "-fPIC", "-O1", "-std=c++20", "-fvisibility=hidden", "-fexceptions", "-DNDEBUG", "-w",
+        "-DZUCCHINI_ENABLE_DEX=1", "-DZUCCHINI_ENABLE_ELF=1",
+        "-I${File(cppDir, "zucchini")}", "-I${File(cppDir, "zucchini/shim")}",
+    ) + jni
+    doFirst {
+        outFile.parentFile.mkdirs()
+        objDir.deleteRecursively()
+        objDir.mkdirs()
+        fun quote(arg: String) = "'" + arg.replace("'", "'\\''") + "'"
+        fun compile(compiler: String, flags: List<String>, source: File): String {
+            val obj = File(objDir, "${source.name}.o")
+            return (listOf(compiler) + flags + listOf("-c", source.path, "-o", obj.path)).joinToString(" ") { quote(it) }
+        }
+        val jobs = (zlibSources + File(cppDir, "hands_zlib_deflater.c")).map { compile("cc", cFlags, it) } +
+            (zucchiniSources + File(cppDir, "hands_zucchini.cc")).map { compile("c++", cxxFlags, it) }
+        script.writeText(
+            buildString {
+                appendLine("set -e")
+                appendLine("pids=")
+                jobs.forEach { appendLine("$it & pids=\"\$pids \$!\"") }
+                appendLine("for pid in \$pids; do wait \$pid; done")
+                appendLine("c++ -shared ${quote(objDir.path)}/*.o -o ${quote(outFile.path)}")
+            }
+        )
+    }
+    commandLine("sh", script.path)
 }
 
 val testAndroidElfVerifier by tasks.registering(Exec::class) {

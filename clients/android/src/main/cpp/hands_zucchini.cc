@@ -112,6 +112,12 @@ jint Apply(const char* old_path, const char* patch_path, const char* out_path, j
 
 }  // namespace
 
+// Lets ZucchiniNative.isAvailable confirm the applier is in this library.
+extern "C" JNIEXPORT jint JNICALL
+Java_build_hands_update_internal_ZucchiniNative_nativeAbiVersion(JNIEnv*, jclass) {
+  return 1;
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_build_hands_update_internal_ZucchiniNative_nativeApply(
     JNIEnv* env, jclass, jstring old_path, jstring patch_path, jstring out_path, jlong max_new_size) {
