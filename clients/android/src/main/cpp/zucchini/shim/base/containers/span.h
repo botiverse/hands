@@ -60,7 +60,12 @@ class span {
   constexpr size_type size_bytes() const noexcept { return impl_.size_bytes(); }
   [[nodiscard]] constexpr bool empty() const noexcept { return impl_.empty(); }
 
-  constexpr reference operator[](size_type idx) const { return impl_[idx]; }
+  // Hands: bounds are CHECKed like Chromium's base::span (a failed CHECK
+  // throws, see base/logging.h) instead of being undefined behavior.
+  constexpr reference operator[](size_type idx) const {
+    CHECK_LT(idx, size());
+    return impl_[idx];
+  }
 
   constexpr iterator begin() const noexcept { return impl_.begin(); }
   constexpr iterator end() const noexcept { return impl_.end(); }
@@ -74,18 +79,28 @@ class span {
   constexpr reverse_iterator crbegin() const noexcept { return impl_.rbegin(); }
   constexpr reverse_iterator crend() const noexcept { return impl_.rend(); }
 
-  constexpr reference front() const { return impl_.front(); }
-  constexpr reference back() const { return impl_.back(); }
+  constexpr reference front() const {
+    CHECK(!empty());
+    return impl_.front();
+  }
+  constexpr reference back() const {
+    CHECK(!empty());
+    return impl_.back();
+  }
 
   constexpr span<T, std::dynamic_extent> subspan(size_type offset, size_type count = std::dynamic_extent) const {
+    CHECK_LE(offset, size());
+    CHECK(count == std::dynamic_extent || count <= size() - offset);
     return span<T, std::dynamic_extent>(impl_.subspan(offset, count));
   }
 
   constexpr span<T, std::dynamic_extent> first(size_type count) const {
+    CHECK_LE(count, size());
     return span<T, std::dynamic_extent>(impl_.first(count));
   }
 
   constexpr span<T, std::dynamic_extent> last(size_type count) const {
+    CHECK_LE(count, size());
     return span<T, std::dynamic_extent>(impl_.last(count));
   }
 

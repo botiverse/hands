@@ -44,5 +44,7 @@ set_source_files_properties(hands_zucchini.cc PROPERTIES COMPILE_OPTIONS "-fexce
 target_compile_options(handscrash PRIVATE -Wall -Wextra -Werror -fvisibility=hidden)
 # NDK r26 defaults to 4 KB PT_LOAD alignment. Keep the supported r26 toolchain
 # while emitting one binary that can load on both 4 KB and 16 KB Android.
-target_link_options(handscrash PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL")
+target_link_options(handscrash PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,--gc-sections" "-Wl,--exclude-libs,ALL"
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/handscrash.map")
+set_target_properties(handscrash PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/handscrash.map)
 # JNIEXPORT carries default visibility, so the entry point stays exported.

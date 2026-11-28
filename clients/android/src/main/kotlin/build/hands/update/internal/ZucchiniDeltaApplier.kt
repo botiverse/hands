@@ -68,7 +68,7 @@ internal class ZucchiniDeltaApplier(private val tempDir: File) : DeltaApplier {
         val patch = File.createTempFile("hands-zucchini", ".patch", tempDir)
         val newBlob = File.createTempFile("hands-zucchini", ".new", tempDir)
         try {
-            patch.outputStream().use { deltaIn.copyTo(it) }
+            patch.outputStream().use { spool(deltaIn, it) }
             val status = ZucchiniNative.nativeApply(oldBlob.path, patch.path, newBlob.path, MAX_NEW_BLOB_BYTES)
             if (status != 0) throw IOException("zucchini apply failed: status=$status")
             newBlob.inputStream().use { it.copyTo(newBlobOut) }
@@ -78,7 +78,27 @@ internal class ZucchiniDeltaApplier(private val tempDir: File) : DeltaApplier {
         }
     }
 
+    /** Copies the patch, refusing one larger than [MAX_PATCH_BYTES]. */
+    private fun spool(input: InputStream, output: OutputStream) {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return
+            total += read
+            if (total > MAX_PATCH_BYTES) throw IOException("zucchini patch exceeds $MAX_PATCH_BYTES bytes")
+            output.write(buffer, 0, read)
+        }
+    }
+
     internal companion object {
+        /**
+         * Upper bound on the decompressed Zucchini delta. Real patches are a
+         * fraction of the APK; this only stops a corrupt stream from filling
+         * the disk.
+         */
+        const val MAX_PATCH_BYTES = 1L shl 30
+
         /**
          * Upper bound on the delta-friendly new blob a patch may declare: an
          * APK with every entry uncompressed. Far above any real app, it only

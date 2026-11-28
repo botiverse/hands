@@ -19,6 +19,10 @@ unmodified except:
   shim/base/numerics/safe_conversions.h
                                       FatalLogStream throws the same exception
                                       instead of printing and aborting.
+  shim/base/containers/span.h         operator[], front/back, subspan, first
+                                      and last CHECK their bounds like
+                                      Chromium's base::span (and so throw),
+                                      instead of undefined behavior.
   shim/base/format_macros.h           PRIuS/PRIdS are "zu"/"td" instead of the
                                       MSVC-only "Iu"/"Id".
 
