@@ -278,7 +278,7 @@ HandsAnalytics.reportDevice(context, baseUrl, appSlug, versionName, versionCode,
 
 ## 设备分析
 
-`Hands.install(...)` 已发送轻量级启动或安装指标请求，每次安装每天最多一次，用于控制台的活跃设备及版本分布视图，无需另行调用。这不是真正的在线心跳，不包含个人身份信息，仅包含每次安装随机生成的设备 ID 以及构建和操作系统元数据。传入 `reportDeviceAnalytics = false` 可关闭。
+`Hands.install(...)` 已发送轻量级启动或安装指标请求：从 `0.16.1` 起每次安装每个 UTC 日最多一次，版本号或渠道变化后的首次启动会再发一次（此前为每 24 小时最多一次），用于控制台的活跃设备及版本分布视图，无需另行调用。这不是真正的在线心跳，不包含个人身份信息，仅包含每次安装随机生成的设备 ID 以及构建和操作系统元数据。传入 `reportDeviceAnalytics = false` 可关闭。
 
 ## 说明
 

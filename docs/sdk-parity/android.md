@@ -27,7 +27,7 @@ or GitHub Packages publication task may write.
   disk/battery/thermal/commit.
 - **Feedback** — `HandsFeedback.submit()` multipart; ≤9 attachments; ≤10 MB
   inline, ≤200 MB via presigned R2 PUT. No built-in UI/auto-screenshot.
-- **Device analytics** — `HandsAnalytics.reportDevice()`, 24h-throttled ping
+- **Device analytics** — `HandsAnalytics.reportDevice()`, ping once per UTC day and on version/channel change
   to `/public/v2/apps/{slug}/metrics`.
 - **Update checking (flagship)** — `UpdateChecker.checkAndInstall()`:
   staged-rollout hash bucketing, force_update, changelog, DownloadManager +
