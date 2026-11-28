@@ -19,6 +19,8 @@ unmodified except:
   shim/base/numerics/safe_conversions.h
                                       FatalLogStream throws the same exception
                                       instead of printing and aborting.
+  shim/base/format_macros.h           PRIuS/PRIdS are "zu"/"td" instead of the
+                                      MSVC-only "Iu"/"Id".
 
 Why: Android delta patches can carry a Zucchini delta between
 archive-patcher's delta-friendly blobs (algorithm
