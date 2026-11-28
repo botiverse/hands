@@ -56,8 +56,10 @@ installed `current_version_code` to the offered build, the response carries a
 `patch` object beside `asset` (`from_version_code`, `algorithm`,
 `download_url`, `size_bytes`, `target_sha256`). Hands stores each patch as
 `archive-patcher-v1+gzip` and as `archive-patcher-v1+xz` (about 30% smaller;
-LZMA2 dictionary of at most 16 MiB) and offers the smallest one whose algorithm
-the client declared in `delta_algorithms`. A client that declares nothing is
+LZMA2 dictionary of at most 16 MiB), and may also hold an
+`archive-patcher-zucchini-v1+xz` patch (a Zucchini delta inside the same
+container, applied by Android SDK 0.16.0+), and offers the smallest one whose
+algorithm the client declared in `delta_algorithms`. A client that declares nothing is
 offered only `archive-patcher-v1+gzip` (or an uncompressed
 `archive-patcher-v1` patch). A patch is offered only when it is under 70% of
 the full asset; `asset` always stays the fallback.

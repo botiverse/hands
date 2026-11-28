@@ -10730,6 +10730,37 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(unknownOnly.update_available).toBe(true);
     expect(unknownOnly.patch).toBeUndefined();
 
+    // A Zucchini patch goes only to a client that declares it, and is served like the others.
+    await seedAsset(env, "build-xz", "asset-xz-zucchini", {
+      artifactKind: "delta-patch",
+      arch: "arm64-v8a",
+      filetype: "zpatch.xz",
+      sizeBytes: 120,
+      r2Key: "apps/app-scope/from-10.zpatch.xz",
+      metadata: { from_version_code: 10, to_version_code: 20, algorithm: "archive-patcher-zucchini-v1+xz", target_sha256: "abc123" },
+    });
+    expect((await call(both)).patch).toMatchObject({ algorithm: "archive-patcher-v1+xz", size_bytes: 200 });
+    expect((await call()).patch).toMatchObject({ algorithm: "archive-patcher-v1+gzip" });
+    const sdk016 = await call({
+      "X-Hands-Delta-Algorithms": "archive-patcher-zucchini-v1+xz,archive-patcher-v1+xz,archive-patcher-v1+gzip",
+    });
+    expect(sdk016.patch).toMatchObject({ algorithm: "archive-patcher-zucchini-v1+xz", size_bytes: 120 });
+    env.APK_BUCKET = {
+      get: async (requestedKey: string) => requestedKey === "apps/app-scope/from-10.zpatch.xz"
+        ? { body: new Blob(["zp"]).stream(), httpEtag: '"zp"', writeHttpMetadata: () => undefined }
+        : null,
+    };
+    const zUrl = new URL(sdk016.patch.download_url);
+    const zDownload = await handlePublicR2Download(
+      makePublicDownloadContext(env, decodeURIComponent(zUrl.pathname.replace("/public/r2/", "")), {
+        expires: zUrl.searchParams.get("expires") ?? undefined,
+        sig: zUrl.searchParams.get("sig") ?? undefined,
+      }),
+    );
+    expect(zDownload.status).toBe(200);
+    expect(await zDownload.text()).toBe("zp");
+    await env.DB.prepare("DELETE FROM build_assets WHERE id = 'asset-xz-zucchini'").run();
+
     // The size ratio applies to the chosen patch: a too-large xz patch is not offered.
     await env.DB.prepare("UPDATE build_assets SET size_bytes = 800 WHERE id IN ('asset-xz-xz', 'asset-xz-gzip')").run();
     expect((await call(both)).patch).toBeUndefined();

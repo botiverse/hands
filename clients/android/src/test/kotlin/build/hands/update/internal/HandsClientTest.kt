@@ -10,15 +10,19 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class HandsClientTest {
     @Test
-    fun `update check declares the delta algorithms this SDK applies, xz first`() = runBlocking {
+    fun `update check declares the delta algorithms this SDK applies, zucchini first`() = runBlocking {
+        // Zucchini is declared only when the native applier loads; Gradle's
+        // unit tests put the host build of the library on java.library.path.
+        assumeTrue(System.getProperty("hands.hostBundledZlib") != null)
         val request = execute(null)
 
         assertEquals(
-            "archive-patcher-v1+xz,archive-patcher-v1+gzip",
+            "archive-patcher-zucchini-v1+xz,archive-patcher-v1+xz,archive-patcher-v1+gzip",
             request.header("X-Hands-Delta-Algorithms"),
         )
     }

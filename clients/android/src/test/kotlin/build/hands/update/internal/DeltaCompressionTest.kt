@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.tukaani.xz.LZMA2Options
 import org.tukaani.xz.MemoryLimitException
@@ -29,10 +30,31 @@ class DeltaCompressionTest {
 
     @Test
     fun `every declared algorithm is one the SDK applies`() {
-        assertEquals(listOf("archive-patcher-v1+xz", "archive-patcher-v1+gzip"), DeltaUpdater.SUPPORTED_ALGORITHMS)
-        for (algorithm in DeltaUpdater.SUPPORTED_ALGORITHMS) {
+        assertEquals(listOf("archive-patcher-v1+xz", "archive-patcher-v1+gzip"), DeltaUpdater.supportedAlgorithms(false))
+        assertEquals(
+            listOf("archive-patcher-zucchini-v1+xz", "archive-patcher-v1+xz", "archive-patcher-v1+gzip"),
+            DeltaUpdater.supportedAlgorithms(true),
+        )
+        for (algorithm in DeltaUpdater.supportedAlgorithms(true)) {
             assertTrue(algorithm, DeltaUpdater.compressionFor(algorithm) != null)
         }
+    }
+
+    @Test
+    fun `zucchini is declared first when the native applier loads`() {
+        // Gradle's unit tests load the host build of libhandscrash.so, which carries it.
+        assumeTrue(System.getProperty("hands.hostBundledZlib") != null)
+        assertEquals(DeltaUpdater.supportedAlgorithms(true), DeltaUpdater.SUPPORTED_ALGORITHMS)
+    }
+
+    @Test
+    fun `zucchini algorithm is xz-compressed with the zucchini engine, others use bsdiff`() {
+        assertEquals(PatchCompression.XZ, DeltaUpdater.compressionFor("archive-patcher-zucchini-v1+xz"))
+        assertEquals(PatchEngine.ZUCCHINI, DeltaUpdater.engineFor("archive-patcher-zucchini-v1+xz"))
+        for (algorithm in listOf("archive-patcher-v1", "archive-patcher-v1+gzip", "archive-patcher-v1+xz")) {
+            assertEquals(algorithm, PatchEngine.BSDIFF, DeltaUpdater.engineFor(algorithm))
+        }
+        assertNull(DeltaUpdater.compressionFor("archive-patcher-zucchini-v1+gzip"))
     }
 
     @Test

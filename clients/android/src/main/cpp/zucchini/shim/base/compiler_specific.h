@@ -1,0 +1,9 @@
+#ifndef SHIM_BASE_COMPILER_SPECIFIC_H_
+#define SHIM_BASE_COMPILER_SPECIFIC_H_
+
+#define WARN_UNUSED_RESULT [[nodiscard]]
+#define GSL_POINTER
+#define UNSAFE_TODO(x) x
+#define UNSAFE_BUFFERS(x) x
+
+#endif  // SHIM_BASE_COMPILER_SPECIFIC_H_

@@ -1,0 +1,7 @@
+/* Only the JNI entry points are exported; everything else, including C++
+   runtime symbols that header-only code would otherwise export weakly, stays
+   local. */
+{
+  global: Java_*;
+  local: *;
+};

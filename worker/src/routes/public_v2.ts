@@ -1171,6 +1171,8 @@ const KNOWN_DELTA_ALGORITHMS = new Set([
   "archive-patcher-v1",
   "archive-patcher-v1+gzip",
   "archive-patcher-v1+xz",
+  // archive-patcher container with a Zucchini delta inside (Android SDK 0.16.0+).
+  "archive-patcher-zucchini-v1+xz",
 ]);
 
 /**
@@ -1614,7 +1616,7 @@ export async function handlePublicR2Download(c: Context<{ Bindings: Env }>) {
      WHERE ba.r2_key = ?1
        AND (
          ba.artifact_kind IN ('installable', 'desktop-manifest', 'desktop-archive')
-         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype IN ('patch', 'patch.xz'))
+         OR (ba.artifact_kind = 'delta-patch' AND ba.filetype IN ('patch', 'patch.xz', 'zpatch.xz'))
        )
        AND b.product_type != 'ios-simulator-qa' AND b.release_type != 'qa'
        AND r.product_type != 'ios-simulator-qa' AND r.release_type != 'qa'

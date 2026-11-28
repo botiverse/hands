@@ -195,6 +195,17 @@ patches. A patch whose xz header cannot be read emits `patch_fallback` with
 `patch_decompress_failed`, and any algorithm the SDK does not know falls back
 to the full APK.
 
+Since `0.16.0` the SDK also applies `archive-patcher-zucchini-v1+xz` patches:
+the same archive-patcher container, but the delta between the uncompressed
+APK contents is a Zucchini patch (Chromium's patcher, which understands DEX and
+native code) instead of bsdiff. For a typical app update this patch is about
+40% smaller than the xz patch. The applier is compiled into
+`libhandscrash.so`; the SDK declares the algorithm only when that library
+loads. Applying needs about four to five times the APK size of free space in the cache
+directory and maps the files into memory rather than the Java heap. Any
+failure, including a corrupt patch, emits `patch_fallback` with
+`patch_apply_failed` and downloads the full APK.
+
 `0.15.0` also recovers from a process killed while a patch downloads or
 applies: the next status read or install treats the left-over `patching`
 transaction as interrupted (`stale`, `patch_interrupted`), deletes the

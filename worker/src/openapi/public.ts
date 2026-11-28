@@ -101,7 +101,7 @@ const PublicUpdateAvailableResponse = z
       .object({
         from_version_code: z.number().int(),
         algorithm: z.string().openapi({
-          description: "`archive-patcher-v1+gzip` (gzip-wrapped), `archive-patcher-v1+xz` (xz, LZMA2 dictionary at most 16 MiB) or `archive-patcher-v1` (uncompressed).",
+          description: "`archive-patcher-v1+gzip` (gzip-wrapped), `archive-patcher-v1+xz` (xz, LZMA2 dictionary at most 16 MiB), `archive-patcher-zucchini-v1+xz` (Zucchini delta inside the archive-patcher container, xz-compressed; Android SDK 0.16.0+) or `archive-patcher-v1` (uncompressed).",
         }),
         download_url: z.string().url(),
         size_bytes: z.number().int(),
