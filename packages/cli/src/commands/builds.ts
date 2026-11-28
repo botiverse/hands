@@ -159,21 +159,52 @@ const ANDROID_DELTA_PATCH_MAGIC = Buffer.from("GFbFv1_0", "ascii");
 
 interface AndroidDeltaPatchSpec {
   fromVersionCode: number;
+  /** The source APK's sha256 (`<vc>@<sha256>=<path>`), lower-case; absent when not given. */
+  fromSha256?: string;
   patchPath: string;
 }
 
+const SHA256_HEX = /^[0-9a-f]{64}$/iu;
+
+/**
+ * Patch metadata. `fromSha256`/`fromArch` name the exact source APK: one version
+ * code can ship as several APKs (universal and per-ABI), and the server offers a
+ * patch only to a device whose installed APK it was made from. `fromArch` is
+ * recorded only alongside a known `fromSha256` (null = universal).
+ */
 export function androidDeltaPatchMetadata(args: {
   fromVersionCode: number;
   toVersionCode: number;
   targetSha256: string;
   algorithm?: string;
+  fromSha256?: string | null | undefined;
+  fromArch?: string | null | undefined;
 }): Record<string, unknown> {
+  const fromSha256 = args.fromSha256 && SHA256_HEX.test(args.fromSha256) ? args.fromSha256.toLowerCase() : null;
   return {
     from_version_code: args.fromVersionCode,
     to_version_code: args.toVersionCode,
     algorithm: args.algorithm ?? ANDROID_DELTA_PATCH_ALGORITHM,
     target_sha256: args.targetSha256,
+    ...(fromSha256 ? { from_sha256: fromSha256 } : {}),
+    ...(fromSha256 && args.fromArch !== undefined ? { from_arch: normalizeAndroidArch(args.fromArch ?? undefined) } : {}),
   };
+}
+
+/**
+ * Work-file stem for a delta source. Two APKs of one version code (universal
+ * and arm64-v8a) are two sources, so the version code alone would make them
+ * overwrite each other's downloaded APK and patches; the position in the
+ * source list keeps every stem distinct, the hash prefix keeps it readable.
+ */
+export function deltaSourceWorkName(source: { from_version_code: number; sha256?: string | null }, index: number): string {
+  const sha = source.sha256 && SHA256_HEX.test(source.sha256) ? `-${source.sha256.toLowerCase().slice(0, 12)}` : "";
+  return `from-${source.from_version_code}${sha}-${index}`;
+}
+
+/** Log label for a delta source: version code, plus arch when it says which APK. */
+function deltaSourceLabel(source: { from_version_code: number; arch: string | null }): string {
+  return `v${source.from_version_code} (${normalizeAndroidArch(source.arch ?? undefined) ?? "universal"})`;
 }
 
 export async function assertGzipAndroidDeltaPatch(filePath: string): Promise<void> {
@@ -239,22 +270,40 @@ function androidRequiredAssetSlots(args: { mapping?: string }): Array<{
   ];
 }
 
-async function preflightAndroidDeltaPatches(
+export async function preflightAndroidDeltaPatches(
   specs: string[] = [],
 ): Promise<AndroidDeltaPatchSpec[]> {
   const parsed = specs.map((spec) => {
     const eq = spec.indexOf("=");
     if (eq <= 0) {
-      throw new Error(`--delta-patch must be <from_version_code>=<path>, got: ${spec}`);
+      throw new Error(`--delta-patch must be <from_version_code>[@<source_sha256>]=<path>, got: ${spec}`);
     }
-    const fromVersionCode = Number(spec.slice(0, eq).trim());
+    const parts = spec.slice(0, eq).trim().split("@");
+    if (parts.length > 2) {
+      throw new Error(`--delta-patch must be <from_version_code>[@<source_sha256>]=<path>, got: ${spec}`);
+    }
+    const [codePart, shaPart] = parts as [string, string | undefined];
+    const fromVersionCode = Number(codePart.trim());
     const patchPath = spec.slice(eq + 1).trim();
     if (!Number.isFinite(fromVersionCode)) {
       throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
     }
+    if (shaPart !== undefined && !SHA256_HEX.test(shaPart.trim())) {
+      throw new Error(`bad source sha256 in --delta-patch (64 hex characters): ${spec}`);
+    }
     if (!existsSync(patchPath)) throw new Error(`missing delta patch file: ${patchPath}`);
-    return { fromVersionCode, patchPath };
+    return { fromVersionCode, patchPath, ...(shaPart ? { fromSha256: shaPart.trim().toLowerCase() } : {}) };
   });
+  // Two patches from the same source would fill the same asset slot; the server
+  // would reject the second only after the build and the first were uploaded.
+  const sources = new Set<string>();
+  for (const patch of parsed) {
+    const key = `${patch.fromVersionCode}@${patch.fromSha256 ?? ""}`;
+    if (sources.has(key)) {
+      throw new Error(`--delta-patch given twice for ${patch.fromVersionCode}${patch.fromSha256 ? `@${patch.fromSha256}` : ""}; add @<source_sha256> to tell two source APKs apart`);
+    }
+    sources.add(key);
+  }
   for (const patch of parsed) {
     await assertGzipAndroidDeltaPatch(patch.patchPath);
   }
@@ -1328,13 +1377,13 @@ export function registerBuildCommands(program: Command): void {
     .option("--metadata <path>", "Build metadata JSON support artifact.")
     .option(
       "--delta-patch <spec>",
-      "Complete gzipped delta patch as <from_version_code>=<path> (official PatchGen .patch.gz output). Repeatable — clients on that version get offered this patch instead of the full APK.",
+      "Complete gzipped delta patch as <from_version_code>=<path> (official PatchGen .patch.gz output), or <from_version_code>@<source_apk_sha256>=<path> to name the exact source APK when that version shipped as more than one APK. Repeatable — clients on that version get offered this patch instead of the full APK.",
       collect,
       [],
     )
     .option(
       "--generate-deltas <N>",
-      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Each patch is uploaded gzip-compressed and, when `xz` is on PATH, also xz-compressed (about 30% smaller, used by Android SDK 0.15.0+) and as a Zucchini patch (about 40% smaller again for a typical update, used by Android SDK 0.16.0+; only from versions built with SDK 0.16.0+; one to six minutes and about 1 GB of memory per version, run in parallel when the machine allows). Clients on those versions download the small patch instead of the full APK.",
+      "After uploading, generate + upload archive-patcher delta patches from the last N published versions — one per source APK when a version shipped as several (universal and per-ABI; an ABI-specific APK patches from the same ABI or universal, a universal APK from any) — (needs a JDK on PATH — CI has one). Each patch is uploaded gzip-compressed and, when `xz` is on PATH, also xz-compressed (about 30% smaller, used by Android SDK 0.15.0+) and as a Zucchini patch (about 40% smaller again for a typical update, used by Android SDK 0.16.0+; only from versions built with SDK 0.16.0+; one to six minutes and about 1 GB of memory per version, run in parallel when the machine allows). Clients on those versions download the small patch instead of the full APK.",
     )
     .option(
       "--no-zucchini-deltas",
@@ -1462,7 +1511,7 @@ export function registerBuildCommands(program: Command): void {
         // target_sha256 is the new APK's hash so the client can verify the
         // reconstructed file. The server offers a patch only when it beats
         // the full APK size.
-        for (const { fromVersionCode, patchPath } of deltaPatches) {
+        for (const { fromVersionCode, fromSha256, patchPath } of deltaPatches) {
           assets.push(
             await uploadAndRegisterAsset(appId, build.id, patchPath, {
               artifact_kind: "delta-patch",
@@ -1473,6 +1522,7 @@ export function registerBuildCommands(program: Command): void {
                 fromVersionCode,
                 toVersionCode: versionCode,
                 targetSha256: installable.file_hash,
+                fromSha256,
               }),
             }),
           );
@@ -3105,7 +3155,9 @@ interface DeltaSource {
 
 /**
  * Generate archive-patcher delta patches from the last N published versions to
- * the just-uploaded build, and upload each as a delta-patch asset. The Worker
+ * the just-uploaded build, and upload each as a delta-patch asset. A version
+ * that shipped as several APKs (universal and per-ABI) is several sources, each
+ * with its own work files and patches recording its sha256 and arch. The Worker
  * serves the source APKs (GET /api/apps/:id/delta-sources) and stores the
  * patches; the CPU-heavy bsdiff runs here in CI. Skips patches that don't beat
  * the full APK size.
@@ -3128,7 +3180,9 @@ async function generateAndUploadAndroidDeltas(args: {
     // No arch (a universal APK) is sent as no parameter, which the server reads as "no arch".
     // channel_id picks sources from what the target channel's devices run (older
     // servers ignore it and return the nearest earlier versions).
-    { query: { arch: args.arch ?? undefined, before: args.toVersionCode, limit: args.versions, channel_id: args.channelId } },
+    // per_version: every APK of a version (universal and per-ABI) is a source;
+    // without it the server returns one per version for older CLIs.
+    { query: { arch: args.arch ?? undefined, before: args.toVersionCode, limit: args.versions, channel_id: args.channelId, per_version: 3 } },
   );
   if (!sources || sources.length === 0) {
     console.error(`[delta] no prior published versions to diff against; skipping.`);
@@ -3141,13 +3195,17 @@ async function generateAndUploadAndroidDeltas(args: {
     const cp = await ensureArchivePatcher(work);
     let xzMissing = false;
     const zucchiniGenerator = args.zucchini ? zucchiniGeneratorPath() : null;
-    const zucchiniJobs: Array<{ fromVersionCode: number; oldPath: string; xzSize: number }> = [];
-    for (const src of sources) {
-      const oldPath = join(work, `old-${src.from_version_code}.apk`);
-      const patchPath = join(work, `from-${src.from_version_code}.patch.gz`);
+    const zucchiniJobs: Array<{ source: DeltaSource; label: string; name: string; oldPath: string; xzSize: number }> = [];
+    for (const [index, src] of sources.entries()) {
+      const name = deltaSourceWorkName(src, index);
+      const label = deltaSourceLabel(src);
+      // Which APK the patch applies to, recorded on every variant.
+      const source = { fromSha256: src.sha256, fromArch: src.arch };
+      const oldPath = join(work, `old-${name}.apk`);
+      const patchPath = join(work, `${name}.patch.gz`);
       const dl = await fetch(src.url);
       if (!dl.ok) {
-        console.error(`[delta] v${src.from_version_code}: download failed HTTP ${dl.status}; skipping.`);
+        console.error(`[delta] ${label}: download failed HTTP ${dl.status}; skipping.`);
         continue;
       }
       await writeFile(oldPath, Buffer.from(await dl.arrayBuffer()));
@@ -3156,10 +3214,10 @@ async function generateAndUploadAndroidDeltas(args: {
       });
       const patchSize = readFileSync(patchPath).length;
       if (patchSize >= args.newApkSize) {
-        console.error(`[delta] v${src.from_version_code}: patch ${patchSize}B not smaller than full APK ${args.newApkSize}B; skipping.`);
+        console.error(`[delta] ${label}: patch ${patchSize}B not smaller than full APK ${args.newApkSize}B; skipping.`);
         continue;
       }
-      console.error(`[delta] v${src.from_version_code} -> v${args.toVersionCode}: patch ${patchSize}B (${(patchSize / args.newApkSize * 100).toFixed(1)}% of full)`);
+      console.error(`[delta] ${label} -> v${args.toVersionCode}: patch ${patchSize}B (${(patchSize / args.newApkSize * 100).toFixed(1)}% of full)`);
       uploaded.push(
         await uploadAndRegisterAsset(args.appId, args.buildId, patchPath, {
           artifact_kind: "delta-patch",
@@ -3170,12 +3228,13 @@ async function generateAndUploadAndroidDeltas(args: {
             fromVersionCode: src.from_version_code,
             toVersionCode: args.toVersionCode,
             targetSha256: args.targetSha256,
+            ...source,
           }),
         }),
       );
       // The xz copy is an extra for SDK 0.15.0+; the gzip patch above is what
       // older SDKs apply, so an xz failure never fails the publish.
-      const xzPath = join(work, `from-${src.from_version_code}.patch.xz`);
+      const xzPath = join(work, `${name}.patch.xz`);
       if (!xzMissing) try {
         if (!(await compressAndroidDeltaPatchXz(patchPath, xzPath))) {
           console.error(`[delta] xz not installed; uploaded gzip patches only.`);
@@ -3183,9 +3242,9 @@ async function generateAndUploadAndroidDeltas(args: {
         } else {
           const xzSize = readFileSync(xzPath).length;
           if (xzSize >= patchSize) {
-            console.error(`[delta] v${src.from_version_code}: xz ${xzSize}B not smaller than gzip; skipping xz.`);
+            console.error(`[delta] ${label}: xz ${xzSize}B not smaller than gzip; skipping xz.`);
           } else {
-            console.error(`[delta] v${src.from_version_code} -> v${args.toVersionCode}: xz patch ${xzSize}B (${(xzSize / args.newApkSize * 100).toFixed(1)}% of full)`);
+            console.error(`[delta] ${label} -> v${args.toVersionCode}: xz patch ${xzSize}B (${(xzSize / args.newApkSize * 100).toFixed(1)}% of full)`);
             uploaded.push(
               await uploadAndRegisterAsset(args.appId, args.buildId, xzPath, {
                 artifact_kind: "delta-patch",
@@ -3197,6 +3256,7 @@ async function generateAndUploadAndroidDeltas(args: {
                   toVersionCode: args.toVersionCode,
                   targetSha256: args.targetSha256,
                   algorithm: ANDROID_DELTA_PATCH_XZ_ALGORITHM,
+                  ...source,
                 }),
               }),
             );
@@ -3205,15 +3265,15 @@ async function generateAndUploadAndroidDeltas(args: {
             // Only devices on an SDK 0.16.0+ build can use it, so skip older sources.
             if (zucchiniGenerator) {
               if (await apkCanApplyZucchini(cp, oldPath)) {
-                zucchiniJobs.push({ fromVersionCode: src.from_version_code, oldPath, xzSize });
+                zucchiniJobs.push({ source: src, label, name, oldPath, xzSize });
               } else {
-                console.error(`[delta] v${src.from_version_code}: built without Zucchini support (Android SDK < 0.16.0); skipping zucchini.`);
+                console.error(`[delta] ${label}: built without Zucchini support (Android SDK < 0.16.0); skipping zucchini.`);
               }
             }
           }
         }
       } catch (error) {
-        console.error(`[delta] v${src.from_version_code}: xz patch failed (${(error as Error).message}); gzip patch kept.`);
+        console.error(`[delta] ${label}: xz patch failed (${(error as Error).message}); gzip patch kept.`);
       }
     }
     // Older SDKs use the patches above, so a failure here never fails the publish.
@@ -3229,13 +3289,13 @@ async function generateAndUploadAndroidDeltas(args: {
           oldApkPath: job.oldPath,
           newApkPath: args.newApkPath,
           work,
-          name: `from-${job.fromVersionCode}`,
+          name: job.name,
         });
         if (zucchini.sizeBytes >= job.xzSize) {
-          console.error(`[delta] v${job.fromVersionCode}: zucchini ${zucchini.sizeBytes}B not smaller than xz; skipping zucchini.`);
+          console.error(`[delta] ${job.label}: zucchini ${zucchini.sizeBytes}B not smaller than xz; skipping zucchini.`);
           return;
         }
-        console.error(`[delta] v${job.fromVersionCode} -> v${args.toVersionCode}: zucchini patch ${zucchini.sizeBytes}B (${(zucchini.sizeBytes / args.newApkSize * 100).toFixed(1)}% of full, ${zucchini.seconds.toFixed(0)}s)`);
+        console.error(`[delta] ${job.label} -> v${args.toVersionCode}: zucchini patch ${zucchini.sizeBytes}B (${(zucchini.sizeBytes / args.newApkSize * 100).toFixed(1)}% of full, ${zucchini.seconds.toFixed(0)}s)`);
         uploaded.push(
           await uploadAndRegisterAsset(args.appId, args.buildId, zucchini.path, {
             artifact_kind: "delta-patch",
@@ -3243,15 +3303,17 @@ async function generateAndUploadAndroidDeltas(args: {
             arch: args.arch,
             filetype: "zpatch.xz",
             metadata_json: androidDeltaPatchMetadata({
-              fromVersionCode: job.fromVersionCode,
+              fromVersionCode: job.source.from_version_code,
               toVersionCode: args.toVersionCode,
               targetSha256: args.targetSha256,
               algorithm: ANDROID_DELTA_PATCH_ZUCCHINI_ALGORITHM,
+              fromSha256: job.source.sha256,
+              fromArch: job.source.arch,
             }),
           }),
         );
       } catch (error) {
-        console.error(`[delta] v${job.fromVersionCode}: zucchini patch failed (${(error as Error).message}); gzip and xz patches kept.`);
+        console.error(`[delta] ${job.label}: zucchini patch failed (${(error as Error).message}); gzip and xz patches kept.`);
       }
     }));
   } finally {
