@@ -885,6 +885,78 @@ describe("Android delta patch xz copy", () => {
     }
   });
 
+  it("bundled Zucchini generator round-trips through its applier", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { zucchiniGeneratorPath } = await import("../src/commands/builds.js");
+    const generator = zucchiniGeneratorPath();
+    expect(generator).not.toBeNull();
+    const dir = mkdtempSync(join(tmpdir(), "hands-zucchini-raw-"));
+    try {
+      const old = Buffer.alloc(50_000);
+      for (let i = 0; i < old.length; i++) old[i] = (i * 2654435761) >>> 24;
+      const next = Buffer.concat([old.subarray(0, 20_000), Buffer.from("inserted"), old.subarray(20_000)]);
+      writeFileSync(join(dir, "old"), old);
+      writeFileSync(join(dir, "new"), next);
+      execFileSync(process.execPath, [generator!, "gen", join(dir, "old"), join(dir, "new"), join(dir, "patch")]);
+      expect(readFileSync(join(dir, "patch")).subarray(0, 4).toString("latin1")).toBe("Zucc");
+      expect(readFileSync(join(dir, "patch")).length).toBeLessThan(1_000);
+      execFileSync(process.execPath, [generator!, "apply", join(dir, "old"), join(dir, "patch"), join(dir, "out")]);
+      expect(Buffer.compare(readFileSync(join(dir, "out")), next)).toBe(0);
+      // A patch for other bytes is refused.
+      expect(() =>
+        execFileSync(process.execPath, [generator!, "apply", join(dir, "new"), join(dir, "patch"), join(dir, "bad")], { stdio: "pipe" }),
+      ).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PatchGen --zucchini makes an xz patch that rebuilds the target archive byte for byte", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { fileURLToPath } = await import("node:url");
+    try {
+      execFileSync("java", ["-version"], { stdio: "ignore" });
+      execFileSync("javac", ["-version"], { stdio: "ignore" });
+      execFileSync("xz", ["--version"], { stdio: "ignore" });
+    } catch {
+      return; // no JDK or xz on this machine; CI images have both.
+    }
+    const {
+      ANDROID_DELTA_PATCH_ZUCCHINI_ALGORITHM,
+      ensureArchivePatcher,
+      generateZucchiniDeltaPatch,
+      zucchiniGeneratorPath,
+    } = await import("../src/commands/builds.js");
+    expect(ANDROID_DELTA_PATCH_ZUCCHINI_ALGORITHM).toBe("archive-patcher-zucchini-v1+xz");
+    const fixtures = fileURLToPath(new URL("./fixtures/zucchini", import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), "hands-zucchini-apk-"));
+    try {
+      const cp = await ensureArchivePatcher(dir);
+      const generator = zucchiniGeneratorPath()!;
+      const patch = await generateZucchiniDeltaPatch({
+        classpath: cp,
+        generator,
+        oldApkPath: join(fixtures, "old.zip"),
+        newApkPath: join(fixtures, "new.zip"),
+        work: dir,
+        name: "fixture",
+      });
+      expect(patch.sizeBytes).toBeGreaterThan(0);
+      expect(patch.sizeBytes).toBeLessThan(readFileSync(join(fixtures, "new.zip")).length);
+      const info = execFileSync("xz", ["-lvv", patch.path]).toString();
+      expect(info).toContain("dict=16MiB");
+      writeFileSync(join(dir, "container.patch"), execFileSync("xz", ["-dc", patch.path], { maxBuffer: 1 << 26 }));
+      execFileSync("javac", ["-cp", cp, "-d", dir, join(fixtures, "PatchApply.java")]);
+      execFileSync("java", [
+        "-cp", `${cp}:${dir}`, "PatchApply", process.execPath, generator,
+        join(fixtures, "old.zip"), join(dir, "container.patch"), join(dir, "rebuilt.zip"),
+      ]);
+      expect(Buffer.compare(readFileSync(join(dir, "rebuilt.zip")), readFileSync(join(fixtures, "new.zip")))).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("reports a missing xz tool instead of failing", async () => {
     const { compressAndroidDeltaPatchXz } = await import("../src/commands/builds.js");
     const dir = mkdtempSync(join(tmpdir(), "hands-android-delta-noxz-"));
