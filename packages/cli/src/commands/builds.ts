@@ -3015,7 +3015,7 @@ const ZUCCHINI_JOB_MEMORY_BYTES = 1.5 * 1024 * 1024 * 1024;
 export function zucchiniConcurrency(
   jobs: number,
   cpus = availableParallelism(),
-  freeBytes = freemem(),
+  freeBytes = availableMemory(),
 ): number {
   return Math.max(1, Math.min(jobs, cpus, Math.floor(freeBytes / ZUCCHINI_JOB_MEMORY_BYTES)));
 }
@@ -3038,6 +3038,12 @@ export async function apkCanApplyZucchini(classpath: string, apkPath: string, ja
     }
     return false;
   }
+}
+
+/** Free memory, within a container's memory limit when Node can read it (Node 20.13+). */
+function availableMemory(): number {
+  const proc = process as { availableMemory?: () => number };
+  return typeof proc.availableMemory === "function" ? proc.availableMemory() : freemem();
 }
 
 /** Run tasks with at most `limit` in flight, in order of start. */

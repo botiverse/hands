@@ -61,8 +61,17 @@ public final class PatchGen {
 
   public static void main(String[] args) throws Exception {
     if (args.length == 2 && args[0].equals("--zucchini-capable")) {
-      // Exit 0 when the APK can apply Zucchini patches, 1 when it can't.
-      System.exit(canApplyZucchini(new File(args[1])) ? 0 : 1);
+      // Exit 0 when the APK can apply Zucchini patches, 1 when it can't, 2 when
+      // the check itself fails (the JVM also exits 1 on an uncaught exception).
+      boolean capable;
+      try {
+        capable = canApplyZucchini(new File(args[1]));
+      } catch (Throwable t) {
+        System.err.println("zucchini-capable: " + t);
+        System.exit(2);
+        return;
+      }
+      System.exit(capable ? 0 : 1);
     }
     final boolean zucchini = args.length == 6 && args[0].equals("--zucchini");
     if (args.length != 3 && !zucchini) {
