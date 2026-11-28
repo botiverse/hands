@@ -7,6 +7,7 @@ import {
   backgroundSystemKillDistribution,
   backgroundSystemKillSpike,
 } from "../src/routes/feedback";
+import { formatRaftNotificationMessage } from "../src/lib/raft_notification_content";
 
 const dir = fileURLToPath(new URL("../../migrations/sql/", import.meta.url));
 
@@ -27,6 +28,8 @@ function d1(sqlite: Database.Database): D1Database {
   return { prepare } as unknown as D1Database;
 }
 
+type BackgroundSystemKillDistributionName = "hands" | "play" | "unconfirmed";
+
 const DAY = "2026-11-26";
 const DAY_MS = 86_400_000;
 const dayMs = (day: string) => Date.parse(`${day}T00:00:00.000Z`);
@@ -38,6 +41,7 @@ function harness() {
   for (const n of readdirSync(dir).sort()) if (n.endsWith(".sql")) sqlite.exec(readFileSync(`${dir}${n}`, "utf8"));
   sqlite.prepare("INSERT INTO apps (id, org_id, slug, name, platform, created_at) VALUES ('app', NULL, 'raft-android', 'Raft', 'android', 1)").run();
   sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('ch', 'app', 'main', 'Main', 1)").run();
+  sqlite.prepare("INSERT INTO channels (id, app_id, slug, name, created_at) VALUES ('chp', 'app', 'preview', 'Preview', 1)").run();
   let n = 0;
   const buildIds = new Map<number, string>();
   const build = (versionName: string, versionCode: number) => {
@@ -79,12 +83,12 @@ function harness() {
     ).run(id, id, JSON.stringify({ crash_types: ["system_kill"], exit_descriptions: [description] }), category);
   };
   /** A main release of an existing build; `activated` ones were offered by Hands. */
-  const release = (code: number, activated: boolean, status = activated ? "superseded" : "draft") => {
+  const release = (code: number, activated: boolean, status = activated ? "superseded" : "draft", channelId = "ch") => {
     n += 1;
     sqlite.prepare(
       `INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status, activated_at, created_by, created_at, updated_at)
-       VALUES (?, 'app', ?, 'ch', 'apk', 'stable', ?, ?, 'test', 1, 1)`,
-    ).run(`r${n}`, buildIds.get(code), status, activated ? 1 : null);
+       VALUES (?, 'app', ?, ?, 'apk', 'stable', ?, ?, 'test', 1, 1)`,
+    ).run(`r${n}`, buildIds.get(code), channelId, status, activated ? 1 : null);
   };
   /** Hands main releases (activated) for these codes. */
   const handsMain = (...codes: number[]) => { for (const c of codes) release(c, true); };
@@ -270,6 +274,98 @@ describe("daily background system kill summary", () => {
     expect(rows + s.rows_omitted!.count).toBe(s.total_count);
     expect(rowsExcl + s.rows_omitted!.count_excluding_cleanup).toBe(s.total_count_excluding_cleanup);
     expect(s.by_version.length + s.rows_omitted!.rows).toBe(15);
+  });
+
+  /**
+   * 1.39.0 -> 1.40.0 on `channel`, with data that meets every flagging condition:
+   * 20 active devices a day on each code, a full 7-day baseline at 0.1 reports per
+   * device-day with full coverage, and 20 reports today on 20 active devices (1.0,
+   * ten times the baseline).
+   */
+  function overThreshold(h: ReturnType<typeof harness>, channel: string, prevCode: number, code: number) {
+    h.pings(channel, prevCode, "2026-11-10", "2026-11-25", 20);
+    h.pings(channel, code, "2026-11-19", DAY, 20);
+    for (let i = 0; i < 14; i++) {
+      h.kill({ channel, versionName: "1.39.0", code: prevCode, device: `${channel}-${prevCode}-${i}`, at: dayMs("2026-11-12") + i * 3_600_000 * 10 });
+    }
+    for (let i = 0; i < 20; i++) {
+      h.kill({ channel, versionName: "1.40.0", code, device: `${channel}-${code}-${i}`, at: window.startMs + i * 60_000 });
+    }
+  }
+
+  it("never flags any main row, and gives Play and unconfirmed rows no rate, even when every condition is met", async () => {
+    const h = harness();
+    // Hands main, Play and unconfirmed (both records) codes for 1.39.0 and 1.40.0.
+    for (const code of [13900011, 13900012, 13900013]) h.build("1.39.0", code);
+    for (const code of [14000015, 14000016, 14000017]) h.build("1.40.0", code);
+    h.handsMain(13900011, 14000015, 13900013, 14000017);
+    for (const code of [13900012, 14000016, 13900013, 14000017]) h.playObserved(code);
+    overThreshold(h, "main", 13900011, 14000015);
+    overThreshold(h, "main", 13900012, 14000016);
+    overThreshold(h, "main", 13900013, 14000017);
+
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    const today = s.by_version.filter((r) => r.version_name === "1.40.0");
+    expect(today.map((r) => r.distribution)).toEqual(["hands", "play", "unconfirmed"]);
+    const [hands, play, unconfirmed] = today;
+    // Hands main has a full rate and baseline that would flag, but the flag is held.
+    expect(hands).toMatchObject({ active_devices: 20, coverage: { matched: 20, reporters: 20 }, count_excluding_cleanup: 20,
+      baseline: { version_codes: [13900011], count: 14, active_device_days: 140 }, spike: false, spike_held: true });
+    expect(hands!.kills_per_active_device).toBeCloseTo(1);
+    expect(backgroundSystemKillSpike(hands!, hands!.baseline)).toBe(true);
+    for (const row of [play!, unconfirmed!]) {
+      expect(row).toMatchObject({ count: 20, active_devices: null, kills_per_active_device: null, affected_device_share: null,
+        baseline: null, rate_unavailable_reason: "distribution_not_comparable", spike: false });
+    }
+    expect(s.by_version.some((r) => r.spike)).toBe(false);
+    const text = formatRaftNotificationMessage({ event: "crash:spike", payload: { ...s } as unknown as Record<string, unknown> });
+    expect(text).not.toContain("较上一版本上升");
+    expect(text).toContain("main（Play） · 1.40.0 (14000016): 20 次 / 20 台 · 只给次数，不给比例和预警");
+    expect(text).toContain("main（未确认归属） · 1.40.0 (14000017): 20 次 / 20 台 · 只给次数，不给比例和预警");
+    expect(text).toContain("（预警暂停，待核对基线和覆盖）");
+
+    // The same data on a channel that is not split does flag, so the case is over the threshold.
+    const control = harness();
+    for (const code of [13900012, 14000016]) control.build(code === 13900012 ? "1.39.0" : "1.40.0", code);
+    overThreshold(control, "preview", 13900012, 14000016);
+    const c = (await buildBackgroundSystemKillDailySummary(control.env, "app", window))!.summary;
+    expect(c.by_version.find((r) => r.version_name === "1.40.0")).toMatchObject({ channel: "preview", spike: true, spike_held: false });
+  });
+
+  it("attributes main version codes conservatively across re-releases, missing records and moved builds", async () => {
+    const h = harness();
+    const cases: Array<[string, number, BackgroundSystemKillDistributionName]> = [];
+    let v = 0;
+    const add = (code: number, expected: BackgroundSystemKillDistributionName, setup: () => void) => {
+      v += 1;
+      h.build(`9.${v}.0`, code);
+      setup();
+      h.kill({ channel: "main", versionName: `9.${v}.0`, code, device: `d-${code}`, at: window.startMs + v });
+      cases.push([`9.${v}.0`, code, expected]);
+    };
+    // Re-released: a cancelled draft, then an activated main release of the same version.
+    add(15000001, "hands", () => { h.release(15000001, false, "cancelled"); h.release(15000001, true); });
+    // Activated, then cancelled: devices may still run it.
+    add(15000002, "hands", () => h.release(15000002, true, "cancelled"));
+    // Released to main and also to preview: still Hands main only.
+    add(15000003, "hands", () => { h.release(15000003, true); h.release(15000003, true, "superseded", "chp"); });
+    // Only a draft main release (how Play builds look in Hands) and no Play record.
+    add(15000004, "unconfirmed", () => h.release(15000004, false));
+    // Play has it only in review, or not published.
+    add(15000005, "unconfirmed", () => h.playObserved(15000005, "RELEASE_LIFECYCLE_STATE_IN_REVIEW"));
+    add(15000006, "unconfirmed", () => h.playObserved(15000006, "RELEASE_LIFECYCLE_STATE_NOT_PUBLISHED"));
+    // Published on Play's internal track only: Play.
+    add(15000007, "play", () => h.playObserved(15000007, "RELEASE_LIFECYCLE_STATE_PUBLISHED", "internal"));
+    // A preview build reported on main (moved between channels): no main record.
+    add(15000008, "unconfirmed", () => h.release(15000008, true, "superseded", "chp"));
+    // Hands main first, Play later (or the other way): both records.
+    add(15000009, "unconfirmed", () => { h.handsMain(15000009); h.playObserved(15000009); });
+    // No record at all, e.g. a Play build from before Play polling began.
+    add(15000010, "unconfirmed", () => {});
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s.rows_omitted).toBeNull();
+    const got = new Map(s.by_version.map((r) => [r.version_name, [r.version_codes, r.distribution]]));
+    for (const [name, code, expected] of cases) expect([name, got.get(name)]).toEqual([name, [[code], expected]]);
   });
 
   it("classifies a main version code only when exactly one kind of record names it", () => {
