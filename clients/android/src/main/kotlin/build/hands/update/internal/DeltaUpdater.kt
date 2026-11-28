@@ -153,8 +153,11 @@ class DeltaUpdater(
                     reconstructed.outputStream().buffered().use { out ->
                         // Use cacheDir as the applier's scratch dir explicitly
                         // rather than relying on java.io.tmpdir.
-                        FileByFileV1DeltaApplier(context.cacheDir, deflaters)
-                            .applyDelta(baseFile, stream, out)
+                        val applier = when (engineFor(patch.algorithm)) {
+                            PatchEngine.ZUCCHINI -> ZucchiniFileByFileApplier(context.cacheDir, deflaters)
+                            else -> FileByFileV1DeltaApplier(context.cacheDir, deflaters)
+                        }
+                        applier.applyDelta(baseFile, stream, out)
                     }
                 }
                 emit("patch_apply_completed")
@@ -259,6 +262,7 @@ class DeltaUpdater(
     private fun validateOffer(patch: Patch): Boolean {
         if (patch.from_version_code != installedVersionCode) return false
         if (compressionFor(patch.algorithm) == null) return false
+        if (engineFor(patch.algorithm) == PatchEngine.ZUCCHINI && !ZucchiniNative.isAvailable) return false
         if (patch.target_sha256.isNullOrBlank()) return false
         return true
     }
@@ -416,10 +420,22 @@ class DeltaUpdater(
          * `X-Hands-Delta-Algorithms` so the server only offers these; a server
          * that sees no header offers `+gzip` (what SDKs before 0.15.0 apply).
          */
-        internal val SUPPORTED_ALGORITHMS: List<String> = listOf(
-            "archive-patcher-v1+xz",
-            "archive-patcher-v1+gzip",
-        )
+        internal val SUPPORTED_ALGORITHMS: List<String>
+            get() = supportedAlgorithms(ZucchiniNative.isAvailable)
+
+        /** Zucchini patches need the native applier; without it they are not declared. */
+        internal fun supportedAlgorithms(zucchiniAvailable: Boolean): List<String> =
+            if (zucchiniAvailable) {
+                listOf(ZUCCHINI_XZ_ALGORITHM, "archive-patcher-v1+xz", "archive-patcher-v1+gzip")
+            } else {
+                listOf("archive-patcher-v1+xz", "archive-patcher-v1+gzip")
+            }
+
+        /**
+         * archive-patcher container whose inner delta is a Zucchini patch
+         * ([ZucchiniFileByFileApplier]) instead of bsdiff, xz-compressed.
+         */
+        internal const val ZUCCHINI_XZ_ALGORITHM = "archive-patcher-zucchini-v1+xz"
 
         /**
          * XZInputStream memory limit in KiB. The server compresses with a
@@ -438,8 +454,13 @@ class DeltaUpdater(
             "archive-patcher-v1" -> PatchCompression.NONE
             "archive-patcher-v1+gzip" -> PatchCompression.GZIP
             "archive-patcher-v1+xz" -> PatchCompression.XZ
+            ZUCCHINI_XZ_ALGORITHM -> PatchCompression.XZ
             else -> null
         }
+
+        /** Which delta engine sits inside the archive-patcher container for [algorithm]. */
+        internal fun engineFor(algorithm: String): PatchEngine =
+            if (algorithm == ZUCCHINI_XZ_ALGORITHM) PatchEngine.ZUCCHINI else PatchEngine.BSDIFF
 
         /** Wraps [raw] in the decompressor for [compression]; closes [raw] if that fails. */
         internal fun openDeltaStream(raw: InputStream, compression: PatchCompression): InputStream =
@@ -517,3 +538,6 @@ class DeltaUpdater(
 
 /** Compression wrapped around an archive-patcher patch. */
 internal enum class PatchCompression { NONE, GZIP, XZ }
+
+/** The delta between archive-patcher's delta-friendly blobs. */
+internal enum class PatchEngine { BSDIFF, ZUCCHINI }

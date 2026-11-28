@@ -45,7 +45,7 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 
 ### 增量补丁
 
-应用的 `delta_updates` 功能开关开启、且 Hands 存有从已安装的 `current_version_code` 到所提供版本的补丁时，响应在 `asset` 旁附带 `patch` 对象（`from_version_code`、`algorithm`、`download_url`、`size_bytes`、`target_sha256`）。Hands 为每个补丁分别保存 `archive-patcher-v1+gzip` 和 `archive-patcher-v1+xz`（约小 30%，LZMA2 字典不超过 16 MiB）两种格式，并提供客户端在 `delta_algorithms` 中声明的算法里最小的一个。未声明的客户端只会收到 `archive-patcher-v1+gzip`（或未压缩的 `archive-patcher-v1`）补丁。补丁小于完整文件的 70% 时才会提供；`asset` 始终作为回退。
+应用的 `delta_updates` 功能开关开启、且 Hands 存有从已安装的 `current_version_code` 到所提供版本的补丁时，响应在 `asset` 旁附带 `patch` 对象（`from_version_code`、`algorithm`、`download_url`、`size_bytes`、`target_sha256`）。Hands 为每个补丁分别保存 `archive-patcher-v1+gzip` 和 `archive-patcher-v1+xz`（约小 30%，LZMA2 字典不超过 16 MiB）两种格式，还可能有 `archive-patcher-zucchini-v1+xz` 补丁（同一容器内为 Zucchini 差分，Android SDK 0.16.0 起可应用），并提供客户端在 `delta_algorithms` 中声明的算法里最小的一个。未声明的客户端只会收到 `archive-patcher-v1+gzip`（或未压缩的 `archive-patcher-v1`）补丁。补丁小于完整文件的 70% 时才会提供；`asset` 始终作为回退。
 
 ### 分阶段发布
 

@@ -1,0 +1,31 @@
+Vendored Zucchini patch applier
+
+Upstream:  Zucchini, Chromium components/zucchini (The Chromium Authors)
+Source:    standalone port https://github.com/rhythmcache/zucchini
+           commit 70262b4 ("Update README.md")
+License:   BSD 3-Clause, see LICENSE (copied from the port).
+
+Only what applying a patch needs is copied: the apply path, the patch reader,
+the DEX and ELF disassemblers (and their helpers), the C API, and the port's
+shims for Chromium's base/ headers. The generator, Win32/ZTF disassemblers,
+io_utils.cc, tests and build files are not included. Files are copied
+unmodified except:
+
+  shim/base/logging.h                 rewritten: log messages are discarded
+                                      (no iostream code in the SDK) and a
+                                      failed CHECK throws
+                                      hands_zucchini::CheckFailure instead of
+                                      calling abort().
+  shim/base/numerics/safe_conversions.h
+                                      FatalLogStream throws the same exception
+                                      instead of printing and aborting.
+
+Why: Android delta patches can carry a Zucchini delta between
+archive-patcher's delta-friendly blobs (algorithm
+archive-patcher-zucchini-v1+xz). ../hands_zucchini.cc exposes the applier to
+ZucchiniDeltaApplier over JNI and turns every failure, including a failed
+internal CHECK, into a status code so a bad patch falls back to the full APK
+instead of crashing the app.
+
+The patch format must match the generator used by the Hands CLI; update both
+from the same upstream revision.
