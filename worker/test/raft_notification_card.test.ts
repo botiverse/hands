@@ -606,5 +606,27 @@ describe("Raft release notification cards", () => {
     expect(text).not.toContain("较上一版本上升");
     expect(text).toContain("main 按可核验的分发记录拆分");
     expect(text).not.toContain("未分开比较");
+    expect(text).not.toContain("另有");
+  });
+
+  it("says how many rows and reports the summary left out", () => {
+    const row = (code: number, count: number) => ({
+      channel: "preview", distribution: null, version_name: `v${code}`, version_code: code, version_codes: [code],
+      count, device_count: 1, user_cleanup_count: 0, count_excluding_cleanup: count, device_count_excluding_cleanup: 1,
+      active_devices: null, coverage: null, rate_unavailable_reason: "no_ping_data", kills_per_active_device: null,
+      affected_device_share: null, baseline: null, baseline_unavailable_reason: "no_ping_data", spike: false, spike_held: false,
+    });
+    const text = formatRaftNotificationMessage({
+      event: "crash:spike",
+      payload: {
+        app_slug: "raft-android", signature: "SystemKill@background",
+        alert_reason: "background_system_kill_daily_summary", day: "2026-11-28",
+        total_count: 60, device_count: 12, user_cleanup_count: 0, total_count_excluding_cleanup: 60,
+        by_version: Array.from({ length: 10 }, (_, i) => row(100 - i, 5)),
+        rows_omitted: { rows: 3, count: 10, count_excluding_cleanup: 10 },
+        top_devices: [],
+      },
+    });
+    expect(text).toContain("- …另有 5 行未显示（共 20 次）");
   });
 });

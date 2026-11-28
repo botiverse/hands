@@ -211,6 +211,7 @@ describe("daily background system kill summary", () => {
     h.kill({ channel: "main", versionName: "1.30.0", code: 13000016, device: "main-13000015-0", at: t + 1 });
 
     const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s.rows_omitted).toBeNull();
     expect(s.by_version.map((r) => [r.channel, r.distribution, r.version_codes])).toEqual([
       ["main", "hands", [13000015]],
       ["main", "play", [13000016]],
@@ -243,6 +244,32 @@ describe("daily background system kill summary", () => {
     }
     expect(play).toMatchObject({ count: 11, count_excluding_cleanup: 11 });
     expect(unconfirmed).toMatchObject({ count: 3, user_cleanup_count: 1, count_excluding_cleanup: 2 });
+  });
+
+  it("sums rows past the row cap so rows and totals still add up, keeping a version's Hands and Play rows together", async () => {
+    const h = harness();
+    release130(h, { allHandsMain: false });
+    h.handsMain(12900011, 13000015);
+    h.playObserved(12900012);
+    h.playObserved(13000016);
+    // Twelve older Hands main versions with one report each, plus one cleanup.
+    for (let v = 0; v < 12; v++) {
+      const code = 12000001 + v * 10_000;
+      h.build(`0.${v}.0`, code);
+      h.handsMain(code);
+      h.kill({ channel: "main", versionName: `0.${v}.0`, code, device: `old-${v}`, at: window.startMs + v,
+        ...(v === 0 ? { description: "SwipeUpClean" } : {}) });
+    }
+    const s = (await buildBackgroundSystemKillDailySummary(h.env, "app", window))!.summary;
+    expect(s.by_version).toHaveLength(12);
+    // Newest version first: 1.30.0's Hands and Play rows lead, ahead of older Hands versions.
+    expect(s.by_version.slice(0, 2).map((r) => [r.version_name, r.distribution])).toEqual([["1.30.0", "hands"], ["1.30.0", "play"]]);
+    expect(s.rows_omitted).not.toBeNull();
+    const rows = s.by_version.reduce((n, r) => n + r.count, 0);
+    const rowsExcl = s.by_version.reduce((n, r) => n + r.count_excluding_cleanup, 0);
+    expect(rows + s.rows_omitted!.count).toBe(s.total_count);
+    expect(rowsExcl + s.rows_omitted!.count_excluding_cleanup).toBe(s.total_count_excluding_cleanup);
+    expect(s.by_version.length + s.rows_omitted!.rows).toBe(15);
   });
 
   it("classifies a main version code only when exactly one kind of record names it", () => {

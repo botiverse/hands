@@ -613,7 +613,14 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
     if (channelRows) {
       lines.push("按渠道和版本统计:");
       for (const raw of byVersion.slice(0, 8)) lines.push(`- ${bgKillChannelRow(record(raw))}`);
-      if (byVersion.length > 8) lines.push(`- …另有 ${byVersion.length - 8} 行未显示`);
+      const omitted = payload.rows_omitted ? record(payload.rows_omitted) : null;
+      const omittedRows = omitted ? bgKillNumber(omitted.rows) ?? 0 : 0;
+      const omittedCount = omitted ? bgKillNumber(omitted.count) ?? 0 : 0;
+      const hiddenRows = Math.max(0, byVersion.length - 8);
+      if (hiddenRows > 0 || omittedRows > 0) {
+        const hiddenCount = byVersion.slice(8).reduce((n: number, raw) => n + (bgKillNumber(record(raw).count) ?? 0), 0);
+        lines.push(`- …另有 ${hiddenRows + omittedRows} 行未显示（共 ${hiddenCount + omittedCount} 次）`);
+      }
       if (payload.rows_truncated === true) lines.push("（当天报告过多，分行只统计了前一部分，不给预警；总数准确）");
     } else if (byVersion.length > 0) {
       // Summaries sent before rows were per channel.

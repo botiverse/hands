@@ -3331,6 +3331,8 @@ export interface BackgroundSystemKillDailySummary {
   ping_data_since: string | null;
   /** More reports than the summary reads: totals are exact, rows count only the first ones read. */
   rows_truncated: boolean;
+  /** Rows past the row cap, summed so the rows always add up to the totals; null when none. */
+  rows_omitted: { rows: number; count: number; count_excluding_cleanup: number } | null;
   by_version: BackgroundSystemKillDailySummaryVersionEntry[];
   top_devices: Array<{
     device_id: string;
@@ -3611,11 +3613,27 @@ export async function buildBackgroundSystemKillDailySummary(
     }
   }
 
-  const ordered = [...groups.values()].sort((a, b) =>
+  // Newest first within a channel, so a version's Hands, Play and unconfirmed
+  // rows sit together; rows past the cap are summed in rows_omitted.
+  const versionMax = new Map<string, number>(); // channel \0 version name -> highest code in any of its rows
+  for (const g of groups.values()) {
+    const k = `${g.channel}\u0000${g.versionName}`;
+    versionMax.set(k, Math.max(versionMax.get(k) ?? -1, ...g.codes));
+  }
+  const maxOf = (g: Group) => versionMax.get(`${g.channel}\u0000${g.versionName}`) ?? -1;
+  const sorted = [...groups.values()].sort((a, b) =>
     compareChannels(a.channel, b.channel)
+    || maxOf(b) - maxOf(a)
+    || a.versionName.localeCompare(b.versionName)
     || compareDistributions(a.distribution, b.distribution)
-    || Math.max(-1, ...b.codes) - Math.max(-1, ...a.codes)
-    || b.count - a.count).slice(0, BG_KILL_SUMMARY_MAX_ROWS);
+    || b.count - a.count);
+  const ordered = sorted.slice(0, BG_KILL_SUMMARY_MAX_ROWS);
+  const omitted = sorted.slice(BG_KILL_SUMMARY_MAX_ROWS);
+  const rowsOmitted = omitted.length === 0 ? null : {
+    rows: omitted.length,
+    count: omitted.reduce((n, g) => n + g.count, 0),
+    count_excluding_cleanup: omitted.reduce((n, g) => n + g.count - g.cleanup, 0),
+  };
 
   const byVersion: BackgroundSystemKillDailySummaryVersionEntry[] = [];
   for (const g of ordered) {
@@ -3791,6 +3809,7 @@ export async function buildBackgroundSystemKillDailySummary(
       total_count_excluding_cleanup: total - cleanupTotal,
       ping_data_since: pingSince,
       rows_truncated: rowsTruncated,
+      rows_omitted: rowsOmitted,
       by_version: byVersion,
       top_devices: deviceRows.results,
     },
