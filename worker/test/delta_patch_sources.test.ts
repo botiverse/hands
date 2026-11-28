@@ -190,6 +190,18 @@ describe("delta patch sources", () => {
     expect(sources.map((s) => s.r2_key)).toEqual(["apk/301", "apk/300"]);
   });
 
+  it("keeps arm64-v8a among a universal target's capped sources, whatever the upload order", async () => {
+    const { db, release, apk } = setup();
+    // Uploaded x86, x86_64, armeabi-v7a, then arm64-v8a: by upload order alone the
+    // cap of 3 would drop the ABI most devices run.
+    release(500, "main", "active", "x86");
+    apk("a500x64", 500, "x86_64");
+    apk("a500v7", 500, "armeabi-v7a");
+    apk("a500arm", 500, "arm64-v8a");
+    const sources = await selectPatchSources(d1(db) as never, "app", target(501), 3, NOW, ["main"]);
+    expect(sources.map((s) => s.arch)).toEqual(["arm64-v8a", "armeabi-v7a", "x86_64"]);
+  });
+
   it("keeps at most 3 distinct APKs per version code, exact arch first", async () => {
     expect(MAX_SOURCE_APKS_PER_VERSION).toBe(3);
     const { db, release, apk } = setup();

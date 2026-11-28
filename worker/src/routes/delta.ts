@@ -151,7 +151,12 @@ async function releasedApkGroups(
        AND (?2 IS NULL OR ${APK_ARCH_SQL} IS ?2 OR ${APK_ARCH_SQL} IS NULL)
        AND b.version_code < ?3
        AND r.status IN ('active', 'superseded')
-     ORDER BY b.version_code DESC, exact_arch DESC, ba.id ASC
+     ORDER BY b.version_code DESC, exact_arch DESC,
+              -- Past the cap, keep the APKs most devices run: a universal target
+              -- takes every ABI, and upload order must not drop arm64-v8a.
+              CASE ${APK_ARCH_SQL} WHEN 'arm64-v8a' THEN 0 WHEN 'armeabi-v7a' THEN 1
+                WHEN 'x86_64' THEN 2 WHEN 'x86' THEN 3 ELSE 4 END ASC,
+              ba.id ASC
      LIMIT 2000`,
   ).bind(appId, target, before, channelsJson).all<ReleasedApk & { exact_arch: number }>()).results ?? [];
   const byCode = new Map<number, ReleasedApk[]>();
@@ -311,10 +316,18 @@ export async function runDeltaGeneration(
     await mark(`minted signed URL for new APK`);
 
     let done = 0;
-    for (const prior of priorRows) {
-      const fromSha256 = prior.file_hash.toLowerCase();
+    for (const [priorIndex, prior] of priorRows.entries()) {
+      // A malformed stored hash is not recorded: an SDK would read it as
+      // another APK and skip a patch that may well apply.
+      const fromSha256 = /^[0-9a-f]{64}$/iu.test(prior.file_hash) ? prior.file_hash.toLowerCase() : null;
+      // The version's first source is the APK the single-source selection
+      // picked before patches recorded their source, so a legacy patch (no
+      // from_sha256) of this version was made from it: only that source
+      // replaces it. Another source failing or succeeding leaves it alone.
+      const primarySource = priorRows.findIndex((p) => p.version_code === prior.version_code) === priorIndex;
       const fromArch = normalizeApkArch(prior.arch);
-      const sourceLabel = `v${prior.version_code} (${fromArch ?? "universal"} ${fromSha256.slice(0, 12)})`;
+      const sourceKey = fromSha256 ? fromSha256.slice(0, 16) : `n${priorIndex}`;
+      const sourceLabel = `v${prior.version_code} (${fromArch ?? "universal"} ${sourceKey})`;
       const oldUrl = await generateInternalR2Url(env, prior.r2_key, URL_TTL_SECONDS, params.origin);
       // Every variant is generated and stored on its own: an xz failure keeps
       // the gzip patch old SDKs need, and the reverse.
@@ -323,8 +336,7 @@ export async function runDeltaGeneration(
         const label = `${sourceLabel} ${variant.compression}`;
         const base = {
           from_version_code: prior.version_code,
-          from_sha256: fromSha256,
-          from_arch: fromArch,
+          ...(fromSha256 ? { from_sha256: fromSha256, from_arch: fromArch } : {}),
           algorithm: variant.algorithm,
         };
         await mark(`${label}: calling container (url mode)`);
@@ -371,25 +383,25 @@ export async function runDeltaGeneration(
 
         // The source hash keeps the patches from two APKs of one version code
         // (universal and arm64-v8a, say) apart.
-        const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${fromSha256.slice(0, 16)}-${newApk.arch ?? "any"}.${variant.filetype}`;
+        const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${sourceKey}-${newApk.arch ?? "any"}.${variant.filetype}`;
         await env.APK_BUCKET.put(patchKey, patchBytes);
         const patchHash = await sha256Hex(patchBytes);
 
         // Replace only this variant from this source APK: the gzip and xz
         // patches, and the patches from other APKs of the same version code,
         // live side by side. A patch stored before patches recorded their
-        // source (no from_sha256) is replaced too: this run makes one from
-        // every source APK of that version.
+        // source (no from_sha256) is replaced only by the version's first
+        // source, which is the APK it was made from (see primarySource).
         await env.DB.prepare(
           `DELETE FROM build_assets
            WHERE build_id = ?1 AND artifact_kind = 'delta-patch'
              AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
              AND (arch IS ?3 OR arch = ?3)
              AND json_extract(metadata_json, '$.algorithm') = ?4
-             AND (json_extract(metadata_json, '$.from_sha256') IS NULL
-                  OR lower(json_extract(metadata_json, '$.from_sha256')) = ?5)`,
+             AND ((?6 = 1 AND json_extract(metadata_json, '$.from_sha256') IS NULL)
+                  OR (?5 IS NOT NULL AND lower(json_extract(metadata_json, '$.from_sha256')) = ?5))`,
         )
-          .bind(newApk.build_id, prior.version_code, newApk.arch, variant.algorithm, fromSha256)
+          .bind(newApk.build_id, prior.version_code, newApk.arch, variant.algorithm, fromSha256, primarySource ? 1 : 0)
           .run();
         await env.DB.prepare(
           `INSERT INTO build_assets
@@ -414,8 +426,7 @@ export async function runDeltaGeneration(
               // The exact APK this patch applies to; the update check offers
               // it only to a device whose installed APK has this hash (or that
               // sends none).
-              from_sha256: fromSha256,
-              from_arch: fromArch,
+              ...(fromSha256 ? { from_sha256: fromSha256, from_arch: fromArch } : {}),
             }),
             Date.now(),
             variant.filetype,

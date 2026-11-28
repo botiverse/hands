@@ -42,6 +42,10 @@ function d1(db: Database.Database) {
   };
 }
 
+/** Stored APK hashes are 64 hex characters; the generator records nothing else. */
+const H10 = "10".padStart(64, "a");
+const U10 = "b".repeat(64);
+
 function setup() {
   const db = new Database(":memory:");
   for (const name of readdirSync(MIGRATION_DIR).sort()) if (name.endsWith(".sql")) db.exec(readFileSync(`${MIGRATION_DIR}${name}`, "utf8"));
@@ -51,7 +55,7 @@ function setup() {
   for (const [code, status] of [[10, "superseded"], [20, "active"]] as const) {
     db.prepare("INSERT INTO builds (id, app_id, version_name, version_code, created_at, updated_at) VALUES (?, 'app', ?, ?, 1, 1)").run(`b${code}`, String(code), code);
     db.prepare("INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES (?, ?, 'installable', 'android', 'arm64-v8a', 'apk', ?, ?, 1000, 1)")
-      .run(`a${code}`, `b${code}`, `apk/${code}`, `h${code}`);
+      .run(`a${code}`, `b${code}`, `apk/${code}`, String(code).padStart(64, "a"));
     db.prepare("INSERT INTO releases (id, app_id, build_id, channel_id, product_type, release_type, status, created_by, created_at, updated_at) VALUES (?, 'app', ?, 'main', 'app', 'stable', ?, 't', 1, 1)")
       .run(`r${code}`, `b${code}`, status);
   }
@@ -103,10 +107,10 @@ describe("delta patch variants", () => {
       expect.objectContaining({ from_version_code: 10, algorithm: "archive-patcher-v1+xz", status: "ok", size_bytes: 200 }),
     ]);
     expect(patches()).toEqual([
-      { r2_key: "delta/app/20/from-10-h10-arm64-v8a.patch", filetype: "patch", size_bytes: 300, algorithm: "archive-patcher-v1+gzip", from_version_code: 10 },
-      { r2_key: "delta/app/20/from-10-h10-arm64-v8a.patch.xz", filetype: "patch.xz", size_bytes: 200, algorithm: "archive-patcher-v1+xz", from_version_code: 10 },
+      { r2_key: "delta/app/20/from-10-aaaaaaaaaaaaaaaa-arm64-v8a.patch", filetype: "patch", size_bytes: 300, algorithm: "archive-patcher-v1+gzip", from_version_code: 10 },
+      { r2_key: "delta/app/20/from-10-aaaaaaaaaaaaaaaa-arm64-v8a.patch.xz", filetype: "patch.xz", size_bytes: 200, algorithm: "archive-patcher-v1+xz", from_version_code: 10 },
     ]);
-    expect([...puts.keys()].sort()).toEqual(["delta/app/20/from-10-h10-arm64-v8a.patch", "delta/app/20/from-10-h10-arm64-v8a.patch.xz"]);
+    expect([...puts.keys()].sort()).toEqual(["delta/app/20/from-10-aaaaaaaaaaaaaaaa-arm64-v8a.patch", "delta/app/20/from-10-aaaaaaaaaaaaaaaa-arm64-v8a.patch.xz"]);
 
     // A re-run replaces each variant in place instead of clobbering the other.
     container.reply = sized({ gzip: 310, xz: 210 });
@@ -140,22 +144,22 @@ describe("delta patch variants", () => {
   it("stores a patch from each APK of a version code, recording the source, under distinct keys", async () => {
     const { db, generate, sources, puts } = setup();
     // Version 10 also shipped as a universal APK (another asset of the same build).
-    db.prepare("INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES ('a10u', 'b10', 'installable', 'android', NULL, 'apk', 'apk/10u', 'U10U', 1100, 1)").run();
+    db.prepare("INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES ('a10u', 'b10', 'installable', 'android', NULL, 'apk', 'apk/10u', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 1100, 1)").run();
     container.reply = sized({ gzip: 300, xz: 200 });
     const outcome = await generate();
     // Exact arch first, then the universal APK.
     expect(container.oldUrls.map((url) => decodeURIComponent(url).includes("apk/10u") ? "universal" : "arm64")).toEqual(["arm64", "arm64", "universal", "universal"]);
     expect(outcome.results.map((r) => [r.from_version_code, r.from_sha256, r.from_arch, r.algorithm, r.status])).toEqual([
-      [10, "h10", "arm64-v8a", "archive-patcher-v1+gzip", "ok"],
-      [10, "h10", "arm64-v8a", "archive-patcher-v1+xz", "ok"],
-      [10, "u10u", null, "archive-patcher-v1+gzip", "ok"],
-      [10, "u10u", null, "archive-patcher-v1+xz", "ok"],
+      [10, H10, "arm64-v8a", "archive-patcher-v1+gzip", "ok"],
+      [10, H10, "arm64-v8a", "archive-patcher-v1+xz", "ok"],
+      [10, U10, null, "archive-patcher-v1+gzip", "ok"],
+      [10, U10, null, "archive-patcher-v1+xz", "ok"],
     ]);
     expect(sources()).toEqual([
-      { algorithm: "archive-patcher-v1+gzip", from_sha256: "h10", from_arch: "arm64-v8a", from_arch_type: "text", size_bytes: 300 },
-      { algorithm: "archive-patcher-v1+gzip", from_sha256: "u10u", from_arch: null, from_arch_type: "null", size_bytes: 300 },
-      { algorithm: "archive-patcher-v1+xz", from_sha256: "h10", from_arch: "arm64-v8a", from_arch_type: "text", size_bytes: 200 },
-      { algorithm: "archive-patcher-v1+xz", from_sha256: "u10u", from_arch: null, from_arch_type: "null", size_bytes: 200 },
+      { algorithm: "archive-patcher-v1+gzip", from_sha256: H10, from_arch: "arm64-v8a", from_arch_type: "text", size_bytes: 300 },
+      { algorithm: "archive-patcher-v1+gzip", from_sha256: U10, from_arch: null, from_arch_type: "null", size_bytes: 300 },
+      { algorithm: "archive-patcher-v1+xz", from_sha256: H10, from_arch: "arm64-v8a", from_arch_type: "text", size_bytes: 200 },
+      { algorithm: "archive-patcher-v1+xz", from_sha256: U10, from_arch: null, from_arch_type: "null", size_bytes: 200 },
     ]);
     expect(puts.size).toBe(4);
 
@@ -163,10 +167,10 @@ describe("delta patch variants", () => {
     container.reply = sized({ gzip: 310, xz: 210 });
     await generate();
     expect(sources().map((p) => [p.algorithm, p.from_sha256, p.size_bytes])).toEqual([
-      ["archive-patcher-v1+gzip", "h10", 310],
-      ["archive-patcher-v1+gzip", "u10u", 310],
-      ["archive-patcher-v1+xz", "h10", 210],
-      ["archive-patcher-v1+xz", "u10u", 210],
+      ["archive-patcher-v1+gzip", H10, 310],
+      ["archive-patcher-v1+gzip", U10, 310],
+      ["archive-patcher-v1+xz", H10, 210],
+      ["archive-patcher-v1+xz", U10, 210],
     ]);
   });
 
@@ -179,8 +183,27 @@ describe("delta patch variants", () => {
     container.reply = sized({ gzip: 300, xz: 200 });
     await generate();
     expect(sources().map((p) => [p.algorithm, p.from_sha256, p.size_bytes])).toEqual([
-      ["archive-patcher-v1+gzip", "h10", 300],
-      ["archive-patcher-v1+xz", "h10", 200],
+      ["archive-patcher-v1+gzip", H10, 300],
+      ["archive-patcher-v1+xz", H10, 200],
+    ]);
+  });
+
+  it("keeps a patch stored before patches recorded their source when only another APK's patch succeeds", async () => {
+    const { db, generate, sources } = setup();
+    db.prepare("INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, created_at) VALUES ('a10u', 'b10', 'installable', 'android', NULL, 'apk', 'apk/10u', ?, 1100, 1)").run(U10);
+    db.prepare(
+      `INSERT INTO build_assets (id, build_id, artifact_kind, platform, arch, filetype, r2_key, file_hash, size_bytes, metadata_json, created_at)
+       VALUES ('legacy', 'b20', 'delta-patch', 'android', 'arm64-v8a', 'patch', 'delta/app/20/from-10-arm64-v8a.patch', 'p', 999, ?, 1)`,
+    ).run(JSON.stringify({ from_version_code: 10, to_version_code: 20, algorithm: "archive-patcher-v1+gzip", target_sha256: "h20" }));
+    // The arm64-v8a APK (the one the legacy patch was made from) fails; the universal one succeeds.
+    const ok = sized({ gzip: 300, xz: 200 });
+    container.reply = (compression) =>
+      decodeURIComponent(container.oldUrls.at(-1) ?? "").includes("apk/10u") ? ok(compression) : new Response("boom", { status: 500 });
+    await generate();
+    expect(sources().map((p) => [p.algorithm, p.from_sha256, p.size_bytes])).toEqual([
+      ["archive-patcher-v1+gzip", null, 999],
+      ["archive-patcher-v1+gzip", U10, 300],
+      ["archive-patcher-v1+xz", U10, 200],
     ]);
   });
 });

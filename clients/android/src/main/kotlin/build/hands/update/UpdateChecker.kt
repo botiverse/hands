@@ -1283,10 +1283,11 @@ class UpdateChecker @JvmOverloads constructor(
 
     /**
      * SHA-256 of the installed base APK, hashed once per install (cached) and
-     * off the main thread; null when it cannot be read, so no header is sent.
+     * off the main thread; null when delta apply is off (no patch will be
+     * used) or the APK cannot be read, so no header is sent.
      */
     private suspend fun installedApkSha256(): String? =
-        withContext(Dispatchers.IO) { InstalledApkHash.get(context) }
+        if (!deltaApplyEnabled) null else withContext(Dispatchers.IO) { InstalledApkHash.get(context) }
 
     private fun installedVersionCodeNow(): Long? = try {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)

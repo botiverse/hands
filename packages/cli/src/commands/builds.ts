@@ -283,7 +283,7 @@ export async function preflightAndroidDeltaPatches(
       throw new Error(`--delta-patch must be <from_version_code>[@<source_sha256>]=<path>, got: ${spec}`);
     }
     const [codePart, shaPart] = parts as [string, string | undefined];
-    const fromVersionCode = Number(codePart.trim());
+    const fromVersionCode = codePart.trim() === "" ? Number.NaN : Number(codePart.trim());
     const patchPath = spec.slice(eq + 1).trim();
     if (!Number.isFinite(fromVersionCode)) {
       throw new Error(`bad from_version_code in --delta-patch: ${spec}`);
