@@ -1,5 +1,7 @@
 export {
+  FEEDBACK_DIAGNOSTICS_ZIP_TYPES,
   FEEDBACK_HOST_ATTACHMENT_TYPES,
+  MAX_FEEDBACK_DIAGNOSTICS_ZIPS,
   MAX_FEEDBACK_HOST_ATTACHMENT_BYTES,
   MAX_FEEDBACK_HOST_ATTACHMENTS,
   FeedbackInbox,
@@ -8,6 +10,7 @@ export {
   NewFeedback,
 } from "./components.js";
 export type {
+  FeedbackAttachmentOptions,
   FeedbackInboxProps,
   FeedbackTicketProps,
   FeedbackWorkspaceProps,

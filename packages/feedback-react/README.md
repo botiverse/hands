@@ -70,6 +70,11 @@ width. Its toolbar, notice and ticket content share one edge on both sides:
 16px at 48rem and wider with a fine primary pointer (mouse), otherwise 20px.
 The supported `@botiverse/raft-ui` peer range remains `>=0.20.0 <1.0.0`.
 
+`allowDiagnosticsZip` (on `FeedbackWorkspace` and `NewFeedback`, default
+`false`) lets the new-feedback file picker also take one diagnostics `.zip`
+(10 MB, counted in the 3-attachment limit). Turn it on only when your backend
+accepts zip attachments on new feedback; replies stay images-only.
+
 A person's list can merge tickets filed from several Raft clients. Set
 `currentClient` on `FeedbackProvider` (`"web"`, `"desktop"`, `"android"`,
 `"ios"` or `"ohos"`) to the client the host runs on, and have the transport set

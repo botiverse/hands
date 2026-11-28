@@ -412,6 +412,24 @@ remains `>=0.20.0 <1.0.0`.
 />
 ```
 
+### Diagnostics zip
+
+Pass `allowDiagnosticsZip` (on `FeedbackWorkspace` or `NewFeedback`) when your
+backend accepts a zip attachment on new feedback. The new-feedback file picker
+then also offers `.zip`, and a reporter can attach one diagnostics bundle (up
+to 10 MB) next to screenshots; it counts toward the same 3-attachment limit and
+is shown as a file card. A file counts as a zip when its type is
+`application/zip`, `application/x-zip-compressed`, `application/x-zip` or
+`multipart/x-zip`, or when its type is empty or `application/octet-stream` and
+its name ends in `.zip`. The SDK does not read the bytes; the backend should
+still check them. A second zip is rejected with `attachmentZipTooMany`, and an
+unsupported file with `attachmentUnsupportedWithZip`. Replies stay images-only,
+and the prop is off by default, so other hosts are unchanged.
+
+```tsx
+<FeedbackWorkspace allowDiagnosticsZip />
+```
+
 The workspace owns list pagination, focus and scroll restoration, reply drafts,
 IME-safe Enter handling, attachment progress/retry/cancel, recoverable cursor
 pages, and near-bottom conversation following. Do not build a second copy of
