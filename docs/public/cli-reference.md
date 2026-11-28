@@ -358,9 +358,14 @@ automatically on the server — no extra flags needed.
 `--arch` names the APK's ABI and defaults to `arm64-v8a`. A device asks for the
 APK of its own ABI and falls back to an APK registered without one. For a
 universal APK that carries native code for every ABI, pass `--arch universal`:
-Hands then serves it to every device, including x86_64 emulators. Delta patches
-pair builds of the same arch, so the first universal build after arm64-v8a
-builds ships full APKs once.
+Hands then serves it to every device, including x86_64 emulators. With
+`--generate-deltas`, an ABI-specific APK gets patches from earlier APKs of the
+same ABI and from universal APKs, and a universal APK gets patches from earlier
+APKs of any ABI, so switching between universal and arm64-v8a releases keeps
+patches small. When a version shipped as more than one APK, each one (up to 3)
+gets its own patch, and every patch records the sha256 of the APK it applies to
+(`from_sha256`). For a hand-made patch, `--delta-patch
+<version_code>@<source_apk_sha256>=<path>` records it too.
 
 When the app requires human approval for agent releases, `hands releases
 publish` from a deploy token or agent session does not publish: Hands answers

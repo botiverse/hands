@@ -155,6 +155,34 @@ let the client take the full download. This keeps delta a strict win.
   the nearest earlier releases filling the rest (default 5). Before this, the
   sources were the 3 nearest lower version codes on any channel, so a main
   release followed preview builds and main's devices were never offered a patch.
+- **Cross-ABI sources and `from_sha256` (2026-11-28, Android SDK 0.16.2):** an
+  app can publish universal APKs for one release and arm64-v8a APKs for the
+  next, and one version code can exist as two APKs (two builds, or two assets
+  of one build). Source selection (`releasedApksForArch`) now lets an
+  ABI-specific target patch from same-ABI and universal APKs (never another
+  ABI), and a universal target patch from APKs of any ABI. Every distinct APK
+  (by file hash) of a chosen version code is a source, up to 3, exact ABI
+  first; `keep`/`limit` still count version codes. `GET delta-sources` returns
+  more than one APK per version only with `per_version=<n>` (the CLI sends 3):
+  older CLIs name work files and patches by version code alone, and a second
+  source of one version would fail their publish on the asset slot. Patch
+  metadata records the
+  exact source as `from_sha256` (lower-case hex) and `from_arch` (null =
+  universal), written by the CLI (`--generate-deltas`, and
+  `--delta-patch <vc>@<sha256>=<path>`) and the server generator. Migration
+  0125 adds `from_sha256` to the canonical asset slot so the patches from two
+  APKs of one version code no longer collide on the unique index (before it, the
+  second upload failed). `/updates/check` reads `X-Hands-Installed-Sha256` (or
+  `installed_sha256`): patches from that APK first, patches without
+  `from_sha256` next, patches from any other APK never. Without it (SDKs before
+  0.16.2) a patch from an APK of the offered asset's arch is preferred, then
+  patches without `from_sha256`, then the rest; a wrong guess costs one patch
+  download before the SDK's sha256 check falls back to the full APK. The offer
+  carries `from_sha256`. SDK 0.16.2 hashes its installed APK once per install
+  (cached in SharedPreferences by versionCode, lastUpdateTime and size), sends
+  the header, and skips (`patch_fallback` / `source_mismatch`) a patch whose
+  `from_sha256` names another APK; `HandsUpdateOffer.downloadSizeBytes` then
+  reports the full APK.
 - **Offer gate:** the `delta_updates` feature flag per app and device; it is off
   for raft-android until a device test passes.
 
