@@ -4,6 +4,8 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -22,6 +24,12 @@ import java.io.IOException
 class ZucchiniDeltaApplierTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Before
+    fun hostLibrary() {
+        // Gradle sets this when it puts the host library on java.library.path.
+        assumeTrue(System.getProperty("hands.hostBundledZlib") != null)
+    }
 
     private fun fixture(name: String): ByteArray =
         requireNotNull(javaClass.getResourceAsStream("/zucchini/$name")) { "missing fixture $name" }.use { it.readBytes() }

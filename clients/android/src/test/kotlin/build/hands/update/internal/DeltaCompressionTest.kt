@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.tukaani.xz.LZMA2Options
 import org.tukaani.xz.MemoryLimitException
@@ -41,7 +42,8 @@ class DeltaCompressionTest {
 
     @Test
     fun `zucchini is declared first when the native applier loads`() {
-        // Unit tests load the host build of libhandscrash.so, which carries it.
+        // Gradle's unit tests load the host build of libhandscrash.so, which carries it.
+        assumeTrue(System.getProperty("hands.hostBundledZlib") != null)
         assertEquals(DeltaUpdater.supportedAlgorithms(true), DeltaUpdater.SUPPORTED_ALGORITHMS)
     }
 

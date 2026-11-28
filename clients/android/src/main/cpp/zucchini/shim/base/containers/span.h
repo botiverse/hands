@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstring>
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/numerics/safe_conversions.h"
 
 namespace base {
