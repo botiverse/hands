@@ -475,8 +475,9 @@ first use).
 
 ## Device analytics
 
-`Hands.install(...)` already sends a lightweight launch/install metrics ping (throttled
-to ≤1/day/install) that powers the console's active-device and
+`Hands.install(...)` already sends a lightweight launch/install metrics ping (at most
+once per UTC day per install, and again on the first launch after the version code or
+channel changes, since `0.16.1`; before, at most once per 24 hours) that powers the console's active-device and
 version-distribution views — no separate call needed. This is not a true
 online heartbeat. No PII: only the random per-install device id and build/OS
 metadata. Pass

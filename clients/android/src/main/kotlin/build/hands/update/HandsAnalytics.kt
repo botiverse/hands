@@ -15,17 +15,39 @@ import org.json.JSONObject
 
 /**
  * Device registration ping: a lightweight launch heartbeat that powers
- * active-device and version-distribution analytics on the Quiver console.
+ * active-device and version-distribution analytics on the Hands console.
  *
- * Throttled to at most once per day per install (a timestamp in the same
- * SharedPreferences as the device id), so calling [reportDevice] on every
+ * Sent at most once per UTC day per install, and again as soon as the app's
+ * version code or channel changes (an upgrade), so the new version counts as
+ * active on the day it is installed. The last successful ping is kept in the
+ * same SharedPreferences as the device id, so calling [reportDevice] on every
  * launch is cheap. Carries no PII — only the random per-install device id
  * and build/OS metadata.
  */
 object HandsAnalytics {
     private const val PREFS_NAME = "quiver_update"
     private const val KEY_LAST_PING = "last_device_ping_at"
-    private val MIN_INTERVAL_MS = TimeUnit.HOURS.toMillis(24)
+    private const val KEY_LAST_VERSION_CODE = "last_device_ping_version_code"
+    private const val KEY_LAST_CHANNEL = "last_device_ping_channel"
+    private val DAY_MS = TimeUnit.DAYS.toMillis(1)
+
+    /**
+     * Whether to ping: never pinged, a different UTC day than the last ping
+     * (also when the clock went backwards), or a different version code or
+     * channel than the last ping reported.
+     */
+    internal fun shouldPing(
+        now: Long,
+        lastPingAt: Long,
+        lastVersionCode: Long?,
+        lastChannel: String?,
+        versionCode: Long?,
+        channel: String?,
+    ): Boolean {
+        if (lastPingAt <= 0L) return true
+        if (Math.floorDiv(now, DAY_MS) != Math.floorDiv(lastPingAt, DAY_MS)) return true
+        return lastVersionCode != versionCode || lastChannel != channel
+    }
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -35,8 +57,9 @@ object HandsAnalytics {
     }
 
     /**
-     * Send a device ping if one hasn't been sent in the last 24h. Safe to
-     * call on every launch; runs the network off the caller's thread.
+     * Send a device ping unless one was already sent this UTC day for the
+     * same version code and channel. Safe to call on every launch; runs the
+     * network off the caller's thread.
      * Returns true if a ping was actually sent.
      */
     suspend fun reportDevice(
@@ -53,8 +76,16 @@ object HandsAnalytics {
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         if (!force) {
-            val last = prefs.getLong(KEY_LAST_PING, 0L)
-            if (now - last < MIN_INTERVAL_MS) return@withContext false
+            val lastVersionCode = if (prefs.contains(KEY_LAST_VERSION_CODE)) prefs.getLong(KEY_LAST_VERSION_CODE, 0L) else null
+            val shouldSend = shouldPing(
+                now = now,
+                lastPingAt = prefs.getLong(KEY_LAST_PING, 0L),
+                lastVersionCode = lastVersionCode,
+                lastChannel = prefs.getString(KEY_LAST_CHANNEL, null),
+                versionCode = versionCode,
+                channel = channel,
+            )
+            if (!shouldSend) return@withContext false
         }
 
         val metadata = JSONObject().apply {
@@ -85,7 +116,11 @@ object HandsAnalytics {
         runCatching {
             client.newCall(requestBuilder.build()).execute().use { response ->
                 if (response.isSuccessful) {
-                    prefs.edit().putLong(KEY_LAST_PING, now).apply()
+                    prefs.edit().apply {
+                        putLong(KEY_LAST_PING, now)
+                        if (versionCode != null) putLong(KEY_LAST_VERSION_CODE, versionCode) else remove(KEY_LAST_VERSION_CODE)
+                        if (channel != null) putString(KEY_LAST_CHANNEL, channel) else remove(KEY_LAST_CHANNEL)
+                    }.apply()
                     true
                 } else {
                     false
