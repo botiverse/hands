@@ -74,6 +74,9 @@ on:
       # executed build-docs, and its first run anywhere was on the deploy runner.
       - "admin/**"
       - "docs/**"
+      # The CLI's Zucchini generator (zucchini-generator job) is built from the
+      # Android SDK's vendored Zucchini sources plus its own.
+      - "clients/android/src/main/cpp/zucchini/**"
   # No paths filter here, deliberately. Two lists are two things to keep in step, and
   # the first was already out of step: this file itself was missing from the push
   # list, so a change to the workflow could merge without main ever running it. The
@@ -136,6 +139,23 @@ jobs:
         run: |
           pnpm --filter @botiverse/hands-cli exec tsc --noEmit
           pnpm --filter @botiverse/hands-cli test
+
+  zucchini-generator:
+    # packages/cli/zucchini/zucchini-gen.cjs is a committed build output; prove
+    # it is exactly what its sources build to.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install Emscripten 7.0.1
+        run: |
+          git clone --depth 1 --branch 7.0.1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install 7.0.1
+          "$RUNNER_TEMP/emsdk/emsdk" activate 7.0.1
+      - name: Rebuild and compare
+        run: |
+          . "$RUNNER_TEMP/emsdk/emsdk_env.sh"
+          packages/cli/zucchini/build.sh
+          git diff --exit-code --stat -- packages/cli/zucchini/zucchini-gen.cjs
 
   app-patch:
     runs-on: ubuntu-latest
