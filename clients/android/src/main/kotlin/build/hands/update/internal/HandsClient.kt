@@ -39,6 +39,8 @@ class HandsClient(
         filetype: String = "apk",
         deviceId: String? = null,
         languageTag: String? = null,
+        /** SHA-256 hex of the installed base APK; only sent when well formed. */
+        installedSha256: String? = null,
     ): UpdateCheckResponse = withContext(Dispatchers.IO) {
         val urlBuilder = baseUrl.trimEnd('/').toHttpUrl().newBuilder()
             .addPathSegments("public/v2/apps")
@@ -59,6 +61,11 @@ class HandsClient(
             // Patch algorithms this SDK can apply; without it the server
             // offers only gzip patches.
             .header("X-Hands-Delta-Algorithms", DeltaUpdater.SUPPORTED_ALGORITHMS.joinToString(","))
+        installedSha256HeaderValue(installedSha256)?.let { sha ->
+            // Picks the patch made from this exact APK when one version code
+            // shipped as several (universal and per-ABI).
+            requestBuilder.header("X-Hands-Installed-Sha256", sha)
+        }
         if (!deviceId.isNullOrBlank()) {
             // Stable per-install id; the server uses it to bucket staged rollouts.
             requestBuilder.header("X-Hands-Device-Id", deviceId)
@@ -88,6 +95,12 @@ class HandsClient(
     }
 
     companion object {
+        private val SHA256_HEX = Regex("^[0-9a-fA-F]{64}$")
+
+        /** [sha256] lower-cased if it is 64 hex characters, else null (no header). */
+        internal fun installedSha256HeaderValue(sha256: String?): String? =
+            sha256?.trim()?.takeIf { SHA256_HEX.matches(it) }?.lowercase()
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)

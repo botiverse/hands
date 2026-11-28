@@ -66,11 +66,17 @@ data class UpdateAsset(
  *  - [from_version_code] MUST equal the installed version_code (the patch is
  *    built against that exact base APK).
  *  - [algorithm] identifies the delta engine and its compression:
- *    `archive-patcher-v1` (raw), `archive-patcher-v1+gzip` (gzip-wrapped) or
- *    `archive-patcher-v1+xz` (xz-wrapped); the patch bytes are decompressed
- *    before applying. Any other value is not applied.
+ *    `archive-patcher-v1` (raw), `archive-patcher-v1+gzip` (gzip-wrapped),
+ *    `archive-patcher-v1+xz` (xz-wrapped) or `archive-patcher-zucchini-v1+xz`;
+ *    the patch bytes are decompressed before applying. Any other value is not
+ *    applied.
  *  - [target_sha256] is the SHA-256 (hex) of the full TARGET APK; the client
  *    verifies the reconstructed file against it before installing.
+ *  - [from_sha256] is the SHA-256 (hex) of the exact installed APK the patch
+ *    applies to (one version code can ship as several APKs, e.g. universal
+ *    and arm64-v8a), or null on patches stored without it. When it names
+ *    another APK than the installed one, the client does not download the
+ *    patch and takes the full APK.
  */
 @Serializable
 data class Patch(
@@ -79,6 +85,7 @@ data class Patch(
     val download_url: String,
     val size_bytes: Long,
     val target_sha256: String? = null,
+    val from_sha256: String? = null,
 )
 
 @Serializable

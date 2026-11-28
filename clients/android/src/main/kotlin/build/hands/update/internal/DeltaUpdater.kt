@@ -85,18 +85,16 @@ class DeltaUpdater(
         persistReadyToInstall: (apk: File, sha256: String) -> Unit = { _, _ -> },
         persistInstallerOpened: () -> Unit = {},
         openInstaller: Boolean = true,
+        /** SHA-256 hex of the installed base APK, null if it could not be read. */
+        installedSha256: String? = null,
     ): Boolean {
-        if (!deltaEnabled()) {
-            emit("patch_fallback", "flag_off")
-            log("delta_fallback reason=flag_off")
+        val skipReason = preflightFallbackReason(patch, installedVersionCode, deltaEnabled(), installedSha256)
+        if (skipReason != null) {
+            emit("patch_fallback", skipReason)
+            log("delta_fallback reason=${if (skipReason == "offer_invalid") "validate" else skipReason}")
             return false
         }
-        if (!validateOffer(patch)) {
-            emit("patch_fallback", "offer_invalid")
-            log("delta_fallback reason=validate")
-            return false
-        }
-        // Non-null and non-blank, per validateOffer.
+        // Non-null and non-blank, per preflightFallbackReason.
         val expectedSha = patch.target_sha256!!
 
         val baseFile = File(context.applicationInfo.sourceDir)
@@ -133,7 +131,7 @@ class DeltaUpdater(
             }
 
             // 2. Open the delta stream, decompressing as the algorithm says
-            //    (validateOffer accepted it, so it is known). A corrupt gzip or
+            //    (preflightFallbackReason accepted it, so it is known). A corrupt gzip or
             //    xz header surfaces here.
             val compression = compressionFor(patch.algorithm) ?: PatchCompression.NONE
             val deltaStream: InputStream = try {
@@ -255,17 +253,6 @@ class DeltaUpdater(
         return deltaApplyEnabled
     }
 
-    /**
-     * Cheap, non-cryptographic offer sanity checks. The real trust anchors are
-     * the post-apply verifications; this just avoids wasted work.
-     */
-    private fun validateOffer(patch: Patch): Boolean {
-        if (patch.from_version_code != installedVersionCode) return false
-        if (compressionFor(patch.algorithm) == null) return false
-        if (engineFor(patch.algorithm) == PatchEngine.ZUCCHINI && !ZucchiniNative.isAvailable) return false
-        if (patch.target_sha256.isNullOrBlank()) return false
-        return true
-    }
 
     private fun downloadTo(url: String, dest: File, expectedBytes: Long?) {
         val request = Request.Builder()
@@ -500,6 +487,44 @@ class DeltaUpdater(
             } catch (_: Throwable) {
                 null
             }
+
+        /**
+         * Why [patch] must not even be downloaded (the `patch_fallback` error
+         * code), or null when it may be tried:
+         *  - `flag_off`: delta apply is disabled;
+         *  - `offer_invalid`: cheap, non-cryptographic sanity checks failed (the
+         *    real trust anchors are the post-apply verifications; this just
+         *    avoids wasted work);
+         *  - `source_mismatch`: the patch was made from another APK of this
+         *    version code (universal vs arm64-v8a) and cannot rebuild the
+         *    target from this one.
+         */
+        internal fun preflightFallbackReason(
+            patch: Patch,
+            installedVersionCode: Long,
+            deltaEnabled: Boolean,
+            installedSha256: String?,
+        ): String? = when {
+            !deltaEnabled -> "flag_off"
+            patch.from_version_code != installedVersionCode ||
+                compressionFor(patch.algorithm) == null ||
+                (engineFor(patch.algorithm) == PatchEngine.ZUCCHINI && !ZucchiniNative.isAvailable) ||
+                patch.target_sha256.isNullOrBlank() -> "offer_invalid"
+            !sourceMatches(patch, installedSha256) -> "source_mismatch"
+            else -> null
+        }
+
+        /**
+         * Whether [patch] was made from the installed APK. A patch without
+         * `from_sha256` (made before Hands recorded it), or an installed hash
+         * that could not be computed, gives no evidence either way: the patch
+         * is tried and the reconstructed APK is verified as always.
+         */
+        internal fun sourceMatches(patch: Patch, installedSha256: String?): Boolean {
+            val from = patch.from_sha256?.trim()?.takeIf { it.isNotEmpty() } ?: return true
+            val installed = installedSha256?.trim()?.takeIf { it.isNotEmpty() } ?: return true
+            return constantTimeEquals(from.lowercase(), installed.lowercase())
+        }
 
         /** Lowercase hex encoding. */
         internal fun toHex(bytes: ByteArray): String {
