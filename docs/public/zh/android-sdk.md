@@ -123,7 +123,7 @@ SDK 会持久化一个绑定了包、来源、应用、渠道、产品、平台�
 
 从 `0.15.0` 起，SDK 也能应用 xz 压缩的补丁（`archive-patcher-v1+xz`，比 gzip 约小 30%），并通过 `X-Hands-Delta-Algorithms` 声明支持的算法；Hands 会提供其中最小的补丁。旧版 SDK 不发送该请求头，继续收到 gzip 补丁。无法读取 xz 补丁头时发出 `patch_fallback`（`patch_decompress_failed`）；SDK 不认识的算法一律回退为完整 APK。
 
-从 `0.16.0` 起，SDK 还能应用 `archive-patcher-zucchini-v1+xz` 补丁：容器仍是 archive-patcher，但解压后 APK 内容之间的差分改用 Zucchini（Chromium 的补丁工具，能识别 DEX 和原生代码）而不是 bsdiff。普通版本更新的补丁比 xz 补丁约小 40%。应用补丁的代码编译在 `libhandscrash.so` 中，只有该库能加载时 SDK 才声明这个算法。应用时缓存目录需要约四到五倍 APK 大小的空闲空间，文件通过内存映射读写，不占 Java 堆。任何失败（包括补丁损坏）都会发出 `patch_fallback`（`patch_apply_failed`）并下载完整 APK。
+从 `0.16.0` 起，SDK 还能应用 `archive-patcher-zucchini-v1+xz` 补丁：容器仍是 archive-patcher，但解压后 APK 内容之间的差分改用 Zucchini（Chromium 的补丁工具，能识别 DEX 和原生代码）而不是 bsdiff。普通版本更新的补丁比 xz 补丁约小 40%。应用补丁的代码编译在 `libhandscrash.so` 中，只有该库能加载时 SDK 才声明这个算法。应用时缓存目录需要约四到五倍 APK 大小的空闲空间，文件通过内存映射读写，不占 Java 堆。任何失败（包括补丁损坏）都会发出 `patch_fallback`（`patch_apply_failed`）并下载完整 APK。`hands builds publish-android --generate-deltas`（CLI 0.5.88+）只为使用 SDK `0.16.0` 或更新版本构建的源版本生成 Zucchini 补丁，因为更早构建上的设备无法应用；每个补丁需要一到六分钟和约 1 GB 内存，机器的 CPU 和内存足够时并行生成。
 
 `0.15.0` 还能从补丁下载或合成途中进程被杀的情况恢复：下次读取状态或安装时，遗留的 `patching` 事务会被判为中断（`stale`，`patch_interrupted`），缓存里残缺的补丁和 APK 会被删除，下次安装重新开始。此前更新会一直停在 `patching`，直到 30 分钟的补丁超时。
 

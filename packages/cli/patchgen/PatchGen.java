@@ -13,13 +13,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
+import java.util.Enumeration;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Minimal CLI wrapper around archive-patcher's file-by-file delta generator
@@ -51,10 +55,18 @@ public final class PatchGen {
   static final BiFunction<Integer, Boolean, IDeflater> DEFLATER_FACTORY =
       (level, nowrap) -> new DefaultDeflater(level, nowrap);
 
+  /** The JNI entry point of the Zucchini applier, exported by Android SDK 0.16.0+. */
+  static final byte[] ZUCCHINI_APPLY_SYMBOL =
+      "Java_build_hands_update_internal_ZucchiniNative_nativeApply".getBytes(StandardCharsets.US_ASCII);
+
   public static void main(String[] args) throws Exception {
+    if (args.length == 2 && args[0].equals("--zucchini-capable")) {
+      // Exit 0 when the APK can apply Zucchini patches, 1 when it can't.
+      System.exit(canApplyZucchini(new File(args[1])) ? 0 : 1);
+    }
     final boolean zucchini = args.length == 6 && args[0].equals("--zucchini");
     if (args.length != 3 && !zucchini) {
-      System.err.println("usage: PatchGen [--zucchini <node> <generator>] <old.apk> <new.apk> <out.patch.gz>");
+      System.err.println("usage: PatchGen [--zucchini <node> <generator>] <old.apk> <new.apk> <out.patch.gz> | PatchGen --zucchini-capable <old.apk>");
       System.exit(2);
     }
     int i = zucchini ? 3 : 0;
@@ -72,6 +84,45 @@ public final class PatchGen {
         new GZIPOutputStream(new BufferedOutputStream(new FileOutputStream(args[i + 2])))) {
       generator.generateDelta(oldFile, newFile, out);
     }
+  }
+
+  /**
+   * Whether an APK ships the Hands Zucchini applier: some native library in it
+   * exports the applier's JNI entry point (Android SDK 0.16.0+). Devices running
+   * an older build can't use a Zucchini patch, so it isn't worth making one.
+   */
+  static boolean canApplyZucchini(File apk) throws IOException {
+    try (ZipFile zip = new ZipFile(apk)) {
+      Enumeration<? extends ZipEntry> entries = zip.entries();
+      while (entries.hasMoreElements()) {
+        ZipEntry entry = entries.nextElement();
+        String name = entry.getName();
+        if (entry.isDirectory() || !name.startsWith("lib/") || !name.endsWith(".so")) continue;
+        try (InputStream in = zip.getInputStream(entry)) {
+          if (contains(in, ZUCCHINI_APPLY_SYMBOL)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Streams {@code in} looking for {@code needle} (Knuth-Morris-Pratt). */
+  static boolean contains(InputStream in, byte[] needle) throws IOException {
+    int[] fail = new int[needle.length];
+    for (int i = 1, k = 0; i < needle.length; i++) {
+      while (k > 0 && needle[i] != needle[k]) k = fail[k - 1];
+      if (needle[i] == needle[k]) k++;
+      fail[i] = k;
+    }
+    byte[] buf = new byte[64 * 1024];
+    int matched = 0;
+    for (int n; (n = in.read(buf)) > 0; ) {
+      for (int i = 0; i < n; i++) {
+        while (matched > 0 && buf[i] != needle[matched]) matched = fail[matched - 1];
+        if (buf[i] == needle[matched] && ++matched == needle.length) return true;
+      }
+    }
+    return false;
   }
 
   /**
