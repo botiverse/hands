@@ -497,8 +497,12 @@ function releaseBuildMessage(event: string, payload: Payload, build: Payload, ap
     : truncateMessage(content, MAX_MESSAGE_LENGTH);
 }
 
+/** Summaries sent before main was split by distribution keep their own description. */
+const BG_KILL_SUMMARY_UNSPLIT_SCOPE =
+  "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。";
+
 const BG_KILL_SUMMARY_METHOD_NOTE = [
-  "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）；main 同时包含 Play 和 Hands main 两种分发，未分开比较。",
+  "口径：每行是一个渠道下同一版本名的全部构建（括号内为 versionCode）。main 按可核验的分发记录拆分：在 Hands main 发布过的为 Hands，Play 显示已发布的为 Play，两者都有或都没有的为未确认；Play 和未确认只给次数（Play 构建不向 Hands 检查更新，活跃记录不完整）。Hands main 给比例和自身基线，但在基线和覆盖核对前不给预警。",
   "活跃设备 = 当天用该渠道该版本向 Hands 发过活跃上报或检查更新的设备（按服务器接收日、按天去重；Android 活跃上报最多一天一次，当天升级的设备要到升级后再次检查更新才算进新版本；没上报的设备不在内）。退出按设备记录的退出时间归日，可能与接收日错开。",
   "覆盖 = 有退出的设备中当天有该版本活跃记录的比例，低于 90% 不给比例和预警。基线 = 旧版本在新版本出现前 7 天的次数 ÷ 设备日，与当日次数 ÷ 当日活跃设备同口径。没有完整活跃记录的日子只给次数。",
   "比例是相对已上报活跃设备的观察指标，不等于真实发生率；⚠️ 只表示同一口径下比上一版本高 2 倍以上，需人工核实。",
@@ -510,6 +514,13 @@ const BG_KILL_BASELINE_REASONS: Record<string, string> = {
   no_previous_version: "同渠道没有上一个版本",
   insufficient_history: "新版本出现前 7 天没有完整的活跃设备记录",
   low_coverage: "旧版本的退出设备活跃记录覆盖不足",
+  distribution_not_comparable: "分发归属不可比",
+};
+
+const BG_KILL_DISTRIBUTION_LABELS: Record<string, string> = {
+  hands: "Hands",
+  play: "Play",
+  unconfirmed: "未确认归属",
 };
 
 function bgKillNumber(value: unknown): number | null {
@@ -526,7 +537,10 @@ function bgKillVersionLabel(name: unknown, codes: unknown): string {
 
 /** One per-channel row of the daily background system kill summary. */
 function bgKillChannelRow(entry: Record<string, unknown>): string {
-  const channel = safePreview(safeValue(entry.channel), 40) ?? "unknown";
+  const channelName = safePreview(safeValue(entry.channel), 40) ?? "unknown";
+  const distribution = safeValue(entry.distribution);
+  const distributionLabel = distribution ? BG_KILL_DISTRIBUTION_LABELS[distribution] : undefined;
+  const channel = distributionLabel ? `${channelName}（${distributionLabel}）` : channelName;
   const count = bgKillNumber(entry.count) ?? 0;
   const devices = bgKillNumber(entry.device_count) ?? 0;
   const cleanup = bgKillNumber(entry.user_cleanup_count) ?? 0;
@@ -540,6 +554,10 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const matched = coverage ? bgKillNumber(coverage.matched) : null;
   const reporters = coverage ? bgKillNumber(coverage.reporters) : null;
   const rateReason = safeValue(entry.rate_unavailable_reason);
+  if (rateReason === "distribution_not_comparable") {
+    parts.push("只给次数，不给比例和预警");
+    return parts.join(" · ");
+  }
   if (active === null) {
     parts.push("当日没有完整的活跃设备记录，比例和预警不可比");
   } else {
@@ -558,10 +576,12 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
   const baselineRate = baseline ? bgKillNumber(baseline.rate) : null;
   if (baseline && baselineRate !== null) {
     parts.push(`基线 ${bgKillVersionLabel(baseline.version_name, baseline.version_codes)} ${bgKillNumber(baseline.count) ?? 0}/${bgKillNumber(baseline.active_device_days) ?? 0} = ${baselineRate.toFixed(2)} 次/设备日`
-      + (entry.spike === true ? " ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）" : ""));
+      + (entry.spike === true ? " ⚠️ 已上报设备的观察指标较上一版本上升（非发生率或回归结论）" : "")
+      + (entry.spike_held === true ? "（预警暂停，待核对基线和覆盖）" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
-    parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`);
+    parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`
+      + (entry.spike_held === true ? "（预警暂停，待核对基线和覆盖）" : ""));
   }
   return parts.join(" · ");
 }
@@ -594,7 +614,14 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
     if (channelRows) {
       lines.push("按渠道和版本统计:");
       for (const raw of byVersion.slice(0, 8)) lines.push(`- ${bgKillChannelRow(record(raw))}`);
-      if (byVersion.length > 8) lines.push(`- …另有 ${byVersion.length - 8} 行未显示`);
+      const omitted = payload.rows_omitted ? record(payload.rows_omitted) : null;
+      const omittedRows = omitted ? bgKillNumber(omitted.rows) ?? 0 : 0;
+      const omittedCount = omitted ? bgKillNumber(omitted.count) ?? 0 : 0;
+      const hiddenRows = Math.max(0, byVersion.length - 8);
+      if (hiddenRows > 0 || omittedRows > 0) {
+        const hiddenCount = byVersion.slice(8).reduce((n: number, raw) => n + (bgKillNumber(record(raw).count) ?? 0), 0);
+        lines.push(`- …另有 ${hiddenRows + omittedRows} 行未显示（共 ${hiddenCount + omittedCount} 次）`);
+      }
       if (payload.rows_truncated === true) lines.push("（当天报告过多，分行只统计了前一部分，不给预警；总数准确）");
     } else if (byVersion.length > 0) {
       // Summaries sent before rows were per channel.
@@ -622,7 +649,10 @@ function issueAlertMessage(event: string, payload: Payload, app: string | null, 
       }
     }
     const footer: string[] = [];
-    if (channelRows) footer.push(BG_KILL_SUMMARY_METHOD_NOTE);
+    if (channelRows) {
+      const split = byVersion.some((raw) => "distribution" in record(raw));
+      footer.push(split ? BG_KILL_SUMMARY_METHOD_NOTE : BG_KILL_SUMMARY_METHOD_NOTE.replace(/^[^\n]*/, BG_KILL_SUMMARY_UNSPLIT_SCOPE));
+    }
     if (cliApp) footer.push(`📖 View more: \`hands feedback list ${cliApp} --signature SystemKill@background\``);
     if (occurred) footer.push(`At: ${humanTime(occurred)}`);
     const content = lines.join("\n");

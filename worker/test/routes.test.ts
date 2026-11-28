@@ -549,6 +549,12 @@ function makeMockDb() {
       device_id TEXT NOT NULL,
       PRIMARY KEY (app_id, day, channel, version_code, device_id)
     );
+    -- Mirrors migrations/sql/0082_google_play_notifications.sql (release observations).
+    CREATE TABLE google_play_release_observations (
+      app_id TEXT NOT NULL, package_name TEXT NOT NULL, play_track TEXT NOT NULL, version_code INTEGER NOT NULL,
+      state TEXT NOT NULL, revision INTEGER NOT NULL, nonce TEXT NOT NULL, observed_at INTEGER NOT NULL,
+      PRIMARY KEY (app_id, package_name, play_track, version_code)
+    );
     -- Mirrors migrations/sql/0115_feedback_rules.sql + 0121_feedback_rule_category.sql.
     CREATE TABLE feedback_rules (
       id TEXT PRIMARY KEY, app_id TEXT NOT NULL, name TEXT NOT NULL,
