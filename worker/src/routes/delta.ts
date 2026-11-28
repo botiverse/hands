@@ -48,12 +48,13 @@ interface ApkAssetRow {
 }
 
 /**
- * Each prior version gets one patch per compression. `+gzip` is what every SDK
+ * Each source APK gets one patch per compression. `+gzip` is what every SDK
  * understands; `+xz` is about 30% smaller and is offered only to SDKs that
  * declare it (X-Hands-Delta-Algorithms, see public_v2.ts findDeltaPatch).
  * The variants differ in filetype because build_assets' canonical slot
- * (build, kind, platform, arch, variant, from-version, filetype) must keep
- * them apart; the filetype is also the R2 key and download-name extension.
+ * (build, kind, platform, arch, variant, from-version, from-sha256, filetype)
+ * must keep them apart; the filetype is also the R2 key and download-name
+ * extension.
  */
 export const DELTA_PATCH_VARIANTS = [
   { compression: "gzip", algorithm: "archive-patcher-v1+gzip", filetype: "patch" },
@@ -62,6 +63,9 @@ export const DELTA_PATCH_VARIANTS = [
 
 export interface DeltaPatchResult {
   from_version_code: number;
+  /** The source APK's sha256 and arch: one version code can have several source APKs. */
+  from_sha256?: string;
+  from_arch?: string | null;
   algorithm: string;
   status: string;
   size_bytes?: number;
@@ -101,17 +105,40 @@ export function normalizeApkArch(arch: string | null | undefined): string | null
   return UNIVERSAL_APK_ARCHES.includes(trimmed) ? null : trimmed;
 }
 
+/** Distinct source APKs kept per version code (a version can ship universal and per-ABI APKs). */
+export const MAX_SOURCE_APKS_PER_VERSION = 3;
+
+type ReleasedApk = ApkAssetRow & { same_channel: number };
+
 /**
- * One released APK per earlier version code that a patch to an APK of `arch`
- * can start from, newest first. A device on a universal APK can upgrade to an
- * ABI-specific one (1.31 ships arm64-v8a only after 1.29/1.30 shipped
- * universal), so an ABI-specific target also takes universal sources; when a
- * version has both, the same-arch APK wins. `same_channel` is 1 when the
- * version was released on one of `channelsJson`'s channels.
+ * Released APKs of earlier version codes that a patch to an APK of `arch` can
+ * start from, newest version first. Apps switch between universal and
+ * ABI-specific APKs (1.31 ships arm64-v8a only after 1.29/1.30 shipped
+ * universal, and the next release may go back), and one version code can ship
+ * as both. So:
+ *  - an ABI-specific target takes same-ABI and universal sources, never a
+ *    different ABI (a device on an x86_64 APK never gets an arm64-v8a one);
+ *  - a universal target takes sources of any ABI, since every device can move
+ *    to it.
+ * Every distinct APK (by file hash) of a chosen version code is kept, up to
+ * `perVersion` (at most MAX_SOURCE_APKS_PER_VERSION), exact-ABI first; `limit`
+ * counts version codes.
+ * `same_channel` is 1 when the version was released on one of `channelsJson`'s
+ * channels.
  */
 async function releasedApksForArch(
   db: D1Database, appId: string, arch: string | null, before: number, channelsJson: string, limit = 200,
-): Promise<Array<ApkAssetRow & { same_channel: number }>> {
+  perVersion = MAX_SOURCE_APKS_PER_VERSION,
+): Promise<ReleasedApk[]> {
+  return (await releasedApkGroups(db, appId, arch, before, channelsJson, limit, perVersion)).flat();
+}
+
+/** releasedApksForArch grouped by version code, newest first. */
+async function releasedApkGroups(
+  db: D1Database, appId: string, arch: string | null, before: number, channelsJson: string, limit = 200,
+  perVersion = MAX_SOURCE_APKS_PER_VERSION,
+): Promise<ReleasedApk[][]> {
+  const cap = Math.max(1, Math.min(perVersion, MAX_SOURCE_APKS_PER_VERSION));
   const target = normalizeApkArch(arch);
   const rows = (await db.prepare(
     `SELECT ba.build_id, b.version_code, ba.arch, ba.r2_key, ba.file_hash, ba.size_bytes,
@@ -121,22 +148,32 @@ async function releasedApksForArch(
      JOIN builds b ON b.id = ba.build_id
      JOIN releases r ON r.build_id = b.id
      WHERE b.app_id = ?1 AND ba.artifact_kind = 'installable' AND ba.filetype = 'apk'
-       AND (${APK_ARCH_SQL} IS ?2 OR (?2 IS NOT NULL AND ${APK_ARCH_SQL} IS NULL))
+       AND (?2 IS NULL OR ${APK_ARCH_SQL} IS ?2 OR ${APK_ARCH_SQL} IS NULL)
        AND b.version_code < ?3
        AND r.status IN ('active', 'superseded')
-     ORDER BY b.version_code DESC, exact_arch DESC, ba.id ASC
+     ORDER BY b.version_code DESC, exact_arch DESC,
+              -- Past the cap, keep the APKs most devices run: a universal target
+              -- takes every ABI, and upload order must not drop arm64-v8a.
+              CASE ${APK_ARCH_SQL} WHEN 'arm64-v8a' THEN 0 WHEN 'armeabi-v7a' THEN 1
+                WHEN 'x86_64' THEN 2 WHEN 'x86' THEN 3 ELSE 4 END ASC,
+              ba.id ASC
      LIMIT 2000`,
-  ).bind(appId, target, before, channelsJson).all<ApkAssetRow & { same_channel: number; exact_arch: number }>()).results ?? [];
-  const byCode = new Map<number, ApkAssetRow & { same_channel: number }>();
+  ).bind(appId, target, before, channelsJson).all<ReleasedApk & { exact_arch: number }>()).results ?? [];
+  const byCode = new Map<number, ReleasedApk[]>();
   for (const row of rows) {
-    const seen = byCode.get(row.version_code);
-    if (seen) {
-      if (row.same_channel === 1) seen.same_channel = 1;
-      continue;
+    let group = byCode.get(row.version_code);
+    if (!group) {
+      if (byCode.size >= limit) break;
+      group = [];
+      byCode.set(row.version_code, group);
     }
-    if (byCode.size >= limit) break;
+    // One row per release: the same APK appears once per channel it shipped on.
+    const seen = group.find((apk) => apk.file_hash === row.file_hash);
+    if (row.same_channel === 1) for (const apk of group) apk.same_channel = 1;
+    if (seen || group.length >= cap) continue;
     const { exact_arch: _exact, ...asset } = row;
-    byCode.set(row.version_code, asset);
+    if (group.some((apk) => apk.same_channel === 1)) asset.same_channel = 1;
+    group.push(asset);
   }
   return [...byCode.values()];
 }
@@ -146,6 +183,8 @@ async function releasedApksForArch(
  * new build's release channels ran most in the last 30 days, plus the latest
  * earlier release on those channels; the nearest earlier releases fill any
  * remaining places (and stand in alone when there is no device activity).
+ * Each chosen version contributes all its source APKs (see
+ * releasedApksForArch); `keep` counts versions.
  *
  * Nearest version codes alone are the wrong sources once a channel has
  * previews: 1.29.0 on main got patches only from 1.29 previews while main's
@@ -154,6 +193,7 @@ async function releasedApksForArch(
 export async function selectPatchSources(
   db: D1Database, appId: string, newApk: ApkAssetRow, keep: number, now = Date.now(),
   channelIds?: string[],
+  perVersion = MAX_SOURCE_APKS_PER_VERSION,
 ): Promise<ApkAssetRow[]> {
   // The target channels: given by the caller (CI generates patches before the
   // build has a release), else the channels the new build is released on.
@@ -161,9 +201,9 @@ export async function selectPatchSources(
     `SELECT DISTINCT channel_id FROM releases WHERE build_id = ?1`,
   ).bind(newApk.build_id).all<{ channel_id: string }>()).results ?? []).map((r) => r.channel_id);
   const channelsJson = JSON.stringify(channels);
-  const released = await releasedApksForArch(db, appId, newApk.arch, newApk.version_code, channelsJson);
+  const released = await releasedApkGroups(db, appId, newApk.arch, newApk.version_code, channelsJson, 200, perVersion);
   if (released.length === 0) return [];
-  const byCode = new Map(released.map((row) => [row.version_code, row]));
+  const byCode = new Map(released.map((group) => [group[0]!.version_code, group]));
   const active = (await db.prepare(
     `SELECT p.version_code, COUNT(*) AS devices
      FROM device_pings p
@@ -174,24 +214,21 @@ export async function selectPatchSources(
      LIMIT 50`,
   ).bind(appId, now - SOURCE_ACTIVITY_WINDOW_MS, newApk.version_code, channelsJson)
     .all<{ version_code: number; devices: number }>()).results ?? [];
-  const chosen: ApkAssetRow[] = [];
-  const add = (row: ApkAssetRow | undefined) => {
-    if (row && !chosen.some((c) => c.version_code === row.version_code)) {
-      const { same_channel: _ignored, ...asset } = row as ApkAssetRow & { same_channel?: number };
-      chosen.push(asset);
-    }
+  const chosen: ReleasedApk[][] = [];
+  const add = (group: ReleasedApk[] | undefined) => {
+    if (group && !chosen.includes(group)) chosen.push(group);
   };
   for (const { version_code } of active) {
     if (chosen.length >= keep) break;
     add(byCode.get(version_code));
   }
   // The release a channel's up-to-date devices are on, even before any ping.
-  add(released.find((row) => row.same_channel === 1));
-  for (const row of released) {
+  add(released.find((group) => group.some((row) => row.same_channel === 1)));
+  for (const group of released) {
     if (chosen.length >= keep + 1) break;
-    add(row);
+    add(group);
   }
-  return chosen;
+  return chosen.flat().map(({ same_channel: _ignored, ...asset }) => asset);
 }
 
 /** Create the delta-generate operation row (pending). Returns it so callers can
@@ -262,7 +299,8 @@ export async function runDeltaGeneration(
       to_version_code: newApk.version_code,
       arch: newApk.arch,
       new_apk_bytes: newApk.size_bytes,
-      prior_versions: priorRows.map((p) => p.version_code),
+      prior_versions: [...new Set(priorRows.map((p) => p.version_code))],
+      prior_sources: priorRows.map((p) => ({ version_code: p.version_code, arch: p.arch, sha256: p.file_hash })),
     };
     await mark(`resolved target vc${newApk.version_code} + ${priorRows.length} priors`, {
       status: "in_progress",
@@ -278,14 +316,29 @@ export async function runDeltaGeneration(
     await mark(`minted signed URL for new APK`);
 
     let done = 0;
-    for (const prior of priorRows) {
+    for (const [priorIndex, prior] of priorRows.entries()) {
+      // A malformed stored hash is not recorded: an SDK would read it as
+      // another APK and skip a patch that may well apply.
+      const fromSha256 = /^[0-9a-f]{64}$/iu.test(prior.file_hash) ? prior.file_hash.toLowerCase() : null;
+      // The version's first source is the APK the single-source selection
+      // picked before patches recorded their source, so a legacy patch (no
+      // from_sha256) of this version was made from it: only that source
+      // replaces it. Another source failing or succeeding leaves it alone.
+      const primarySource = priorRows.findIndex((p) => p.version_code === prior.version_code) === priorIndex;
+      const fromArch = normalizeApkArch(prior.arch);
+      const sourceKey = fromSha256 ? fromSha256.slice(0, 16) : `n${priorIndex}`;
+      const sourceLabel = `v${prior.version_code} (${fromArch ?? "universal"} ${sourceKey})`;
       const oldUrl = await generateInternalR2Url(env, prior.r2_key, URL_TTL_SECONDS, params.origin);
       // Every variant is generated and stored on its own: an xz failure keeps
       // the gzip patch old SDKs need, and the reverse.
       let stored = 0;
       for (const variant of DELTA_PATCH_VARIANTS) {
-        const label = `v${prior.version_code} ${variant.compression}`;
-        const base = { from_version_code: prior.version_code, algorithm: variant.algorithm };
+        const label = `${sourceLabel} ${variant.compression}`;
+        const base = {
+          from_version_code: prior.version_code,
+          ...(fromSha256 ? { from_sha256: fromSha256, from_arch: fromArch } : {}),
+          algorithm: variant.algorithm,
+        };
         await mark(`${label}: calling container (url mode)`);
 
         const container = await getRandom(env.APK_PARSER, 1);
@@ -328,20 +381,27 @@ export async function runDeltaGeneration(
           continue;
         }
 
-        const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${newApk.arch ?? "any"}.${variant.filetype}`;
+        // The source hash keeps the patches from two APKs of one version code
+        // (universal and arm64-v8a, say) apart.
+        const patchKey = `delta/${appId}/${newApk.version_code}/from-${prior.version_code}-${sourceKey}-${newApk.arch ?? "any"}.${variant.filetype}`;
         await env.APK_BUCKET.put(patchKey, patchBytes);
         const patchHash = await sha256Hex(patchBytes);
 
-        // Replace only this variant: the gzip and xz patches for the same
-        // from-version + arch live side by side.
+        // Replace only this variant from this source APK: the gzip and xz
+        // patches, and the patches from other APKs of the same version code,
+        // live side by side. A patch stored before patches recorded their
+        // source (no from_sha256) is replaced only by the version's first
+        // source, which is the APK it was made from (see primarySource).
         await env.DB.prepare(
           `DELETE FROM build_assets
            WHERE build_id = ?1 AND artifact_kind = 'delta-patch'
              AND CAST(json_extract(metadata_json, '$.from_version_code') AS INTEGER) = ?2
              AND (arch IS ?3 OR arch = ?3)
-             AND json_extract(metadata_json, '$.algorithm') = ?4`,
+             AND json_extract(metadata_json, '$.algorithm') = ?4
+             AND ((?6 = 1 AND json_extract(metadata_json, '$.from_sha256') IS NULL)
+                  OR (?5 IS NOT NULL AND lower(json_extract(metadata_json, '$.from_sha256')) = ?5))`,
         )
-          .bind(newApk.build_id, prior.version_code, newApk.arch, variant.algorithm)
+          .bind(newApk.build_id, prior.version_code, newApk.arch, variant.algorithm, fromSha256, primarySource ? 1 : 0)
           .run();
         await env.DB.prepare(
           `INSERT INTO build_assets
@@ -363,6 +423,10 @@ export async function runDeltaGeneration(
               // applier decompresses before FileByFileV1DeltaApplier.applyDelta.
               algorithm: variant.algorithm,
               target_sha256: newApk.file_hash,
+              // The exact APK this patch applies to; the update check offers
+              // it only to a device whose installed APK has this hash (or that
+              // sends none).
+              ...(fromSha256 ? { from_sha256: fromSha256, from_arch: fromArch } : {}),
             }),
             Date.now(),
             variant.filetype,
@@ -374,7 +438,7 @@ export async function runDeltaGeneration(
         await mark(`${label}: stored delta-patch`);
       }
       if (stored > 0) done += 1;
-      await mark(`v${prior.version_code}: ${stored}/${DELTA_PATCH_VARIANTS.length} variants stored`, {
+      await mark(`${sourceLabel}: ${stored}/${DELTA_PATCH_VARIANTS.length} variants stored`, {
         progress: done / Math.max(1, priorRows.length),
       });
     }
@@ -445,9 +509,16 @@ export async function handleGenerateDeltaPatches(c: AdminContext) {
 }
 
 /**
- * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>[&channel_id=<id>]
- * Returns short-lived signed download URLs for the last N published installable
- * APKs (same arch, or universal for an ABI-specific arch; version_code < before). With channel_id, the sources are
+ * GET /api/apps/:appId/delta-sources?arch=<abi>&before=<version_code>&limit=<N>[&channel_id=<id>][&per_version=<M>]
+ * Returns short-lived signed download URLs for the installable APKs of the last
+ * N published version codes (version_code < before): for an ABI-specific arch
+ * the same-arch and universal APKs, for no arch (universal) APKs of any arch;
+ * up to `per_version` distinct APKs of a version (at most
+ * MAX_SOURCE_APKS_PER_VERSION), each with its arch and sha256. `per_version`
+ * defaults to 1: CLIs before it existed name their work files and patches by
+ * version code alone, so two sources of one version would overwrite each
+ * other's files and their second patch would collide with the first in the
+ * canonical asset slot, failing the publish. With channel_id, the sources are
  * chosen as in selectPatchSources: the versions that channel's devices run,
  * plus its latest earlier release. Used by the CLI/CI to fetch the
  * source APKs, generate archive-patcher patches, and upload them via
@@ -463,6 +534,10 @@ export async function handleDeltaSources(c: AdminContext) {
   }
   const limitRaw = Number(c.req.query("limit"));
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 10) : DEFAULT_KEEP_VERSIONS;
+  const perVersionRaw = Number(c.req.query("per_version"));
+  const perVersion = Number.isInteger(perVersionRaw) && perVersionRaw > 0
+    ? Math.min(perVersionRaw, MAX_SOURCE_APKS_PER_VERSION)
+    : 1;
 
   const channelId = c.req.query("channel_id")?.trim() || null;
   const origin = requestOrigin(c);
@@ -480,11 +555,11 @@ export async function handleDeltaSources(c: AdminContext) {
       .bind(channelId, appId).first<{ id: string }>();
     if (!channel) return c.json({ error: "channel_id is not a channel of this app" }, 404);
     const target: ApkAssetRow = { build_id: "", version_code: before, arch, r2_key: "", file_hash: "", size_bytes: 0 };
-    const rows = await selectPatchSources(c.env.DB, appId, target, limit, Date.now(), [channelId]);
+    const rows = await selectPatchSources(c.env.DB, appId, target, limit, Date.now(), [channelId], perVersion);
     return c.json({ arch, before, channel_id: channelId, sources: await sign(rows) });
   }
 
-  const priors = await releasedApksForArch(c.env.DB, appId, arch, before, "[]", limit);
+  const priors = await releasedApksForArch(c.env.DB, appId, arch, before, "[]", limit, perVersion);
   const sources = priors.map(({ same_channel: _ignored, ...row }) => row);
   return c.json({ arch, before, sources: await sign(sources) });
 }

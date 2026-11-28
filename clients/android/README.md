@@ -205,6 +205,16 @@ directory and maps the files into memory rather than the Java heap. Any
 failure, including a corrupt patch, emits `patch_fallback` with
 `patch_apply_failed` and downloads the full APK.
 
+Since `0.16.2` the SDK sends the SHA-256 of its installed base APK as
+`X-Hands-Installed-Sha256` (hashed once per install on an IO thread, cached in
+SharedPreferences by versionCode, lastUpdateTime and file size; omitted if the
+APK cannot be read). One version code can ship as a universal and an
+arm64-v8a APK, and a patch applies only to the APK it was made from: Hands
+offers the patch made from this APK, and a patch whose `from_sha256` names
+another APK is skipped before download (`patch_fallback` / `source_mismatch`),
+so `HandsUpdateOffer.downloadSizeBytes` is then the full APK size and
+`patchSizeBytes` is null.
+
 `0.15.0` also recovers from a process killed while a patch downloads or
 applies: the next status read or install treats the left-over `patching`
 transaction as interrupted (`stale`, `patch_interrupted`), deletes the

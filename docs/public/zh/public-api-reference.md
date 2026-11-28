@@ -40,12 +40,15 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `lang` | 否 | 首选更新说明语言，例如 `zh-CN` 或 `en`。也可从 `X-Hands-Lang` 或 `Accept-Language` 读取。 |
 | `device_id` | 否 | 每次安装稳定的标识符，也可从 `X-Hands-Device-Id` 读取。参与分阶段发布时必填。 |
 | `delta_algorithms` | 否 | 客户端可应用的增量补丁算法，逗号分隔，例如 `archive-patcher-v1+xz,archive-patcher-v1+gzip`。也可从 `X-Hands-Delta-Algorithms` 读取。未知值会被忽略。 |
+| `installed_sha256` | 否 | 已安装 APK 的 SHA-256（十六进制）。也可从 `X-Hands-Installed-Sha256` 读取。不是 64 位十六进制字符时忽略。 |
 
 提供 `arch` 时，Hands 首先选择平台和架构完全匹配的文件；没有精确架构文件时，回退到该平台的通用文件（`arch: null`），例如通用 Android APK。这样上报 ABI 的客户端也可以使用仅以单个通用包发布的版本。
 
 ### 增量补丁
 
 应用的 `delta_updates` 功能开关开启、且 Hands 存有从已安装的 `current_version_code` 到所提供版本的补丁时，响应在 `asset` 旁附带 `patch` 对象（`from_version_code`、`algorithm`、`download_url`、`size_bytes`、`target_sha256`）。Hands 为每个补丁分别保存 `archive-patcher-v1+gzip` 和 `archive-patcher-v1+xz`（约小 30%，LZMA2 字典不超过 16 MiB）两种格式，还可能有 `archive-patcher-zucchini-v1+xz` 补丁（同一容器内为 Zucchini 差分，Android SDK 0.16.0 起可应用），并提供客户端在 `delta_algorithms` 中声明的算法里最小的一个。未声明的客户端只会收到 `archive-patcher-v1+gzip`（或未压缩的 `archive-patcher-v1`）补丁。补丁小于完整文件的 70% 时才会提供；`asset` 始终作为回退。
+
+同一版本号可能有多个 APK（例如通用包和 arm64-v8a 包），而补丁只能应用到生成它的那个 APK 上。补丁的 `from_sha256` 是该 APK 的 SHA-256，未记录时为 `null`。带 `installed_sha256` 时，Hands 优先提供由该 APK 生成的补丁，其次是没有 `from_sha256` 的补丁，绝不提供由其他 APK 生成的补丁。不带时（Android SDK 0.16.2 之前），Hands 优先提供由与所下发 APK 相同 arch 的 APK 生成的补丁。客户端不得应用 `from_sha256` 与已安装 APK 不同的补丁。
 
 ### 分阶段发布
 

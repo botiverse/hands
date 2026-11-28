@@ -78,7 +78,7 @@ val status = checker.install()
 
 ### 只检查不安装
 
-`checker.check()` 向 Hands 查询更新，但不开始下载。返回的 `HandsUpdateCheck.offer` 包含 `versionName`、`versionCode`、`releaseNotes`（按请求语言挑选的更新日志，没有则用英文，再没有则用普通 changelog）、`downloadSizeBytes`（本机能应用增量补丁时为补丁大小，否则为完整 APK 大小）、`fullSizeBytes`、`forceUpdate` 和 `releasedAt`；`status` 是当前事务状态。先展示这些信息，再调用 `install()`。更新进行中，`HandsUpdateStatus.releaseNotes` 和 `targetVersionName` 保留同一份日志和版本，之后重新打开页面无需再请求。
+`checker.check()` 向 Hands 查询更新，但不开始下载。返回的 `HandsUpdateCheck.offer` 包含 `versionName`、`versionCode`、`releaseNotes`（按请求语言挑选的更新日志，没有则用英文，再没有则用普通 changelog）、`downloadSizeBytes`（本机能应用增量补丁时为补丁大小，否则为完整 APK 大小）、`patchSizeBytes`（该补丁大小，或 null）、`fullSizeBytes`、`forceUpdate` 和 `releasedAt`；`status` 是当前事务状态。先展示这些信息，再调用 `install()`。更新进行中，`HandsUpdateStatus.releaseNotes` 和 `targetVersionName` 保留同一份日志和版本，之后重新打开页面无需再请求。
 
 ```kotlin
 val check = checker.check()
@@ -124,6 +124,8 @@ SDK 会持久化一个绑定了包、来源、应用、渠道、产品、平台�
 从 `0.15.0` 起，SDK 也能应用 xz 压缩的补丁（`archive-patcher-v1+xz`，比 gzip 约小 30%），并通过 `X-Hands-Delta-Algorithms` 声明支持的算法；Hands 会提供其中最小的补丁。旧版 SDK 不发送该请求头，继续收到 gzip 补丁。无法读取 xz 补丁头时发出 `patch_fallback`（`patch_decompress_failed`）；SDK 不认识的算法一律回退为完整 APK。
 
 从 `0.16.0` 起，SDK 还能应用 `archive-patcher-zucchini-v1+xz` 补丁：容器仍是 archive-patcher，但解压后 APK 内容之间的差分改用 Zucchini（Chromium 的补丁工具，能识别 DEX 和原生代码）而不是 bsdiff。普通版本更新的补丁比 xz 补丁约小 40%。应用补丁的代码编译在 `libhandscrash.so` 中，只有该库能加载时 SDK 才声明这个算法。应用时缓存目录需要约四到五倍 APK 大小的空闲空间，文件通过内存映射读写，不占 Java 堆。任何失败（包括补丁损坏）都会发出 `patch_fallback`（`patch_apply_failed`）并下载完整 APK。`hands builds publish-android --generate-deltas`（CLI 0.5.88+）只为使用 SDK `0.16.0` 或更新版本构建的源版本生成 Zucchini 补丁，因为更早构建上的设备无法应用；每个补丁需要一到六分钟和约 1 GB 内存，机器的 CPU 和内存足够时并行生成。
+
+从 `0.16.2` 起，SDK 会发送已安装 APK 的 SHA-256（`X-Hands-Installed-Sha256`），每次安装只在后台线程计算一次并缓存。同一版本号可能同时有通用包和 arm64-v8a 包，而补丁只能应用到生成它的那个 APK 上：Hands 因此提供由本机这个 APK 生成的补丁，SDK 也会跳过由其他 APK 生成的补丁（`patch_fallback` / `source_mismatch`），不下载它。此时 `downloadSizeBytes` 为完整 APK 大小，`patchSizeBytes` 为 null。
 
 `0.15.0` 还能从补丁下载或合成途中进程被杀的情况恢复：下次读取状态或安装时，遗留的 `patching` 事务会被判为中断（`stale`，`patch_interrupted`），缓存里残缺的补丁和 APK 会被删除，下次安装重新开始。此前更新会一直停在 `patching`，直到 30 分钟的补丁超时。
 

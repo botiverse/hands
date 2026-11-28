@@ -101,6 +101,8 @@ describe("migration 0062 — build asset direct upload", () => {
       // No from_version_code in metadata, so the delta discriminator normalises to
       // the sentinel and this row's slot is unchanged by its introduction.
       slot_from_version: "-",
+      // Added by 0125 on the same terms: no from_sha256, so the sentinel.
+      slot_from_source: "-",
     });
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM build_assets").get(),

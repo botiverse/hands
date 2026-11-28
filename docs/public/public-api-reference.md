@@ -42,6 +42,7 @@ GET /public/v2/apps/:appSlug/updates/check?channel=main&product_type=android-apk
 | `lang` | No | Preferred changelog language, such as `zh-CN` or `en`. Also read from `X-Hands-Lang` or `Accept-Language`. |
 | `device_id` | No | Stable per-install identifier. Also read from `X-Hands-Device-Id`. Required to participate in staged rollouts. |
 | `delta_algorithms` | No | Comma-separated delta patch algorithms the client can apply, such as `archive-patcher-v1+xz,archive-patcher-v1+gzip`. Also read from `X-Hands-Delta-Algorithms`. Unknown values are ignored. |
+| `installed_sha256` | No | SHA-256 (hex) of the installed APK. Also read from `X-Hands-Installed-Sha256`. Ignored unless it is 64 hex characters. |
 
 When `arch` is supplied, Hands first selects an asset with the exact
 platform and architecture. If no exact architecture asset exists, it falls
@@ -63,6 +64,15 @@ algorithm the client declared in `delta_algorithms`. A client that declares noth
 offered only `archive-patcher-v1+gzip` (or an uncompressed
 `archive-patcher-v1` patch). A patch is offered only when it is under 70% of
 the full asset; `asset` always stays the fallback.
+
+One version code can ship as more than one APK (for example a universal and an
+arm64-v8a APK), and a patch applies only to the APK it was made from. Its
+`from_sha256` is that APK's SHA-256, or `null` for a patch stored without it.
+With `installed_sha256`, Hands offers a patch from that exact APK first, then
+one without `from_sha256`, and never one from another APK. Without it (Android
+SDK before 0.16.2), Hands prefers a patch made from an APK of the offered
+asset's arch. A client must not apply a patch whose `from_sha256` differs from
+its installed APK.
 
 ### Staged rollouts
 

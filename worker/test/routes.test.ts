@@ -10551,6 +10551,53 @@ describe("quiver public API v2 — scope resolution", () => {
     expect(arm.patch).toMatchObject({ from_version_code: 10, size_bytes: 200 });
   });
 
+  it("updates/check offers the patch made from the installed APK when one version code has several", async () => {
+    // Version 10 shipped as an arm64-v8a APK and a universal APK; build 20 has a
+    // patch from each, plus one stored before patches recorded their source.
+    const env = makeEnv();
+    const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");
+    await seedRelease(env, "rel-src", "build-src", [["full", "all"]], { versionCode: 20, versionName: "1.0.20" });
+    await seedAsset(env, "build-src", "asset-src-full", { arch: "arm64-v8a", sizeBytes: 1000 });
+    const ARM = "a".repeat(64);
+    const UNI = "b".repeat(64);
+    const patch = (id: string, sizeBytes: number, source: Record<string, unknown>) =>
+      seedAsset(env, "build-src", id, {
+        artifactKind: "delta-patch",
+        arch: "arm64-v8a",
+        filetype: "patch",
+        sizeBytes,
+        r2Key: `apps/app-scope/${id}.patch`,
+        metadata: { from_version_code: 10, to_version_code: 20, algorithm: "archive-patcher-v1+gzip", target_sha256: "t20", ...source },
+      });
+    await patch("patch-from-arm", 300, { from_sha256: ARM, from_arch: "arm64-v8a" });
+    await patch("patch-from-uni", 200, { from_sha256: UNI, from_arch: null });
+    await patch("patch-legacy", 100, {});
+    await env.DB.prepare(
+      `INSERT INTO feature_flags (id, app_id, key, default_enabled, updated_at)
+       VALUES ('ff-delta-src', 'app-scope', 'delta_updates', 1, ?1)`,
+    ).bind(Date.now()).run();
+    const call = async (headers: Record<string, string> = {}, query: Record<string, string> = {}) =>
+      (await responseJson<any>(await handlePublicV2UpdateCheck(makePublicContext(env, {
+        channel: "production", product_type: "android-apk", current_version_code: "10", platform: "android", ...query,
+      }, headers)))).patch;
+
+    // The installed APK's own patch wins, even over a smaller one; any case of hex.
+    const uni = await call({ "X-Hands-Installed-Sha256": UNI });
+    expect(uni).toMatchObject({ size_bytes: 200, from_sha256: UNI, target_sha256: "t20" });
+    expect(uni.download_url).toContain("patch-from-uni.patch");
+    expect(await call({ "X-Hands-Installed-Sha256": ARM.toUpperCase() })).toMatchObject({ size_bytes: 300, from_sha256: ARM });
+    expect(await call({}, { installed_sha256: UNI })).toMatchObject({ size_bytes: 200, from_sha256: UNI });
+    // An APK no patch was made from: never another APK's patch, only the legacy one.
+    expect(await call({ "X-Hands-Installed-Sha256": "c".repeat(64) })).toMatchObject({ size_bytes: 100, from_sha256: null });
+    // No hash (SDK < 0.16.2): the patch from an APK of the offered arch (arm64-v8a).
+    expect(await call()).toMatchObject({ size_bytes: 300, from_sha256: ARM });
+    // A malformed hash counts as none.
+    expect(await call({ "X-Hands-Installed-Sha256": "not-a-hash" })).toMatchObject({ size_bytes: 300, from_sha256: ARM });
+
+    await env.DB.prepare("DELETE FROM build_assets WHERE id = 'patch-legacy'").run();
+    expect(await call({ "X-Hands-Installed-Sha256": "c".repeat(64) })).toBeUndefined();
+  });
+
   it("delta offer respects the delta_updates feature flag (default off/on, per-device allow/deny)", async () => {
     const env = makeEnv();
     const { handlePublicV2UpdateCheck } = await import("../src/routes/public_v2");

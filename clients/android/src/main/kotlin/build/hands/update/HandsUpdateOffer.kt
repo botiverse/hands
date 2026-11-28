@@ -11,7 +11,9 @@ import kotlinx.serialization.Serializable
  * how much will be downloaded.
  *
  * [downloadSizeBytes] is the patch size when this device can apply the
- * offered patch, otherwise the full APK size ([fullSizeBytes]).
+ * offered patch, otherwise the full APK size ([fullSizeBytes]). Since 0.16.2 a
+ * patch made from a different APK of the installed version code (universal vs
+ * arm64-v8a) does not count: [patchSizeBytes] is then null.
  */
 @Serializable
 data class HandsUpdateOffer(
@@ -35,15 +37,24 @@ data class HandsUpdateCheck(
     val status: HandsUpdateStatus,
 )
 
-/** Whether this device can apply [patch] on top of [installedVersionCode]. */
-internal fun patchApplies(patch: Patch?, installedVersionCode: Long, deltaEnabled: Boolean): Boolean =
+/**
+ * Whether this device can apply [patch] on top of [installedVersionCode] and
+ * the installed APK whose hash is [installedSha256] (null if unknown).
+ */
+internal fun patchApplies(
+    patch: Patch?,
+    installedVersionCode: Long,
+    deltaEnabled: Boolean,
+    installedSha256: String? = null,
+): Boolean =
     patch != null &&
         deltaEnabled &&
         installedVersionCode > 0L &&
         patch.from_version_code == installedVersionCode &&
         DeltaUpdater.compressionFor(patch.algorithm) != null &&
         !patch.target_sha256.isNullOrBlank() &&
-        patch.size_bytes > 0L
+        patch.size_bytes > 0L &&
+        DeltaUpdater.sourceMatches(patch, installedSha256)
 
 /**
  * Release notes for [requestedLanguageTag]: the matching or closest
@@ -65,9 +76,10 @@ internal fun updateOffer(
     installedVersionCode: Long,
     deltaEnabled: Boolean,
     requestedLanguageTag: String?,
+    installedSha256: String? = null,
 ): HandsUpdateOffer? {
     val (latest, asset) = response.requireUpdate() ?: return null
-    val patch = response.patch?.takeIf { patchApplies(it, installedVersionCode, deltaEnabled) }
+    val patch = response.patch?.takeIf { patchApplies(it, installedVersionCode, deltaEnabled, installedSha256) }
     val (notes, notesTag) = releaseNotesFor(response, requestedLanguageTag)
     return HandsUpdateOffer(
         versionCode = latest.version_code,

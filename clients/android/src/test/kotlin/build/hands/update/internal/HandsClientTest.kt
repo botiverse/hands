@@ -60,7 +60,16 @@ class HandsClientTest {
         assertEquals("de-DE", request.header("Accept-Language"))
     }
 
-    private suspend fun execute(languageTag: String?): Request {
+    @Test
+    fun `installed APK hash is sent lower-cased, and only when well formed`() = runBlocking {
+        val sha = "AB".repeat(32)
+        assertEquals("ab".repeat(32), execute(null, installedSha256 = sha).header("X-Hands-Installed-Sha256"))
+        listOf<String?>(null, "", "ab".repeat(31), "zz".repeat(32)).forEach { bad ->
+            assertNull(execute(null, installedSha256 = bad).header("X-Hands-Installed-Sha256"))
+        }
+    }
+
+    private suspend fun execute(languageTag: String?, installedSha256: String? = null): Request {
         var captured: Request? = null
         val client = OkHttpClient.Builder()
             .addInterceptor(Interceptor { chain ->
@@ -78,6 +87,7 @@ class HandsClientTest {
             slug = "raft-android",
             currentVersionCode = 1000010,
             languageTag = languageTag,
+            installedSha256 = installedSha256,
         )
         return requireNotNull(captured)
     }

@@ -94,7 +94,7 @@ returned `HandsUpdateCheck.offer` has `versionName`, `versionCode`,
 `releaseNotes` (the release's notes for the requested language, falling back
 to English and then to the plain changelog), `downloadSizeBytes` (the patch
 size when this device can apply the offered patch, else the full APK),
-`fullSizeBytes`, `forceUpdate` and `releasedAt`; `status` is the current
+`patchSizeBytes` (that patch size, or null), `fullSizeBytes`, `forceUpdate` and `releasedAt`; `status` is the current
 transaction. Show the offer, then call `install()`. While an update is in
 progress, `HandsUpdateStatus.releaseNotes` and `targetVersionName` keep the
 same notes and version, so a page reopened later needs no new request.
@@ -209,6 +209,14 @@ failure, including a corrupt patch, emits `patch_fallback` with
 only from source versions built with SDK `0.16.0` or newer, since devices on
 older builds cannot apply them; each takes one to six minutes and about 1 GB of
 memory, and they run in parallel when the machine has the CPUs and memory.
+
+Since `0.16.2` the SDK sends the SHA-256 of its installed APK
+(`X-Hands-Installed-Sha256`), hashed once per install off the main thread and
+cached. One version code can ship as a universal and an arm64-v8a APK, and a
+patch applies only to the APK it was made from: Hands then offers the patch
+made from this exact APK, and the SDK skips a patch made from another one
+(`patch_fallback` / `source_mismatch`) without downloading it. In that case
+`downloadSizeBytes` is the full APK size and `patchSizeBytes` is null.
 
 `0.15.0` also recovers from a process killed while a patch downloads or
 applies: the next status read or install treats the left-over `patching`

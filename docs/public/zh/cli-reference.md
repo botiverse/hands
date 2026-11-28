@@ -290,7 +290,7 @@ hands builds publish-android raft-android \
 
 服务端自动从 APK 提取包 ID、SDK 级别和启动图标，无需额外参数。
 
-`--arch` 是 APK 的 ABI，默认 `arm64-v8a`。设备会先要与自己 ABI 相同的 APK，没有时退回到不带 ABI 的 APK。如果 APK 是包含所有 ABI 原生代码的通用包，传 `--arch universal`，Hands 会把它发给所有设备，包括 x86_64 模拟器。差量包只在 arch 相同的构建之间生成，所以从 arm64-v8a 改成 universal 后的第一个构建会下发一次完整 APK。
+`--arch` 是 APK 的 ABI，默认 `arm64-v8a`。设备会先要与自己 ABI 相同的 APK，没有时退回到不带 ABI 的 APK。如果 APK 是包含所有 ABI 原生代码的通用包，传 `--arch universal`，Hands 会把它发给所有设备，包括 x86_64 模拟器。使用 `--generate-deltas` 时，特定 ABI 的 APK 从相同 ABI 和通用（universal）的旧 APK 生成补丁，通用 APK 从任意 ABI 的旧 APK 生成补丁，所以在通用包和 arm64-v8a 包之间切换仍能使用小补丁。同一版本号有多个 APK 时，每个（最多 3 个）各生成一份补丁，每份补丁都记录它所适用 APK 的 sha256（`from_sha256`）。手动补丁可用 `--delta-patch <version_code>@<源 APK sha256>=<path>` 记录。
 
 应用开启「智能体发布需真人审批」时，部署令牌或智能体会话运行 `hands releases publish` 不会直接发布：Hands 返回 HTTP 202，带 `"status": "pending_approval"` 和 `approval_request_id`，版本保持草稿，直到应用或组织管理员批准。请检查 `--json` 输出里的 `status`。
 

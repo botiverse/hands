@@ -96,6 +96,38 @@ class HandsUpdateOfferTest {
     }
 
     @Test
+    fun `a patch made from another APK of this version code does not count toward the download size`() {
+        val installed = "ab".repeat(32)
+        val fromOther = goodPatch.copy(from_sha256 = "cd".repeat(32))
+        val mismatch = updateOffer(response(patch = fromOther), 100, true, null, installedSha256 = installed)!!
+        assertEquals(9_000L, mismatch.downloadSizeBytes)
+        assertNull(mismatch.patchSizeBytes)
+        assertFalse(patchApplies(fromOther, 100, true, installed))
+
+        val fromInstalled = goodPatch.copy(from_sha256 = installed.uppercase())
+        val match = updateOffer(response(patch = fromInstalled), 100, true, null, installedSha256 = installed)!!
+        assertEquals(1_000L, match.downloadSizeBytes)
+        assertEquals(1_000L, match.patchSizeBytes)
+        // A patch stored without its source still applies.
+        assertEquals(1_000L, updateOffer(response(patch = goodPatch), 100, true, null, installed)!!.patchSizeBytes)
+    }
+
+    @Test
+    fun `the patch source is read from the update check response`() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val withSource = json.decodeFromString(
+            Patch.serializer(),
+            """{"from_version_code":100,"algorithm":"archive-patcher-v1+gzip","download_url":"u","size_bytes":1,"from_sha256":"${"ab".repeat(32)}"}""",
+        )
+        assertEquals("ab".repeat(32), withSource.from_sha256)
+        val legacy = json.decodeFromString(
+            Patch.serializer(),
+            """{"from_version_code":100,"algorithm":"archive-patcher-v1+gzip","download_url":"u","size_bytes":1}""",
+        )
+        assertNull(legacy.from_sha256)
+    }
+
+    @Test
     fun `no update means no offer`() {
         assertNull(updateOffer(response(available = false), 100, true, null))
     }

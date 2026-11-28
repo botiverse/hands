@@ -12,6 +12,7 @@ import build.hands.update.installer.ApkInstaller
 import build.hands.update.installer.DownloadState
 import build.hands.update.internal.DeltaUpdater
 import build.hands.update.internal.HandsClient
+import build.hands.update.internal.InstalledApkHash
 import build.hands.update.models.LatestUpdate
 import build.hands.update.models.Patch
 import build.hands.update.models.UpdateAsset
@@ -229,6 +230,7 @@ class UpdateChecker @JvmOverloads constructor(
      */
     suspend fun check(languageTag: String? = this.languageTag): HandsUpdateCheck {
         val requested = normalizedLanguageTag(languageTag)
+        val installedSha256 = installedApkSha256()
         val response = client.checkForUpdate(
             slug = appSlug,
             channel = channel,
@@ -238,8 +240,9 @@ class UpdateChecker @JvmOverloads constructor(
             arch = arch,
             deviceId = deviceId ?: withContext(Dispatchers.IO) { HandsDeviceId.get(context) },
             languageTag = requested,
+            installedSha256 = installedSha256,
         )
-        val offer = updateOffer(response, installedVersionCode, deltaApplyEnabled, requested)
+        val offer = updateOffer(response, installedVersionCode, deltaApplyEnabled, requested, installedSha256)
         return HandsUpdateCheck(updateAvailable = offer != null, offer = offer, status = liveStatus())
     }
 
@@ -530,6 +533,7 @@ class UpdateChecker @JvmOverloads constructor(
             HandsUpdateState.CHECKING,
             requestedLanguageTag = requestedLanguage,
         )
+        val installedSha256 = installedApkSha256()
         val response = try {
             client.checkForUpdate(
                 slug = appSlug,
@@ -540,6 +544,7 @@ class UpdateChecker @JvmOverloads constructor(
                 arch = arch,
                 deviceId = deviceId ?: HandsDeviceId.get(context),
                 languageTag = requestedLanguage,
+                installedSha256 = installedSha256,
             )
         } catch (exception: Exception) {
             transactionStore.read()?.takeIf { it.state == HandsUpdateState.CHECKING }?.let {
@@ -567,7 +572,7 @@ class UpdateChecker @JvmOverloads constructor(
         val offeredUpdate = response.requireUpdate()
         if (offeredUpdate != null) {
             try {
-                installUpdate(response, requestedLanguage, resolvedLanguage, openInstaller)
+                installUpdate(response, requestedLanguage, resolvedLanguage, openInstaller, installedSha256)
             } catch (exception: Exception) {
                 transactionStore.read()?.takeIf {
                     (it.state == HandsUpdateState.CHECKING || it.state == HandsUpdateState.PATCHING) &&
@@ -635,6 +640,7 @@ class UpdateChecker @JvmOverloads constructor(
         requestedLanguageTag: String?,
         resolvedLanguageTag: String?,
         openInstaller: Boolean = true,
+        installedSha256: String? = null,
     ) {
         val (latest, asset) = response.requireUpdate() ?: return
         val existing = transactionStore.read()
@@ -743,6 +749,7 @@ class UpdateChecker @JvmOverloads constructor(
                         )
                     },
                     openInstaller = openInstaller,
+                    installedSha256 = installedSha256,
                 )
                 }
             } finally {
@@ -1273,6 +1280,14 @@ class UpdateChecker @JvmOverloads constructor(
         }
         return signatures?.map { bytesToHex(it.toByteArray()) }?.toSet()?.takeIf { it.isNotEmpty() }
     }
+
+    /**
+     * SHA-256 of the installed base APK, hashed once per install (cached) and
+     * off the main thread; null when delta apply is off (no patch will be
+     * used) or the APK cannot be read, so no header is sent.
+     */
+    private suspend fun installedApkSha256(): String? =
+        if (!deltaApplyEnabled) null else withContext(Dispatchers.IO) { InstalledApkHash.get(context) }
 
     private fun installedVersionCodeNow(): Long? = try {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
