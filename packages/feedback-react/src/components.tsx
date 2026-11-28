@@ -172,6 +172,61 @@ export const FEEDBACK_ATTACHMENT_TYPES = [
   "image/webp",
 ] as const;
 
+/**
+ * MIME labels browsers use for a `.zip` file. Windows browsers send
+ * `application/x-zip-compressed`; some browsers send `""` or
+ * `application/octet-stream`, which count only with a `.zip` name.
+ */
+export const FEEDBACK_DIAGNOSTICS_ZIP_TYPES = [
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/x-zip",
+  "multipart/x-zip",
+] as const;
+/** At most this many diagnostics `.zip` files per submission. */
+export const MAX_FEEDBACK_DIAGNOSTICS_ZIPS = 1;
+const FEEDBACK_DIAGNOSTICS_ZIP_ACCEPT = [
+  ".zip",
+  "application/zip",
+  "application/x-zip-compressed",
+];
+
+export type FeedbackAttachmentOptions = {
+  /** Also accept one diagnostics `.zip` (counts toward the total limit). */
+  allowDiagnosticsZip?: boolean;
+};
+
+/** Whether `file` is a `.zip` by its MIME label (or a blank/generic label and a `.zip` name). */
+export function isFeedbackDiagnosticsZip(file: File): boolean {
+  const type = file.type.toLowerCase();
+  if ((FEEDBACK_DIAGNOSTICS_ZIP_TYPES as readonly string[]).includes(type))
+    return true;
+  return (
+    (type === "" || type === "application/octet-stream") &&
+    /\.zip$/i.test(file.name)
+  );
+}
+
+function isAllowedFeedbackAttachment(
+  file: File,
+  options: FeedbackAttachmentOptions,
+) {
+  return (
+    (FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type) ||
+    (options.allowDiagnosticsZip === true && isFeedbackDiagnosticsZip(file))
+  );
+}
+
+function tooManyDiagnosticsZips(
+  files: File[],
+  options: FeedbackAttachmentOptions,
+) {
+  return (
+    options.allowDiagnosticsZip === true &&
+    files.filter(isFeedbackDiagnosticsZip).length > MAX_FEEDBACK_DIAGNOSTICS_ZIPS
+  );
+}
+
 type PendingAttachment = {
   id: string;
   file: File;
@@ -323,12 +378,19 @@ export function mergeCommentPages(
   );
 }
 
-export function validateFeedbackAttachments(files: File[]): string | null {
+export function validateFeedbackAttachments(
+  files: File[],
+  options: FeedbackAttachmentOptions = {},
+): string | null {
   if (files.length > MAX_FEEDBACK_ATTACHMENTS)
     return `Choose no more than ${MAX_FEEDBACK_ATTACHMENTS} screenshots.`;
+  if (tooManyDiagnosticsZips(files, options))
+    return "Attach only one .zip file.";
   for (const file of files) {
-    if (!(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type))
-      return `${file.name} is not a supported image.`;
+    if (!isAllowedFeedbackAttachment(file, options))
+      return options.allowDiagnosticsZip
+        ? `${file.name} is not a supported image or .zip file.`
+        : `${file.name} is not a supported image.`;
     if (file.size > MAX_FEEDBACK_ATTACHMENT_BYTES)
       return `${file.name} is larger than 10 MB.`;
   }
@@ -338,28 +400,38 @@ export function validateFeedbackAttachments(files: File[]): string | null {
 function localizedPendingAttachmentError(
   pending: PendingAttachment[],
   message: (key: FeedbackMessageKey, values?: FeedbackMessageValues) => string,
+  options: FeedbackAttachmentOptions = {},
 ) {
   if (pending.length > MAX_FEEDBACK_ATTACHMENTS)
     return message("attachmentTooMany", { count: MAX_FEEDBACK_ATTACHMENTS });
   return localizedAttachmentError(
     pending.filter((item) => item.source !== "host").map(({ file }) => file),
     message,
+    options,
   );
 }
 
 function localizedAttachmentError(
   files: File[],
   message: (key: FeedbackMessageKey, values?: FeedbackMessageValues) => string,
+  options: FeedbackAttachmentOptions = {},
 ) {
-  const error = validateFeedbackAttachments(files);
+  const error = validateFeedbackAttachments(files, options);
   if (!error) return null;
   if (files.length > MAX_FEEDBACK_ATTACHMENTS)
     return message("attachmentTooMany", { count: MAX_FEEDBACK_ATTACHMENTS });
+  if (tooManyDiagnosticsZips(files, options))
+    return message("attachmentZipTooMany");
   const invalid = files.find(
-    (file) =>
-      !(FEEDBACK_ATTACHMENT_TYPES as readonly string[]).includes(file.type),
+    (file) => !isAllowedFeedbackAttachment(file, options),
   );
-  if (invalid) return message("attachmentUnsupported", { name: invalid.name });
+  if (invalid)
+    return message(
+      options.allowDiagnosticsZip
+        ? "attachmentUnsupportedWithZip"
+        : "attachmentUnsupported",
+      { name: invalid.name },
+    );
   const large = files.find((file) => file.size > MAX_FEEDBACK_ATTACHMENT_BYTES);
   return large ? message("attachmentTooLarge", { name: large.name }) : error;
 }
@@ -685,6 +757,8 @@ type FeedbackComposerProps = {
   imageInputLabel?: string;
   testIdPrefix: "new" | "reply";
   actions: ReactNode;
+  /** The file picker also offers `.zip` (one diagnostics bundle). */
+  allowDiagnosticsZip?: boolean;
 };
 
 /** A short type label for a file card: its extension, or its MIME subtype. */
@@ -854,6 +928,7 @@ function FeedbackComposer({
   imageInputLabel,
   testIdPrefix,
   actions,
+  allowDiagnosticsZip = false,
 }: FeedbackComposerProps) {
   const { message } = useHandsFeedback();
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -888,7 +963,10 @@ function FeedbackComposer({
         data-testid={`hands-feedback-${testIdPrefix}-file-input`}
         className="hands-feedback-sr-only"
         type="file"
-        accept={FEEDBACK_ATTACHMENT_TYPES.join(",")}
+        accept={(allowDiagnosticsZip
+          ? [...FEEDBACK_ATTACHMENT_TYPES, ...FEEDBACK_DIAGNOSTICS_ZIP_ACCEPT]
+          : FEEDBACK_ATTACHMENT_TYPES
+        ).join(",")}
         multiple
         disabled={attachmentsDisabled}
         onChange={(event) => {
@@ -2397,6 +2475,12 @@ export type NewFeedbackProps = {
   ) => void;
   /** Host handle; see `FeedbackWorkspaceHandle`. */
   ref?: Ref<FeedbackWorkspaceHandle>;
+  /**
+   * Let the reporter attach one diagnostics `.zip` (up to 10 MB, counted in
+   * the attachment limit) through the file picker. Off by default: enable it
+   * only when the host's backend accepts zip attachments on new feedback.
+   */
+  allowDiagnosticsZip?: boolean;
 };
 
 type NewFeedbackInternalProps = NewFeedbackProps & {
@@ -2416,7 +2500,9 @@ function NewFeedbackForm({
   ref,
   initialHostFile,
   onInitialHostFileConsumed,
+  allowDiagnosticsZip = false,
 }: NewFeedbackInternalProps) {
+  const attachmentOptions: FeedbackAttachmentOptions = { allowDiagnosticsZip };
   const { message: copy, reportUnread, transport } = useHandsFeedback();
   const safeError = useSafeError();
   const [kind, setKind] = useState<FeedbackKind>("feedback");
@@ -2494,7 +2580,11 @@ function NewFeedbackForm({
     const normalized = message.trim();
     if (!normalized || sending) return;
     const files = attachments.map(({ file }) => file);
-    const attachmentError = localizedPendingAttachmentError(attachments, copy);
+    const attachmentError = localizedPendingAttachmentError(
+      attachments,
+      copy,
+      attachmentOptions,
+    );
     if (attachmentError) {
       setError(attachmentError);
       return;
@@ -2570,7 +2660,11 @@ function NewFeedbackForm({
         state: "ready" as const,
       })),
     ];
-    const attachmentError = localizedPendingAttachmentError(combined, copy);
+    const attachmentError = localizedPendingAttachmentError(
+      combined,
+      copy,
+      attachmentOptions,
+    );
     if (attachmentError) {
       setError(attachmentError);
       return;
@@ -2677,6 +2771,7 @@ function NewFeedbackForm({
               count: MAX_FEEDBACK_ATTACHMENTS,
             })}
             testIdPrefix="new"
+            allowDiagnosticsZip={allowDiagnosticsZip}
             actions={
               <ComposerSubmit
                 size="icon-sm"
@@ -2696,7 +2791,10 @@ function NewFeedbackForm({
             }
           />
           <p className="hands-feedback-form-note">
-            {copy("attachmentHint", { count: MAX_FEEDBACK_ATTACHMENTS })}
+            {copy(
+              allowDiagnosticsZip ? "attachmentHintWithZip" : "attachmentHint",
+              { count: MAX_FEEDBACK_ATTACHMENTS },
+            )}
           </p>
         </div>
       </div>
@@ -2737,6 +2835,8 @@ export type FeedbackWorkspaceProps = {
    * on the ticket and new views. Booleans, `null` and `""` render nothing.
    */
   inboxNotice?: ReactNode;
+  /** See `NewFeedbackProps.allowDiagnosticsZip`; replies stay images-only. */
+  allowDiagnosticsZip?: boolean;
   /**
    * Host handle. `attachPendingFile` targets the new-feedback composer only
    * and returns `composer_closed` on any other route.
@@ -2753,6 +2853,7 @@ export function FeedbackWorkspace({
   enablePullToRefresh = false,
   hideHeaderTitle = false,
   inboxNotice,
+  allowDiagnosticsZip = false,
   ref,
 }: FeedbackWorkspaceProps) {
   const initial = useMemo<FeedbackWorkspaceRoute>(
@@ -2885,6 +2986,7 @@ export function FeedbackWorkspace({
           ref={newFeedbackRef}
           initialHostFile={hostSeed}
           onInitialHostFileConsumed={() => setHostSeed(null)}
+          allowDiagnosticsZip={allowDiagnosticsZip}
           {...(onOpenPendingAttachment ? { onOpenPendingAttachment } : {})}
           onCancel={() => {
             setHostSeed(null);

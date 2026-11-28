@@ -321,6 +321,14 @@ const [view, setView] = useState<FeedbackWorkspaceRoute["view"]>("inbox");
 
 `FeedbackWorkspace` 和 `FeedbackInbox` 的 `inboxNotice` 可将宿主提供的提示放在工具栏和工单列表之间，位于列表滚动区域；进入工单或新建反馈时它被隐藏但保持挂载。传入 `cond ? <Notice /> : null`，不要用 `cond && <Notice />`：数字 `0` 仍会显示。列表使用覆盖式滚动区域，滚动条不占内容宽度，继续支持 `@botiverse/raft-ui` 0.20.0 或以上、1.0.0 以下版本。工具栏、提示和工单内容的左右边缘统一：窗口宽度至少 48rem 且主指针为鼠标时是 16px，其他情况是 20px。
 
+### 诊断 zip
+
+如果后端接受新反馈中的 zip 附件，可在 `FeedbackWorkspace` 或 `NewFeedback` 上传入 `allowDiagnosticsZip`。新建反馈的文件选择器随即也接受 `.zip`，用户可在截图之外添加一个诊断包（不超过 10 MB），它计入同样的 3 个附件上限，并以文件卡片显示。类型为 `application/zip`、`application/x-zip-compressed`、`application/x-zip` 或 `multipart/x-zip`，或类型为空或 `application/octet-stream` 且文件名以 `.zip` 结尾的文件视为 zip。SDK 不读取文件内容，后端仍应校验。第二个 zip 会以 `attachmentZipTooMany` 提示拒绝，不支持的文件使用 `attachmentUnsupportedWithZip`。回复仍只接受图片；该属性默认关闭，其他宿主不受影响。
+
+```tsx
+<FeedbackWorkspace allowDiagnosticsZip />
+```
+
 工作区负责列表分页、焦点和滚动位置恢复、回复草稿、输入法安全的回车处理、附件进度及重试和取消、可恢复的游标页面，以及接近底部时跟随对话。宿主应用不要再实现一套相同的状态机。
 
 ## 本地化和主题

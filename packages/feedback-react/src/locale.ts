@@ -11,6 +11,9 @@ export type FeedbackMessageKey =
   | "attachmentTooLarge"
   | "attachmentTooMany"
   | "attachmentUnsupported"
+  | "attachmentUnsupportedWithZip"
+  | "attachmentZipTooMany"
+  | "attachmentHintWithZip"
   | "attachmentSummary"
   | "attachmentHint"
   | "attachments"
@@ -124,8 +127,12 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooLarge: "{name} is larger than 10 MB.",
     attachmentTooMany: "Choose no more than {count} screenshots.",
     attachmentUnsupported: "{name} is not a supported image.",
+    attachmentUnsupportedWithZip: "{name} is not a supported image or .zip file.",
+    attachmentZipTooMany: "Attach only one .zip file.",
     attachmentSummary: "{name} · {size}",
     attachmentHint: "Up to {count} images, 10 MB each.",
+    attachmentHintWithZip:
+      "Up to {count} files, 10 MB each: images, plus one diagnostics .zip.",
     attachments: "Attachments",
     attachFile: "Attach file",
     attachImage: "Attach image",
@@ -238,8 +245,11 @@ const messages: Record<FeedbackLocale, FeedbackMessages> = {
     attachmentTooLarge: "{name} 超过 10 MB。",
     attachmentTooMany: "最多选择 {count} 张截图。",
     attachmentUnsupported: "{name} 不是支持的图片格式。",
+    attachmentUnsupportedWithZip: "{name} 不是支持的图片或 .zip 文件。",
+    attachmentZipTooMany: "只能添加一个 .zip 文件。",
     attachmentSummary: "{name} · {size}",
     attachmentHint: "最多 {count} 张，每张不超过 10 MB。",
+    attachmentHintWithZip: "最多 {count} 个文件，每个不超过 10 MB：图片，以及一个诊断 .zip。",
     attachments: "附件",
     attachFile: "添加文件",
     attachImage: "添加图片",

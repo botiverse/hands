@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   FeedbackWorkspace,
+  isFeedbackDiagnosticsZip,
   isNearConversationBottom,
   MAX_FEEDBACK_ATTACHMENT_BYTES,
   mergeCommentPages,
@@ -247,5 +248,75 @@ describe("FeedbackProvider", () => {
         image("huge.png", "image/png", MAX_FEEDBACK_ATTACHMENT_BYTES + 1),
       ]),
     ).toMatch(/larger than 10 MB/);
+  });
+
+  it("accepts one diagnostics zip only when the host opts in", () => {
+    const file = (name: string, type: string, size = 1) =>
+      ({ name, type, size, lastModified: 0 }) as File;
+    const zip = file("diagnostics.zip", "application/zip");
+    const allow = { allowDiagnosticsZip: true };
+
+    // Off by default: a zip is not a supported attachment.
+    expect(validateFeedbackAttachments([zip])).toMatch(
+      /is not a supported image\.$/,
+    );
+    expect(validateFeedbackAttachments([zip], {})).toMatch(/supported image/);
+
+    expect(
+      validateFeedbackAttachments([file("1.png", "image/png"), zip], allow),
+    ).toBeNull();
+    // Browser variants: Windows label, blank or generic label with .zip name.
+    for (const variant of [
+      file("a.zip", "application/x-zip-compressed"),
+      file("a.ZIP", ""),
+      file("a.zip", "application/octet-stream"),
+      file("a.zip", "application/x-zip"),
+      file("a.zip", "multipart/x-zip"),
+    ])
+      expect(validateFeedbackAttachments([variant], allow)).toBeNull();
+    // A blank or generic label without a .zip name is still rejected.
+    expect(
+      validateFeedbackAttachments([file("a.bin", "application/octet-stream")], allow),
+    ).toMatch(/not a supported image or \.zip file/);
+    expect(
+      validateFeedbackAttachments([file("notes.txt", "text/plain")], allow),
+    ).toMatch(/not a supported image or \.zip file/);
+
+    // At most one zip.
+    expect(
+      validateFeedbackAttachments(
+        [zip, file("b.zip", "application/x-zip-compressed")],
+        allow,
+      ),
+    ).toMatch(/only one \.zip/);
+    // The zip counts toward the total limit.
+    expect(
+      validateFeedbackAttachments(
+        [
+          file("1.png", "image/png"),
+          file("2.png", "image/png"),
+          file("3.png", "image/png"),
+          zip,
+        ],
+        allow,
+      ),
+    ).toMatch(/no more than 3/);
+    // Same 10 MB cap as images.
+    expect(
+      validateFeedbackAttachments(
+        [file("big.zip", "application/zip", MAX_FEEDBACK_ATTACHMENT_BYTES + 1)],
+        allow,
+      ),
+    ).toMatch(/larger than 10 MB/);
+    expect(
+      validateFeedbackAttachments(
+        [file("max.zip", "application/zip", MAX_FEEDBACK_ATTACHMENT_BYTES)],
+        allow,
+      ),
+    ).toBeNull();
+
+    expect(isFeedbackDiagnosticsZip(file("x.zip", ""))).toBe(true);
+    expect(isFeedbackDiagnosticsZip(file("x.png", "image/png"))).toBe(false);
+    expect(isFeedbackDiagnosticsZip(file("x.txt", ""))).toBe(false);
   });
 });

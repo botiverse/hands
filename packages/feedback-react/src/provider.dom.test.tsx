@@ -521,6 +521,77 @@ describe("FeedbackWorkspace browser behavior", () => {
     );
   });
 
+  it("keeps the new-feedback file picker images-only unless the host allows a diagnostics zip", async () => {
+    const off = render(
+      <FeedbackProvider transport={transport()}>
+        <FeedbackWorkspace />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New feedback"));
+    const offInput = screen.getByTestId(
+      "hands-feedback-new-file-input",
+    ) as HTMLInputElement;
+    expect(offInput.accept).not.toContain("zip");
+    fireEvent.change(offInput, {
+      target: {
+        files: [new File(["PK"], "diagnostics.zip", { type: "application/zip" })],
+      },
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "diagnostics.zip is not a supported image.",
+    );
+    off.unmount();
+
+    const adapter = transport();
+    const { container } = render(
+      <FeedbackProvider transport={adapter}>
+        <FeedbackWorkspace allowDiagnosticsZip />
+      </FeedbackProvider>,
+    );
+    fireEvent.click(await screen.findByText("New feedback"));
+    const input = screen.getByTestId(
+      "hands-feedback-new-file-input",
+    ) as HTMLInputElement;
+    expect(input.accept).toContain(".zip");
+    expect(input.accept).toContain("application/x-zip-compressed");
+    // The screenshot picker stays images-only.
+    expect(
+      (screen.getByTestId("hands-feedback-new-image-input") as HTMLInputElement)
+        .accept,
+    ).not.toContain("zip");
+    expect(container.textContent).toContain("one diagnostics .zip");
+
+    // Windows browsers label a zip application/x-zip-compressed.
+    const zip = new File(["PK"], "diagnostics.zip", {
+      type: "application/x-zip-compressed",
+    });
+    const shot = new File(["png"], "shot.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [zip, shot] } });
+    // The zip is drawn as a file card with its name, not an image preview.
+    expect(await screen.findByText("diagnostics.zip")).toBeTruthy();
+    expect(container.querySelectorAll("img").length).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // A second zip is refused with its own message; the draft stays.
+    fireEvent.change(input, {
+      target: { files: [new File(["PK"], "more.zip", { type: "" })] },
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Attach only one .zip file.",
+    );
+    expect(screen.queryByText("more.zip")).toBeNull();
+
+    fireEvent.change(
+      screen.getByRole("textbox", { name: /What would you like us to know/ }),
+      { target: { value: "Logs attached" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+    await waitFor(() => expect(adapter.createTicket).toHaveBeenCalledTimes(1));
+    expect(
+      vi.mocked(adapter.createTicket).mock.calls[0]![0].attachments,
+    ).toEqual([zip, shot]);
+  });
+
   it("adds a pasted image to the composer", async () => {
     const { container } = render(
       <FeedbackProvider transport={transport()}>
