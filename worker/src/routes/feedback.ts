@@ -3219,6 +3219,11 @@ const BG_KILL_DEVICE_DAILY_THRESHOLD = 3;
  * main rows give rates and a baseline over Hands main codes only, but are not
  * flagged until that baseline and its coverage have been checked
  * (BG_KILL_MAIN_SPIKE_HELD).
+ * Attribution is not stored: each run classifies codes from the records as
+ * they are then, so re-running an old day after records were added, or
+ * after a Play state changed, can move a code between rows and change a
+ * Hands main baseline. A cancelled release keeps activated_at, so cancelling
+ * moves nothing. Summaries already sent keep the payload they were sent with.
  *
  * Reports matching a rule whose category is `user_cleanup` (cleanup the user
  * started) are counted separately and left out of rates. Rules are not applied
