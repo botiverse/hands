@@ -8,7 +8,7 @@ import type { Command } from "commander";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { availableParallelism, freemem, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import { Writable } from "node:stream";
@@ -1334,7 +1334,7 @@ export function registerBuildCommands(program: Command): void {
     )
     .option(
       "--generate-deltas <N>",
-      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Each patch is uploaded gzip-compressed and, when `xz` is on PATH, also xz-compressed (about 30% smaller, used by Android SDK 0.15.0+) and as a Zucchini patch (about 40% smaller again for a typical update, used by Android SDK 0.16.0+; about a minute and 800 MB of memory per version). Clients on those versions download the small patch instead of the full APK.",
+      "After uploading, generate + upload archive-patcher delta patches from the last N published versions (needs a JDK on PATH — CI has one). Each patch is uploaded gzip-compressed and, when `xz` is on PATH, also xz-compressed (about 30% smaller, used by Android SDK 0.15.0+) and as a Zucchini patch (about 40% smaller again for a typical update, used by Android SDK 0.16.0+; only from versions built with SDK 0.16.0+; one to six minutes and about 1 GB of memory per version, run in parallel when the machine allows). Clients on those versions download the small patch instead of the full APK.",
     )
     .option(
       "--no-zucchini-deltas",
@@ -2999,8 +2999,61 @@ export function zucchiniGeneratorPath(): string | null {
   return path;
 }
 
-/** A Zucchini patch takes about a minute for a 30 MB APK; give up well past that. */
+/**
+ * A Zucchini patch takes one to six minutes for a 30 MB APK depending on the
+ * machine; give up well past that.
+ */
 const ZUCCHINI_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Peak memory of one Zucchini job (Node generator plus the PatchGen JVM), with headroom. */
+const ZUCCHINI_JOB_MEMORY_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+/**
+ * How many Zucchini jobs to run at once: one per CPU, as many as the free
+ * memory allows, at least one.
+ */
+export function zucchiniConcurrency(
+  jobs: number,
+  cpus = availableParallelism(),
+  freeBytes = availableMemory(),
+): number {
+  return Math.max(1, Math.min(jobs, cpus, Math.floor(freeBytes / ZUCCHINI_JOB_MEMORY_BYTES)));
+}
+
+/**
+ * Whether a published APK can apply Zucchini patches (it was built with
+ * Android SDK 0.16.0+). Devices on an older build would never download one,
+ * so no patch is made from it. A failed check counts as "no".
+ */
+export async function apkCanApplyZucchini(classpath: string, apkPath: string, java = "java"): Promise<boolean> {
+  try {
+    await execFileAsync(java, ["-cp", classpath, "PatchGen", "--zucchini-capable", apkPath], {
+      maxBuffer: 1024 * 1024,
+    });
+    return true;
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (code !== 1) {
+      console.error(`[delta] Zucchini support check failed (${(error as Error).message}); treating as unsupported.`);
+    }
+    return false;
+  }
+}
+
+/** Free memory, within a container's memory limit when Node can read it (Node 20.13+). */
+function availableMemory(): number {
+  const proc = process as { availableMemory?: () => number };
+  return typeof proc.availableMemory === "function" ? proc.availableMemory() : freemem();
+}
+
+/** Run tasks with at most `limit` in flight, in order of start. */
+async function runLimited(limit: number, tasks: Array<() => Promise<void>>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) await tasks[next++]!();
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+}
 
 /**
  * Make an archive-patcher-zucchini-v1+xz patch: PatchGen --zucchini runs the
@@ -3149,7 +3202,14 @@ async function generateAndUploadAndroidDeltas(args: {
             );
             // The Zucchini patch is a further extra for SDK 0.16.0+, made after
             // every gzip and xz patch is uploaded (it takes about a minute each).
-            if (zucchiniGenerator) zucchiniJobs.push({ fromVersionCode: src.from_version_code, oldPath, xzSize });
+            // Only devices on an SDK 0.16.0+ build can use it, so skip older sources.
+            if (zucchiniGenerator) {
+              if (await apkCanApplyZucchini(cp, oldPath)) {
+                zucchiniJobs.push({ fromVersionCode: src.from_version_code, oldPath, xzSize });
+              } else {
+                console.error(`[delta] v${src.from_version_code}: built without Zucchini support (Android SDK < 0.16.0); skipping zucchini.`);
+              }
+            }
           }
         }
       } catch (error) {
@@ -3157,7 +3217,11 @@ async function generateAndUploadAndroidDeltas(args: {
       }
     }
     // Older SDKs use the patches above, so a failure here never fails the publish.
-    for (const job of zucchiniGenerator ? zucchiniJobs : []) {
+    const zucchiniParallel = zucchiniConcurrency(zucchiniJobs.length);
+    if (zucchiniGenerator && zucchiniJobs.length > 0) {
+      console.error(`[delta] generating ${zucchiniJobs.length} zucchini patch(es), ${zucchiniParallel} at a time.`);
+    }
+    await runLimited(zucchiniParallel, (zucchiniGenerator ? zucchiniJobs : []).map((job) => async () => {
       try {
         const zucchini = await generateZucchiniDeltaPatch({
           classpath: cp,
@@ -3169,7 +3233,7 @@ async function generateAndUploadAndroidDeltas(args: {
         });
         if (zucchini.sizeBytes >= job.xzSize) {
           console.error(`[delta] v${job.fromVersionCode}: zucchini ${zucchini.sizeBytes}B not smaller than xz; skipping zucchini.`);
-          continue;
+          return;
         }
         console.error(`[delta] v${job.fromVersionCode} -> v${args.toVersionCode}: zucchini patch ${zucchini.sizeBytes}B (${(zucchini.sizeBytes / args.newApkSize * 100).toFixed(1)}% of full, ${zucchini.seconds.toFixed(0)}s)`);
         uploaded.push(
@@ -3189,7 +3253,7 @@ async function generateAndUploadAndroidDeltas(args: {
       } catch (error) {
         console.error(`[delta] v${job.fromVersionCode}: zucchini patch failed (${(error as Error).message}); gzip and xz patches kept.`);
       }
-    }
+    }));
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {});
   }

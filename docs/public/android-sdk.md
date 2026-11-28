@@ -205,6 +205,10 @@ loads. Applying needs about four to five times the APK size of free space in the
 directory and maps the files into memory rather than the Java heap. Any
 failure, including a corrupt patch, emits `patch_fallback` with
 `patch_apply_failed` and downloads the full APK.
+`hands builds publish-android --generate-deltas` (CLI 0.5.88+) makes Zucchini patches
+only from source versions built with SDK `0.16.0` or newer, since devices on
+older builds cannot apply them; each takes one to six minutes and about 1 GB of
+memory, and they run in parallel when the machine has the CPUs and memory.
 
 `0.15.0` also recovers from a process killed while a patch downloads or
 applies: the next status read or install treats the left-over `patching`

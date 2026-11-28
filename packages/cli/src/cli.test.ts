@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -964,6 +964,68 @@ describe("Android delta patch xz copy", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it("PatchGen --zucchini-capable finds the SDK 0.16 applier in an APK's native libraries", async () => {
+    const { execFileSync } = await import("node:child_process");
+    try {
+      execFileSync("javac", ["-version"], { stdio: "ignore" });
+      execFileSync("jar", ["--version"], { stdio: "ignore" });
+    } catch {
+      return; // no JDK on this machine; CI images have one.
+    }
+    const { apkCanApplyZucchini, ensureArchivePatcher } = await import("../src/commands/builds.js");
+    const dir = mkdtempSync(join(tmpdir(), "hands-zucchini-capable-"));
+    try {
+      const cp = await ensureArchivePatcher(dir);
+      const symbol = Buffer.from("Java_build_hands_update_internal_ZucchiniNative_nativeApply", "ascii");
+      // The symbol straddles PatchGen's 64 KiB read buffer.
+      const withSymbol = Buffer.concat([Buffer.alloc(65_530, 0x41), symbol, Buffer.alloc(1_000, 0x42)]);
+      const without = Buffer.concat([Buffer.alloc(65_530, 0x41), symbol.subarray(0, symbol.length - 1), Buffer.alloc(1_000, 0x42)]);
+      const makeApk = (name: string, files: Record<string, Buffer>, stored: boolean) => {
+        const root = join(dir, `${name}-root`);
+        for (const [path, data] of Object.entries(files)) {
+          mkdirSync(join(root, path, ".."), { recursive: true });
+          writeFileSync(join(root, path), data);
+        }
+        const apk = join(dir, `${name}.apk`);
+        execFileSync("jar", [stored ? "cfM0" : "cfM", apk, "-C", root, "."]);
+        return apk;
+      };
+      for (const stored of [true, false]) {
+        const tag = stored ? "stored" : "deflated";
+        expect(await apkCanApplyZucchini(cp, makeApk(`new-${tag}`, {
+          "classes.dex": Buffer.from("dex"),
+          "lib/arm64-v8a/libother.so": without,
+          "lib/arm64-v8a/libhandscrash.so": withSymbol,
+        }, stored))).toBe(true);
+        expect(await apkCanApplyZucchini(cp, makeApk(`old-${tag}`, {
+          "classes.dex": Buffer.from("dex"),
+          "lib/arm64-v8a/libhandscrash.so": without,
+        }, stored))).toBe(false);
+        // Only native libraries count.
+        expect(await apkCanApplyZucchini(cp, makeApk(`asset-${tag}`, {
+          "assets/notes.txt": withSymbol,
+          "lib/arm64-v8a/libhandscrash.txt": withSymbol,
+        }, stored))).toBe(false);
+      }
+      // Not a zip: the check fails and counts as unsupported.
+      writeFileSync(join(dir, "broken.apk"), "not a zip");
+      expect(await apkCanApplyZucchini(cp, join(dir, "broken.apk"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("runs Zucchini jobs one per CPU within free memory, at least one", async () => {
+    const { zucchiniConcurrency } = await import("../src/commands/builds.js");
+    const gib = 1024 * 1024 * 1024;
+    expect(zucchiniConcurrency(4, 4, 16 * gib)).toBe(4);
+    expect(zucchiniConcurrency(4, 4, 4 * gib)).toBe(2);
+    expect(zucchiniConcurrency(4, 2, 16 * gib)).toBe(2);
+    expect(zucchiniConcurrency(2, 8, 16 * gib)).toBe(2);
+    expect(zucchiniConcurrency(3, 4, gib)).toBe(1);
+    expect(zucchiniConcurrency(0, 4, 16 * gib)).toBe(1);
+  });
 
   it("reports a missing xz tool instead of failing", async () => {
     const { compressAndroidDeltaPatchXz } = await import("../src/commands/builds.js");
