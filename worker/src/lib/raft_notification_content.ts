@@ -580,7 +580,8 @@ function bgKillChannelRow(entry: Record<string, unknown>): string {
       + (entry.spike_held === true ? "（预警暂停，待核对基线和覆盖）" : ""));
   } else {
     const reason = safeValue(entry.baseline_unavailable_reason);
-    parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`);
+    parts.push(`无可比基线（${(reason && BG_KILL_BASELINE_REASONS[reason]) ?? "缺少完整的活跃设备记录"}）`
+      + (entry.spike_held === true ? "（预警暂停，待核对基线和覆盖）" : ""));
   }
   return parts.join(" · ");
 }

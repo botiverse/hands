@@ -622,11 +622,12 @@ describe("Raft release notification cards", () => {
         app_slug: "raft-android", signature: "SystemKill@background",
         alert_reason: "background_system_kill_daily_summary", day: "2026-11-28",
         total_count: 60, device_count: 12, user_cleanup_count: 0, total_count_excluding_cleanup: 60,
-        by_version: Array.from({ length: 10 }, (_, i) => row(100 - i, 5)),
+        by_version: [{ ...row(101, 5), channel: "main", distribution: "hands", spike_held: true }, ...Array.from({ length: 9 }, (_, i) => row(100 - i, 5))],
         rows_omitted: { rows: 3, count: 10, count_excluding_cleanup: 10 },
         top_devices: [],
       },
     });
     expect(text).toContain("- …另有 5 行未显示（共 20 次）");
+    expect(text).toContain("- main（Hands） · v101 (101): 5 次 / 1 台 · 当日没有完整的活跃设备记录，比例和预警不可比 · 无可比基线（缺少完整的活跃设备记录）（预警暂停，待核对基线和覆盖）");
   });
 });
