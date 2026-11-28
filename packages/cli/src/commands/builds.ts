@@ -3027,6 +3027,9 @@ export async function generateZucchiniDeltaPatch(args: {
     [
       // archive-patcher's delta-friendly blobs go under work, which the caller removes.
       `-Djava.io.tmpdir=${args.work}`,
+      // PatchGen kills its Zucchini child before this process's own limit
+      // kills the JVM, so no generator is left running.
+      `-Dhands.zucchini.timeoutSeconds=${Math.max(1, Math.floor((args.timeoutMs ?? ZUCCHINI_TIMEOUT_MS) / 1000) - 30)}`,
       "-cp", args.classpath, "PatchGen", "--zucchini", process.execPath, args.generator,
       args.oldApkPath, args.newApkPath, gzPath,
     ],

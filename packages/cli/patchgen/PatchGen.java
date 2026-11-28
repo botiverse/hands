@@ -3,16 +3,21 @@ import com.google.archivepatcher.generator.FileByFileV1DeltaGenerator;
 import com.google.archivepatcher.generator.RecommendationModifier;
 import com.google.archivepatcher.shared.DefaultDeflater;
 import com.google.archivepatcher.shared.IDeflater;
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.zip.GZIPOutputStream;
 
@@ -101,15 +106,15 @@ public final class PatchGen {
           imposed.append(oldDex.get(i)[0]).append('+').append(oldDex.get(i)[1]).append('=')
               .append(newDex.get(i)[0]).append('+').append(newDex.get(i)[1]);
         }
-        List<String> command = new ArrayList<>(List.of(
+        List<String> command = new ArrayList<>(Arrays.asList(
             node, script, "gen", oldBlob.getPath(), newBlob.getPath(), patch.getPath()));
         if (imposed.length() > 0) command.add(imposed.toString());
         run(command, "zucchini generator");
         // Apply it back with the same applier sources the SDK uses: a patch that
         // does not rebuild the new blob exactly is never uploaded.
-        run(List.of(node, script, "apply", oldBlob.getPath(), patch.getPath(), check.getPath()),
+        run(Arrays.asList(node, script, "apply", oldBlob.getPath(), patch.getPath(), check.getPath()),
             "zucchini apply check");
-        if (Files.mismatch(check.toPath(), newBlob.toPath()) != -1L) {
+        if (!sameContents(check, newBlob)) {
           throw new IOException("zucchini patch does not rebuild the new blob");
         }
         Files.copy(patch.toPath(), out);
@@ -120,10 +125,44 @@ public final class PatchGen {
     }
   }
 
+  /**
+   * Runs [command], killing it after hands.zucchini.timeoutSeconds (the CLI
+   * sets it below its own limit on this JVM, which would otherwise leave the
+   * child running).
+   */
   private static void run(List<String> command, String what) throws IOException, InterruptedException {
+    long timeoutSeconds = Long.getLong("hands.zucchini.timeoutSeconds", 840L);
     Process process = new ProcessBuilder(command).inheritIO().start();
-    int status = process.waitFor();
+    try {
+      if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+        throw new IOException(what + " timed out after " + timeoutSeconds + "s");
+      }
+    } finally {
+      if (process.isAlive()) process.destroyForcibly().waitFor();
+    }
+    int status = process.exitValue();
     if (status != 0) throw new IOException(what + " exited with status " + status);
+  }
+
+  /** Byte-for-byte file comparison; Java 8 compatible like the rest of this file. */
+  static boolean sameContents(File a, File b) throws IOException {
+    if (a.length() != b.length()) return false;
+    try (InputStream x = new BufferedInputStream(new FileInputStream(a));
+        InputStream y = new BufferedInputStream(new FileInputStream(b))) {
+      byte[] bx = new byte[1 << 16];
+      byte[] by = new byte[1 << 16];
+      while (true) {
+        int n = x.read(bx);
+        if (n < 0) return y.read() < 0;
+        int m = 0;
+        while (m < n) {
+          int r = y.read(by, m, n - m);
+          if (r < 0) return false;
+          m += r;
+        }
+        for (int i = 0; i < n; i++) if (bx[i] != by[i]) return false;
+      }
+    }
   }
 
   /** Offsets and sizes of the DEX files in a delta-friendly blob, in order. */
