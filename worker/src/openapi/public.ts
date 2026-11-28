@@ -106,10 +106,13 @@ const PublicUpdateAvailableResponse = z
         download_url: z.string().url(),
         size_bytes: z.number().int(),
         target_sha256: z.string().nullable(),
+        from_sha256: z.string().nullable().openapi({
+          description: "SHA-256 (lower-case hex) of the exact installed APK the patch applies to, or null for a patch stored without it. One version code can ship as several APKs (universal and per-ABI); a client whose installed APK has a different hash must not use the patch.",
+        }),
       })
       .optional()
       .openapi({
-        description: "Delta patch from the installed version, present only when one exists for a supported algorithm and is much smaller than the full APK. The smallest supported patch is offered; `asset` stays the fallback.",
+        description: "Delta patch from the installed version, present only when one exists for a supported algorithm and is much smaller than the full APK. With `X-Hands-Installed-Sha256` (or `installed_sha256`), only a patch from that exact APK or one without `from_sha256` is offered; without it, a patch from an APK of the offered asset's arch is preferred. Then the smallest supported patch is offered; `asset` stays the fallback.",
       }),
     scoped: PublicScope,
     expires_in: z.number().int(),
@@ -306,6 +309,9 @@ export function registerPublicRoutes(): RouteConfigList {
         delta_algorithms: z.string().optional().openapi({
           description: "Same as the X-Hands-Delta-Algorithms header.",
         }),
+        installed_sha256: z.string().optional().openapi({
+          description: "Same as the X-Hands-Installed-Sha256 header.",
+        }),
       }),
       headers: z.object({
         "X-Hands-Client-Platform": z.string().optional(),
@@ -315,6 +321,9 @@ export function registerPublicRoutes(): RouteConfigList {
         "X-Hands-Device-Id": z.string().optional(),
         "X-Hands-Delta-Algorithms": z.string().optional().openapi({
           description: "Delta patch algorithms the client can apply, comma-separated, e.g. `archive-patcher-v1+xz,archive-patcher-v1+gzip`. Unknown values are ignored. Without it the server offers only patches older SDKs understand (`archive-patcher-v1+gzip`, `archive-patcher-v1`).",
+        }),
+        "X-Hands-Installed-Sha256": z.string().optional().openapi({
+          description: "SHA-256 (hex) of the installed APK (Android SDK 0.16.2+). A patch made from a different APK of the same version code is then never offered. Ignored unless it is 64 hex characters.",
         }),
       }),
     },

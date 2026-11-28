@@ -746,6 +746,9 @@ export async function handlePublicV2UpdateCheck(c: Context<{ Bindings: Env }>) {
           algorithms: parseDeltaAlgorithms(
             c.req.header("X-Hands-Delta-Algorithms") ?? c.req.query("delta_algorithms"),
           ),
+          installedSha256: parseInstalledSha256(
+            c.req.header("X-Hands-Installed-Sha256") ?? c.req.query("installed_sha256"),
+          ),
         })
       : null;
 
@@ -1200,12 +1203,78 @@ export function parseDeltaAlgorithms(raw: string | null | undefined): ReadonlySe
 }
 
 /**
+ * SHA-256 of the client's installed APK (X-Hands-Installed-Sha256 header or
+ * `installed_sha256` query, Android SDK 0.16.2+), lower-cased; null when absent
+ * or not 64 hex characters.
+ */
+export function parseInstalledSha256(raw: string | null | undefined): string | null {
+  const value = (raw ?? "").trim();
+  return /^[0-9a-fA-F]{64}$/u.test(value) ? value.toLowerCase() : null;
+}
+
+/** Universal APKs carry no arch; older uploads spelled it `universal`, `any` or "". */
+function normalizedPatchArch(arch: string | null | undefined): string | null {
+  const trimmed = arch?.trim() ?? "";
+  return trimmed === "" || trimmed === "universal" || trimmed === "any" ? null : trimmed;
+}
+
+export interface DeltaPatchCandidate {
+  r2_key: string;
+  size_bytes: number;
+  arch: string | null;
+  algorithm: string | null;
+  target_sha256: string | null;
+  /** Source APK hash (lower-case), null on patches stored before it was recorded. */
+  from_sha256: string | null;
+  /** Source APK arch (null = universal); meaningful only when from_arch_known. */
+  from_arch: string | null;
+  from_arch_known: number;
+}
+
+/**
+ * The patch to offer among a build's patches from the client's version code.
+ *
+ * One version code can ship as several APKs (universal and arm64-v8a), and a
+ * patch applies only to the exact APK it was made from (metadata from_sha256).
+ *  - With the installed APK's hash: a patch from that APK first; a patch from
+ *    a different APK never; a patch with no recorded source after those.
+ *  - Without it (SDKs before 0.16.2): a patch from an APK of the offered
+ *    asset's arch first (a device usually stays on one ABI type), then patches
+ *    with no recorded source, then the rest. A wrong guess costs one patch
+ *    download: the SDK verifies the result and falls back to the full APK.
+ * Then, as before, an exact-arch patch over a universal one, then the smallest.
+ */
+export function chooseDeltaPatch(
+  rows: DeltaPatchCandidate[],
+  args: { arch: string | null; algorithms: ReadonlySet<string>; installedSha256: string | null },
+): DeltaPatchCandidate | null {
+  const offeredArch = normalizedPatchArch(args.arch);
+  const sourceRank = (row: DeltaPatchCandidate): number => {
+    if (args.installedSha256) {
+      if (row.from_sha256 === args.installedSha256) return 0;
+      return row.from_sha256 === null ? 1 : -1;
+    }
+    if (row.from_arch_known !== 1) return 1;
+    return normalizedPatchArch(row.from_arch) === offeredArch ? 0 : 2;
+  };
+  const eligible = rows
+    .filter((row) => args.algorithms.has(row.algorithm ?? "archive-patcher-v1"))
+    .map((row) => ({ row, rank: sourceRank(row) }))
+    .filter(({ rank }) => rank >= 0);
+  eligible.sort((left, right) =>
+    left.rank - right.rank
+    || Number(right.row.arch === args.arch) - Number(left.row.arch === args.arch)
+    || left.row.size_bytes - right.row.size_bytes);
+  return eligible[0]?.row ?? null;
+}
+
+/**
  * Find a delta-patch asset on the target build that upgrades the client's
  * installed version for its arch, returning a signed offer only when the patch
  * is small enough to be a win. Patch assets carry
- * metadata_json = {from_version_code, to_version_code, algorithm, target_sha256}.
- * A build may hold one patch per algorithm; the smallest one the client
- * supports is offered.
+ * metadata_json = {from_version_code, to_version_code, algorithm, target_sha256,
+ * from_sha256?, from_arch?}. A build may hold one patch per algorithm and
+ * source APK; chooseDeltaPatch picks the one offered.
  */
 async function findDeltaPatch(
   c: Context<{ Bindings: Env }>,
@@ -1220,6 +1289,7 @@ async function findDeltaPatch(
     platform: string | null;
     channel: string | null;
     algorithms: ReadonlySet<string>;
+    installedSha256: string | null;
   },
 ): Promise<{
   from_version_code: number;
@@ -1227,6 +1297,7 @@ async function findDeltaPatch(
   download_url: string;
   size_bytes: number;
   target_sha256: string | null;
+  from_sha256: string | null;
 } | null> {
   // Server-side feature gate for the delta *offer*: only offer deltas when the
   // `delta_updates` feature flag is enabled for this app + device. This allows
@@ -1252,11 +1323,13 @@ async function findDeltaPatch(
 
   if (args.algorithms.size === 0) return null;
 
-  // An exact-arch patch wins over a universal one; then the smallest.
   const rows = (await c.env.DB.prepare(
     `SELECT r2_key, size_bytes, arch,
             json_extract(metadata_json, '$.algorithm') AS algorithm,
-            json_extract(metadata_json, '$.target_sha256') AS target_sha256
+            json_extract(metadata_json, '$.target_sha256') AS target_sha256,
+            lower(json_extract(metadata_json, '$.from_sha256')) AS from_sha256,
+            json_extract(metadata_json, '$.from_arch') AS from_arch,
+            CASE WHEN json_type(metadata_json, '$.from_arch') IS NULL THEN 0 ELSE 1 END AS from_arch_known
      FROM build_assets
      WHERE build_id = ?1
        AND artifact_kind = 'delta-patch'
@@ -1265,14 +1338,8 @@ async function findDeltaPatch(
      ORDER BY (arch = ?4) DESC, size_bytes ASC`,
   )
     .bind(args.buildId, args.fromVersionCode, args.arch, args.arch)
-    .all<{
-      r2_key: string;
-      size_bytes: number;
-      arch: string | null;
-      algorithm: string | null;
-      target_sha256: string | null;
-    }>()).results ?? [];
-  const row = rows.find((candidate) => args.algorithms.has(candidate.algorithm ?? "archive-patcher-v1"));
+    .all<DeltaPatchCandidate>()).results ?? [];
+  const row = chooseDeltaPatch(rows, args);
   if (!row) return null;
   // Only a win if it's meaningfully smaller than the full download.
   if (row.size_bytes > args.fullSizeBytes * DELTA_MAX_SIZE_RATIO) return null;
@@ -1282,6 +1349,7 @@ async function findDeltaPatch(
     download_url: await generateSignedR2Url(c.env, row.r2_key, args.ttl, args.origin),
     size_bytes: row.size_bytes,
     target_sha256: row.target_sha256,
+    from_sha256: row.from_sha256,
   };
 }
 
