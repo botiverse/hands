@@ -12,6 +12,16 @@ node zucchini-gen.cjs gen <old> <new> <patch> [<imposed matches>]
 node zucchini-gen.cjs apply <old> <patch> <new>
 ```
 
+`PatchGen --zucchini` applies every generated delta back with the bundled
+applier and refuses one that does not rebuild the new blob exactly, so a
+generator fault never reaches devices. The CLI makes Zucchini patches after all
+gzip and xz patches are uploaded, with a 15-minute limit per patch.
+
+Trade-off: the imposed DEX pairs replace Zucchini's own element detection, so
+a changed native library is diffed as raw bytes rather than as ELF. DEX
+dominates app updates; a Zucchini patch is uploaded only when it is smaller
+than the xz patch.
+
 ## Sources
 
 - Shared with the Android SDK's applier, compiled from

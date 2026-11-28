@@ -885,7 +885,7 @@ describe("Android delta patch xz copy", () => {
     }
   });
 
-  it("bundled Zucchini generator round-trips through its applier", async () => {
+  it("bundled zucchini generator round-trips through its applier", async () => {
     const { execFileSync } = await import("node:child_process");
     const { zucchiniGeneratorPath } = await import("../src/commands/builds.js");
     const generator = zucchiniGeneratorPath();
@@ -911,7 +911,7 @@ describe("Android delta patch xz copy", () => {
     }
   });
 
-  it("PatchGen --zucchini makes an xz patch that rebuilds the target archive byte for byte", async () => {
+  it("PatchGen --zucchini makes xz patches that rebuild the target archives byte for byte", async () => {
     const { execFileSync } = await import("node:child_process");
     const { fileURLToPath } = await import("node:url");
     try {
@@ -933,25 +933,33 @@ describe("Android delta patch xz copy", () => {
     try {
       const cp = await ensureArchivePatcher(dir);
       const generator = zucchiniGeneratorPath()!;
-      const patch = await generateZucchiniDeltaPatch({
-        classpath: cp,
-        generator,
-        oldApkPath: join(fixtures, "old.zip"),
-        newApkPath: join(fixtures, "new.zip"),
-        work: dir,
-        name: "fixture",
-      });
-      expect(patch.sizeBytes).toBeGreaterThan(0);
-      expect(patch.sizeBytes).toBeLessThan(readFileSync(join(fixtures, "new.zip")).length);
-      const info = execFileSync("xz", ["-lvv", patch.path]).toString();
-      expect(info).toContain("dict=16MiB");
-      writeFileSync(join(dir, "container.patch"), execFileSync("xz", ["-dc", patch.path], { maxBuffer: 1 << 26 }));
       execFileSync("javac", ["-cp", cp, "-d", dir, join(fixtures, "PatchApply.java")]);
-      execFileSync("java", [
-        "-cp", `${cp}:${dir}`, "PatchApply", process.execPath, generator,
-        join(fixtures, "old.zip"), join(dir, "container.patch"), join(dir, "rebuilt.zip"),
-      ]);
-      expect(Buffer.compare(readFileSync(join(dir, "rebuilt.zip")), readFileSync(join(fixtures, "new.zip")))).toBe(0);
+      // old/new.zip: deflated non-code entries (raw Zucchini diff). dex-old/new.zip:
+      // two DEX files each (classes.dex, classes2.dex built with d8), one
+      // changed and one with an added class, so the DEX pairing and Zucchini's
+      // DEX disassembler run in both generator and applier.
+      for (const [oldName, newName] of [["old.zip", "new.zip"], ["dex-old.zip", "dex-new.zip"]]) {
+        const patch = await generateZucchiniDeltaPatch({
+          classpath: cp,
+          generator,
+          oldApkPath: join(fixtures, oldName),
+          newApkPath: join(fixtures, newName),
+          work: dir,
+          name: oldName,
+        });
+        expect(patch.sizeBytes).toBeGreaterThan(0);
+        expect(patch.sizeBytes).toBeLessThan(readFileSync(join(fixtures, newName)).length);
+        const info = execFileSync("xz", ["-lvv", patch.path]).toString();
+        expect(info).toContain("dict=16MiB");
+        const container = join(dir, `${oldName}.container`);
+        const rebuilt = join(dir, `${oldName}.rebuilt`);
+        writeFileSync(container, execFileSync("xz", ["-dc", patch.path], { maxBuffer: 1 << 26 }));
+        execFileSync("java", [
+          "-cp", `${cp}:${dir}`, "PatchApply", process.execPath, generator,
+          join(fixtures, oldName), container, rebuilt,
+        ]);
+        expect(Buffer.compare(readFileSync(rebuilt), readFileSync(join(fixtures, newName)))).toBe(0);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

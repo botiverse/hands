@@ -5,7 +5,7 @@
  */
 
 import type { Command } from "commander";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2999,6 +2999,9 @@ export function zucchiniGeneratorPath(): string | null {
   return path;
 }
 
+/** A Zucchini patch takes about a minute for a 30 MB APK; give up well past that. */
+const ZUCCHINI_TIMEOUT_MS = 15 * 60 * 1000;
+
 /**
  * Make an archive-patcher-zucchini-v1+xz patch: PatchGen --zucchini runs the
  * Zucchini generator (with this Node) between the delta-friendly blobs and
@@ -3014,20 +3017,26 @@ export async function generateZucchiniDeltaPatch(args: {
   name: string;
   java?: string;
   xz?: string;
+  timeoutMs?: number;
 }): Promise<{ path: string; sizeBytes: number; seconds: number }> {
   const started = Date.now();
   const gzPath = join(args.work, `${args.name}.zpatch.gz`);
   const xzPath = join(args.work, `${args.name}.zpatch.xz`);
   await execFileAsync(
     args.java ?? "java",
-    ["-cp", args.classpath, "PatchGen", "--zucchini", process.execPath, args.generator, args.oldApkPath, args.newApkPath, gzPath],
-    { maxBuffer: 16 * 1024 * 1024 },
+    [
+      // archive-patcher's delta-friendly blobs go under work, which the caller removes.
+      `-Djava.io.tmpdir=${args.work}`,
+      "-cp", args.classpath, "PatchGen", "--zucchini", process.execPath, args.generator,
+      args.oldApkPath, args.newApkPath, gzPath,
+    ],
+    { maxBuffer: 16 * 1024 * 1024, timeout: args.timeoutMs ?? ZUCCHINI_TIMEOUT_MS, killSignal: "SIGKILL" },
   );
   if (!(await compressAndroidDeltaPatchXz(gzPath, xzPath, args.xz))) {
     throw new Error("xz not installed");
   }
   await rm(gzPath, { force: true });
-  return { path: xzPath, sizeBytes: readFileSync(xzPath).length, seconds: (Date.now() - started) / 1000 };
+  return { path: xzPath, sizeBytes: statSync(xzPath).size, seconds: (Date.now() - started) / 1000 };
 }
 
 interface DeltaSource {
@@ -3076,6 +3085,7 @@ async function generateAndUploadAndroidDeltas(args: {
     const cp = await ensureArchivePatcher(work);
     let xzMissing = false;
     const zucchiniGenerator = args.zucchini ? zucchiniGeneratorPath() : null;
+    const zucchiniJobs: Array<{ fromVersionCode: number; oldPath: string; xzSize: number }> = [];
     for (const src of sources) {
       const oldPath = join(work, `old-${src.from_version_code}.apk`);
       const patchPath = join(work, `from-${src.from_version_code}.patch.gz`);
@@ -3134,45 +3144,47 @@ async function generateAndUploadAndroidDeltas(args: {
                 }),
               }),
             );
-            // The Zucchini patch is a further extra for SDK 0.16.0+: older SDKs
-            // keep the patches above, so a failure here never fails the publish.
-            if (zucchiniGenerator) {
-              try {
-                const zucchini = await generateZucchiniDeltaPatch({
-                  classpath: cp,
-                  generator: zucchiniGenerator,
-                  oldApkPath: oldPath,
-                  newApkPath: args.newApkPath,
-                  work,
-                  name: `from-${src.from_version_code}`,
-                });
-                if (zucchini.sizeBytes >= xzSize) {
-                  console.error(`[delta] v${src.from_version_code}: zucchini ${zucchini.sizeBytes}B not smaller than xz; skipping zucchini.`);
-                } else {
-                  console.error(`[delta] v${src.from_version_code} -> v${args.toVersionCode}: zucchini patch ${zucchini.sizeBytes}B (${(zucchini.sizeBytes / args.newApkSize * 100).toFixed(1)}% of full, ${zucchini.seconds.toFixed(0)}s)`);
-                  uploaded.push(
-                    await uploadAndRegisterAsset(args.appId, args.buildId, zucchini.path, {
-                      artifact_kind: "delta-patch",
-                      platform: "android",
-                      arch: args.arch,
-                      filetype: "zpatch.xz",
-                      metadata_json: androidDeltaPatchMetadata({
-                        fromVersionCode: src.from_version_code,
-                        toVersionCode: args.toVersionCode,
-                        targetSha256: args.targetSha256,
-                        algorithm: ANDROID_DELTA_PATCH_ZUCCHINI_ALGORITHM,
-                      }),
-                    }),
-                  );
-                }
-              } catch (error) {
-                console.error(`[delta] v${src.from_version_code}: zucchini patch failed (${(error as Error).message}); gzip and xz patches kept.`);
-              }
-            }
+            // The Zucchini patch is a further extra for SDK 0.16.0+, made after
+            // every gzip and xz patch is uploaded (it takes about a minute each).
+            if (zucchiniGenerator) zucchiniJobs.push({ fromVersionCode: src.from_version_code, oldPath, xzSize });
           }
         }
       } catch (error) {
         console.error(`[delta] v${src.from_version_code}: xz patch failed (${(error as Error).message}); gzip patch kept.`);
+      }
+    }
+    // Older SDKs use the patches above, so a failure here never fails the publish.
+    for (const job of zucchiniGenerator ? zucchiniJobs : []) {
+      try {
+        const zucchini = await generateZucchiniDeltaPatch({
+          classpath: cp,
+          generator: zucchiniGenerator!,
+          oldApkPath: job.oldPath,
+          newApkPath: args.newApkPath,
+          work,
+          name: `from-${job.fromVersionCode}`,
+        });
+        if (zucchini.sizeBytes >= job.xzSize) {
+          console.error(`[delta] v${job.fromVersionCode}: zucchini ${zucchini.sizeBytes}B not smaller than xz; skipping zucchini.`);
+          continue;
+        }
+        console.error(`[delta] v${job.fromVersionCode} -> v${args.toVersionCode}: zucchini patch ${zucchini.sizeBytes}B (${(zucchini.sizeBytes / args.newApkSize * 100).toFixed(1)}% of full, ${zucchini.seconds.toFixed(0)}s)`);
+        uploaded.push(
+          await uploadAndRegisterAsset(args.appId, args.buildId, zucchini.path, {
+            artifact_kind: "delta-patch",
+            platform: "android",
+            arch: args.arch,
+            filetype: "zpatch.xz",
+            metadata_json: androidDeltaPatchMetadata({
+              fromVersionCode: job.fromVersionCode,
+              toVersionCode: args.toVersionCode,
+              targetSha256: args.targetSha256,
+              algorithm: ANDROID_DELTA_PATCH_ZUCCHINI_ALGORITHM,
+            }),
+          }),
+        );
+      } catch (error) {
+        console.error(`[delta] v${job.fromVersionCode}: zucchini patch failed (${(error as Error).message}); gzip and xz patches kept.`);
       }
     }
   } finally {

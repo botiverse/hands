@@ -73,7 +73,10 @@ public final class PatchGen {
    * Runs the Zucchini generator on the delta-friendly blobs. Zucchini's own
    * matcher gives up on DEX when an archive has more than one, so DEX files are
    * paired explicitly: the n-th DEX in the old blob with the n-th in the new
-   * one (classes.dex, classes2.dex, ... keep their order in an APK).
+   * one (classes.dex, classes2.dex, ... keep their order in an APK). Imposed
+   * matches replace Zucchini's own element detection, so changed native
+   * libraries are diffed as raw bytes rather than as ELF; DEX dominates app
+   * updates, and the result is only uploaded when smaller than the xz patch.
    */
   static final class ZucchiniDeltaGenerator implements DeltaGenerator {
     private final String node;
@@ -88,6 +91,7 @@ public final class PatchGen {
     public void generateDelta(File oldBlob, File newBlob, OutputStream out)
         throws IOException, InterruptedException {
       File patch = File.createTempFile("zucchini", ".patch", oldBlob.getParentFile());
+      File check = File.createTempFile("zucchini", ".check", oldBlob.getParentFile());
       try {
         List<long[]> oldDex = dexRanges(oldBlob);
         List<long[]> newDex = dexRanges(newBlob);
@@ -100,14 +104,26 @@ public final class PatchGen {
         List<String> command = new ArrayList<>(List.of(
             node, script, "gen", oldBlob.getPath(), newBlob.getPath(), patch.getPath()));
         if (imposed.length() > 0) command.add(imposed.toString());
-        Process process = new ProcessBuilder(command).inheritIO().start();
-        int status = process.waitFor();
-        if (status != 0) throw new IOException("zucchini generator exited with status " + status);
+        run(command, "zucchini generator");
+        // Apply it back with the same applier sources the SDK uses: a patch that
+        // does not rebuild the new blob exactly is never uploaded.
+        run(List.of(node, script, "apply", oldBlob.getPath(), patch.getPath(), check.getPath()),
+            "zucchini apply check");
+        if (Files.mismatch(check.toPath(), newBlob.toPath()) != -1L) {
+          throw new IOException("zucchini patch does not rebuild the new blob");
+        }
         Files.copy(patch.toPath(), out);
       } finally {
         patch.delete();
+        check.delete();
       }
     }
+  }
+
+  private static void run(List<String> command, String what) throws IOException, InterruptedException {
+    Process process = new ProcessBuilder(command).inheritIO().start();
+    int status = process.waitFor();
+    if (status != 0) throw new IOException(what + " exited with status " + status);
   }
 
   /** Offsets and sizes of the DEX files in a delta-friendly blob, in order. */
